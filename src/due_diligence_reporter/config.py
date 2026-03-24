@@ -38,10 +38,6 @@ class Settings(BaseSettings):
     )
 
     # DD Report Templates
-    dd_template_google_doc_id: str = Field(
-        "",
-        description="Google Doc ID of the V1 DD report template",
-    )
     dd_template_v2_google_doc_id: str = Field(
         "",
         description="Google Doc ID of the V2 DD report template",

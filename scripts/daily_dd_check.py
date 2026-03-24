@@ -69,8 +69,11 @@ def main(site_filter: str | None = None) -> None:
     wrike_cfg = load_wrike_config()
 
     # Load the agent system prompt
-    prompt_path = _project_root / "prompt.md"
-    system_prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
+    prompt_path = _project_root / "prompt_v2.md"
+    if not prompt_path.exists():
+        logger.error("System prompt not found at %s — aborting", prompt_path)
+        sys.exit(1)
+    system_prompt = prompt_path.read_text(encoding="utf-8")
 
     # Init Google client
     gc = GoogleClient.from_oauth_config(

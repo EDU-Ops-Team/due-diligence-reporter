@@ -2,8 +2,7 @@
 """
 generate_v2_report.py — Manual V2 DD report generation for a single site.
 
-Uses prompt_v2.md and the V2 template. The V2 prompt instructs the agent
-to pass version=2 to create_dd_report.
+Uses prompt_v2.md and the V2 template.
 
 Run:
     uv run python scripts/generate_v2_report.py --site "Alpha Keller"

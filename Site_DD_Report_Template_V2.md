@@ -23,6 +23,10 @@
 | :---- |
 | {{exec.acquisition\_conditions}} |
 
+| Risks to Note |
+| :---- |
+| {{exec.risk\_notes}} |
+
 # **Source Documents**
 
 | Document | Link |
@@ -32,3 +36,4 @@
 | **ISP** | {{sources.isp\_link}} |
 | **E-Occupancy Assessment** | {{sources.e\_occupancy\_link}} |
 | **School Approval Assessment** | {{sources.school\_approval\_link}} |
+| **Trace Report** | {{sources.trace\_link}} |

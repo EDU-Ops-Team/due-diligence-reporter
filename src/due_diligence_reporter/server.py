@@ -1910,7 +1910,7 @@ async def check_report_completeness(doc_id: str) -> dict[str, Any]:
         unresolved_token_count = len(unresolved_tokens)
 
         # Find all [Not found — ...] and [Pending...] labels
-        pending_labels = re.findall(r"\[(?:Not found[^]]*|Pending[^]]*)\]", text, re.IGNORECASE)
+        pending_labels = re.findall(r"\[Not found\s*—[^]]+\]", text, re.IGNORECASE)
         pending_section_count = len(pending_labels)
 
         ready_to_send = unresolved_token_count == 0

@@ -192,8 +192,11 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     logger.info("Pipeline phase: %d unique site(s) received new uploads", len(unique_sites))
 
     # Load the agent system prompt
-    prompt_path = _project_root / "prompt.md"
-    system_prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
+    prompt_path = _project_root / "prompt_v2.md"
+    if not prompt_path.exists():
+        logger.error("System prompt not found at %s — aborting pipeline phase", prompt_path)
+        return
+    system_prompt = prompt_path.read_text(encoding="utf-8")
 
     # Pre-fetch shared folder file lists once (freshly, since we just uploaded)
     logger.info("Refreshing shared Drive folder cache...")

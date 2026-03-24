@@ -565,7 +565,7 @@ class ReportTrace:
 
     site_name: str
     started_at: str
-    prompt_version: int = 1
+    prompt_version: int = 2
     events: list[TraceEvent] = field(default_factory=list)
     ended_at: str = ""
     total_duration_ms: int = 0
