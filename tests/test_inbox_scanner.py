@@ -12,8 +12,6 @@ from due_diligence_reporter.inbox_scanner import (
     AUTO_FILE_CONFIDENCE,
     DOC_TYPE_FILENAME_TEMPLATES,
     SUPPORTED_DOC_TYPES,
-    ClassificationResult,
-    _fallback_classify,
     _generate_drive_filename,
     _walk_parts,
     process_email,
@@ -54,13 +52,11 @@ class TestGenerateDriveFilename:
     def test_sir_matches_classify_document_type_pattern(self):
         """The generated SIR filename must be classified as 'sir' by the server's regex."""
         name = _generate_drive_filename("Alpha Southlake", "sir")
-        # Mirrors server.py _classify_document_type SIR check
         assert re.search(r"\bsir\b", name.lower())
 
     def test_inspection_matches_classify_document_type_pattern(self):
         """The generated inspection filename must be classified as 'building_inspection'."""
         name = _generate_drive_filename("Alpha Norwalk", "building_inspection")
-        # Mirrors server.py _classify_document_type Building Inspection check
         assert "inspection" in name.lower()
 
     def test_all_supported_doc_types_have_templates(self):
@@ -69,47 +65,52 @@ class TestGenerateDriveFilename:
 
 
 # ---------------------------------------------------------------------------
-# LLM prompt / classification structure
+# Classification — now uses classify_document() from classifier.py
 # ---------------------------------------------------------------------------
 
 
-class TestClassifyPromptStructure:
-    """Ensure the LLM classification function produces well-structured results."""
-
-    def test_fallback_classify_sir(self):
-        result = _fallback_classify("Keller_SIR_2026.pdf", [])
-        assert result.doc_type == "sir"
-        assert result.confidence > 0
-
-    def test_fallback_classify_inspection(self):
-        result = _fallback_classify("Building_Inspection_Boca.pdf", [])
-        assert result.doc_type == "building_inspection"
-        assert result.confidence > 0
-
-    def test_fallback_classify_isp(self):
-        result = _fallback_classify("Alpha_Keller_ISP_2026.pdf", [])
-        assert result.doc_type == "isp"
-        assert result.confidence > 0
-
-    def test_fallback_classify_program_fit(self):
-        result = _fallback_classify("Program Fit Analysis - Keller.pdf", [])
-        assert result.doc_type == "isp"
-        assert result.confidence > 0
-
-    def test_fallback_classify_unknown(self):
-        result = _fallback_classify("random_document.pdf", [])
-        assert result.doc_type == "unknown"
-        assert result.confidence == 0.0
-
-    def test_fallback_no_site_match(self):
-        """Fallback never attempts site matching."""
-        candidates = [{"id": "ABC123", "title": "Alpha Keller"}]
-        result = _fallback_classify("Some_SIR.pdf", candidates)
-        assert result.matched_site_id is None
-        assert result.matched_site_title is None
+class TestClassification:
+    """Verify classify_document is used and doc_type gates the upload."""
 
     def test_confidence_threshold_is_reasonable(self):
         assert 0.5 <= AUTO_FILE_CONFIDENCE <= 0.9
+
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_unknown_doc_type_skipped(self, mock_extract, mock_classify):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_1",
+            subject="Hello",
+            sender="test@example.com",
+            body_snippet="Some text",
+            attachments=[{"filename": "notes.pdf", "attachment_id": "a1", "mime_type": "application/pdf"}],
+        )
+        mock_classify.return_value = ("unknown", 0.0)
+
+        gc = MagicMock()
+        result = process_email(gc, "msg_1", MagicMock(), "label_123")
+
+        assert result["skipped"] == 1
+        assert len(result["uploaded"]) == 0
+
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_low_confidence_flagged_for_review(self, mock_extract, mock_classify):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_2",
+            subject="Something",
+            sender="test@example.com",
+            body_snippet="",
+            attachments=[{"filename": "report.pdf", "attachment_id": "a2", "mime_type": "application/pdf"}],
+        )
+        mock_classify.return_value = ("sir", 0.5)  # below AUTO_FILE_CONFIDENCE
+
+        gc = MagicMock()
+        result = process_email(gc, "msg_2", MagicMock(), "label_123")
+
+        assert len(result["low_confidence"]) == 1
+        assert result["low_confidence"][0]["doc_type"] == "sir"
+        assert result["marked"] is False  # must not mark when review needed
 
 
 # ---------------------------------------------------------------------------
@@ -194,12 +195,10 @@ class TestIdempotency:
         query = f"{settings.inbox_scan_query} -label:{settings.inbox_processed_label}"
         assert "-label:DD-Processed" in query
 
-    @patch("due_diligence_reporter.inbox_scanner._classify_and_match_site")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
-    def test_unknown_doc_type_skipped_and_email_marked(
-        self, mock_extract, mock_classify
-    ):
-        """Emails where all attachments are 'unknown' should be marked processed."""
+    def test_unknown_doc_type_email_marked_processed(self, mock_extract, mock_classify):
+        """Emails with only unknown-type attachments are marked processed (no re-scan needed)."""
         mock_extract.return_value = MagicMock(
             message_id="msg_1",
             subject="Hello",
@@ -207,18 +206,11 @@ class TestIdempotency:
             body_snippet="Some text",
             attachments=[{"filename": "notes.pdf", "attachment_id": "a1", "mime_type": "application/pdf"}],
         )
-        mock_classify.return_value = ClassificationResult(
-            doc_type="unknown",
-            matched_site_id=None,
-            matched_site_title=None,
-            confidence=0.0,
-            reasoning="Not a DD document",
-        )
+        mock_classify.return_value = ("unknown", 0.0)
 
         gc = MagicMock()
-        result = process_email(gc, "msg_1", [], MagicMock(), "label_123")
+        result = process_email(gc, "msg_1", MagicMock(), "label_123")
 
         assert result["skipped"] == 1
         assert len(result["uploaded"]) == 0
-        # Email should still be marked (all attachments were handled, just skipped)
-        assert result["marked"] is True
+        assert result["marked"] is True  # mark so we don't re-scan it forever
