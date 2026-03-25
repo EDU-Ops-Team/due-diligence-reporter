@@ -275,9 +275,11 @@ def process_email(
             logger.error("Upload failed for '%s': %s", filename, e)
             all_succeeded = False
 
-    # Mark email as processed only if all attachments succeeded
+    # Mark email as processed only if at least one attachment was uploaded
+    # and none required manual review. Emails with low-confidence attachments
+    # stay in the queue so they can be retried or reviewed.
     marked = False
-    if all_succeeded and not dry_run and (uploaded or skipped == len(metadata.attachments)):
+    if all_succeeded and not dry_run and uploaded and not low_confidence:
         _mark_email_processed(gc, message_id, label_id)
         marked = True
 

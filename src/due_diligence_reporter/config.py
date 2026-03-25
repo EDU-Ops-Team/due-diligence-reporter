@@ -83,8 +83,8 @@ class Settings(BaseSettings):
 
     # Inbox Scanner
     inbox_scan_query: str = Field(
-        "to:edu.ops@trilogy.com has:attachment filename:pdf",
-        description="Gmail search query for incoming DD documents",
+        "{to:edu.ops@trilogy.com cc:edu.ops@trilogy.com} has:attachment filename:pdf",
+        description="Gmail search query for incoming DD documents (to or cc)",
     )
     inbox_processed_label: str = Field(
         "DD-Processed",
