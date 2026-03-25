@@ -205,21 +205,7 @@ def process_email(
             skipped += 1
             continue
 
-        # No site match
-        if not classification.matched_site_id or not classification.matched_site_title:
-            logger.warning("No site match for '%s' — skipping", filename)
-            low_confidence.append({
-                "filename": filename,
-                "doc_type": classification.doc_type,
-                "matched_site": None,
-                "confidence": classification.confidence,
-                "reasoning": classification.reasoning,
-                "email_subject": metadata.subject,
-            })
-            skipped += 1
-            continue
-
-        # Determine target folder
+        # Determine target folder — doc_type alone is sufficient to route the file
         folder_attr = DOC_TYPE_FOLDER_MAP.get(classification.doc_type)
         if not folder_attr:
             skipped += 1
@@ -230,10 +216,15 @@ def process_email(
             all_succeeded = False
             continue
 
-        # Generate filename
-        drive_filename = _generate_drive_filename(
-            classification.matched_site_title, classification.doc_type,
-        )
+        # Generate filename — use site title when matched, original filename otherwise
+        if classification.matched_site_title:
+            drive_filename = _generate_drive_filename(
+                classification.matched_site_title, classification.doc_type,
+            )
+        else:
+            logger.info("No site match for '%s' — filing with original filename", filename)
+            date_str = datetime.now().strftime("%b %d %Y")
+            drive_filename = f"{date_str} - {filename}"
 
         if dry_run:
             logger.info("[DRY RUN] Would upload '%s' to folder %s", drive_filename, target_folder_id)
