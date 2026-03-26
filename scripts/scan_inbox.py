@@ -2,12 +2,13 @@
 """
 scan_inbox.py — Scan edu.ops@trilogy.com inbox for DD documents.
 
-Finds emails with PDF attachments (SIR, Building Inspection), classifies them
-using GPT-4o-mini, matches to a Wrike site record, and uploads to the correct
-shared Drive folder.
+Finds emails with PDF attachments (SIR, Building Inspection, ISP), classifies
+them by filename using the three-tier classifier (regex → GPT-4o-mini), and
+uploads to the correct shared Drive folder by doc_type only (no site matching).
 
-Phase 2: For each site that received a new upload, immediately checks readiness
-and triggers report generation if all required documents are present.
+Phase 2: Pipeline trigger for newly-uploaded sites. Currently inactive because
+the filename classifier does not match files to Wrike site records (site_title
+is always None). Report generation falls to the daily sweep instead.
 
 Run:
     uv run python scripts/scan_inbox.py

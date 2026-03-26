@@ -166,6 +166,140 @@ _EOCCUPANCY_TIER_LABELS: dict[int, str] = {
     5: "Tier 5 — Very Easy",
 }
 
+# IBC occupancy group → (difficulty label, score cap or None)
+# Score cap: None = no override; 0 = do not pursue; 20 = institutional cap
+_IBC_GROUP_INFO: dict[str, tuple[str, int | None]] = {
+    "E":   ("Educational — already Group E", None),
+    "B":   ("Business/Office — Low-Moderate difficulty", None),
+    "A-3": ("Assembly: Worship/Recreation — Low-Moderate difficulty", None),
+    "A-2": ("Assembly: Food & Drink — Moderate difficulty", None),
+    "A-1": ("Assembly: Fixed Seating — Moderate difficulty", None),
+    "M":   ("Mercantile — Moderate difficulty", None),
+    "F":   ("Factory — Moderate-High difficulty", None),
+    "S":   ("Storage — High difficulty", None),
+    "R":   ("Residential — High difficulty", None),
+    "I":   ("Institutional — Very High difficulty", 20),
+    "H":   ("Hazardous — Do Not Pursue", 0),
+}
+
+# Required exits by occupant load (IBC Table 1006.2.1)
+_IBC_EXIT_REQUIREMENTS: list[tuple[int, int, int]] = [
+    (1, 49, 1),
+    (50, 500, 2),
+    (501, 1000, 3),
+    (1001, 99999, 4),
+]
+
+
+def _eval_ibc_gates(
+    fire_area_sqft: int,
+    has_below_grade_space: bool,
+    already_sprinklered: bool,
+    max_travel_distance_ft: int,
+    existing_exit_count: int,
+    projected_occupant_load: int,
+    construction_type: str,
+) -> tuple[dict[str, str], list[str], int]:
+    """Evaluate IBC compliance gates for Group E conversion.
+
+    Returns (gate_statuses dict, flags list, score_adjustment int).
+    Score adjustments: sprinkler retrofit needed (−5), travel distance fail (−15),
+    exit count fail (−10). All are penalties — negative values.
+    """
+    gates: dict[str, str] = {}
+    flags: list[str] = []
+    adjustment = 0
+
+    # Gate 1: Sprinkler requirement (IBC 903.2.3)
+    sprinkler_required: bool | None = None
+    if fire_area_sqft > 0 or has_below_grade_space:
+        if fire_area_sqft > 12000:
+            sprinkler_required = True
+            gates["sprinkler_required"] = "YES — fire area exceeds 12,000 sq ft (IBC 903.2.3)"
+        elif has_below_grade_space:
+            sprinkler_required = True
+            gates["sprinkler_required"] = "YES — below-grade space present (IBC 903.2.3)"
+        elif fire_area_sqft > 0:
+            sprinkler_required = False
+            gates["sprinkler_required"] = f"NO — fire area {fire_area_sqft:,} sq ft is under 12,000 sq ft threshold"
+    else:
+        gates["sprinkler_required"] = "UNKNOWN — fire area not provided"
+
+    if sprinkler_required and not already_sprinklered:
+        gates["sprinkler_cost"] = "Retrofit required — budget $3–6/sq ft (NFPA 13)"
+        flags.append("Sprinkler retrofit required (IBC 903.2.3)")
+        adjustment -= 5
+    elif already_sprinklered:
+        gates["sprinkler_cost"] = "Already sprinklered — no retrofit cost"
+
+    # Gate 2: Travel distance (IBC Table 1017.2)
+    if max_travel_distance_ft > 0:
+        # Use sprinklered limit if building is or will be sprinklered
+        is_sprinklered = already_sprinklered or bool(sprinkler_required)
+        limit = 250 if is_sprinklered else 200
+        if max_travel_distance_ft > limit:
+            gates["travel_distance"] = (
+                f"NON-COMPLIANT — {max_travel_distance_ft} ft exceeds {limit} ft limit "
+                f"({'sprinklered' if is_sprinklered else 'non-sprinklered'}) (IBC Table 1017.2)"
+            )
+            flags.append(f"Travel distance non-compliant: {max_travel_distance_ft} ft > {limit} ft limit (IBC 1017.2)")
+            adjustment -= 15
+        else:
+            gates["travel_distance"] = (
+                f"COMPLIANT — {max_travel_distance_ft} ft within {limit} ft limit (IBC Table 1017.2)"
+            )
+    else:
+        gates["travel_distance"] = "UNKNOWN — travel distance not provided; verify against 200 ft (non-sprinklered) or 250 ft (sprinklered)"
+
+    # Gate 3: Exit count (IBC Table 1006.2.1)
+    if existing_exit_count > 0 and projected_occupant_load > 0:
+        required = next(
+            req for lo, hi, req in _IBC_EXIT_REQUIREMENTS if lo <= projected_occupant_load <= hi
+        )
+        if existing_exit_count < required:
+            gates["exit_count"] = (
+                f"NON-COMPLIANT — {existing_exit_count} exit(s) present, {required} required "
+                f"for {projected_occupant_load} occupants (IBC Table 1006.2.1)"
+            )
+            flags.append(f"Insufficient exits: {existing_exit_count} present, {required} required (IBC 1006.2.1)")
+            adjustment -= 10
+        else:
+            gates["exit_count"] = (
+                f"COMPLIANT — {existing_exit_count} exit(s) meets {required}-exit requirement "
+                f"for {projected_occupant_load} occupants (IBC Table 1006.2.1)"
+            )
+    elif projected_occupant_load > 0:
+        required = next(
+            req for lo, hi, req in _IBC_EXIT_REQUIREMENTS if lo <= projected_occupant_load <= hi
+        )
+        gates["exit_count"] = f"UNKNOWN — verify {required} exits required for {projected_occupant_load} occupants (IBC Table 1006.2.1)"
+    else:
+        gates["exit_count"] = "UNKNOWN — occupant load not provided; at 50+ occupants, minimum 2 exits required"
+
+    # Gate 4: Construction type (informational)
+    if construction_type:
+        gates["construction_type"] = (
+            f"Type {construction_type} — verify allowable height/area for Group E "
+            "against IBC Tables 504.3, 504.4, 506.2"
+        )
+    else:
+        gates["construction_type"] = "UNKNOWN — verify construction type against IBC Chapter 5"
+
+    # Universal 50-occupant threshold flags (any real school will exceed this)
+    load = projected_occupant_load
+    if load == 0 or load >= 50:
+        flags.append("Fire alarm system required at 50+ occupants (IBC 907.2.3)")
+        flags.append("Panic hardware required on all egress doors at 50+ occupants — budget $300–500/door (IBC 1010.2.9)")
+        if load == 0:
+            flags.append("Storm shelter may be required in 250 mph wind zones at 50+ occupants (IBC 423.5)")
+        elif load >= 50:
+            flags.append("Storm shelter required in 250 mph wind zones (IBC 423.5)")
+
+    flags.append("CO detectors required in all classrooms with auto-transmission to attended location (IBC 915.2.3)")
+    flags.append("Enhanced acoustics required in classrooms ≤ 20,000 cu ft (IBC 1208.2)")
+
+    return gates, flags, adjustment
+
 
 def _match_building_type(description: str) -> tuple[int, str]:
     """Return (base_score, label) for a free-form building type description.
@@ -999,14 +1133,23 @@ async def apply_e_occupancy_skill(
     no_outdoor_space: bool = False,
     shared_parking: bool = False,
     incompatible_tenants: bool = False,
+    ibc_occupancy_group: str = "",
+    fire_area_sqft: int = 0,
+    has_below_grade_space: bool = False,
+    already_sprinklered: bool = False,
+    construction_type: str = "",
+    max_travel_distance_ft: int = 0,
+    existing_exit_count: int = 0,
+    projected_occupant_load: int = 0,
     site_name: str = "",
     drive_folder_url: str = "",
 ) -> dict[str, Any]:
     """Apply the E-Occupancy Skill to score a building for educational use conversion.
 
     Evaluates the building's current use against the Alpha School E-Occupancy scoring
-    matrix and returns a complete structured assessment. Call this tool in Step 4 after
-    identifying the building's current use from source documents or the Wrike record.
+    matrix and returns a complete structured assessment including IBC compliance gates.
+    Call this tool in Step 4 after identifying the building's current use from source
+    documents or the Wrike record.
 
     If site_name and drive_folder_url are provided, the full assessment is automatically
     saved as a Google Doc in the site's M1 subfolder and the doc_url is returned.
@@ -1023,12 +1166,28 @@ async def apply_e_occupancy_skill(
         no_outdoor_space: True if no access to outdoor space for students.
         shared_parking: True if parking is shared with other tenants.
         incompatible_tenants: True if other tenants are incompatible with school use.
+        ibc_occupancy_group: Source building's IBC occupancy group (B, A-1, A-2, A-3,
+            M, F, S, R, I, H, E). Overrides score for I (cap 20) and H (score 0).
+        fire_area_sqft: Fire area in square feet. Triggers mandatory sprinklers at 12,000 sq ft
+            (IBC 903.2.3). Pass 0 if unknown.
+        has_below_grade_space: True if any portion is below the level of exit discharge.
+            Triggers mandatory sprinklers regardless of size (IBC 903.2.3).
+        already_sprinklered: True if building already has a compliant sprinkler system.
+        construction_type: IBC construction type (I-A, I-B, II-A, II-B, III-A, III-B,
+            IV, V-A, V-B). Informational — flags for cross-reference against IBC Chapter 5.
+        max_travel_distance_ft: Maximum travel distance from most remote classroom to
+            nearest exit. Compare against 200 ft (non-sprinklered) or 250 ft (sprinklered)
+            per IBC Table 1017.2.
+        existing_exit_count: Number of compliant exits in the building. Used to verify
+            against IBC Table 1006.2.1 requirements based on occupant load.
+        projected_occupant_load: Expected total occupant load. Drives exit count check
+            and 50-occupant threshold flag (fire alarm, panic hardware, storm shelter).
         site_name: Site name — pass to auto-publish the assessment as a Google Doc.
         drive_folder_url: Site Drive folder URL — pass to auto-publish.
 
     Returns:
-        Dict with score, zone, tier, timeline, confidence, doc_url (if auto-published),
-        and ready-to-use report_data_fields for q2.e_occupancy_*.
+        Dict with score, zone, tier, timeline, confidence, ibc_gates, ibc_flags,
+        doc_url (if auto-published), and ready-to-use report_data_fields for q2.e_occupancy_*.
     """
     logger.info(
         "Tool called: apply_e_occupancy_skill — building_type=%s, stories=%d",
@@ -1037,6 +1196,18 @@ async def apply_e_occupancy_skill(
     )
 
     base_score, matched_type = _match_building_type(building_type_description)
+
+    # IBC group override: H → do not pursue (0), I → cap at 20
+    ibc_group_label = ""
+    if ibc_occupancy_group:
+        group = ibc_occupancy_group.upper().strip()
+        group_info = _IBC_GROUP_INFO.get(group)
+        if group_info:
+            ibc_group_label, cap = group_info
+            if cap == 0:
+                base_score = 0
+            elif cap is not None and base_score > cap:
+                base_score = cap
 
     # Apply height override (absolute ceiling, even on score-0 types this is a no-op)
     if base_score > 0:
@@ -1075,6 +1246,24 @@ async def apply_e_occupancy_skill(
         if score < 1:
             score = 1
 
+    # Apply IBC compliance gate checks
+    ibc_gates: dict[str, str] = {}
+    ibc_flags: list[str] = []
+    ibc_adjustment = 0
+    if base_score > 0:
+        ibc_gates, ibc_flags, ibc_adjustment = _eval_ibc_gates(
+            fire_area_sqft=fire_area_sqft,
+            has_below_grade_space=has_below_grade_space,
+            already_sprinklered=already_sprinklered,
+            max_travel_distance_ft=max_travel_distance_ft,
+            existing_exit_count=existing_exit_count,
+            projected_occupant_load=projected_occupant_load,
+            construction_type=construction_type,
+        )
+        score += ibc_adjustment
+        if score < 1:
+            score = 1
+
     score = max(0, min(100, score))
 
     zone = "GREEN" if score == 100 else ("RED" if score == 0 else "YELLOW")
@@ -1082,36 +1271,47 @@ async def apply_e_occupancy_skill(
     tier_label = _EOCCUPANCY_TIER_LABELS.get(tier, str(tier))
     timeline = _e_occupancy_timeline(score)
 
-    # Confidence: HIGH if type matched clearly, MEDIUM if deductions applied, LOW if default
+    # Confidence: HIGH if type matched clearly, MEDIUM if deductions/gates applied, LOW if default
+    has_ibc_data = any([fire_area_sqft, has_below_grade_space, max_travel_distance_ft, existing_exit_count, projected_occupant_load])
     if matched_type.endswith("(default)"):
         confidence = "LOW"
-    elif deductions:
+    elif deductions or (has_ibc_data and ibc_adjustment < 0):
         confidence = "MEDIUM"
     else:
         confidence = "HIGH"
 
     deduction_note = f"Deductions: {', '.join(deductions)}." if deductions else "No tenant deductions."
+    ibc_note = f"IBC gate adjustment: {ibc_adjustment}." if ibc_adjustment else "No IBC gate penalties."
+
+    # Build IBC gate summary for report
+    gate_problems = [v for v in ibc_gates.values() if v.startswith("NON-COMPLIANT") or v.startswith("YES —")]
+    ibc_summary = "; ".join(gate_problems) if gate_problems else "No critical IBC gate failures identified."
 
     result: dict[str, Any] = {
         "status": "success",
         "matched_building_type": matched_type,
+        "ibc_occupancy_group": ibc_group_label or ibc_occupancy_group or "Not provided",
         "base_score": base_score,
         "deductions_applied": deductions,
+        "ibc_adjustment": ibc_adjustment,
         "final_score": score,
         "zone": zone,
         "tier": tier_label,
         "timeline": timeline,
         "confidence": confidence,
+        "ibc_gates": ibc_gates,
+        "ibc_flags": ibc_flags,
         "report_data_fields": {
             "q2.e_occupancy_score": str(score),
             "q2.e_occupancy_zone": zone,
             "q2.e_occupancy_tier": tier_label,
             "q2.e_occupancy_timeline": timeline,
             "q2.e_occupancy_confidence": confidence,
+            "q2.e_occupancy_ibc_summary": ibc_summary,
         },
         "message": (
             f"E-Occupancy: {score}/100 — {zone} ({tier_label}, {timeline}). "
-            f"Matched building type: {matched_type}. {deduction_note}"
+            f"Matched building type: {matched_type}. {deduction_note} {ibc_note}"
         ),
     }
 

@@ -420,49 +420,137 @@
   "occupancy_classifications": {
     "E": {
       "score": 100,
+      "ibc_difficulty": "N/A — already Group E",
       "description": "Educational",
       "typical_uses": ["Schools K-12", "Daycare (>5 children)", "Pre-K"],
       "note": "Current E occupancy = Score 100 (GREEN - no conversion needed)"
     },
     "B": {
+      "ibc_difficulty": "Low-Moderate",
       "description": "Business",
       "typical_uses": ["Offices", "Medical offices", "Retail stores"],
-      "conversion_note": "B to E is well-understood conversion path"
-    },
-    "A-1": {
-      "description": "Assembly - Fixed Seating",
-      "typical_uses": ["Theaters", "Concert halls", "Auditoriums"],
-      "conversion_note": "Fixed seating and sloped floors create barriers"
-    },
-    "A-2": {
-      "description": "Assembly - Food/Drink",
-      "typical_uses": ["Restaurants", "Bars", "Nightclubs"],
-      "conversion_note": "Hood/grease systems and egress issues"
+      "conversion_note": "B to E is the most well-understood conversion path. Shares high-density public occupancy DNA with Group E.",
+      "score_cap": null
     },
     "A-3": {
+      "ibc_difficulty": "Low-Moderate",
       "description": "Assembly - Worship/Recreation",
       "typical_uses": ["Churches", "Gyms", "Museums", "Libraries"],
-      "conversion_note": "Varies widely - small churches and gyms often good candidates"
+      "conversion_note": "Often adequate egress for Group E. Small churches and gyms often good candidates. Large worship centers require sanctuary subdivision.",
+      "score_cap": null
     },
-    "I-1": {
-      "description": "Institutional - Assisted",
-      "typical_uses": ["Assisted living", "Group homes"],
-      "conversion_note": "Room layouts typically don't align with classroom needs"
+    "A-1": {
+      "ibc_difficulty": "Moderate",
+      "description": "Assembly - Fixed Seating",
+      "typical_uses": ["Theaters", "Concert halls", "Auditoriums"],
+      "conversion_note": "Fixed seating and sloped floors create barriers. Egress reconfiguration likely required.",
+      "score_cap": null
     },
-    "I-2": {
-      "description": "Institutional - Medical",
-      "typical_uses": ["Hospitals", "Nursing homes"],
-      "conversion_note": "Complex systems and layouts create significant barriers"
+    "A-2": {
+      "ibc_difficulty": "Moderate",
+      "description": "Assembly - Food/Drink",
+      "typical_uses": ["Restaurants", "Bars", "Nightclubs"],
+      "conversion_note": "Hood/grease systems and egress issues. Often no natural light.",
+      "score_cap": null
     },
-    "S-1": {
-      "description": "Storage - Moderate Hazard",
-      "typical_uses": ["Warehouses", "Storage"],
-      "conversion_note": "HVAC and fenestration critical factors"
+    "M": {
+      "ibc_difficulty": "Moderate",
+      "description": "Mercantile",
+      "typical_uses": ["Retail stores", "Department stores", "Strip malls"],
+      "conversion_note": "Open floor plans need subdivision. Egress reconfiguration likely. Generally manageable for smaller retail.",
+      "score_cap": null
     },
-    "F-1": {
-      "description": "Factory - Moderate Hazard",
-      "typical_uses": ["Manufacturing", "Assembly"],
-      "conversion_note": "Check for contamination history and zoning"
+    "F": {
+      "ibc_difficulty": "Moderate-High",
+      "description": "Factory",
+      "typical_uses": ["Light manufacturing", "Assembly plants", "Flex industrial"],
+      "conversion_note": "Construction type limitations common. Extensive interior buildout required. Check contamination history.",
+      "score_cap": null
+    },
+    "S": {
+      "ibc_difficulty": "High",
+      "description": "Storage",
+      "typical_uses": ["Warehouses", "Distribution centers", "Cold storage"],
+      "conversion_note": "Minimal existing egress infrastructure. Limited fire protection. HVAC and fenestration typically absent. Major infrastructure investment required.",
+      "score_cap": null
+    },
+    "R": {
+      "ibc_difficulty": "High",
+      "description": "Residential",
+      "typical_uses": ["Apartments", "Hotels", "Dormitories"],
+      "conversion_note": "Egress systems fundamentally incompatible with Group E. Corridor configurations wrong. Extensive replanning required.",
+      "score_cap": null
+    },
+    "I": {
+      "ibc_difficulty": "Very High",
+      "description": "Institutional",
+      "typical_uses": ["Hospitals", "Nursing homes", "Assisted living", "Prisons"],
+      "conversion_note": "Fundamentally different fire/life safety systems. Room configurations misaligned. Often impractical. Score capped at 20.",
+      "score_cap": 20
+    },
+    "H": {
+      "ibc_difficulty": "Do Not Pursue",
+      "description": "Hazardous",
+      "typical_uses": ["Chemical storage", "Hazardous manufacturing"],
+      "conversion_note": "Contamination concerns, incompatible construction. Score forced to 0.",
+      "score_cap": 0
+    }
+  },
+  "ibc_compliance_gates": {
+    "description": "Binary IBC code gates that must be evaluated independently of building type score. Failing a gate applies a score penalty.",
+    "gates": {
+      "sprinkler_requirement": {
+        "ibc_reference": "IBC 903.2.3",
+        "triggers": [
+          "Fire area exceeds 12,000 sq ft",
+          "Any portion below the level of exit discharge"
+        ],
+        "exception": "Below-grade exception applies only when every classroom has direct exterior exit at ground level",
+        "retrofit_cost": "$3–6 per sq ft (NFPA 13)",
+        "score_penalty_if_required_and_not_present": -5,
+        "note": "Sprinkler retrofits are expensive but manageable. Not the primary conversion killer."
+      },
+      "travel_distance": {
+        "ibc_reference": "IBC Table 1017.2",
+        "limits": {
+          "non_sprinklered": "200 ft",
+          "sprinklered": "250 ft"
+        },
+        "score_penalty_if_non_compliant": -15,
+        "note": "The primary conversion killer. Egress reconfiguration costs 10-20x more than sprinkler retrofits and may be physically impossible. Hard go/no-go gate."
+      },
+      "exit_count": {
+        "ibc_reference": "IBC Table 1006.2.1",
+        "requirements": {
+          "1_to_49_occupants": 1,
+          "50_to_500_occupants": 2,
+          "501_to_1000_occupants": 3,
+          "over_1000_occupants": 4
+        },
+        "score_penalty_if_non_compliant": -10
+      },
+      "construction_type": {
+        "ibc_reference": "IBC Chapter 5, Tables 504.3, 504.4, 506.2",
+        "types": ["I-A", "I-B", "II-A", "II-B", "III-A", "III-B", "IV", "V-A", "V-B"],
+        "sprinkler_bonuses": {
+          "area_single_story": "+300%",
+          "area_multi_story": "+200%",
+          "height": "+1 story and +20 ft"
+        },
+        "score_penalty": null,
+        "note": "Informational — no automatic penalty. Flag for professional review."
+      }
+    },
+    "universal_50_occupant_triggers": {
+      "note": "Any meaningful educational facility exceeds 50 occupants. Plan for all of these from the start.",
+      "requirements": [
+        {"requirement": "Fire alarm system", "ibc_reference": "IBC 907.2.3"},
+        {"requirement": "Panic hardware on all egress doors", "ibc_reference": "IBC 1010.2.9", "cost_note": "$300–500 per door, 4–8 doors typical = $1,200–4,000"},
+        {"requirement": "Minimum 2 exits", "ibc_reference": "IBC Table 1006.2.1"},
+        {"requirement": "Storm shelter in 250 mph tornado design wind speed zones", "ibc_reference": "IBC 423.5", "note": "Geographic — check ICC 500 wind zone map"},
+        {"requirement": "CO detectors in classrooms with auto-transmission to attended location", "ibc_reference": "IBC 915.2.3"},
+        {"requirement": "Enhanced acoustics in classrooms with volume 20,000 cu ft or less", "ibc_reference": "IBC 1208.2", "standard": "ICC A117.1 Section 808"}
+      ]
     }
   }
 }

@@ -50,12 +50,12 @@ flowchart TD
     %% Inbox Scan Detail
     %% ──────────────────────────────────────────────
     INBOX --> VENDOR_EMAIL["Vendor email with PDF<br/><i>edu.ops@trilogy.com</i>"]
-    VENDOR_EMAIL --> CLASSIFY["GPT-5.2 classification<br/><i>doc_type + matched_site_id + confidence</i>"]
+    VENDOR_EMAIL --> CLASSIFY["Three-tier classifier<br/><i>regex → GPT-4o-mini filename → GPT-4o-mini content</i><br/><i>doc_type + confidence (no site matching)</i>"]
     CLASSIFY --> CONF_CHECK{confidence ≥ 0.7?}
-    CONF_CHECK -->|Yes| UPLOAD["Upload to shared Drive folder<br/><i>Standardized filename, dedup check</i>"]
+    CONF_CHECK -->|Yes| UPLOAD["Upload to shared Drive folder<br/><i>Date-prefixed filename, dedup check</i>"]
     CONF_CHECK -->|No| FLAG["Flag for manual review<br/><i>→ Google Chat alert</i>"]
     UPLOAD --> MARK["Mark email DD-Processed"]
-    MARK --> TRIGGER_PIPELINE["Trigger pipeline for affected sites"]
+    MARK --> SIR_NOTIFY["SIR arrival email<br/><i>→ jake.petersen, joshua.rockers, edu.ops</i>"]
 
     %% ──────────────────────────────────────────────
     %% Shared folders
@@ -92,7 +92,7 @@ flowchart TD
     %% ──────────────────────────────────────────────
     AGENT_START["<b>Claude Agent Loop</b><br/><i>13 tools, up to 40 iterations</i>"]
 
-    AGENT_START --> STEP2["<b>Step 2</b> — get_site_record<br/><i>Wrike lookup + GPT-5.2 fuzzy match</i>"]
+    AGENT_START --> STEP2["<b>Step 2</b> — get_site_record<br/><i>Wrike lookup + GPT-4o-mini fuzzy match</i>"]
     STEP2 --> STEP3["<b>Step 3</b> — check_site_readiness<br/><i>Confirm doc availability</i>"]
     STEP3 --> STEP3_5["<b>Step 3.5</b> — get_site_comments<br/><i>Wrike comments override API data</i>"]
     STEP3_5 --> STEP4["<b>Step 4</b> — read_drive_document ×3<br/><i>SIR + ISP + Inspection → evidence dict</i>"]

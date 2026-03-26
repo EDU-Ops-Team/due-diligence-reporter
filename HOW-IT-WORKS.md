@@ -1,8 +1,8 @@
 # Due Diligence Reporter — How It Works
 
-**Version:** 4.0.0
+**Version:** 4.1.0
 **Team:** EDU Ops Intelligence
-**Last Updated:** 2026-03-20
+**Last Updated:** 2026-03-26
 
 ---
 
@@ -11,7 +11,7 @@
 The Due Diligence Reporter is an AI agent powered by Claude that generates Site Due Diligence (DD) Reports for potential Alpha School locations. It operates in three modes:
 
 1. **Interactive** — A human gives it a site name in chat via MCP Hive. The agent gathers data, runs analytical skills, and produces an executive-ready Google Doc.
-2. **Event-Driven (Inbox Scan — every 15 min)** — A scheduled script scans the `edu.ops@trilogy.com` inbox for new SIR and Building Inspection PDFs, classifies them with GPT-5.2, uploads to the correct shared Drive folder, then immediately checks if the site is ready for report generation.
+2. **Event-Driven (Inbox Scan — every 15 min)** — A scheduled script scans the `edu.ops@trilogy.com` inbox for new SIR, Building Inspection, and ISP PDFs, classifies them by filename using a three-tier classifier (regex → GPT-4o-mini), and uploads to the correct shared Drive folder.
 3. **Daily Sweep (Safety Net — 9 AM)** — A scheduled script scans all Wrike Site Records in active DD stages. When a site has all three required documents (SIR, ISP, Building Inspection) and no existing report, it triggers full report generation. This catches anything the 15-min scan missed.
 
 The agent gathers facts. It does not make recommendations. The decision belongs to the leadership team.
@@ -72,8 +72,8 @@ Both require per-bullet source citations.
                               ┌──────────────────────────┐
                               │  Inbox Scan (every 15min) │
                               │  scan_inbox.py            │
-                              │  GPT-5.2 classification   │
-    ┌─────────────────────┐   │  + report pipeline        │
+                              │  three-tier classifier    │
+    ┌─────────────────────┐   │  (regex → GPT-4o-mini)    │
     │  Daily Sweep (9 AM) │   └────────────┬─────────────┘
     │  daily_dd_check.py  │                │
     │  (active stages only)│                │
@@ -134,25 +134,28 @@ The inbox scanner is the primary trigger for report generation. When a vendor em
 ```
 For each unprocessed email with PDF attachments:
   1. Extract email metadata (subject, sender, body snippet, attachments)
-  2. Classify each PDF with GPT-5.2:
-     - doc_type: "sir", "building_inspection", or "unknown"
-     - matched_site_id: which Wrike site record this belongs to
-     - confidence: 0.0–1.0
+  2. Classify each PDF by filename using the three-tier classifier:
+     - Tier 1: regex keyword matching (free, instant)
+     - Tier 2: GPT-4o-mini on filename if Tier 1 returns unknown (~$0.001)
+     - Tier 3: GPT-4o-mini on first-page text if Tier 2 returns unknown (~$0.002)
+     - Output: doc_type ("sir", "building_inspection", "isp", or unknown), confidence 0.0–1.0
   3. If confidence >= 0.7 and doc_type is supported:
-     a. Generate standardized filename (e.g., "Mar 03 2026 - Alpha Keller SIR.pdf")
+     a. Generate date-prefixed filename: "{date} - {original_filename}"
      b. Check for duplicates in target shared folder
-     c. Upload to correct shared Drive folder (SIR → SIR folder, BI → BI folder)
+     c. Upload to correct shared Drive folder (SIR → SIR folder, BI → BI folder, ISP → ISP folder)
   4. If confidence < 0.7 → flag for manual review in Google Chat
   5. Mark email as processed (DD-Processed label)
+  6. If any SIR was uploaded → send SIR arrival email to jake.petersen@trilogy.com,
+     joshua.rockers@trilogy.com, edu.ops@trilogy.com
 ```
 
-**Building Inspection naming convention:** Reports are titled `[Brand] [City] Building Inspection Report` (e.g., "Alpha Keller Building Inspection Report"), which helps GPT-5.2 match them to the correct site record.
-
-**Supported doc types:** `sir`, `building_inspection`. ISPs arrive through a separate channel and are placed manually.
+**Supported doc types:** `sir`, `building_inspection`, `isp`.
 
 ### Phase 2 — Per-Site Pipeline
 
-After all uploads complete, the scanner identifies which sites received new documents and runs the report pipeline for each:
+After all uploads complete, the scanner attempts to run the report pipeline for each site that received a new document. Phase 2 requires a `site_title` to look up the Wrike record. The current classifier routes by `doc_type` only and does not match files to sites, so `site_title` is `None` in all uploads — **Phase 2 is currently inactive** and report generation falls to the daily sweep.
+
+When site matching is re-enabled (e.g., via a future `matched_site_id` returned from classification), Phase 2 will run:
 
 ```
 For each unique site that received an upload:
@@ -231,7 +234,7 @@ ready_for_report = sir_found AND isp_found AND inspection_found AND NOT report_e
 **Activity:**
 1. Checks if input is a direct Wrike ID or permalink URL — fetches directly
 2. Otherwise fetches all Site Records from Wrike space `IEAGN6I6I5RFSYZI` in batches of 100
-3. Uses **GPT-5.2** to fuzzy-match the query against all record titles and addresses
+3. Uses **GPT-4o-mini** to fuzzy-match the query against all record titles and addresses
 4. Enriches the matched record with human-readable custom field names
 
 **Output:** Site title, Wrike ID, address, school type, stage, Google Drive folder URL, and all custom fields.
@@ -289,11 +292,13 @@ ready_for_report = sir_found AND isp_found AND inspection_found AND NOT report_e
 
 Three skill tools analyze the source data and produce structured outputs. The first two auto-publish full assessment documents to the site's Drive folder when `site_name` and `drive_folder_url` are provided.
 
-**E-Occupancy Skill** — `apply_e_occupancy_skill(building_type_description, stories, ..., site_name, drive_folder_url)`
+**E-Occupancy Skill** — `apply_e_occupancy_skill(building_type_description, stories, ..., ibc_occupancy_group, fire_area_sqft, has_below_grade_space, already_sprinklered, construction_type, max_travel_distance_ft, existing_exit_count, projected_occupant_load, site_name, drive_folder_url)`
 1. Matches building type against a scoring matrix
-2. Applies height ceiling and tenant deductions
-3. Returns score (0–100), zone (GREEN/YELLOW/RED), tier, and confidence
-4. Publishes assessment → `sources.e_occupancy_link`
+2. Applies IBC group override (H → score 0, I → cap 20)
+3. Applies height ceiling and tenant deductions
+4. Runs IBC compliance gates: sprinkler requirement, travel distance, exit count, construction type
+5. Returns score (0–100), zone (GREEN/YELLOW/RED), tier, confidence, `ibc_gates`, `ibc_flags`, and `q2.e_occupancy_ibc_summary`
+6. Publishes assessment → `sources.e_occupancy_link`
 
 **School Approval Skill** — `apply_school_approval_skill(state, site_name, drive_folder_url)`
 1. Looks up state in built-in approval table (all 50 states + DC)
@@ -453,7 +458,7 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 | Variable | Purpose |
 |----------|---------|
 | `WRIKE_ACCESS_TOKEN` | Wrike API bearer token |
-| `OPENAI_API_KEY` | GPT-5.2 for inbox classification and fuzzy site name matching |
+| `OPENAI_API_KEY` | GPT-4o-mini for inbox classification (Tier 2/3) and fuzzy site name matching |
 | `ANTHROPIC_API_KEY` | Claude API for automated report generation agent |
 | `DD_TEMPLATE_GOOGLE_DOC_ID` | Master DD report template Google Doc ID |
 | `GOOGLE_DRIVE_ROOT_FOLDER_ID` | Parent Drive folder containing all site folders |
@@ -479,7 +484,7 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 | `src/due_diligence_reporter/report_pipeline.py` | Shared pipeline — readiness check, Claude agent loop, notifications |
 | `src/due_diligence_reporter/report_schema.py` | Template token list (28), alias map (26), `normalize_report_data()`, `compute_deltas()` |
 | `src/due_diligence_reporter/classifier.py` | Three-tier document classification (regex → LLM filename → LLM content) |
-| `src/due_diligence_reporter/inbox_scanner.py` | Gmail inbox scan, GPT-5.2 classification, Drive upload |
+| `src/due_diligence_reporter/inbox_scanner.py` | Gmail inbox scan, three-tier filename classification, Drive upload |
 | `src/due_diligence_reporter/wrike.py` | Wrike API client, site record search, LLM matching |
 | `src/due_diligence_reporter/google_client.py` | Google Drive v3 + Docs v1 + Gmail API client (OAuth), `list_files_recursive()` |
 | `src/due_diligence_reporter/config.py` | Pydantic settings loader |

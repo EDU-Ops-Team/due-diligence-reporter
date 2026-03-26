@@ -1,7 +1,7 @@
 ---
 name: e-occupancy
-description: Evaluate properties for E occupancy (educational use) conversion potential. Scores building type complexity from 0-100 based on current use and conversion barriers. Used as a sub-skill of alpha-building-suitability.
-version: 2.0.0
+description: Evaluate properties for E occupancy (educational use) conversion potential. Scores building type complexity from 0-100 based on current use and conversion barriers, plus IBC compliance gate checks (sprinkler, travel distance, exits). Used as a sub-skill of alpha-building-suitability.
+version: 3.0.0
 ---
 
 # E Occupancy Conversion Evaluator
@@ -295,7 +295,69 @@ Timeline: 6-9 months
 
 ---
 
-## Part 5: Confidence Assessment
+## Part 5: IBC Compliance Gates
+
+These gates are evaluated separately from the building type score. Failing a gate applies a score penalty and adds a flag to the output.
+
+### Gate 1 — Sprinkler Requirement (IBC 903.2.3)
+
+**Two independent triggers — either alone mandates sprinklers:**
+
+| Condition | Result |
+|-----------|--------|
+| Fire area > 12,000 sq ft | Sprinklers REQUIRED |
+| Any space below exit discharge level | Sprinklers REQUIRED |
+| Fire area ≤ 12,000 sq ft + no below-grade | Sprinklers NOT required |
+| Already sprinklered | No retrofit cost |
+
+Score penalty if sprinklers required and not already present: **−5**
+Retrofit cost note: $3–6/sq ft (NFPA 13). Budget this as a known line item.
+
+**Exception**: Below-grade sprinkler requirement waived only if every classroom has a direct exterior exit at ground level (IBC 903.2.3 Exception).
+
+### Gate 2 — Travel Distance (IBC Table 1017.2)
+
+| Condition | Max Travel Distance |
+|-----------|-------------------|
+| Non-sprinklered | 200 ft |
+| Sprinklered | 250 ft |
+
+Score penalty if non-compliant: **−15**
+
+This is the primary conversion killer. Buildings with travel distance violations require structural egress changes (new exits, corridor reconfiguration) that cost 10–20× more than sprinkler retrofits and may be physically impossible.
+
+### Gate 3 — Exit Count (IBC Table 1006.2.1)
+
+| Occupant Load | Required Exits |
+|---------------|---------------|
+| 1–49 | 1 |
+| 50–500 | 2 |
+| 501–1,000 | 3 |
+| 1,001+ | 4 |
+
+Score penalty if non-compliant: **−10**
+
+### Gate 4 — Construction Type (IBC Chapter 5, Tables 504.3/504.4/506.2)
+
+Informational only — no automatic score penalty. Flag for manual review.
+Sprinkler bonus: +1 story, +20 ft height, +200–300% area allowance.
+
+### 50-Occupant Universal Triggers
+
+Any school exceeding 50 occupants (virtually all) triggers all of the following. These are flagged in output but do not adjust the score since they are universal and manageable:
+
+| Requirement | IBC Reference | Cost Note |
+|-------------|--------------|-----------|
+| Fire alarm system | IBC 907.2.3 | Standard line item |
+| Panic hardware on all egress doors | IBC 1010.2.9 | $300–500/door, 4–8 doors typical |
+| Minimum 2 exits | IBC Table 1006.2.1 | May already be satisfied |
+| Storm shelter in 250 mph wind zones | IBC 423.5 | Geographic — check local wind map |
+| CO detectors in classrooms | IBC 915.2.3 | Standard line item |
+| Enhanced acoustics (classrooms ≤ 20,000 cu ft) | IBC 1208.2 | Standard finish spec |
+
+---
+
+## Part 6: Confidence Assessment
 
 ### HIGH Confidence
 - Occupancy confirmed via official records (building permits, certificates)
@@ -317,7 +379,7 @@ Timeline: 6-9 months
 
 ---
 
-## Part 6: Common Edge Cases
+## Part 7: Common Edge Cases
 
 ### Vacant Properties
 - Note previous tenant if determinable
@@ -342,7 +404,7 @@ Timeline: 6-9 months
 
 ---
 
-## Part 7: Scoring for Building Suitability
+## Part 8: Scoring for Building Suitability
 
 Convert score to 0-1 scale for the parent skill:
 
@@ -382,11 +444,12 @@ Return to `alpha-building-suitability`:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 E OCCUPANCY EVALUATION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Score:              0.XX / 1.0
+Score:              XX / 100  (0.XX / 1.0)
 Zone:               [GREEN | YELLOW | RED]
 Confidence:         [HIGH | MEDIUM | LOW]
 
 Current Use:        [Business/building type]
+IBC Occupancy Group:[B | A-3 | M | S | R | I | H | Not provided]
 Building Type:      [Matched type from scoring_matrix.json]
 Stories:            [X total]
 Floor Evaluated:    [X or "Entire building"]
@@ -395,8 +458,22 @@ Timeline:           [Estimated conversion time]
 Scoring Breakdown:
   Base Score:       [XX] ([building type])
   Height Ceiling:   [XX or "N/A"]
-  Tenant Deductions: [-XX] (if applicable)
+  Tenant Deductions:[−XX] (if applicable)
+  IBC Gate Adjustment: [−XX] (if applicable)
   Final Score:      [XX]
+
+IBC Compliance Gates:
+  Sprinklers:       [YES — fire area exceeds 12,000 sq ft | NO | UNKNOWN]
+  Travel Distance:  [COMPLIANT — XX ft | NON-COMPLIANT — XX ft exceeds XXX ft | UNKNOWN]
+  Exit Count:       [COMPLIANT — X exits | NON-COMPLIANT — X exits, Y required | UNKNOWN]
+  Construction Type:[Type XX — verify IBC Chapter 5 | UNKNOWN]
+
+Required (Universal ≥50 occupants):
+  • Fire alarm system (IBC 907.2.3)
+  • Panic hardware on all egress doors — $300–500/door (IBC 1010.2.9)
+  • Storm shelter in 250 mph wind zones (IBC 423.5)
+  • CO detectors in all classrooms (IBC 915.2.3)
+  • Enhanced acoustics in classrooms ≤ 20,000 cu ft (IBC 1208.2)
 
 Summary:            [Brief assessment]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
