@@ -195,6 +195,14 @@ def get_contact_email(
     contact_id: str, *, cfg: WrikeConfig | None = None
 ) -> str | None:
     """Resolve a Wrike contact ID to an email address via the Contacts API."""
+    profile = get_contact_profile(contact_id, cfg=cfg)
+    return profile.get("email") if profile else None
+
+
+def get_contact_profile(
+    contact_id: str, *, cfg: WrikeConfig | None = None
+) -> dict[str, str] | None:
+    """Resolve a Wrike contact ID to a dict with 'name' and 'email'."""
     if cfg is None:
         cfg = load_wrike_config()
 
@@ -207,11 +215,16 @@ def get_contact_email(
         _raise_for_wrike_error(resp)
         data = resp.json().get("data", [])
         if data:
-            profiles = data[0].get("profiles", [])
-            if profiles:
-                return profiles[0].get("email")
+            contact = data[0]
+            first = contact.get("firstName", "")
+            last = contact.get("lastName", "")
+            name = f"{first} {last}".strip() or None
+            profiles = contact.get("profiles", [])
+            email = profiles[0].get("email") if profiles else None
+            if name or email:
+                return {"name": name or "", "email": email or ""}
     except Exception as e:
-        logger.warning("Failed to resolve contact %s to email: %s", contact_id, e)
+        logger.warning("Failed to resolve contact %s: %s", contact_id, e)
 
     return None
 
@@ -258,6 +271,40 @@ def extract_p1_email_from_record(
                 "P1 Accountable field present but could not resolve email for '%s'",
                 record.get("title", "?"),
             )
+
+    return None
+
+
+def extract_p1_from_record(
+    record: dict[str, Any], *, cfg: WrikeConfig | None = None
+) -> dict[str, str] | None:
+    """Return {'name': ..., 'email': ...} for the P1 Accountable person, or None."""
+    custom_fields = record.get("customFields", [])
+    if not isinstance(custom_fields, list):
+        return None
+
+    p1_field_id = WRIKE_CUSTOM_FIELDS["p1_accountable"]
+
+    for field in custom_fields:
+        if not isinstance(field, dict):
+            continue
+        if field.get("id") != p1_field_id:
+            continue
+        value = field.get("value", "")
+        contact_id = None
+        if isinstance(value, list):
+            contact_id = next((v for v in value if isinstance(v, str) and v.strip()), None)
+        elif isinstance(value, str) and value.strip():
+            contact_id = value.strip()
+
+        if contact_id:
+            profile = get_contact_profile(contact_id, cfg=cfg)
+            if profile:
+                logger.info(
+                    "Resolved P1 for '%s': %s <%s>",
+                    record.get("title", "?"), profile.get("name"), profile.get("email"),
+                )
+                return profile
 
     return None
 

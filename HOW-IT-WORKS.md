@@ -59,10 +59,10 @@ Two separate tokens with distinct classification rules:
 
 | Token | Purpose | Classification test |
 |-------|---------|-------------------|
-| `exec.acquisition_conditions` | Contractual items for the lease/purchase agreement | "Would we walk away if this were not addressed before signing?" |
-| `exec.risk_notes` | Informational flags for budgeting/planning | "Is this something we'll handle during buildout or budget for?" |
+| `exec.acquisition_conditions` | TI allowance ask OR landlord-must-fix items | Type A: quantifiable buildout cost → negotiate TI. Type B: landlord's existing obligation → not acceptable in current state. |
+| `exec.risk_notes` | Confirmed document findings that threaten timeline or viability | "Did we actually find this in the documents AND does it directly threaten timeline or viability?" |
 
-Both require per-bullet source citations.
+Both require per-bullet source citations. `risk_notes` must cite a specific document finding — no speculative or generic items.
 
 ---
 
@@ -251,7 +251,7 @@ ready_for_report = sir_found AND isp_found AND inspection_found AND NOT report_e
 3. Checks if a DD report already exists
 4. Returns presence booleans, file metadata, and missing doc list
 
-**Output:** `sir_found`, `isp_found`, `inspection_found`, `report_exists`, `files` dict with `name`/`id`/`webViewLink` per doc type, `missing_docs` list.
+**Output:** `sir_found`, `isp_found`, `inspection_found`, `report_exists`, `files` dict with `name`/`id`/`webViewLink` per doc type, `missing_docs` list, `p1_assignee_name`, `p1_assignee_email`.
 
 ---
 

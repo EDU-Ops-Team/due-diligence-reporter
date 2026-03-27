@@ -36,6 +36,7 @@ from .wrike import (
     build_site_summary,
     classify_comment_to_section,
     extract_p1_email_from_record,
+    extract_p1_from_record,
     find_site_record,
     get_record_comments,
 )
@@ -2041,12 +2042,15 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
 
         ready_for_report = sir_found and isp_found and inspection_found and not report_exists
 
-        # Resolve P1 Assignee email from Wrike contact
-        p1_email = extract_p1_email_from_record(record)
+        # Resolve P1 Assignee name + email from Wrike contact
+        p1_profile = extract_p1_from_record(record)
+        p1_email = p1_profile.get("email") if p1_profile else None
+        p1_name = p1_profile.get("name") if p1_profile else None
 
         return {
             "status": "success",
             "site_title": site_title,
+            "p1_assignee_name": p1_name,
             "p1_assignee_email": p1_email,
             "sir_found": sir_found,
             "isp_found": isp_found,

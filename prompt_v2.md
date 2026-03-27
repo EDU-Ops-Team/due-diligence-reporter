@@ -333,6 +333,8 @@ Call `check_site_readiness(site_name)`. This returns:
 - `files` — dict keyed by doc_type, each value has `name`, `id`, `webViewLink`
 - `missing_docs` — list of missing document types
 - `message` — human-readable summary with filenames
+- `p1_assignee_name` — full name of the P1 Accountable person from Wrike (use as `meta.prepared_by`)
+- `p1_assignee_email` — email of the P1 Accountable person (pass to `send_dd_report_email` as `additional_recipients`)
 
 ### Step 2.5 — Retrieve Wrike comments
 Call `get_site_comments(site_name)` to fetch comments on the Wrike record. These may contain pre-app meeting notes, vendor updates, zoning details, or other contextual information. Comments are grouped by suggested report section (q1, q2, q3, q4, appendix, general). Incorporate relevant comments into the matching report sections:
@@ -422,18 +424,19 @@ Rules:
 - Calculate target date by summing permit + review + construction timelines from today
 - If multiple spec tiers have different timelines, show each
 
-**`exec.acquisition_conditions` — Contractual Lease Conditions**
-Bullet list of items that must be written into the lease/purchase agreement. Each bullet cites its source.
-See "exec — Contractual Lease Conditions" in the schema section below for the full classification key.
+**`exec.acquisition_conditions` — Conditions to Add to Acquisition**
+Bullet list structured as either TI allowance asks or landlord-must-fix items. Each bullet cites its source.
+See "exec — Conditions to Add to Acquisition" in the schema section below for the full classification key.
 
-**`exec.risk_notes` — Informational Risk Notes**
-Bullet list of items leadership should know about but that don't belong in the lease. Each bullet cites its source.
-See "exec — Informational Risk Notes" in the schema section below for the full classification key.
+**`exec.risk_notes` — Risks to Note**
+Confirmed findings from source documents that threaten timeline or viability. Each bullet cites its source.
+See "exec — Risks to Note" in the schema section below for the full classification key.
 
 Rules:
-- "Conditions" = things to literally write into the contract (would we walk away if not addressed?)
-- "Risk notes" = informational flags for budgeting/planning, NOT recommendations
+- "Conditions" = TI ask (quantified) OR landlord obligation that must be resolved before signing
+- "Risks to note" = confirmed evidence from documents of a real threat to timeline or viability only
 - No "executive review recommended" or "consider before proceeding" language
+- No speculative or generic items in either field
 
 ### Step 6 — Generate the V2 report
 Call `create_dd_report(site_name, drive_folder_url, report_data, token_evidence=evidence)` with the assembled data dict. See "V2 Report Data Schema" section below for exact token keys.
@@ -491,7 +494,7 @@ You may pass keys as either:
 | `meta.school_type` | School type (e.g., "K-8 Microschool") | Wrike record or default |
 | `meta.marketing_name` | Marketing name if different from site name | Wrike record |
 | `meta.report_date` | Report date MM/DD/YYYY | Auto-populated |
-| `meta.prepared_by` | Author (e.g., "DD Report Agent") | Set to "DD Report Agent" |
+| `meta.prepared_by` | P1 Accountable person's name | `p1_assignee_name` from Step 2 readiness check; fall back to "DD Report Agent" if not set |
 | `meta.drive_folder_url` | Google Drive folder URL for the site | Auto-populated |
 
 ### exec — "Can we do this?" card (pick-menu dimensions)
@@ -533,65 +536,68 @@ These 3 tokens are computed automatically by `create_dd_report` from the MVP/Ide
 | `exec.delta_cost` | ideal_cost − mvp_cost | `+$105,000` |
 | `exec.delta_ready` | ideal_ready − mvp_ready | `+3 mo` |
 
-### exec — Contractual Lease Conditions
+### exec — Conditions to Add to Acquisition
 
 | Token | Source | Format |
 |---|---|---|
 | `exec.acquisition_conditions` | Agent (synthesize from SIR + Building Inspection) | Bullet list with source citations |
 
-Items that must appear as conditions in the lease/purchase agreement. Each bullet must cite its source document.
+Items that must be written into the lease/purchase agreement. Two types:
 
-**From the SIR:**
-- City/county requires a traffic study, environmental study, or other pre-condition → condition lease on study completion
-- Zoning variance, CUP, or SUP required and not yet approved → condition lease on zoning approval
-- Pre-application meeting required and outcome unknown → condition lease on pre-app outcome
-- AHJ has flagged a sequential blocker (e.g., State Fire Marshal review before City permit) → condition lease on AHJ clearance
-- Environmental contamination or Phase I ESA flags action items → condition lease on environmental clearance
+**Type A — TI Allowance Ask**
+Items that are our buildout responsibility but where the inspection reveals costs significant enough to negotiate a Tenant Improvement allowance from the landlord. Consolidate related items into a single dollar ask.
+- Sprinkler installation required (no system present)
+- Restroom demolition/reconstruction or additional restrooms required
+- HVAC full replacement required (not just aged — non-functional or undersized)
+- Major electrical panel upgrade required
+- ADA deficiencies that must be resolved before occupancy (ramp, restroom reconfiguration)
 
-**From the Building Inspection:**
-- Any **Critical / Occupancy-Blocking** deficiency → condition lease on landlord remediation OR price adjustment
-  - Sprinkler system absent (required for E-occupancy)
-  - Insufficient toilet fixtures (blocks occupancy certificate)
-  - ADA ramp missing (no accessible path of travel)
-  - Panic hardware missing on exit doors (life-safety violation)
-  - Fire-rated separation missing between tenant spaces
-- Shared building systems where landlord controls access (shared HVAC, shared electrical, shared water heater) → condition lease on guaranteed access/capacity
+Format: `"Request TI allowance of approximately $[X] for [summary of scope] (Building Inspection: [evidence])"`
 
-**Classification test:** "Would we walk away or require the landlord to act if this were not addressed before signing?" If yes → Condition.
+**Type B — Landlord Must Address Before We Sign**
+Items that are clearly the landlord's responsibility in the current state — deferred maintenance, building-wide systems failures, or legal violations that exist independent of our tenancy.
+- Structural deficiencies (foundation cracking, roof active leaks, water damage)
+- Building-wide systems the landlord controls and has not maintained (whole-building HVAC, shared electrical feeds)
+- Fire-rated separations missing between tenant spaces (code violation landlord must cure)
+- Panic hardware missing on required exit doors (life-safety violation that predates our tenancy)
+- Environmental contamination or Phase I ESA action items → condition lease on environmental clearance
+- Zoning or permit pre-conditions (traffic study, variance, CUP) → condition lease on approval
 
-Format:
-```
-- Condition lease on State Fire Marshal review (SIR: "State Fire Marshal review is sequential — must complete before City building permit")
-- Condition lease on ADA ramp installation by landlord (Building Inspection: "No exterior ADA ramp — occupancy-blocking")
-```
+Format: `"Landlord must [action] before signing — [evidence] (Building Inspection/SIR: [quote])"`
 
-### exec — Informational Risk Notes
+**Classification test:**
+- Type A: "Is this our buildout scope but large enough to negotiate a TI contribution?"
+- Type B: "Is this the landlord's existing obligation that we should not accept in current state?"
+
+### exec — Risks to Note
 
 | Token | Source | Format |
 |---|---|---|
-| `exec.risk_notes` | Agent (synthesize from Building Inspection + cost analysis) | Bullet list with source citations |
+| `exec.risk_notes` | Agent (synthesize from source documents only) | Bullet list with source citations |
 
-Items leadership should be aware of but that don't belong in the lease.
+**Only include confirmed findings** — things actually observed in the source documents that present a real risk to the timeline or viability of use. Do not include speculative items, generic cost commentary, or things that are simply part of normal buildout scope.
 
-**From the Building Inspection:**
-- Fire alarm >15 years old, modernization recommended (cost risk, not a blocker)
-- HVAC replacement recommended but functional
-- ADA deficiencies addressable during buildout (door hardware, signage, counter heights)
-- Electrical capacity concerns
-- Ceiling/finish work scope
+**Qualifies as a risk to note:**
+- Sequential permit blocker (e.g., State Fire Marshal review must precede City permit — real timeline impact)
+- Multi-tenant building where landlord or other tenants control construction access windows — risk to construction timeline
+- HVAC system confirmed non-functional or undersized for school use (not just aged)
+- Fire alarm system confirmed aged and requiring full replacement (not just "recommended")
+- Environmental findings from Phase I ESA that are unresolved
+- Shared building systems (HVAC, electrical) where capacity is confirmed insufficient for school load
+- Zoning variance or CUP required with uncertain outcome — risk to viability
 
-**From cost analysis / other:**
-- Cost estimate exceeds typical range
-- Permit timeline longer than standard
-- Large construction scope
-- Multi-tenant coordination required
+**Does not qualify:**
+- Generic cost observations ("estimate is high for this market")
+- Normal buildout scope items that are expected for any conversion
+- Items already captured in `exec.acquisition_conditions`
+- Speculative items not found in the source documents
 
-**Classification test:** "Is this something we'll handle during buildout or budget for, not something the landlord must address first?" If yes → Risk to note.
+**Classification test:** "Did we actually find evidence of this in the documents, and does it directly threaten the timeline or viability of this site for a school?" If both are true → Risk to note.
 
 Format:
 ```
-- Fire alarm ~20 years old; modernization likely during buildout (Building Inspection: "Conventional fire alarm, estimated >15 years, modernization recommended")
-- Cost estimate at $850K+ for minimum viable spec (get_cost_estimate: midpoint $850,000 for 3,066 SF)
+- State Fire Marshal review is sequential blocker before City permit — adds unknown weeks to permit track (SIR: "State Fire Marshal review must be completed before City building permit can be issued")
+- Multi-tenant building; construction access requires LL coordination — risk to construction schedule (Building Inspection: "Tenant shares HVAC and electrical systems with adjacent tenants")
 ```
 
 ### sources — Document links (6 rows)
