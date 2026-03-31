@@ -16,6 +16,8 @@ import os
 import re
 from typing import Any
 
+from .config import get_settings
+
 logger = logging.getLogger("[classifier]")
 
 # Valid doc types returned by the classifier
@@ -89,6 +91,7 @@ def classify_by_filename_llm(
     try:
         from openai import OpenAI
 
+        settings = get_settings()
         client = OpenAI(api_key=openai_api_key)
 
         user_msg = f"Filename: {filename}"
@@ -96,7 +99,7 @@ def classify_by_filename_llm(
             user_msg += f"\nSite name: {site_name}"
 
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=settings.openai_filename_model,
             messages=[
                 {"role": "system", "content": _FILENAME_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
@@ -159,10 +162,11 @@ def classify_by_content_llm(
     try:
         from openai import OpenAI
 
+        settings = get_settings()
         client = OpenAI(api_key=openai_api_key)
 
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=settings.openai_content_model,
             messages=[
                 {"role": "system", "content": _CONTENT_SYSTEM_PROMPT},
                 {"role": "user", "content": f"Filename: {filename}\n\nFirst page text:\n{first_page_text[:3000]}"},
@@ -277,6 +281,7 @@ def match_file_to_site_llm(
     try:
         from openai import OpenAI
 
+        settings = get_settings()
         client = OpenAI(api_key=openai_api_key)
 
         user_msg = f"Site name: {site_title}\n"
@@ -287,7 +292,7 @@ def match_file_to_site_llm(
             user_msg += f"- {fn}\n"
 
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=settings.openai_site_match_model,
             messages=[
                 {"role": "system", "content": _SITE_MATCH_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},

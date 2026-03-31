@@ -14,6 +14,8 @@ from due_diligence_reporter.inbox_scanner import (
     SUPPORTED_DOC_TYPES,
     _generate_drive_filename,
     _walk_parts,
+    has_site_identity,
+    scan_inbox,
     process_email,
 )
 
@@ -111,6 +113,31 @@ class TestClassification:
         assert len(result["low_confidence"]) == 1
         assert result["low_confidence"][0]["doc_type"] == "sir"
         assert result["marked"] is False  # must not mark when review needed
+
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_upload_failure_is_returned_as_error(self, mock_extract, mock_classify):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_3",
+            subject="SIR attached",
+            sender="test@example.com",
+            body_snippet="",
+            attachments=[{"filename": "sir.pdf", "attachment_id": "a3", "mime_type": "application/pdf"}],
+        )
+        mock_classify.return_value = ("sir", 0.95)
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"pdf"
+        gc.upload_file_to_folder.side_effect = RuntimeError("upload boom")
+
+        result = process_email(gc, "msg_3", MagicMock(sir_folder_id="folder123"), "label_123")
+
+        assert result["marked"] is False
+        assert len(result["uploaded"]) == 0
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["filename"] == "sir.pdf"
+        assert result["errors"][0]["error"] == "upload boom"
 
 
 # ---------------------------------------------------------------------------
@@ -214,3 +241,32 @@ class TestIdempotency:
         assert result["skipped"] == 1
         assert len(result["uploaded"]) == 0
         assert result["marked"] is True  # mark so we don't re-scan it forever
+
+
+class TestScanResults:
+    def test_scan_inbox_aggregates_email_errors(self):
+        gc = MagicMock()
+        gc.gmail_get_or_create_label.return_value = "label_123"
+        gc.gmail_search.return_value = [{"id": "msg_1"}]
+
+        settings = MagicMock()
+        settings.inbox_processed_label = "DD-Processed"
+        settings.inbox_scan_query = "query"
+        settings.inbox_scan_max_results = 10
+
+        with patch("due_diligence_reporter.inbox_scanner.process_email") as mock_process:
+            mock_process.return_value = {
+                "uploaded": [],
+                "skipped": 0,
+                "low_confidence": [],
+                "errors": [{"message_id": "msg_1", "filename": "sir.pdf", "error": "boom"}],
+                "marked": False,
+            }
+            result = scan_inbox(gc, [], settings)
+
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["filename"] == "sir.pdf"
+
+    def test_has_site_identity_requires_title_or_id(self):
+        assert has_site_identity([{"site_title": None, "matched_site_id": None}]) is False
+        assert has_site_identity([{"site_title": "Alpha Keller", "matched_site_id": None}]) is True

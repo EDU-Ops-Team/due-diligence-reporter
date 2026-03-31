@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 import smtplib
@@ -9,10 +10,32 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from io import BytesIO
 from typing import Any
+from urllib.parse import urlparse
 
 import requests as _requests
 
 logger = logging.getLogger("[utils]")
+
+
+def escape_html_text(value: str) -> str:
+    """Escape a string for safe HTML rendering."""
+    return html.escape(value, quote=True)
+
+
+def sanitize_http_url(url: str) -> str | None:
+    """Return a safe http/https URL or None when invalid."""
+    trimmed = url.strip()
+    if not trimmed:
+        return None
+    parsed = urlparse(trimmed)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return trimmed
+
+
+def escape_drive_query_literal(value: str) -> str:
+    """Escape a string for a single-quoted Google Drive query literal."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def extract_folder_id_from_url(url: str) -> str | None:

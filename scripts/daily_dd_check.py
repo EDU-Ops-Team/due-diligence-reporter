@@ -15,7 +15,7 @@ Run:
 Environment (from .env):
     WRIKE_ACCESS_TOKEN, GOOGLE_CLIENT_CONFIG, GOOGLE_TOKEN_FILE,
     ANTHROPIC_API_KEY, GOOGLE_CHAT_WEBHOOK_URL, DD_REPORT_EMAIL_RECIPIENTS,
-    EMAIL_SENDER, EMAIL_APP_PASSWORD, DD_TEMPLATE_GOOGLE_DOC_ID,
+    EMAIL_SENDER, EMAIL_APP_PASSWORD, DD_TEMPLATE_V2_GOOGLE_DOC_ID,
     GOOGLE_DRIVE_ROOT_FOLDER_ID, OPENAI_API_KEY
 """
 
@@ -120,11 +120,15 @@ def main(site_filter: str | None = None) -> None:
         p1_email = extract_p1_email_from_record(record)
         logger.info("Checking site: %s (match terms: %s, p1: %s)", site_title, match_terms, p1_email)
 
-        result = process_site_pipeline(
-            gc, site_title, drive_folder_url, match_terms,
-            shared_cache, system_prompt, settings,
-            p1_email=p1_email, site_address=address,
-        )
+        try:
+            result = process_site_pipeline(
+                gc, site_title, drive_folder_url, match_terms,
+                shared_cache, system_prompt, settings,
+                p1_email=p1_email, site_address=address,
+            )
+        except Exception as e:
+            logger.exception("Unexpected pipeline failure for '%s'", site_title)
+            result = PipelineResult(site_title=site_title, status="error", error=str(e))
         results.append(result)
 
         # Post each result to Google Chat

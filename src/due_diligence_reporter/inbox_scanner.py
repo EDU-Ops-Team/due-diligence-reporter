@@ -106,6 +106,8 @@ def scan_inbox(
                 results["attachments_skipped"] += email_result["skipped"]
             if email_result.get("low_confidence"):
                 results["low_confidence"].extend(email_result["low_confidence"])
+            if email_result.get("errors"):
+                results["errors"].extend(email_result["errors"])
             if email_result.get("marked"):
                 results["emails_processed"] += 1
         except Exception as e:
@@ -131,7 +133,7 @@ def process_email(
 ) -> dict[str, Any]:
     """Process a single email: classify attachments by filename, upload, mark done.
 
-    Returns a dict with keys: uploaded, skipped, low_confidence, marked.
+    Returns a dict with keys: uploaded, skipped, low_confidence, errors, marked.
     """
     metadata = _extract_email_metadata(gc, message_id)
     logger.info(
@@ -144,6 +146,7 @@ def process_email(
     uploaded: list[dict[str, Any]] = []
     skipped = 0
     low_confidence: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
     all_succeeded = True
 
     for att in metadata.attachments:
@@ -187,6 +190,12 @@ def process_email(
         target_folder_id = getattr(settings, folder_attr, "")
         if not target_folder_id:
             logger.error("No folder ID configured for %s", doc_type)
+            errors.append({
+                "message_id": message_id,
+                "filename": filename,
+                "doc_type": doc_type,
+                "error": f"No folder ID configured for {doc_type}",
+            })
             all_succeeded = False
             continue
 
@@ -232,6 +241,12 @@ def process_email(
             logger.info("Uploaded '%s' -> '%s'", filename, drive_filename)
         except Exception as e:
             logger.error("Upload failed for '%s': %s", filename, e)
+            errors.append({
+                "message_id": message_id,
+                "filename": filename,
+                "doc_type": doc_type,
+                "error": str(e),
+            })
             all_succeeded = False
 
     # Mark as processed if no exceptions and no low-confidence items.
@@ -247,8 +262,14 @@ def process_email(
         "uploaded": uploaded,
         "skipped": skipped,
         "low_confidence": low_confidence,
+        "errors": errors,
         "marked": marked,
     }
+
+
+def has_site_identity(uploads: list[dict[str, Any]]) -> bool:
+    """Return True when at least one upload can be mapped to a site."""
+    return any(u.get("site_title") or u.get("matched_site_id") for u in uploads)
 
 
 def _extract_email_metadata(gc: GoogleClient, message_id: str) -> EmailMetadata:
@@ -346,6 +367,7 @@ def build_scan_summary(results: dict[str, Any]) -> str:
     if results.get("errors"):
         lines.append(f"\nErrors: {len(results['errors'])}")
         for err in results["errors"]:
-            lines.append(f"  {err['message_id']}: {err['error']}")
+            target = err.get("filename") or err.get("message_id", "unknown")
+            lines.append(f"  {target}: {err['error']}")
 
     return "\n".join(lines)

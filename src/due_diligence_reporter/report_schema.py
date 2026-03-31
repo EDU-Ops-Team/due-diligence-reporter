@@ -16,6 +16,19 @@ from .utils import flatten_report_data_for_replacement
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_CAN_WE_ANSWERS: frozenset[str] = frozenset({
+    "Yes",
+    "Yes see notes",
+    "No",
+})
+
+LEGACY_CAN_WE_ANSWER_ALIASES: dict[str, str] = {
+    "yes": "Yes",
+    "yes see notes": "Yes see notes",
+    "no": "No",
+    "conditional": "Yes see notes",
+}
+
 # ---------------------------------------------------------------------------
 # Template tokens (match the {{token}} placeholders in the V2 template)
 # ---------------------------------------------------------------------------
@@ -136,6 +149,7 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "site.school_type":     "meta.school_type",
     "site.marketing_name":  "meta.marketing_name",
     "site.prepared_by":     "meta.prepared_by",
+    "p1_assignee_name":     "meta.prepared_by",
     # ── exec_summary.* → exec.* (legacy agent output) ────────────────────
     "exec_summary.acquisition_conditions": "exec.acquisition_conditions",
     "exec_summary.risk_notes":             "exec.risk_notes",
@@ -207,6 +221,20 @@ def normalize_report_data(
             if canonical in TEMPLATE_TOKEN_SET:
                 token_sources[canonical] = f"alias:{alias}"
 
+    if "meta.prepared_by" not in flat:
+        flat["meta.prepared_by"] = "EDU Ops Team"
+        token_sources["meta.prepared_by"] = "default"
+
+    can_we_answer = flat.get("exec.c_answer")
+    if isinstance(can_we_answer, str):
+        normalized_answer = normalize_can_we_answer(can_we_answer)
+        if normalized_answer is None:
+            logger.warning("Dropping invalid exec.c_answer value: %r", can_we_answer)
+            flat.pop("exec.c_answer", None)
+            token_sources.pop("exec.c_answer", None)
+        else:
+            flat["exec.c_answer"] = normalized_answer
+
     # 4. Filter → only template tokens
     replacements: dict[str, str] = {}
     unmatched_keys: list[str] = []
@@ -235,6 +263,11 @@ def normalize_report_data(
         logger.debug("Unfilled tokens: %s", sorted(unfilled_tokens))
 
     return replacements, sorted(unmatched_keys), sorted(unfilled_tokens), token_sources
+
+
+def normalize_can_we_answer(value: str) -> str | None:
+    """Normalize legacy or case-variant answers to the canonical allowed values."""
+    return LEGACY_CAN_WE_ANSWER_ALIASES.get(value.strip().lower())
 
 
 # ---------------------------------------------------------------------------

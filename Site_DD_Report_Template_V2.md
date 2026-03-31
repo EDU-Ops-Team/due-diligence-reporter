@@ -19,7 +19,7 @@
 | ----- |
 | **MVP** **Ideal** **Delta** **Capacity** {{exec.e\_mvp\_capacity}} students {{exec.e\_ideal\_capacity}} students {{exec.delta\_capacity}} **Cost** {{exec.e\_mvp\_cost}} {{exec.e\_ideal\_cost}} {{exec.delta\_cost}} **Timeline** {{exec.f\_mvp\_ready}} {{exec.f\_ideal\_ready}} {{exec.delta\_ready}} |
 
-| Conditions to Add to Acquisition Agreement |
+| Notes for Acquistion Negoations |
 | :---- |
 | {{exec.acquisition\_conditions}} |
 

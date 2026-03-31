@@ -36,7 +36,7 @@ Four dimensions, each a fixed pick-menu:
 
 | Dimension | Source | Options |
 |-----------|--------|---------|
-| `exec.c_answer` | Agent synthesis | YES / NO / CONDITIONAL |
+| `exec.c_answer` | Agent synthesis | Yes / Yes see notes / No |
 | `exec.c_zoning` | SIR | Permitted by right / Use Permit Required (Admin) / Use Permit Required (Public) / Prohibited |
 | `exec.c_occupancy` | E-Occupancy skill | Has E-Occupancy / Change of use required, meets E-Occupancy / Change of use required, needs work |
 | `exec.c_edreg` | School Approval skill | Not required / Required and have done / Required have not done |
@@ -53,7 +53,7 @@ Two tiers (MVP and Ideal) with server-computed deltas:
 
 Rules: cost = single midpoint number (not a range), timeline = MM/YY format only, Wrike comments override API numbers.
 
-### Conditions and Risk Notes
+### Notes for Acquistion Negoations and Risk Notes
 
 Two separate tokens with distinct classification rules:
 

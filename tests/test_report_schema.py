@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from due_diligence_reporter.report_schema import (
+    ALLOWED_CAN_WE_ANSWERS,
     AGENT_KEY_ALIASES,
     LINK_TOKENS,
     TEMPLATE_TOKEN_SET,
@@ -68,7 +69,7 @@ class TestNormalization:
         """exec.*, sources.*, meta.* keys pass through unchanged."""
         report_data = {
             "exec": {
-                "c_answer": "YES",
+                "c_answer": "Yes",
                 "e_mvp_capacity": "36",
                 "e_ideal_capacity": "54",
                 "e_mvp_cost": "$185,000",
@@ -85,7 +86,7 @@ class TestNormalization:
         replacements, unmatched, unfilled, sources = normalize_report_data(
             report_data, site_name="Alpha Test", report_date="03/19/2026",
         )
-        assert replacements["exec.c_answer"] == "YES"
+        assert replacements["exec.c_answer"] == "Yes"
         assert replacements["exec.e_mvp_capacity"] == "36"
         assert replacements["exec.e_ideal_capacity"] == "54"
         assert replacements["exec.e_mvp_cost"] == "$185,000"
@@ -149,12 +150,13 @@ class TestNormalization:
         assert "sources.sir_link" in unfilled
 
     def test_meta_defaults(self):
-        """site_name and report_date are auto-injected."""
+        """site_name, report_date, and prepared_by are auto-injected."""
         replacements, _, _, _ = normalize_report_data(
             {}, site_name="Alpha Metro", report_date="03/19/2026",
         )
         assert replacements["meta.site_name"] == "Alpha Metro"
         assert replacements["meta.report_date"] == "03/19/2026"
+        assert replacements["meta.prepared_by"] == "EDU Ops Team"
 
     def test_pick_menu_tokens_pass_through(self):
         """Pick-menu dimension tokens pass through."""
@@ -171,6 +173,41 @@ class TestNormalization:
         assert replacements["exec.c_zoning"] == "Permitted by right"
         assert replacements["exec.c_edreg"] == "Not required"
         assert replacements["exec.c_occupancy"] == "Has E-Occupancy"
+
+    def test_p1_assignee_name_aliases_to_prepared_by(self):
+        report_data = {"p1_assignee_name": "Jane Owner"}
+        replacements, _, _, sources = normalize_report_data(
+            report_data, site_name="Test", report_date="01/01/2026",
+        )
+        assert replacements["meta.prepared_by"] == "Jane Owner"
+        assert sources["meta.prepared_by"] == "alias:p1_assignee_name"
+
+    @pytest.mark.parametrize(
+        ("raw_value", "expected"),
+        [
+            ("Yes", "Yes"),
+            ("YES", "Yes"),
+            ("No", "No"),
+            ("CONDITIONAL", "Yes see notes"),
+            ("Yes see notes", "Yes see notes"),
+        ],
+    )
+    def test_can_we_answer_normalizes_to_allowed_values(self, raw_value, expected):
+        report_data = {"exec": {"c_answer": raw_value}}
+        replacements, _, unfilled, _ = normalize_report_data(
+            report_data, site_name="Test", report_date="01/01/2026",
+        )
+        assert replacements["exec.c_answer"] == expected
+        assert replacements["exec.c_answer"] in ALLOWED_CAN_WE_ANSWERS
+        assert "exec.c_answer" not in unfilled
+
+    def test_invalid_can_we_answer_is_left_unfilled(self):
+        report_data = {"exec": {"c_answer": "Maybe"}}
+        replacements, _, unfilled, _ = normalize_report_data(
+            report_data, site_name="Test", report_date="01/01/2026",
+        )
+        assert "exec.c_answer" not in replacements
+        assert "exec.c_answer" in unfilled
 
     def test_backward_compat_timeline_alias(self):
         """Old exec.f_ready_mm_yy aliases to exec.f_mvp_ready."""
@@ -196,7 +233,7 @@ class TestNormalization:
         """token_sources tracks where each token value came from."""
         report_data = {
             "exec": {
-                "c_answer": "YES",
+                "c_answer": "Yes",
                 "c_zoning": "Permitted",
                 "f_ready_mm_yy": "09/27",
             },

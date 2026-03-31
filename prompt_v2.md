@@ -424,9 +424,9 @@ Rules:
 - Calculate target date by summing permit + review + construction timelines from today
 - If multiple spec tiers have different timelines, show each
 
-**`exec.acquisition_conditions` — Conditions to Add to Acquisition**
+**`exec.acquisition_conditions` — Notes for Acquistion Negoations**
 Bullet list structured as either TI allowance asks or landlord-must-fix items. Each bullet cites its source.
-See "exec — Conditions to Add to Acquisition" in the schema section below for the full classification key.
+See "exec — Notes for Acquistion Negoations" in the schema section below for the full classification key.
 
 **`exec.risk_notes` — Risks to Note**
 Confirmed findings from source documents that threaten timeline or viability. Each bullet cites its source.
@@ -494,7 +494,7 @@ You may pass keys as either:
 | `meta.school_type` | School type (e.g., "K-8 Microschool") | Wrike record or default |
 | `meta.marketing_name` | Marketing name if different from site name | Wrike record |
 | `meta.report_date` | Report date MM/DD/YYYY | Auto-populated |
-| `meta.prepared_by` | P1 Accountable person's name | `p1_assignee_name` from Step 2 readiness check; fall back to "DD Report Agent" if not set |
+| `meta.prepared_by` | P1 Accountable person's name | `p1_assignee_name` from Step 2 readiness check; fall back to `EDU Ops Team` if not set |
 | `meta.drive_folder_url` | Google Drive folder URL for the site | Auto-populated |
 
 ### exec — "Can we do this?" card (pick-menu dimensions)
@@ -503,7 +503,7 @@ Each dimension uses a **fixed option menu**. Pick exactly one option per field b
 
 | Token | Source | Options (pick one) |
 |---|---|---|
-| `exec.c_answer` | Agent (synthesize from all sources) | `YES` / `NO` / `CONDITIONAL` |
+| `exec.c_answer` | Agent (synthesize from all sources) | `Yes` / `Yes see notes` / `No` |
 | `exec.c_zoning` | SIR (zoning designation + permitted uses) | `Permitted by right` / `Use Permit Required (Admin approval)` / `Use Permit Required (Public approval)` / `Prohibited` |
 | `exec.c_occupancy` | E-Occupancy skill (uses Building Inspection data) | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
 | `exec.c_edreg` | School Approval skill | `Not required` / `Required and have done` / `Required have not done` |
@@ -536,7 +536,7 @@ These 3 tokens are computed automatically by `create_dd_report` from the MVP/Ide
 | `exec.delta_cost` | ideal_cost − mvp_cost | `+$105,000` |
 | `exec.delta_ready` | ideal_ready − mvp_ready | `+3 mo` |
 
-### exec — Conditions to Add to Acquisition
+### exec — Notes for Acquistion Negoations
 
 | Token | Source | Format |
 |---|---|---|

@@ -69,11 +69,33 @@ class Settings(BaseSettings):
         description="Base URL for the Building Optimizer pricing API",
     )
 
+    # LLM model IDs
+    openai_filename_model: str = Field(
+        "gpt-4o-mini",
+        description="OpenAI model used for filename classification",
+    )
+    openai_content_model: str = Field(
+        "gpt-4o-mini",
+        description="OpenAI model used for PDF content classification",
+    )
+    openai_site_match_model: str = Field(
+        "gpt-4o-mini",
+        description="OpenAI model used for shared-folder site matching",
+    )
+    anthropic_report_model: str = Field(
+        "claude-sonnet-4-6",
+        description="Anthropic model used for DD report generation",
+    )
+
     # Email (Gmail SMTP with App Password)
     email_sender: str = Field("", description="Gmail address for sending DD report emails")
     email_app_password: str = Field("", description="Gmail App Password for the sender account")
     dd_report_email_recipients: str = Field(
         "", description="Comma-separated list of recipient email addresses"
+    )
+    sir_notification_recipients: str = Field(
+        "",
+        description="Comma-separated recipient email addresses for SIR arrival notifications",
     )
 
     # Google Chat

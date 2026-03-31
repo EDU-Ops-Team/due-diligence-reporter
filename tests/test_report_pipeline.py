@@ -207,6 +207,88 @@ class TestProcessSitePipeline:
         assert result.status == "error"
         assert "Drive API error" in result.error
 
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_readiness_payload_error(self, mock_readiness):
+        """Treats readiness payload errors as pipeline errors."""
+        mock_readiness.return_value = {
+            "sir_found": False,
+            "isp_found": False,
+            "inspection_found": False,
+            "report_exists": False,
+            "error": "bad_url",
+        }
+
+        gc = MagicMock()
+        result = process_site_pipeline(
+            gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"], {}, "system prompt", _make_settings(),
+        )
+
+        assert result.status == "error"
+        assert result.error == "bad_url"
+
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_agent_exception_becomes_generation_failed(self, mock_readiness, mock_agent):
+        """Raised agent exceptions degrade to generation_failed."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        mock_agent.side_effect = RuntimeError("Anthropic timeout")
+
+        gc = MagicMock()
+        result = process_site_pipeline(
+            gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"], {}, "system prompt", _make_settings(),
+        )
+
+        assert result.status == "generation_failed"
+        assert result.error == "Anthropic timeout"
+
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_completeness_payload_error_returns_error(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+    ):
+        """Treats completeness payload errors as pipeline errors."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+        }
+
+        async def fake_completeness(doc_id):
+            return {
+                "status": "error",
+                "error": "check_report_completeness failed",
+                "message": "export broke",
+            }
+
+        mock_completeness.side_effect = fake_completeness
+
+        gc = MagicMock()
+        result = process_site_pipeline(
+            gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"], {}, "system prompt", _make_settings(),
+        )
+
+        assert result.status == "error"
+        assert result.doc_id == "doc123"
+        assert "export broke" in (result.error or "")
+
 
 # ---------------------------------------------------------------------------
 # PipelineResult dataclass
