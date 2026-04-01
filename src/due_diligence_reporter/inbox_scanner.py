@@ -8,6 +8,7 @@ or ISP). No site matching required — doc_type alone routes the file.
 
 from __future__ import annotations
 
+import base64
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +17,7 @@ from typing import Any
 from .classifier import classify_document
 from .config import Settings
 from .google_client import GoogleClient
+from .wrike import _match_site_with_llm, extract_address_from_record
 
 logger = logging.getLogger("[inbox_scanner]")
 
@@ -48,7 +50,7 @@ class EmailMetadata:
     subject: str
     sender: str
     body_snippet: str
-    attachments: list[dict[str, Any]]  # [{filename, attachment_id, mime_type}]
+    attachments: list[dict[str, Any]]  # [{filename, attachment_id?, body_data?, mime_type}]
 
 
 @dataclass
@@ -64,7 +66,7 @@ class ProcessedAttachment:
 
 def scan_inbox(
     gc: GoogleClient,
-    site_records: list[dict[str, Any]],
+    site_records: list[dict[str, Any]] | None,
     settings: Settings,
     *,
     dry_run: bool = False,
@@ -74,9 +76,11 @@ def scan_inbox(
     Returns a summary dict with counts and details.
     """
     logger.info("Starting inbox scan (dry_run=%s)", dry_run)
+    site_records = site_records or []
 
     # Get or create the DD-Processed label
     label_id = gc.gmail_get_or_create_label(settings.inbox_processed_label)
+    review_label_id = gc.gmail_get_or_create_label(settings.inbox_manual_review_label)
 
     # Exclude already-labeled messages from search
     query = f"{settings.inbox_scan_query} -label:{settings.inbox_processed_label}"
@@ -97,7 +101,13 @@ def scan_inbox(
         message_id = msg_stub["id"]
         try:
             email_result = process_email(
-                gc, message_id, settings, label_id, dry_run=dry_run,
+                gc,
+                message_id,
+                settings,
+                label_id,
+                review_label_id,
+                site_records=site_records,
+                dry_run=dry_run,
             )
             if email_result.get("uploaded"):
                 results["attachments_uploaded"] += len(email_result["uploaded"])
@@ -128,7 +138,9 @@ def process_email(
     message_id: str,
     settings: Settings,
     label_id: str,
+    review_label_id: str,
     *,
+    site_records: list[dict[str, Any]] | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Process a single email: classify attachments by filename, upload, mark done.
@@ -148,17 +160,40 @@ def process_email(
     low_confidence: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     all_succeeded = True
+    review_needed = False
+    site_records = site_records or []
+
+    if not metadata.attachments:
+        logger.warning(
+            "No PDF attachments were extracted from email '%s' despite matching scan query",
+            metadata.subject,
+        )
+        errors.append({
+            "message_id": message_id,
+            "error": "No PDF attachments detected in Gmail payload",
+            "email_subject": metadata.subject,
+        })
+        review_needed = True
 
     for att in metadata.attachments:
         filename = att["filename"]
-        attachment_id = att["attachment_id"]
 
         # Classify by filename using the three-tier classifier
         doc_type, confidence = classify_document(filename)
+        matched_record = _match_attachment_to_site(
+            filename,
+            metadata,
+            site_records,
+        )
+        site_title = matched_record.get("title") if matched_record else None
+        matched_site_id = matched_record.get("id") if matched_record else None
 
         logger.info(
-            "Classification for '%s': doc_type=%s, confidence=%.2f",
-            filename, doc_type, confidence,
+            "Classification for '%s': doc_type=%s, confidence=%.2f, site=%s",
+            filename,
+            doc_type,
+            confidence,
+            site_title or "unmatched",
         )
 
         # Skip unsupported doc types
@@ -178,8 +213,10 @@ def process_email(
                 "doc_type": doc_type,
                 "confidence": confidence,
                 "email_subject": metadata.subject,
+                "site_title": site_title,
             })
             skipped += 1
+            review_needed = True
             continue
 
         # Route to target folder by doc_type
@@ -200,8 +237,11 @@ def process_email(
             continue
 
         # Use date-prefixed original filename
-        date_str = datetime.now().strftime("%b %d %Y")
-        drive_filename = f"{date_str} - {filename}"
+        drive_filename = (
+            _generate_drive_filename(site_title, doc_type)
+            if site_title
+            else _prefix_original_filename(filename)
+        )
 
         if dry_run:
             logger.info("[DRY RUN] Would upload '%s' to folder %s", drive_filename, target_folder_id)
@@ -209,8 +249,8 @@ def process_email(
                 "original_filename": filename,
                 "drive_filename": drive_filename,
                 "doc_type": doc_type,
-                "site_title": None,
-                "matched_site_id": None,
+                "site_title": site_title,
+                "matched_site_id": matched_site_id,
                 "dry_run": True,
             })
             continue
@@ -223,7 +263,7 @@ def process_email(
 
         # Download attachment and upload to Drive
         try:
-            file_bytes = gc.gmail_get_attachment(message_id, attachment_id)
+            file_bytes = _get_attachment_bytes(gc, message_id, att)
             drive_file = gc.upload_file_to_folder(
                 folder_id=target_folder_id,
                 file_name=drive_filename,
@@ -233,8 +273,8 @@ def process_email(
                 "original_filename": filename,
                 "drive_filename": drive_filename,
                 "doc_type": doc_type,
-                "site_title": None,
-                "matched_site_id": None,
+                "site_title": site_title,
+                "matched_site_id": matched_site_id,
                 "drive_file_id": drive_file.get("id"),
                 "drive_link": drive_file.get("webViewLink"),
             })
@@ -248,13 +288,13 @@ def process_email(
                 "error": str(e),
             })
             all_succeeded = False
+            review_needed = True
 
-    # Mark as processed if no exceptions and no low-confidence items.
-    # Unknown doc types and duplicates are safely skipped and don't need
-    # re-scanning. Only low-confidence items require human review and
-    # should stay in the queue.
     marked = False
-    if all_succeeded and not dry_run and not low_confidence:
+    if review_needed and not dry_run:
+        _mark_email_for_review(gc, message_id, label_id, review_label_id)
+        marked = True
+    elif all_succeeded and not dry_run and not low_confidence:
         _mark_email_processed(gc, message_id, label_id)
         marked = True
 
@@ -270,6 +310,84 @@ def process_email(
 def has_site_identity(uploads: list[dict[str, Any]]) -> bool:
     """Return True when at least one upload can be mapped to a site."""
     return any(u.get("site_title") or u.get("matched_site_id") for u in uploads)
+
+
+def _prefix_original_filename(filename: str) -> str:
+    """Prefix the original filename with the current date."""
+    date_str = datetime.now().strftime("%b %d %Y")
+    return f"{date_str} - {filename}"
+
+
+def _extract_city_from_address(address: str | None) -> str | None:
+    """Extract the city segment from a US-style address."""
+    if not address:
+        return None
+    parts = [part.strip() for part in address.split(",") if part.strip()]
+    if len(parts) < 2:
+        return None
+    city = parts[-2].strip()
+    return city or None
+
+
+def _site_match_score(filename: str, subject: str, record: dict[str, Any]) -> int:
+    """Compute a deterministic match score between an attachment and a site record."""
+    haystack = f"{filename} {subject}".lower()
+    title = str(record.get("title", "")).strip()
+    if not title:
+        return 0
+
+    score = 0
+    title_lower = title.lower()
+    if title_lower in haystack:
+        score += 100
+
+    address = extract_address_from_record(record)
+    city = _extract_city_from_address(address)
+    if city and city.lower() in haystack:
+        score += 25
+
+    stop_words = {"alpha", "school", "campus", "microschool"}
+    for word in title_lower.replace("/", " ").split():
+        token = word.strip(",.()")
+        if len(token) < 3 or token in stop_words:
+            continue
+        if token in haystack:
+            score += 12
+
+    if address:
+        zip_match = address.strip().split()[-1]
+        if zip_match.isdigit() and zip_match in haystack:
+            score += 10
+
+    return score
+
+
+def _match_attachment_to_site(
+    filename: str,
+    metadata: EmailMetadata,
+    site_records: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Match an attachment to a Wrike site record using deterministic rules and LLM fallback."""
+    if not site_records:
+        return None
+
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for record in site_records:
+        score = _site_match_score(filename, metadata.subject, record)
+        if score > 0:
+            scored.append((score, record))
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    if scored:
+        best_score, best_record = scored[0]
+        next_score = scored[1][0] if len(scored) > 1 else -1
+        if best_score >= 100 or (best_score >= 35 and best_score >= next_score + 15):
+            return best_record
+
+    query = f"{filename} {metadata.subject}".strip()
+    if not query:
+        return None
+    return _match_site_with_llm(query=query, site_records=site_records)
 
 
 def _extract_email_metadata(gc: GoogleClient, message_id: str) -> EmailMetadata:
@@ -306,11 +424,14 @@ def _walk_parts(part: dict[str, Any], attachments: list[dict[str, Any]]) -> None
     mime_type = part.get("mimeType", "")
     body = part.get("body", {})
     attachment_id = body.get("attachmentId")
+    body_data = body.get("data")
+    is_pdf = mime_type == "application/pdf" or filename.lower().endswith(".pdf")
 
-    if filename and attachment_id and mime_type == "application/pdf":
+    if filename and is_pdf and (attachment_id or body_data):
         attachments.append({
             "filename": filename,
             "attachment_id": attachment_id,
+            "body_data": body_data,
             "mime_type": mime_type,
         })
 
@@ -338,6 +459,36 @@ def _mark_email_processed(gc: GoogleClient, message_id: str, label_id: str) -> N
         remove_labels=["UNREAD"],
     )
     logger.info("Marked email %s as processed", message_id)
+
+
+def _mark_email_for_review(
+    gc: GoogleClient,
+    message_id: str,
+    processed_label_id: str,
+    review_label_id: str,
+) -> None:
+    """Mark an email as needing manual review while suppressing reprocessing."""
+    gc.gmail_modify_labels(
+        message_id,
+        add_labels=[processed_label_id, review_label_id],
+        remove_labels=[],
+    )
+    logger.info("Marked email %s for manual review", message_id)
+
+
+def _get_attachment_bytes(
+    gc: GoogleClient,
+    message_id: str,
+    attachment: dict[str, Any],
+) -> bytes:
+    """Return attachment bytes from either attachmentId or inline data."""
+    attachment_id = attachment.get("attachment_id")
+    if attachment_id:
+        return gc.gmail_get_attachment(message_id, attachment_id)
+    body_data = attachment.get("body_data", "")
+    if isinstance(body_data, str) and body_data:
+        return base64.urlsafe_b64decode(body_data)
+    raise RuntimeError(f"Attachment '{attachment.get('filename', '')}' had no retrievable bytes")
 
 
 def build_scan_summary(results: dict[str, Any]) -> str:

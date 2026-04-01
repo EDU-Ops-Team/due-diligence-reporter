@@ -465,27 +465,10 @@ def _school_zone(score: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# COST ESTIMATE — Building Optimizer API + per-SF code-required item estimates
+# COST ESTIMATE - RayCon API
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Components that map to each DD report cost category (v2 API)
-_FINISH_WORK_COMPONENTS = {"floors", "walls", "ceiling"}
-_MEP_COMPONENTS = {"hvac", "lighting"}   # electrical (lighting) + mechanical; plumbing → bathrooms
-_FFE_COMPONENTS = {"tech", "millwork", "security"}
-_BATHROOM_COMPONENTS = {"plumbing", "fixtures"}  # restroom rooms only
-_SPRINKLER_COMPONENTS = {"sprinkler"}
-_FIRE_ALARM_COMPONENTS = {
-    "fireAlarm", "emergencyLighting", "egressHardware",
-    "fireCompliance", "fireMonitoring",
-}
-
-# Per-SF cost ranges for items NOT available in the Optimizer API
-_PER_SF_RANGES: dict[str, tuple[float, float]] = {
-    "structural": (8.0, 25.0),    # foundation/structural remediation
-    "ada": (2.0, 8.0),            # ADA / accessibility upgrades
-}
-
-# Region key aliases — map common city/state names to API region keys
+# Region key aliases - map common city/state names to API region keys
 _REGION_ALIASES: dict[str, str] = {
     "austin": "austin",
     "texas": "austin",
@@ -509,69 +492,35 @@ def _resolve_region(region_hint: str) -> str:
     return _REGION_ALIASES.get(region_hint.lower().strip(), "default")
 
 
-def _build_rooms_payload(
-    rooms: list[dict[str, Any]],
-    finish_level: int,
-) -> list[dict[str, Any]]:
-    """Build a rooms list for the v2 API with all components set to finish_level.
+_RAYCON_BREAKDOWN_ROWS: tuple[tuple[str, str], ...] = (
+    ("demolition", "Demolition"),
+    ("framing_doors", "Framing / Doors"),
+    ("mep_fire_life_safety", "MEP / Fire / Life Safety"),
+    ("plumbing_bathrooms", "Plumbing / Bathrooms"),
+    ("finish_work", "Finish Work"),
+    ("furniture", "Furniture"),
+    ("tech_security_signage", "Tech / Security / Signage"),
+    ("other_hard_costs", "Other Hard Costs"),
+    ("soft_costs", "Soft Costs"),
+    ("gc_fee", "GC Fee"),
+    ("contingency", "Contingency"),
+    ("grand_total", "Grand Total"),
+)
 
-    Fire-safety components (sprinkler, fireAlarm, emergencyLighting, egressHardware,
-    fireCompliance, fireMonitoring) are always included — the API returns $0 at level 0
-    and real costs at level >= 1.
-    """
-    # Fire-safety components present on every v2 room type
-    _FIRE_SAFETY = [
-        "fireAlarm", "sprinkler", "emergencyLighting",
-        "egressHardware", "fireCompliance", "fireMonitoring",
-    ]
-    component_keys_by_type: dict[str, list[str]] = {
-        "learningroom":  ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
-        "hallway":       ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "office":        ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
-        "conferenceroom":["floors", "walls", "ceiling", "lighting", "hvac", "tech", "security"] + _FIRE_SAFETY,
-        "breakroom":     ["floors", "walls", "ceiling", "lighting", "hvac", "millwork", "appliances", "security"] + _FIRE_SAFETY,
-        "restroom":      ["floors", "walls", "ceiling", "lighting", "plumbing", "fixtures", "security"] + _FIRE_SAFETY,
-        "limitlessroom": ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
-        "rocketroom":    ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
-        "multipurpose":  ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "reception":     ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "storage":       ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "lobby":         ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "otherroom":     ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "workshop":      ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
-    }
-    default_keys = ["floors", "walls", "ceiling", "lighting"] + _FIRE_SAFETY
-    result = []
-    for room in rooms:
-        room_type = room.get("type", "otherroom")
-        keys = component_keys_by_type.get(room_type, default_keys)
-        result.append({
-            "type": room_type,
-            "sqft": room.get("sqft", 400),
-            "levels": {k: finish_level for k in keys},
+
+def _build_raycon_rooms_payload(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build a RayCon-compatible rooms payload from ISP room data."""
+    payload: list[dict[str, Any]] = []
+    for index, room in enumerate(rooms, start=1):
+        payload.append({
+            "name": str(room.get("name") or f"Room {index}"),
+            "type": str(room.get("type") or "otherroom"),
+            "sqft": int(room.get("sqft", 400)),
+            "perimeterLinearFt": int(room.get("perimeterLinearFt", 0)),
+            "wallHeightFt": int(room.get("wallHeightFt", 10)),
+            "floor": str(room.get("floor") or room.get("floorLabel") or "1st Floor"),
         })
-    return result
-
-
-def _sum_components(api_rooms: list[dict[str, Any]], component_keys: set[str]) -> float:
-    """Sum component subtotals across all rooms for the given component keys."""
-    total = 0.0
-    for room in api_rooms:
-        for comp in room.get("components", []):
-            if comp.get("key") in component_keys:
-                total += comp.get("subtotal", 0.0)
-    return total
-
-
-def _sum_bathroom_components(api_rooms: list[dict[str, Any]]) -> float:
-    """Sum plumbing + fixtures only for restroom-type rooms."""
-    total = 0.0
-    for room in api_rooms:
-        if room.get("type") == "restroom":
-            for comp in room.get("components", []):
-                if comp.get("key") in _BATHROOM_COMPONENTS:
-                    total += comp.get("subtotal", 0.0)
-    return total
+    return payload
 
 
 def _auto_generate_rooms(total_sf: int, classroom_count: int) -> list[dict[str, Any]]:
@@ -591,20 +540,183 @@ def _auto_generate_rooms(total_sf: int, classroom_count: int) -> list[dict[str, 
     return rooms
 
 
-def _call_pricing_api(
-    api_url: str,
-    rooms_payload: list[dict[str, Any]],
+def _build_raycon_request_payload(
+    *,
+    site_name: str,
+    total_building_sf: int,
     region: str,
+    room_list: list[dict[str, Any]],
+    address: str | None = None,
+    inspection_summary: str | None = None,
+    sir_summary: str | None = None,
 ) -> dict[str, Any]:
-    """POST to the Building Optimizer v2 /v1/estimate endpoint."""
-    resp = requests.post(
-        f"{api_url}/v1/estimate",
-        headers={"Content-Type": "application/json"},
-        json={"rooms": rooms_payload, "region": region, "fees": {}},
-        timeout=30,
+    """Build the POST body for RayCon chat."""
+    payload: dict[str, Any] = {
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Calculate two deterministic school conversion scenarios for this space: "
+                    "MVP (minimum work / as-is) and Ideal (max capacity). "
+                    "Return structured estimate cards and cost breakdowns for both."
+                ),
+            }
+        ],
+        "space": {
+            "name": site_name or "School Conversion",
+            "rooms": _build_raycon_rooms_payload(room_list),
+            "spaceDetails": {
+                "address": address or "",
+                "totalArea": total_building_sf,
+                "grossFloorArea": total_building_sf,
+            },
+            "metadata": {
+                "roomCount": len(room_list),
+                "totalSqft": total_building_sf,
+            },
+            "source": "isp",
+        },
+        "region": region,
+        "temperature": 0,
+        "max_tool_rounds": 8,
+    }
+    drive_doc_summaries: dict[str, str] = {}
+    if inspection_summary:
+        drive_doc_summaries["inspection"] = inspection_summary
+    if sir_summary:
+        drive_doc_summaries["sir"] = sir_summary
+    if drive_doc_summaries:
+        payload["drive_doc_summaries"] = drive_doc_summaries
+    return payload
+
+
+def _read_raycon_done_event(response: requests.Response) -> dict[str, Any]:
+    """Read an SSE stream and return the JSON payload from the final done event."""
+    current_event = ""
+    data_lines: list[str] = []
+    error_message = ""
+    for raw_line in response.iter_lines(decode_unicode=True):
+        if raw_line is None:
+            continue
+        line = raw_line.strip()
+        if not line:
+            if current_event == "done" and data_lines:
+                return json.loads("\n".join(data_lines))
+            if current_event == "error" and data_lines:
+                error_payload = json.loads("\n".join(data_lines))
+                error_message = error_payload.get("message", "Unknown RayCon error")
+            current_event = ""
+            data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            current_event = line.partition(":")[2].strip()
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line.partition(":")[2].lstrip())
+    if error_message:
+        raise ValueError(error_message)
+    raise ValueError("RayCon stream ended before a done event was received")
+
+
+def _call_raycon_api(
+    api_url: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """POST to RayCon /v1/chat and return the final structured response."""
+    response = requests.post(
+        f"{api_url}/v1/chat",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        },
+        json=payload,
+        timeout=60,
+        stream=True,
     )
-    resp.raise_for_status()
-    return resp.json()  # type: ignore[no-any-return]
+    response.raise_for_status()
+    return _read_raycon_done_event(response)
+
+
+def _extract_raycon_scenario(
+    response_data: dict[str, Any],
+    scenario_key: str,
+    card_label_hint: str,
+) -> dict[str, Any]:
+    """Extract one scenario from RayCon structured output with card fallback."""
+    structured = response_data.get("structured", {})
+    scenario = structured.get(scenario_key)
+    if isinstance(scenario, dict):
+        return scenario
+    cards = response_data.get("estimate_cards", {}).get("cards", [])
+    for card in cards:
+        label = str(card.get("label", "")).lower()
+        if card_label_hint in label:
+            return {
+                "categories": card.get("costBreakdown", []),
+                "grandTotal": card.get("totals", {}).get("grandTotal", 0),
+                "softCosts": card.get("totals", {}).get("softCosts", 0),
+                "gcFee": card.get("totals", {}).get("gcFee", 0),
+                "contingency": card.get("totals", {}).get("contingency", 0),
+                "furniture": card.get("totals", {}).get("furniture", 0),
+            }
+    return {}
+
+
+def _match_breakdown_bucket(category_name: str) -> str:
+    """Normalize a RayCon category label into a fixed report row key."""
+    label = category_name.lower()
+    if "demo" in label:
+        return "demolition"
+    if any(term in label for term in ("framing", "drywall", "partition", "door")):
+        return "framing_doors"
+    if any(term in label for term in ("mep", "hvac", "electrical", "sprinkler", "fire", "alarm", "lighting")):
+        return "mep_fire_life_safety"
+    if any(term in label for term in ("plumbing", "restroom", "bathroom", "fixture")):
+        return "plumbing_bathrooms"
+    if "finish" in label:
+        return "finish_work"
+    if "furniture" in label:
+        return "furniture"
+    if any(term in label for term in ("internet", "low voltage", "security", "signage", "wayfinding", "tech")):
+        return "tech_security_signage"
+    return "other_hard_costs"
+
+
+def _format_currency(value: float | int | None) -> str:
+    """Format a numeric amount as a whole-dollar string."""
+    amount = float(value or 0)
+    return f"${round(amount):,}"
+
+
+def _build_breakdown_fields(
+    scenario_suffix: str,
+    scenario_data: dict[str, Any],
+) -> dict[str, str]:
+    """Build fixed-row report fields from a RayCon scenario."""
+    bucket_totals = {row_key: 0.0 for row_key, _ in _RAYCON_BREAKDOWN_ROWS}
+    for category in scenario_data.get("categories", []):
+        row_key = _match_breakdown_bucket(str(category.get("category", "")))
+        bucket_totals[row_key] += float(category.get("subtotal", 0) or 0)
+    bucket_totals["soft_costs"] = float(scenario_data.get("softCosts", 0) or 0)
+    bucket_totals["gc_fee"] = float(scenario_data.get("gcFee", 0) or 0)
+    bucket_totals["contingency"] = float(scenario_data.get("contingency", 0) or 0)
+    bucket_totals["grand_total"] = float(scenario_data.get("grandTotal", 0) or 0)
+    if not bucket_totals["furniture"]:
+        bucket_totals["furniture"] = float(scenario_data.get("furniture", 0) or 0)
+    return {
+        f"exec.cost_{row_key}_{scenario_suffix}": _format_currency(bucket_totals[row_key])
+        for row_key, _ in _RAYCON_BREAKDOWN_ROWS
+    }
+
+
+def _blank_breakdown_fields(scenario_suffix: str) -> dict[str, str]:
+    """Return blank placeholders for a scenario that is not modeled yet."""
+    return {
+        f"exec.cost_{row_key}_{scenario_suffix}": ""
+        for row_key, _ in _RAYCON_BREAKDOWN_ROWS
+    }
 
 
 def _classify_document_type(filename: str) -> str:
@@ -1456,8 +1568,12 @@ async def get_cost_estimate(
     region: str = "default",
     rooms: list[dict[str, Any]] | None = None,
     classroom_count: int = 0,
+    site_name: str = "",
+    address: str = "",
+    inspection_summary: str = "",
+    sir_summary: str = "",
 ) -> dict[str, Any]:
-    """Estimate renovation costs for a school conversion using the Building Optimizer."""
+    """Estimate MinWork and MaxCapacity costs for a school conversion using RayCon."""
     logger.info(
         "Tool called: get_cost_estimate - total_sf=%d, region=%s, rooms_provided=%s",
         total_building_sf,
@@ -1485,83 +1601,39 @@ async def get_cost_estimate(
 
     def _work() -> dict[str, Any]:
         try:
-            low_payload = _build_rooms_payload(room_list, finish_level=1)
-            low_resp = _call_pricing_api(api_url, low_payload, resolved_region)
-            low_rooms = low_resp["data"]["rooms"]
-
-            high_payload = _build_rooms_payload(room_list, finish_level=3)
-            high_resp = _call_pricing_api(api_url, high_payload, resolved_region)
-            high_rooms = high_resp["data"]["rooms"]
+            payload = _build_raycon_request_payload(
+                site_name=site_name,
+                total_building_sf=total_building_sf,
+                region=resolved_region,
+                room_list=room_list,
+                address=address or None,
+                inspection_summary=inspection_summary or None,
+                sir_summary=sir_summary or None,
+            )
+            raycon_data = _call_raycon_api(api_url, payload)
         except requests.HTTPError as e:
-            logger.error("Pricing API HTTP error: %s", e)
-            return {"status": "error", "error": "Pricing API error", "message": str(e)}
+            logger.error("RayCon API HTTP error: %s", e)
+            return {"status": "error", "error": "RayCon API error", "message": str(e)}
         except Exception as e:
-            logger.error("Pricing API call failed: %s", e)
-            return {"status": "error", "error": "Pricing API error", "message": str(e)}
+            logger.error("RayCon API call failed: %s", e)
+            return {"status": "error", "error": "RayCon API error", "message": str(e)}
 
-        finish_low = _sum_components(low_rooms, _FINISH_WORK_COMPONENTS)
-        finish_high = _sum_components(high_rooms, _FINISH_WORK_COMPONENTS)
-        mep_low = _sum_components(low_rooms, _MEP_COMPONENTS)
-        mep_high = _sum_components(high_rooms, _MEP_COMPONENTS)
-        ffe_low = _sum_components(low_rooms, _FFE_COMPONENTS)
-        ffe_high = _sum_components(high_rooms, _FFE_COMPONENTS)
-        bath_low = _sum_bathroom_components(low_rooms)
-        bath_high = _sum_bathroom_components(high_rooms)
-        sprinkler_low = _sum_components(low_rooms, _SPRINKLER_COMPONENTS)
-        sprinkler_high = _sum_components(high_rooms, _SPRINKLER_COMPONENTS)
-        fa_low = _sum_components(low_rooms, _FIRE_ALARM_COMPONENTS)
-        fa_high = _sum_components(high_rooms, _FIRE_ALARM_COMPONENTS)
-
-        sf = total_building_sf
-        struct_low, struct_high = sf * _PER_SF_RANGES["structural"][0], sf * _PER_SF_RANGES["structural"][1]
-        ada_low, ada_high = sf * _PER_SF_RANGES["ada"][0], sf * _PER_SF_RANGES["ada"][1]
-
-        sub_low = finish_low + mep_low + ffe_low + bath_low + struct_low + sprinkler_low + fa_low + ada_low
-        sub_high = finish_high + mep_high + ffe_high + bath_high + struct_high + sprinkler_high + fa_high + ada_high
-        cont_low = sub_low * 0.15
-        cont_high = sub_high * 0.20
-        total_low = sub_low + cont_low
-        total_high = sub_high + cont_high
-
-        def fmt(n: float) -> str:
-            return f"{round(n):,}"
+        mvp_data = _extract_raycon_scenario(raycon_data, "costs_mvp", "mvp")
+        max_capacity_data = _extract_raycon_scenario(raycon_data, "costs_ideal", "ideal")
+        if not mvp_data or not max_capacity_data:
+            return {
+                "status": "error",
+                "error": "RayCon API error",
+                "message": "RayCon response did not include both MVP and Ideal scenarios",
+            }
 
         report_fields: dict[str, str] = {
-            "q3.structural_low": fmt(struct_low),
-            "q3.structural_high": fmt(struct_high),
-            "q3.mep_low": fmt(mep_low),
-            "q3.mep_high": fmt(mep_high),
-            "q3.sprinkler_low": fmt(sprinkler_low),
-            "q3.sprinkler_high": fmt(sprinkler_high),
-            "q3.fire_alarm_low": fmt(fa_low),
-            "q3.fire_alarm_high": fmt(fa_high),
-            "q3.ada_low": fmt(ada_low),
-            "q3.ada_high": fmt(ada_high),
-            "q3.bathrooms_low": fmt(bath_low),
-            "q3.bathrooms_high": fmt(bath_high),
-            "q3.finish_work_low": fmt(finish_low),
-            "q3.finish_work_high": fmt(finish_high),
-            "q3.ffe_low": fmt(ffe_low),
-            "q3.ffe_high": fmt(ffe_high),
-            "q3.contingency_low": fmt(cont_low),
-            "q3.contingency_high": fmt(cont_high),
-            "q3.total_low": fmt(total_low),
-            "q3.total_high": fmt(total_high),
-            "q3.calculated_budget": f"${fmt(total_low)} - ${fmt(total_high)}",
-            "q3.budget_formula": (
-                "Building Optimizer v2 (finish, MEP, FF&E, bathrooms, sprinkler, fire alarm) + "
-                f"per-SF estimates (structural ${_PER_SF_RANGES['structural'][0]:.0f}-${_PER_SF_RANGES['structural'][1]:.0f}/SF, "
-                f"ADA ${_PER_SF_RANGES['ada'][0]:.0f}-${_PER_SF_RANGES['ada'][1]:.0f}/SF) + 15-20% contingency"
-            ),
-            "q3.budget_status": "[Review against acquisition budget]",
-            "q3.key_cost_risks": (
-                "Structural condition unknown pending field inspection\n"
-                "Sprinkler installation required if system not present\n"
-                "Fire alarm upgrade required for E-occupancy code compliance\n"
-                "ADA scope may increase significantly depending on inspection findings\n"
-                "Finish cost range reflects Refresh vs. Alpha standard"
-            ),
+            "exec.e_mvp_cost": _format_currency(mvp_data.get("grandTotal")),
+            "exec.e_max_capacity_cost": _format_currency(max_capacity_data.get("grandTotal")),
         }
+        report_fields.update(_build_breakdown_fields("mvp", mvp_data))
+        report_fields.update(_build_breakdown_fields("max_capacity", max_capacity_data))
+        report_fields.update(_blank_breakdown_fields("max_value"))
 
         return {
             "status": "success",
@@ -1570,24 +1642,17 @@ async def get_cost_estimate(
             "rooms_used": rooms_note,
             "room_count": len(room_list),
             "cost_summary": {
-                "finish_work": f"${fmt(finish_low)} - ${fmt(finish_high)}",
-                "mep": f"${fmt(mep_low)} - ${fmt(mep_high)}",
-                "ffe": f"${fmt(ffe_low)} - ${fmt(ffe_high)}",
-                "bathrooms": f"${fmt(bath_low)} - ${fmt(bath_high)}",
-                "structural": f"${fmt(struct_low)} - ${fmt(struct_high)}",
-                "sprinkler": f"${fmt(sprinkler_low)} - ${fmt(sprinkler_high)}",
-                "fire_alarm": f"${fmt(fa_low)} - ${fmt(fa_high)}",
-                "ada": f"${fmt(ada_low)} - ${fmt(ada_high)}",
-                "contingency": f"${fmt(cont_low)} - ${fmt(cont_high)}",
-                "grand_total": f"${fmt(total_low)} - ${fmt(total_high)}",
+                "minwork": _format_currency(mvp_data.get("grandTotal")),
+                "max_capacity": _format_currency(max_capacity_data.get("grandTotal")),
             },
+            "raycon_estimate_cards": raycon_data.get("estimate_cards", {}),
+            "raycon_structured": raycon_data.get("structured", {}),
             "report_data_fields": report_fields,
             "message": (
-                f"Cost estimate: ${fmt(total_low)} - ${fmt(total_high)} "
+                f"RayCon estimated MinWork at {_format_currency(mvp_data.get('grandTotal'))} "
+                f"and MaxCapacity at {_format_currency(max_capacity_data.get('grandTotal'))} "
                 f"({resolved_region} region, {len(room_list)} rooms, {total_building_sf:,} SF). "
-                "IMPORTANT: Copy all report_data_fields directly into report_data as flat "
-                "top-level keys (e.g. report_data['q3.structural_low'] = '24,000'). "
-                "Do NOT nest them under q3.cost_estimate_table."
+                "Copy report_data_fields into report_data as flat top-level keys."
             ),
         }
 
@@ -1607,7 +1672,14 @@ def _normalize_report_replacements(
         report_date=report_date,
     )
     compute_deltas(replacements)
-    for delta_token in ("exec.delta_capacity", "exec.delta_cost", "exec.delta_ready"):
+    for delta_token in (
+        "exec.delta_max_capacity_capacity",
+        "exec.delta_max_capacity_cost",
+        "exec.delta_max_capacity_ready",
+        "exec.delta_max_value_capacity",
+        "exec.delta_max_value_cost",
+        "exec.delta_max_value_ready",
+    ):
         if delta_token in replacements and token_sources.get(delta_token) == "unfilled":
             token_sources[delta_token] = "computed"
 

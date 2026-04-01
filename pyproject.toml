@@ -59,6 +59,9 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
+
 [dependency-groups]
 dev = [
     "mypy>=1.18.2",

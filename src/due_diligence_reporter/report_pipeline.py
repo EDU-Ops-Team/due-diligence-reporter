@@ -543,6 +543,7 @@ class PipelineResult:
     pending_count: int = 0
     error: str | None = None
     trace_url: str | None = None
+    trace: ReportTrace | None = None
 
 
 def _get_payload_error(result: dict[str, Any]) -> str | None:
@@ -651,6 +652,9 @@ def _summarize_tool_output(result: Any) -> dict[str, Any]:
         summary["file_count"] = len(result["files"])
     if "content" in result and isinstance(result["content"], str):
         summary["content_length"] = len(result["content"])
+        preview = result["content"][:200].strip()
+        if preview.startswith("[") or len(result["content"]) <= 200:
+            summary["content_preview"] = preview
     if "message" in result:
         msg = str(result["message"])
         summary["message"] = msg[:300] if len(msg) > 300 else msg
@@ -674,6 +678,99 @@ def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
     if not readiness.get("inspection_found", False):
         missing.append("Building Inspection")
     return missing
+
+
+def _source_doc_type_for_alert(file_name: str) -> str | None:
+    """Return the monitored source-doc label for a filename."""
+    name = file_name.lower()
+    if "sir" in name:
+        return "SIR"
+    if "building inspection" in name or "inspection report" in name:
+        return "Building Inspection"
+    return None
+
+
+def _extract_source_read_issues(trace: ReportTrace | None) -> list[dict[str, str]]:
+    """Return unreadable SIR / Building Inspection events from a run trace."""
+    if trace is None:
+        return []
+
+    issues: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for event in trace.events:
+        if event.tool_name != "read_drive_document":
+            continue
+        file_name = str(event.input_summary.get("file_name", "")).strip()
+        doc_type = _source_doc_type_for_alert(file_name)
+        if not doc_type:
+            continue
+
+        output = event.output_summary
+        preview = str(output.get("content_preview", ""))
+        problem = (
+            event.error
+            or str(output.get("error", "")).strip()
+            or str(output.get("message", "")).strip()
+        )
+        has_issue = (
+            bool(problem)
+            or output.get("status") == "error"
+            or output.get("content_length") == 0
+            or "returned no text" in preview.lower()
+            or "requires ocr" in preview.lower()
+        )
+        if not has_issue:
+            continue
+
+        key = (doc_type, file_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        issues.append({
+            "doc_type": doc_type,
+            "file_name": file_name or doc_type,
+            "problem": problem or "Document could not be read cleanly",
+        })
+
+    return issues
+
+
+def _notify_source_read_issues(
+    webhook_url: str,
+    site_title: str,
+    trace: ReportTrace | None,
+    *,
+    drive_folder_url: str = "",
+    trace_url: str = "",
+) -> None:
+    """Alert the team when SIR or Building Inspection reads fail."""
+    issues = _extract_source_read_issues(trace)
+    if not webhook_url or not issues:
+        return
+
+    lines = [
+        f"DD Source Review Needed -- {site_title}",
+        "Issue reading required source document(s). Please review.",
+    ]
+    for issue in issues:
+        lines.append(f"- {issue['doc_type']}: {issue['file_name']}")
+        lines.append(f"  Problem: {issue['problem']}")
+    if drive_folder_url:
+        lines.append(f"Drive: {drive_folder_url}")
+    if trace_url:
+        lines.append(f"Trace: {trace_url}")
+    msg = "\n".join(lines)
+
+    for url in [u.strip() for u in webhook_url.split(",") if u.strip()]:
+        try:
+            post_google_chat_message(url, msg)
+        except Exception as e:
+            logger.error(
+                "Failed to post source review alert for '%s' to %s: %s",
+                site_title,
+                url[:60],
+                e,
+            )
 
 
 def _resolve_readiness_result(
@@ -731,6 +828,7 @@ def _run_pipeline_agent(
         site_title=site_title,
         status="generation_failed",
         error=err,
+        trace=agent_result.get("trace"),
     )
 
 
@@ -886,6 +984,19 @@ def process_site_pipeline(
 
     agent_result, generation_result = _run_pipeline_agent(site_title, system_prompt, settings)
     if generation_result is not None:
+        generation_result.trace_url = _save_pipeline_trace(
+            gc,
+            drive_folder_url,
+            site_title,
+            generation_result.trace,
+        )
+        _notify_source_read_issues(
+            settings.google_chat_webhook_url,
+            site_title,
+            generation_result.trace,
+            drive_folder_url=drive_folder_url,
+            trace_url=generation_result.trace_url or "",
+        )
         return generation_result
     assert agent_result is not None
 
@@ -897,9 +1008,18 @@ def process_site_pipeline(
         site_title,
         agent_result.get("trace"),
     )
+    _notify_source_read_issues(
+        settings.google_chat_webhook_url,
+        site_title,
+        agent_result.get("trace"),
+        drive_folder_url=drive_folder_url,
+        trace_url=trace_url or "",
+    )
 
     completeness, completeness_result = _check_generated_report(site_title, doc_id, doc_url)
     if completeness_result is not None:
+        completeness_result.trace_url = trace_url
+        completeness_result.trace = agent_result.get("trace")
         return completeness_result
     assert completeness is not None
 
@@ -912,6 +1032,7 @@ def process_site_pipeline(
         doc_url=doc_url,
         pending_count=completeness.get("pending_section_count", 0),
         trace_url=trace_url,
+        trace=agent_result.get("trace"),
     )
 
 

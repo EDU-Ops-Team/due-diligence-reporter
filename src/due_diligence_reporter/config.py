@@ -63,10 +63,10 @@ class Settings(BaseSettings):
         description="Drive folder ID for shared Building Inspection documents",
     )
 
-    # Building Optimizer / Pricing API (v2 — no API key required)
+    # RayCon cost API
     pricing_api_url: str = Field(
-        "https://pricing-api-738625530258.us-central1.run.app",
-        description="Base URL for the Building Optimizer pricing API",
+        "https://raycon-api-738625530258.us-central1.run.app",
+        description="Base URL for the RayCon pricing API",
     )
 
     # LLM model IDs
@@ -111,6 +111,10 @@ class Settings(BaseSettings):
     inbox_processed_label: str = Field(
         "DD-Processed",
         description="Gmail label applied to processed inbox emails",
+    )
+    inbox_manual_review_label: str = Field(
+        "DD-Manual-Review",
+        description="Gmail label applied to emails needing human review",
     )
     inbox_scan_max_results: int = Field(
         50,

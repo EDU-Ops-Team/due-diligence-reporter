@@ -8,6 +8,9 @@ import pytest
 
 from due_diligence_reporter.report_pipeline import (
     PipelineResult,
+    ReportTrace,
+    TraceEvent,
+    _extract_source_read_issues,
     check_site_readiness_direct,
     match_site_in_shared_cache,
     process_site_pipeline,
@@ -315,3 +318,101 @@ class TestPipelineResult:
         )
         assert r.doc_id == "abc"
         assert r.pending_count == 2
+
+
+class TestSourceReadAlerts:
+    def test_extracts_sir_and_building_inspection_read_issues(self):
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-04-01T00:00:00+00:00",
+            events=[
+                TraceEvent(
+                    timestamp="2026-04-01T00:00:01+00:00",
+                    event_type="tool_call",
+                    tool_name="read_drive_document",
+                    input_summary={"file_name": "Alpha Keller SIR.pdf"},
+                    output_summary={"status": "error", "error": "Failed to read document"},
+                ),
+                TraceEvent(
+                    timestamp="2026-04-01T00:00:02+00:00",
+                    event_type="tool_call",
+                    tool_name="read_drive_document",
+                    input_summary={
+                        "file_name": "Alpha Keller Building Inspection Report.pdf",
+                    },
+                    output_summary={
+                        "status": "ok",
+                        "content_preview": "[PDF text extraction returned no text. This may be an image-only PDF that requires OCR.]",
+                    },
+                ),
+                TraceEvent(
+                    timestamp="2026-04-01T00:00:03+00:00",
+                    event_type="tool_call",
+                    tool_name="read_drive_document",
+                    input_summary={"file_name": "Alpha Keller ISP.pdf"},
+                    output_summary={"status": "error", "error": "Ignore ISP failures here"},
+                ),
+            ],
+        )
+
+        issues = _extract_source_read_issues(trace)
+
+        assert len(issues) == 2
+        assert issues[0]["doc_type"] == "SIR"
+        assert issues[1]["doc_type"] == "Building Inspection"
+
+    @patch("due_diligence_reporter.report_pipeline._save_pipeline_trace")
+    @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_generation_failure_posts_source_review_alert(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_chat,
+        mock_save_trace,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        mock_save_trace.return_value = "https://drive.google.com/trace"
+        mock_agent.return_value = {
+            "success": False,
+            "error": "Agent completed without creating a report",
+            "trace": ReportTrace(
+                site_name="Alpha Keller",
+                started_at="2026-04-01T00:00:00+00:00",
+                events=[
+                    TraceEvent(
+                        timestamp="2026-04-01T00:00:01+00:00",
+                        event_type="tool_call",
+                        tool_name="read_drive_document",
+                        input_summary={"file_name": "Alpha Keller SIR.pdf"},
+                        output_summary={"status": "error", "error": "Failed to read document"},
+                    ),
+                ],
+            ),
+        }
+        settings = _make_settings()
+        settings.google_chat_webhook_url = "https://chat.example/webhook"
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            settings,
+        )
+
+        assert result.status == "generation_failed"
+        assert result.trace_url == "https://drive.google.com/trace"
+        mock_chat.assert_called_once()
+        message = mock_chat.call_args.args[1]
+        assert "DD Source Review Needed -- Alpha Keller" in message
+        assert "SIR" in message
+        assert "Failed to read document" in message

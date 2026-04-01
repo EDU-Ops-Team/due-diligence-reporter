@@ -470,15 +470,57 @@ class TestAsyncOffloading:
             "due_diligence_reporter.server.asyncio.to_thread",
             new=AsyncMock(side_effect=run_inline),
         ) as mock_to_thread, patch(
-            "due_diligence_reporter.server._call_pricing_api",
-            side_effect=[
-                {"data": {"rooms": []}},
-                {"data": {"rooms": []}},
-            ],
+            "due_diligence_reporter.server._call_raycon_api",
+            return_value={
+                "structured": {
+                    "costs_mvp": {
+                        "grandTotal": 86000,
+                        "softCosts": 6200,
+                        "gcFee": 4600,
+                        "contingency": 6300,
+                        "furniture": 22400,
+                        "categories": [
+                            {"category": "Finish Work", "subtotal": 42000},
+                            {"category": "Furniture", "subtotal": 22400},
+                            {"category": "Internet/Low Voltage", "subtotal": 2100},
+                            {"category": "Signage & Wayfinding", "subtotal": 2000},
+                        ],
+                    },
+                    "costs_ideal": {
+                        "grandTotal": 245000,
+                        "softCosts": 22000,
+                        "gcFee": 15000,
+                        "contingency": 33000,
+                        "furniture": 34000,
+                        "categories": [
+                            {"category": "Selective Demolition", "subtotal": 5200},
+                            {"category": "Framing & Drywall", "subtotal": 18500},
+                            {"category": "MEP Rough-In", "subtotal": 45000},
+                            {"category": "Interior Doors", "subtotal": 8000},
+                            {"category": "Plumbing (additional restroom)", "subtotal": 20000},
+                            {"category": "Finish Work", "subtotal": 55000},
+                            {"category": "Furniture", "subtotal": 34000},
+                            {"category": "Internet/Low Voltage", "subtotal": 4200},
+                            {"category": "Security", "subtotal": 0},
+                            {"category": "Signage & Wayfinding", "subtotal": 2000},
+                        ],
+                    },
+                },
+                "estimate_cards": {"cards": []},
+            },
         ):
             result = asyncio.run(get_cost_estimate(total_building_sf=1000, classroom_count=2))
 
         assert result["status"] == "success"
+        assert result["report_data_fields"]["exec.e_mvp_cost"] == "$86,000"
+        assert result["report_data_fields"]["exec.e_max_capacity_cost"] == "$245,000"
+        assert result["report_data_fields"]["exec.cost_finish_work_mvp"] == "$42,000"
+        assert result["report_data_fields"]["exec.cost_demolition_max_capacity"] == "$5,200"
+        assert result["report_data_fields"]["exec.cost_framing_doors_max_capacity"] == "$26,500"
+        assert result["report_data_fields"]["exec.cost_tech_security_signage_mvp"] == "$4,100"
+        assert result["report_data_fields"]["exec.cost_soft_costs_max_capacity"] == "$22,000"
+        assert result["report_data_fields"]["exec.cost_grand_total_max_capacity"] == "$245,000"
+        assert result["report_data_fields"]["exec.cost_grand_total_max_value"] == ""
         mock_to_thread.assert_awaited_once()
 
     def test_save_skill_report_uses_to_thread(self) -> None:

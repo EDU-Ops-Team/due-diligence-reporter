@@ -100,7 +100,7 @@ When I find a file with `doc_type == "isp"`, I read it and extract the following
 ### 1. Room list for cost estimation
 
 I extract every room from the **Room Assignment Details** table and map ISP room types to
-Building Optimizer API types:
+RayCon API room types:
 
 | ISP Room Type | API `type` |
 |---|---|
@@ -128,8 +128,8 @@ I build the rooms array using the sqft from each room's row in the table:
 ]
 ```
 
-I then call `get_cost_estimate(rooms=[...], total_building_sf=..., region=...)` with this
-ISP-derived room list so all Q3 cost fields are sourced from the actual floorplan, not auto-generated.
+I then call `get_cost_estimate(rooms=[...], total_building_sf=..., region=..., site_name=..., address=...)` with this
+ISP-derived room list so MinWork and MaxCapacity costs are sourced from the actual floorplan, not auto-generated.
 
 ### 2. Program Fit summary → Q2 floorplan viability
 
@@ -160,7 +160,7 @@ The `q2.floorplan_viability` field should read like:
 ### What the ISP does NOT contain
 
 - **Construction timeline** — not present in the Program Fit Analysis. Use `[Not found — ISP does not include construction timeline]`
-- **Cost estimates** — costs come from the Building Optimizer API (`get_cost_estimate`), not the ISP
+- **Cost estimates** — costs come from the RayCon API (`get_cost_estimate`), not the ISP
 - **Renderings** — not present in the ISP
 
 ---
@@ -344,7 +344,7 @@ Call `get_site_comments(site_name)` to fetch comments on the Wrike record. These
 - Cost/budget comments → Q3 fields
 - Timeline/schedule comments → Q4 fields
 
-If Wrike comments contain team-provided cost analysis or capacity numbers, these override Building Optimizer API estimates in the executive summary. The team's numbers reflect real-world constraints the API doesn't capture.
+If Wrike comments contain team-provided cost analysis or capacity numbers, these override RayCon estimates in the executive summary. The team's numbers reflect real-world constraints the API doesn't capture.
 
 ### Step 3 — Present the discovery summary
 Before reading any documents, show the user what was found:
@@ -399,17 +399,18 @@ Facts only. No ISP score commentary, no "well below standard" language.
 
 **`exec_summary.q3_summary` — Cost by Capacity Tier**
 ```
-Minimum work: $[single number] for [capacity] students ([brief scope note])
-Ideal spec: $[single number] for [capacity] students ([brief scope note])
-```
-Optional third line if a middle option exists:
-```
-Additional option: $[number] for [capacity] students ([brief scope note])
+MinWork: $[single number] for [capacity] students ([brief scope note])
+MaxCapacity: $[single number] for [capacity] students ([brief scope note])
+MaxValue: $[single number] for [capacity] students ([brief scope note])
 ```
 Rules:
 - One number per tier (midpoint at 50% confidence), NOT a range
-- If Wrike comments contain team-provided cost analysis, use those numbers instead of Building Optimizer output
+- Use RayCon `grandTotal` for MinWork and MaxCapacity unless Wrike comments contain team-provided cost analysis that should override it
 - Capacity = student count, not room count
+- `MinWork` = only the work required to reach E-occupancy compliance
+- `MaxCapacity` = the highest student count supportable by the space
+- `MaxValue` = the highest capacity achievable for the least amount of money
+- MaxValue remains a separate scenario to solve; do not assume RayCon's Ideal scenario is MaxValue
 
 **`exec_summary.q4_summary` — Timeline by Spec Tier**
 Per spec tier:
@@ -448,15 +449,21 @@ evidence = {
     "exec.c_zoning": "SIR p.2: 'Zoning: C-2 Commercial. Schools permitted by right under conditional use.'",
     "exec.c_occupancy": "E-Occupancy skill returned score 62, zone YELLOW, tier 'Needs work'",
     "exec.c_edreg": "School Approval skill: TN requires state approval, not yet obtained",
-    "exec.e_mvp_capacity": "ISP: absolute_min tier = 18 students (4 classrooms × 742–665 sqft)",
-    "exec.e_mvp_cost": "get_cost_estimate returned $850,000 midpoint for 3,066 SF with 4 rooms",
-    "exec.f_mvp_ready": "SIR: permit timeline 10 weeks + construction est. 12 weeks from today = 07/27",
+    "exec.e_mvp_capacity": "ISP: MinWork tier = 18 students (4 classrooms × 742–665 sqft)",
+    "exec.e_mvp_cost": "RayCon costs_mvp.grandTotal returned $850,000 for the MinWork scope in 3,066 SF with 4 rooms",
+    "exec.f_mvp_ready": "SIR: permit timeline 10 weeks + construction est. 12 weeks from today = 07/27 for the MinWork scope",
+    "exec.e_max_capacity_capacity": "ISP: highest supportable program fit scenario = 54 students",
+    "exec.e_max_capacity_cost": "Wrike cost analysis: 54-student max-capacity layout requires approximately $1,150,000",
+    "exec.f_max_capacity_ready": "SIR + inspection scope: max-capacity buildout adds 5 months beyond MinWork, target 12/27",
+    "exec.e_max_value_capacity": "Wrike comments: 42 students is the best capacity/cost tradeoff before restroom and MEP costs step up materially",
+    "exec.e_max_value_cost": "Wrike cost analysis: best-value layout is approximately $940,000",
+    "exec.f_max_value_ready": "SIR + inspection scope: best-value buildout adds 2 months beyond MinWork, target 09/27",
     "exec.acquisition_conditions": "SIR: traffic study required by City of Franklin; Building Inspection: State Fire Marshal sequential blocker",
-    "exec.risk_notes": "Building Inspection: fire alarm >15 years old, modernization recommended; get_cost_estimate: midpoint $850,000 for 3,066 SF",
+    "exec.risk_notes": "Building Inspection: fire alarm >15 years old, modernization recommended; RayCon costs_mvp.grandTotal returned $850,000 for 3,066 SF",
 }
 ```
 
-Keep evidence short (1-2 sentences) — quote the source, cite the page/section if available. For skill tool outputs, note the key return values. For synthesized fields (`c_answer`, `f_mvp_ready`, `acquisition_conditions`, `risk_notes`), cite the inputs that drove the conclusion.
+Keep evidence short (1-2 sentences) — quote the source, cite the page/section if available. For skill tool outputs, note the key return values. For synthesized fields (`c_answer`, `f_mvp_ready`, `f_max_capacity_ready`, `f_max_value_ready`, `acquisition_conditions`, `risk_notes`), cite the inputs that drove the conclusion. The `*_mvp_*` token names still represent the MinWork tier.
 
 ### Step 7 — Verify completeness
 Call `check_report_completeness(doc_id)`. If any `{{token}}` placeholders remain, attempt to fill them. `[Not found — ...]` labels are acceptable and not blocking.
@@ -477,7 +484,7 @@ If a document was not found in Step 2, use sourced gap labels for every field th
 
 ## Report Data Schema (create_dd_report)
 
-The V2 report is an **executive one-pager**. 24 tokens total. The agent still reads all documents and runs all skill tools — the difference is in what gets written to the template.
+The V2 report is an executive one-pager. 70 tokens total. The agent still reads all documents and runs all skill tools — the difference is in what gets written to the template.
 
 When you call `create_dd_report`, the `report_data` dict must use the **exact keys** listed below. Keys that don't match a V2 template token are silently dropped.
 
@@ -508,33 +515,60 @@ Each dimension uses a **fixed option menu**. Pick exactly one option per field b
 | `exec.c_occupancy` | E-Occupancy skill (uses Building Inspection data) | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
 | `exec.c_edreg` | School Approval skill | `Not required` / `Required and have done` / `Required have not done` |
 
-### exec — Cost / Capacity / Timeline grid (bare values)
+### exec — Build Scenarios table (bare values)
 
 The template provides labels — the agent fills only the values. No dollar signs in capacity fields, no units in cost fields beyond the `$`.
 
 | Token | Source | Format | Example |
 |---|---|---|---|
-| `exec.e_mvp_capacity` | ISP (tier analysis student count) | Integer (students) | `36` |
-| `exec.e_ideal_capacity` | ISP (tier analysis student count) | Integer (students) | `54` |
-| `exec.e_mvp_cost` | ISP (room list → `get_cost_estimate`) | Dollar amount | `$185,000` |
-| `exec.e_ideal_cost` | ISP (room list → `get_cost_estimate`) | Dollar amount | `$290,000` |
-| `exec.f_mvp_ready` | Agent (SIR timelines + construction estimate) | MM/YY | `01/27` |
-| `exec.f_ideal_ready` | Agent (SIR timelines + construction estimate) | MM/YY | `04/27` |
+| `exec.e_mvp_capacity` | ISP (MinWork tier analysis student count) | Integer (students) | `36` |
+| `exec.e_mvp_cost` | ISP (MinWork room list → `get_cost_estimate`) | Dollar amount | `$185,000` |
+| `exec.f_mvp_ready` | Agent (SIR timelines + MinWork construction estimate) | MM/YY | `01/27` |
+| `exec.e_max_capacity_capacity` | ISP / Wrike (highest supportable student count) | Integer (students) | `54` |
+| `exec.e_max_capacity_cost` | Wrike / Agent synthesis | Dollar amount | `$290,000` |
+| `exec.f_max_capacity_ready` | Agent (SIR timelines + max-capacity construction estimate) | MM/YY | `04/27` |
+| `exec.e_max_value_capacity` | Wrike / Agent synthesis | Integer (students) | `42` |
+| `exec.e_max_value_cost` | Wrike / Agent synthesis | Dollar amount | `$240,000` |
+| `exec.f_max_value_ready` | Agent (SIR timelines + max-value construction estimate) | MM/YY | `03/27` |
 
 Rules:
 - Cost = single midpoint number (50% confidence), NOT a range. Wrike comments override API numbers.
 - Timeline = MM/YY format only. Never "Fall 2027" or season names.
 - Capacity = student count from ISP tier analysis.
+- `MaxCapacity` = highest student count supportable by the space.
+- `MaxValue` = highest capacity achievable for the least amount of money.
 
-### exec — Delta column (server-computed, do NOT fill)
+### exec — Build Delta Analysis (server-computed, do NOT fill)
 
-These 3 tokens are computed automatically by `create_dd_report` from the MVP/Ideal pairs above. The agent must **not** include them in `report_data`.
+### exec — Detailed Cost Breakdown (fixed row table)
+
+Populate MinWork and MaxCapacity from `get_cost_estimate.report_data_fields`. MaxValue remains separate and may be filled later when that scenario is defined.
+
+| Row | MinWork token | MaxCapacity token | MaxValue token |
+|---|---|---|---|
+| Demolition | `exec.cost_demolition_mvp` | `exec.cost_demolition_max_capacity` | `exec.cost_demolition_max_value` |
+| Framing / Doors | `exec.cost_framing_doors_mvp` | `exec.cost_framing_doors_max_capacity` | `exec.cost_framing_doors_max_value` |
+| MEP / Fire / Life Safety | `exec.cost_mep_fire_life_safety_mvp` | `exec.cost_mep_fire_life_safety_max_capacity` | `exec.cost_mep_fire_life_safety_max_value` |
+| Plumbing / Bathrooms | `exec.cost_plumbing_bathrooms_mvp` | `exec.cost_plumbing_bathrooms_max_capacity` | `exec.cost_plumbing_bathrooms_max_value` |
+| Finish Work | `exec.cost_finish_work_mvp` | `exec.cost_finish_work_max_capacity` | `exec.cost_finish_work_max_value` |
+| Furniture | `exec.cost_furniture_mvp` | `exec.cost_furniture_max_capacity` | `exec.cost_furniture_max_value` |
+| Tech / Security / Signage | `exec.cost_tech_security_signage_mvp` | `exec.cost_tech_security_signage_max_capacity` | `exec.cost_tech_security_signage_max_value` |
+| Other Hard Costs | `exec.cost_other_hard_costs_mvp` | `exec.cost_other_hard_costs_max_capacity` | `exec.cost_other_hard_costs_max_value` |
+| Soft Costs | `exec.cost_soft_costs_mvp` | `exec.cost_soft_costs_max_capacity` | `exec.cost_soft_costs_max_value` |
+| GC Fee | `exec.cost_gc_fee_mvp` | `exec.cost_gc_fee_max_capacity` | `exec.cost_gc_fee_max_value` |
+| Contingency | `exec.cost_contingency_mvp` | `exec.cost_contingency_max_capacity` | `exec.cost_contingency_max_value` |
+| Grand Total | `exec.cost_grand_total_mvp` | `exec.cost_grand_total_max_capacity` | `exec.cost_grand_total_max_value` |
+
+These 6 tokens are computed automatically by `create_dd_report` by comparing each scenario against MinWork. The agent must **not** include them in `report_data`.
 
 | Token | Computed as | Example |
 |---|---|---|
-| `exec.delta_capacity` | ideal_capacity − mvp_capacity | `+18` |
-| `exec.delta_cost` | ideal_cost − mvp_cost | `+$105,000` |
-| `exec.delta_ready` | ideal_ready − mvp_ready | `+3 mo` |
+| `exec.delta_max_capacity_capacity` | max_capacity_capacity − mvp_capacity | `+18` |
+| `exec.delta_max_capacity_cost` | max_capacity_cost − mvp_cost | `+$105,000` |
+| `exec.delta_max_capacity_ready` | max_capacity_ready − mvp_ready | `+3 mo` |
+| `exec.delta_max_value_capacity` | max_value_capacity − mvp_capacity | `+6` |
+| `exec.delta_max_value_cost` | max_value_cost − mvp_cost | `+$55,000` |
+| `exec.delta_max_value_ready` | max_value_ready − mvp_ready | `+2 mo` |
 
 ### exec — Notes for Acquistion Negoations
 

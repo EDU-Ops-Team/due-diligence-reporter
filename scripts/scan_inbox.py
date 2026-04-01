@@ -125,13 +125,17 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
         scopes=settings.google_scopes,
     )
 
-    # Fetch all Wrike site records and filter to active sites
-    logger.info("Fetching Wrike site records...")
-    wrike_cfg = load_wrike_config()
-    all_records = _get_all_site_records(cfg=wrike_cfg)
-    active_status_ids = _get_active_status_ids(access_token=wrike_cfg.access_token)
-    site_records = filter_active_site_records(all_records, active_status_ids)
-    logger.info("Found %d site records (%d active)", len(all_records), len(site_records))
+    # Fetch Wrike site records when available. Inbox filing should continue even if Wrike is down.
+    site_records: list[dict[str, Any]] = []
+    try:
+        logger.info("Fetching Wrike site records...")
+        wrike_cfg = load_wrike_config()
+        all_records = _get_all_site_records(cfg=wrike_cfg)
+        active_status_ids = _get_active_status_ids(access_token=wrike_cfg.access_token)
+        site_records = filter_active_site_records(all_records, active_status_ids)
+        logger.info("Found %d site records (%d active)", len(all_records), len(site_records))
+    except Exception as e:
+        logger.error("Wrike lookup failed; continuing with inbox scan only: %s", e)
 
     # ── Phase 1: Inbox scan ──────────────────────────────────────────────────
     results = scan_inbox(gc, site_records, settings, dry_run=dry_run)
@@ -208,6 +212,12 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
         return
     if not has_site_identity(uploads):
         logger.info("Uploads lack site identity — skipping pipeline phase until matching exists")
+        return
+    if not site_records:
+        logger.info("Wrike site records unavailable — skipping pipeline phase")
+        return
+    if not settings.dd_template_v2_google_doc_id or not settings.google_drive_root_folder_id:
+        logger.info("DD report generation settings missing — skipping pipeline phase")
         return
 
     unique_sites = _extract_unique_sites_from_uploads(uploads)
