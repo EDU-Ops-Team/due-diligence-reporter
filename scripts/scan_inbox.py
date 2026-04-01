@@ -224,7 +224,7 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     logger.info("Pipeline phase: %d unique site(s) received new uploads", len(unique_sites))
 
     # Load the agent system prompt
-    prompt_path = _project_root / "prompt_v2.md"
+    prompt_path = _project_root / "docs" / "prompts" / "prompt_v2.md"
     if not prompt_path.exists():
         logger.error("System prompt not found at %s — aborting pipeline phase", prompt_path)
         return

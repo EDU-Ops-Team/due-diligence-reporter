@@ -111,7 +111,7 @@ Both require per-bullet source citations. `risk_notes` must cite a specific docu
 Human (chat)   │       report_pipeline.py  │  shared pipeline module
     │          │          ┌────────────────┘
     │          │          │
-    │  prompt_v2.md       │  same tools, same prompt
+    │  docs/prompts/prompt_v2.md │  same tools, same prompt
     ▼          ▼          ▼
 Claude AI Agent ◄─────────┘
     │
@@ -508,7 +508,7 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 
 | File | What It Is |
 |------|-----------|
-| `prompt_v2.md` | Agent system prompt — V2 workflow, exec summary format, report data schema |
+| `docs/prompts/prompt_v2.md` | Agent system prompt — V2 workflow, exec summary format, report data schema |
 | `src/due_diligence_reporter/server.py` | MCP server — 13 tools + embedded skill logic |
 | `src/due_diligence_reporter/report_pipeline.py` | Shared pipeline — readiness check, Claude agent loop, notifications |
 | `src/due_diligence_reporter/report_schema.py` | Template token list (28), alias map (26), `normalize_report_data()`, `compute_deltas()` |

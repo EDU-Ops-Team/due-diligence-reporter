@@ -69,7 +69,7 @@ def main(site_filter: str | None = None) -> None:
     wrike_cfg = load_wrike_config()
 
     # Load the agent system prompt
-    prompt_path = _project_root / "prompt_v2.md"
+    prompt_path = _project_root / "docs" / "prompts" / "prompt_v2.md"
     if not prompt_path.exists():
         logger.error("System prompt not found at %s — aborting", prompt_path)
         sys.exit(1)
