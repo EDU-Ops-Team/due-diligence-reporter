@@ -129,7 +129,11 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
 
     if skip_readiness:
         logger.info("--skip-readiness: bypassing readiness gate, calling agent directly")
-        agent_result = run_dd_report_agent(site_title, system_prompt)
+        agent_result = run_dd_report_agent(
+            site_title,
+            system_prompt,
+            settings.anthropic_report_model,
+        )
 
         print(f"\n{'=' * 60}")
         print(f"V2 Report — {site_title}")
