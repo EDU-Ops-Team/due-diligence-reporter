@@ -363,6 +363,23 @@ class TestReportNormalizationDefaults:
         assert replacements["exec.e_max_value_capacity"] == "[Not found - MaxValue scenario not yet defined]"
         assert replacements["exec.delta_max_value_cost"] == "[Not found - MaxValue scenario not yet defined]"
 
+    @patch("due_diligence_reporter.server.find_site_record")
+    def test_inject_wrike_defaults_sets_missing_p1_label_when_lookup_misses(
+        self,
+        mock_find_site_record: MagicMock,
+    ) -> None:
+        from due_diligence_reporter.report_schema import MISSING_P1_ASSIGNEE_LABEL
+        from due_diligence_reporter.server import _inject_wrike_report_defaults
+
+        mock_find_site_record.return_value = None
+
+        enriched = _inject_wrike_report_defaults(
+            {"meta": {"prepared_by": "DD Report Agent"}},
+            "Alpha Atlanta 345",
+        )
+
+        assert enriched["p1_assignee_name"] == MISSING_P1_ASSIGNEE_LABEL
+
     @patch("due_diligence_reporter.server.requests.get")
     def test_optional_params_passed_correctly(self, mock_get: MagicMock) -> None:
         import asyncio
@@ -695,3 +712,39 @@ class TestAsyncOffloading:
         assert result["status"] == "success"
         gc.copy_document.assert_called_once()
         mock_to_thread.assert_awaited_once()
+
+    def test_create_dd_report_reuses_existing_same_day_doc(self) -> None:
+        from due_diligence_reporter.server import create_dd_report
+
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = [{
+            "id": "doc-existing",
+            "name": "Alpha DD Report - 04/02/2026",
+            "webViewLink": "https://docs.google.com/document/d/doc-existing",
+        }]
+
+        async def run_inline(func: Any, *args: Any, **kwargs: Any) -> Any:
+            return func(*args, **kwargs)
+
+        with patch(
+            "due_diligence_reporter.server.asyncio.to_thread",
+            new=AsyncMock(side_effect=run_inline),
+        ), patch(
+            "due_diligence_reporter.server.get_settings",
+            return_value=MagicMock(dd_template_v2_google_doc_id="template123"),
+        ), patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ), patch(
+            "due_diligence_reporter.server.datetime",
+        ) as mock_datetime:
+            mock_datetime.now.return_value.strftime.return_value = "04/02/2026"
+            result = asyncio.run(create_dd_report(
+                site_name="Alpha",
+                drive_folder_url="https://drive.google.com/drive/folders/folder123",
+                report_data={},
+            ))
+
+        assert result["status"] == "success"
+        assert result["document"]["id"] == "doc-existing"
+        gc.copy_document.assert_not_called()

@@ -11,8 +11,10 @@ from due_diligence_reporter.report_pipeline import (
     ReportTrace,
     TraceEvent,
     _extract_source_read_issues,
+    _merge_cached_report_fields,
     check_site_readiness_direct,
     match_site_in_shared_cache,
+    run_dd_report_agent,
     process_site_pipeline,
 )
 
@@ -318,6 +320,94 @@ class TestPipelineResult:
         )
         assert r.doc_id == "abc"
         assert r.pending_count == 2
+
+
+class TestAgentToolMerging:
+    def test_merge_cached_report_fields_fills_missing_values_only(self):
+        merged = _merge_cached_report_fields(
+            {
+                "report_data": {
+                    "exec.e_mvp_cost": "$100,000",
+                },
+            },
+            {
+                "exec.e_mvp_cost": "$86,000",
+                "exec.cost_demolition_mvp": "$0",
+            },
+        )
+
+        assert merged["report_data"]["exec.e_mvp_cost"] == "$100,000"
+        assert merged["report_data"]["exec.cost_demolition_mvp"] == "$0"
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
+    @patch("due_diligence_reporter.report_pipeline.anthropic.Anthropic")
+    def test_run_dd_report_agent_merges_cost_fields_and_stops_after_first_report(
+        self,
+        mock_anthropic,
+        mock_route_tool_call_sync,
+    ):
+        class FakeToolUse:
+            def __init__(self, tool_id, name, tool_input):
+                self.type = "tool_use"
+                self.id = tool_id
+                self.name = name
+                self.input = tool_input
+
+        response = MagicMock()
+        response.content = [
+            FakeToolUse("tool-1", "get_cost_estimate", {"total_building_sf": 1000}),
+            FakeToolUse(
+                "tool-2",
+                "create_dd_report",
+                {
+                    "site_name": "Alpha Keller",
+                    "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                    "report_data": {"exec.e_mvp_capacity": "25"},
+                },
+            ),
+            FakeToolUse(
+                "tool-3",
+                "create_dd_report",
+                {
+                    "site_name": "Alpha Keller",
+                    "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                    "report_data": {},
+                },
+            ),
+        ]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = response
+        mock_anthropic.return_value = mock_client
+
+        mock_route_tool_call_sync.side_effect = [
+            {
+                "status": "success",
+                "report_data_fields": {
+                    "exec.e_max_capacity_cost": "$245,000",
+                    "exec.cost_demolition_max_capacity": "$5,200",
+                },
+            },
+            {
+                "status": "success",
+                "document": {
+                    "id": "doc123",
+                    "url": "https://docs.google.com/document/d/doc123",
+                },
+                "replacements_applied": 10,
+                "unfilled_template_tokens": 0,
+            },
+        ]
+
+        result = run_dd_report_agent("Alpha Keller", "system prompt", "claude-test")
+
+        assert result["success"] is True
+        assert mock_route_tool_call_sync.call_count == 2
+        create_call = mock_route_tool_call_sync.call_args_list[1]
+        create_input = create_call.args[1]
+        assert create_input["report_data"]["exec.e_mvp_capacity"] == "25"
+        assert create_input["report_data"]["exec.e_max_capacity_cost"] == "$245,000"
+        assert create_input["report_data"]["exec.cost_demolition_max_capacity"] == "$5,200"
 
 
 class TestSourceReadAlerts:

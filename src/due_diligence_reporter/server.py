@@ -1678,6 +1678,7 @@ def _normalize_report_replacements(
         if normalized_answer is not None:
             replacements["exec.c_answer"] = normalized_answer
     _fill_max_value_placeholders(replacements)
+    _fill_max_capacity_placeholders(replacements)
     compute_deltas(replacements)
     for delta_token in (
         "exec.delta_max_capacity_capacity",
@@ -1707,6 +1708,7 @@ def _inject_wrike_report_defaults(
         record = None
 
     if not record:
+        enriched["p1_assignee_name"] = MISSING_P1_ASSIGNEE_LABEL
         return enriched
 
     summary = build_site_summary(record)
@@ -1727,6 +1729,25 @@ def _inject_wrike_report_defaults(
         enriched["p1_assignee_email"] = p1_email.strip()
 
     return enriched
+
+
+def _find_existing_report_doc(
+    gc: GoogleClient,
+    *,
+    folder_id: str,
+    doc_name: str,
+) -> dict[str, Any] | None:
+    """Return an existing same-name DD report in the site folder, if present."""
+    try:
+        files = gc.list_files_in_folder(folder_id)
+    except Exception as e:
+        logger.warning("Could not list folder %s while checking for existing report: %s", folder_id, e)
+        return None
+
+    for file_info in files:
+        if file_info.get("name") == doc_name:
+            return file_info
+    return None
 
 
 def _fill_max_value_placeholders(replacements: dict[str, str]) -> None:
@@ -1755,6 +1776,19 @@ def _fill_max_value_placeholders(replacements: dict[str, str]) -> None:
     for token in max_value_tokens:
         if token not in replacements or not str(replacements[token]).strip():
             replacements[token] = max_value_label
+
+
+def _fill_max_capacity_placeholders(replacements: dict[str, str]) -> None:
+    """Fill missing MaxCapacity non-cost fields with explicit sourced gap labels."""
+    missing_label = "[Not found - ISP Ideal scenario not extracted]"
+    for token in (
+        "exec.e_max_capacity_capacity",
+        "exec.f_max_capacity_ready",
+        "exec.delta_max_capacity_capacity",
+        "exec.delta_max_capacity_ready",
+    ):
+        if token not in replacements or not str(replacements[token]).strip():
+            replacements[token] = missing_label
 
 
 def _prepare_report_text_replacements(
@@ -1983,6 +2017,25 @@ async def create_dd_report(
     def _work() -> dict[str, Any]:
         try:
             gc = _make_google_client()
+            existing_doc = _find_existing_report_doc(gc, folder_id=folder_id, doc_name=doc_name)
+            if existing_doc:
+                existing_doc_id = existing_doc.get("id")
+                existing_doc_url = existing_doc.get("webViewLink")
+                logger.info("Existing DD report found, reusing: %s (id=%s)", doc_name, existing_doc_id)
+                return {
+                    "status": "success",
+                    "document": {
+                        "id": existing_doc_id,
+                        "name": doc_name,
+                        "url": existing_doc_url,
+                    },
+                    "replacements_applied": 0,
+                    "unmatched_agent_keys": 0,
+                    "unfilled_template_tokens": 0,
+                    "hyperlinks_applied": 0,
+                    "message": f"DD report already exists: {existing_doc_url}",
+                }
+
             logger.info("Copying template %s to folder %s as '%s'", template_id, folder_id, doc_name)
             copied_doc = gc.copy_document(
                 template_id=template_id,

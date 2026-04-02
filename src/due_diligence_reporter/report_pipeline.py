@@ -435,6 +435,7 @@ def run_dd_report_agent(
 
     doc_id: str | None = None
     doc_url: str | None = None
+    cached_report_fields: dict[str, Any] = {}
     max_iterations = 40  # Safety limit
 
     for iteration in range(max_iterations):
@@ -468,7 +469,9 @@ def run_dd_report_agent(
         tool_results: list[dict[str, Any]] = []
         for tool_use in tool_uses:
             logger.info("Executing tool: %s", tool_use.name)
-            tool_input = tool_use.input
+            tool_input = dict(tool_use.input)
+            if tool_use.name == "create_dd_report":
+                tool_input = _merge_cached_report_fields(tool_input, cached_report_fields)
 
             t0 = time.monotonic()
             tool_error: str | None = None
@@ -501,12 +504,20 @@ def run_dd_report_agent(
                     trace.doc_id = doc_id
                     trace.tokens_filled = result.get("replacements_applied", 0)
                     trace.tokens_unfilled = result.get("unfilled_template_tokens", 0)
+            elif isinstance(result, dict):
+                report_fields = result.get("report_data_fields")
+                if isinstance(report_fields, dict):
+                    cached_report_fields.update(report_fields)
 
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
                 "content": json.dumps(result),
             })
+
+            if doc_id:
+                logger.info("Report created during tool batch, skipping remaining tool calls")
+                break
 
         messages.append({"role": "user", "content": tool_results})
 
@@ -666,6 +677,28 @@ def _summarize_tool_output(result: Any) -> dict[str, Any]:
         summary["unfilled_template_tokens"] = result["unfilled_template_tokens"]
 
     return summary
+
+
+def _merge_cached_report_fields(
+    tool_input: dict[str, Any],
+    cached_report_fields: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge cached tool report_data_fields into create_dd_report input."""
+    if not cached_report_fields:
+        return tool_input
+
+    merged = dict(tool_input)
+    report_data = merged.get("report_data")
+    if not isinstance(report_data, dict):
+        report_data = {}
+    else:
+        report_data = dict(report_data)
+
+    for key, value in cached_report_fields.items():
+        report_data.setdefault(key, value)
+
+    merged["report_data"] = report_data
+    return merged
 
 
 def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
