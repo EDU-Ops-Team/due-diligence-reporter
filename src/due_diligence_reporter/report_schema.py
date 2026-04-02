@@ -367,7 +367,7 @@ def normalize_report_data(
 
 def normalize_can_we_answer(value: str) -> str | None:
     """Normalize legacy or case-variant answers to the canonical allowed values."""
-    return LEGACY_CAN_WE_ANSWER_ALIASES.get(value.strip().lower())
+    return LEGACY_CAN_WE_ANSWER_ALIASES.get(value.strip().rstrip(".,;:?!").lower())
 
 
 def _parse_dollar(value: str) -> int | None:

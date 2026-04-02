@@ -333,7 +333,7 @@ Call `check_site_readiness(site_name)`. This returns:
 - `files` — dict keyed by doc_type, each value has `name`, `id`, `webViewLink`
 - `missing_docs` — list of missing document types
 - `message` — human-readable summary with filenames
-- `p1_assignee_name` — full name of the P1 Accountable person from Wrike (use as `meta.prepared_by`; if missing, use `[Not found - P1 Assignee not set in Wrike]`)
+- `p1_assignee_name` — full name of the P1 Accountable person from Wrike (use as `meta.prepared_by`; if missing or blank, call LocationOS `getSite` for the site and use the `accountable` DRI's name from the response as `meta.prepared_by` instead; only use `[Not found - P1 Assignee not set in Wrike]` if both sources return nothing)
 - `p1_assignee_email` — email of the P1 Accountable person (pass to `send_dd_report_email` as `additional_recipients`)
 
 ### Step 2.5 — Retrieve Wrike comments
@@ -505,7 +505,7 @@ You may pass keys as either:
 | `meta.school_type` | School type (e.g., "K-8 Microschool") | Wrike record or default |
 | `meta.marketing_name` | Marketing name if different from site name | Wrike record |
 | `meta.report_date` | Report date MM/DD/YYYY | Auto-populated |
-| `meta.prepared_by` | P1 Accountable person's name | `p1_assignee_name` from Step 2 readiness check; if missing, use `[Not found - P1 Assignee not set in Wrike]` |
+| `meta.prepared_by` | P1 Accountable person's name | `p1_assignee_name` from Step 2; if missing, use accountable DRI from LocationOS `getSite`; if both empty, use `[Not found - P1 Assignee not set in Wrike]` |
 | `meta.drive_folder_url` | Google Drive folder URL for the site | Auto-populated |
 
 ### exec — "Can we do this?" card (pick-menu dimensions)
@@ -514,7 +514,7 @@ Each dimension uses a **fixed option menu**. Pick exactly one option per field b
 
 | Token | Source | Options (pick one) |
 |---|---|---|
-| `exec.c_answer` | Agent (synthesize from all sources) | `Yes` / `Yes see notes` / `No` |
+| `exec.c_answer` | Agent (synthesize from all sources) | `Yes` / `Yes see notes` / `No` — **no other values are valid**; do not use `Conditional` |
 | `exec.c_zoning` | SIR (zoning designation + permitted uses) | `Permitted by right` / `Use Permit Required (Admin approval)` / `Use Permit Required (Public approval)` / `Prohibited` |
 | `exec.c_occupancy` | E-Occupancy skill (uses Building Inspection data) | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
 | `exec.c_edreg` | School Approval skill | `Not required` / `Required and have done` / `Required have not done` |

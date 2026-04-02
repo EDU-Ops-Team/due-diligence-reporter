@@ -1621,20 +1621,35 @@ async def get_cost_estimate(
 
         mvp_data = _extract_raycon_scenario(raycon_data, "costs_mvp", "mvp")
         max_capacity_data = _extract_raycon_scenario(raycon_data, "costs_ideal", "ideal")
-        if not mvp_data or not max_capacity_data:
+        if not mvp_data and not max_capacity_data:
             return {
                 "status": "error",
                 "error": "RayCon API error",
-                "message": "RayCon response did not include both MVP and Ideal scenarios",
+                "message": "RayCon response did not include any cost scenarios",
             }
 
-        report_fields: dict[str, str] = {
-            "exec.e_mvp_cost": _format_currency(mvp_data.get("grandTotal")),
-            "exec.e_max_capacity_cost": _format_currency(max_capacity_data.get("grandTotal")),
-        }
-        report_fields.update(_build_breakdown_fields("mvp", mvp_data))
-        report_fields.update(_build_breakdown_fields("max_capacity", max_capacity_data))
+        report_fields: dict[str, str] = {}
+        if mvp_data:
+            report_fields["exec.e_mvp_cost"] = _format_currency(mvp_data.get("grandTotal"))
+            report_fields.update(_build_breakdown_fields("mvp", mvp_data))
+        else:
+            logger.warning("RayCon did not return MVP scenario; blanking MVP cost fields")
+            report_fields["exec.e_mvp_cost"] = ""
+            report_fields.update(_blank_breakdown_fields("mvp"))
+        if max_capacity_data:
+            report_fields["exec.e_max_capacity_cost"] = _format_currency(max_capacity_data.get("grandTotal"))
+            report_fields.update(_build_breakdown_fields("max_capacity", max_capacity_data))
+        else:
+            logger.warning("RayCon did not return MaxCapacity scenario; blanking MaxCapacity cost fields")
+            report_fields["exec.e_max_capacity_cost"] = ""
+            report_fields.update(_blank_breakdown_fields("max_capacity"))
         report_fields.update(_blank_breakdown_fields("max_value"))
+
+        scenario_parts = []
+        if mvp_data:
+            scenario_parts.append(f"MinWork at {_format_currency(mvp_data.get('grandTotal'))}")
+        if max_capacity_data:
+            scenario_parts.append(f"MaxCapacity at {_format_currency(max_capacity_data.get('grandTotal'))}")
 
         return {
             "status": "success",
@@ -1643,15 +1658,14 @@ async def get_cost_estimate(
             "rooms_used": rooms_note,
             "room_count": len(room_list),
             "cost_summary": {
-                "minwork": _format_currency(mvp_data.get("grandTotal")),
-                "max_capacity": _format_currency(max_capacity_data.get("grandTotal")),
+                "minwork": _format_currency(mvp_data.get("grandTotal")) if mvp_data else None,
+                "max_capacity": _format_currency(max_capacity_data.get("grandTotal")) if max_capacity_data else None,
             },
             "raycon_estimate_cards": raycon_data.get("estimate_cards", {}),
             "raycon_structured": raycon_data.get("structured", {}),
             "report_data_fields": report_fields,
             "message": (
-                f"RayCon estimated MinWork at {_format_currency(mvp_data.get('grandTotal'))} "
-                f"and MaxCapacity at {_format_currency(max_capacity_data.get('grandTotal'))} "
+                f"RayCon estimated {' and '.join(scenario_parts)} "
                 f"({resolved_region} region, {len(room_list)} rooms, {total_building_sf:,} SF). "
                 "Copy report_data_fields into report_data as flat top-level keys."
             ),
@@ -1722,8 +1736,8 @@ def _inject_wrike_report_defaults(
             site_block = {}
             enriched["site"] = site_block
         site_block["p1_assignee_name"] = p1_name.strip()
-    else:
-        enriched["p1_assignee_name"] = MISSING_P1_ASSIGNEE_LABEL
+    # When Wrike P1 is absent, leave p1_assignee_name unset so _resolve_prepared_by
+    # falls through to agent-provided meta.prepared_by (e.g. from LocationOS getSite)
 
     if isinstance(p1_email, str) and p1_email.strip():
         enriched["p1_assignee_email"] = p1_email.strip()
@@ -1779,8 +1793,8 @@ def _fill_max_value_placeholders(replacements: dict[str, str]) -> None:
 
 
 def _fill_max_capacity_placeholders(replacements: dict[str, str]) -> None:
-    """Fill missing MaxCapacity non-cost fields with explicit sourced gap labels."""
-    missing_label = "[Not found - ISP Ideal scenario not extracted]"
+    """Fill missing MaxCapacity and MVP capacity fields with explicit sourced gap labels."""
+    max_capacity_label = "[Not found - ISP Ideal scenario not extracted]"
     for token in (
         "exec.e_max_capacity_capacity",
         "exec.f_max_capacity_ready",
@@ -1788,7 +1802,9 @@ def _fill_max_capacity_placeholders(replacements: dict[str, str]) -> None:
         "exec.delta_max_capacity_ready",
     ):
         if token not in replacements or not str(replacements[token]).strip():
-            replacements[token] = missing_label
+            replacements[token] = max_capacity_label
+    if not str(replacements.get("exec.e_mvp_capacity", "")).strip():
+        replacements["exec.e_mvp_capacity"] = "[Not found - ISP MinWork tier analysis not extracted]"
 
 
 def _prepare_report_text_replacements(
