@@ -21,6 +21,7 @@ from .report_schema import (
     ALLOWED_CAN_WE_ANSWERS,
     LINK_DISPLAY_LABELS,
     LINK_TOKENS,
+    MISSING_P1_ASSIGNEE_LABEL,
     TEMPLATE_TOKENS,
     TOKEN_SOURCES,
     compute_deltas,
@@ -1666,11 +1667,17 @@ def _normalize_report_replacements(
     drive_folder_url: str,
 ) -> tuple[dict[str, str], list[str], list[str], dict[str, str]]:
     """Normalize report data and annotate computed token sources."""
+    report_data = _inject_wrike_report_defaults(report_data, site_name)
     replacements, unmatched, unfilled, token_sources = normalize_report_data(
         report_data,
         site_name=site_name,
         report_date=report_date,
     )
+    if "exec.c_answer" in replacements:
+        normalized_answer = normalize_can_we_answer(replacements["exec.c_answer"])
+        if normalized_answer is not None:
+            replacements["exec.c_answer"] = normalized_answer
+    _fill_max_value_placeholders(replacements)
     compute_deltas(replacements)
     for delta_token in (
         "exec.delta_max_capacity_capacity",
@@ -1685,6 +1692,69 @@ def _normalize_report_replacements(
 
     replacements.setdefault("meta.drive_folder_url", drive_folder_url)
     return replacements, unmatched, unfilled, token_sources
+
+
+def _inject_wrike_report_defaults(
+    report_data: dict[str, Any],
+    site_name: str,
+) -> dict[str, Any]:
+    """Inject authoritative Wrike defaults that should not depend on agent output."""
+    enriched = json.loads(json.dumps(report_data))
+    try:
+        record = find_site_record(site_name_or_id=site_name)
+    except Exception as e:
+        logger.warning("Could not fetch Wrike defaults for '%s': %s", site_name, e)
+        record = None
+
+    if not record:
+        return enriched
+
+    summary = build_site_summary(record)
+    p1_name = summary.get("p1_assignee_name")
+    p1_email = summary.get("p1_assignee_email")
+
+    if isinstance(p1_name, str) and p1_name.strip():
+        enriched["p1_assignee_name"] = p1_name.strip()
+        site_block = enriched.get("site")
+        if not isinstance(site_block, dict):
+            site_block = {}
+            enriched["site"] = site_block
+        site_block["p1_assignee_name"] = p1_name.strip()
+    else:
+        enriched["p1_assignee_name"] = MISSING_P1_ASSIGNEE_LABEL
+
+    if isinstance(p1_email, str) and p1_email.strip():
+        enriched["p1_assignee_email"] = p1_email.strip()
+
+    return enriched
+
+
+def _fill_max_value_placeholders(replacements: dict[str, str]) -> None:
+    """Fill MaxValue fields with explicit WIP labels until the scenario is defined."""
+    max_value_label = "[Not found - MaxValue scenario not yet defined]"
+    max_value_tokens = [
+        "exec.e_max_value_capacity",
+        "exec.e_max_value_cost",
+        "exec.f_max_value_ready",
+        "exec.cost_demolition_max_value",
+        "exec.cost_framing_doors_max_value",
+        "exec.cost_mep_fire_life_safety_max_value",
+        "exec.cost_plumbing_bathrooms_max_value",
+        "exec.cost_finish_work_max_value",
+        "exec.cost_furniture_max_value",
+        "exec.cost_tech_security_signage_max_value",
+        "exec.cost_other_hard_costs_max_value",
+        "exec.cost_soft_costs_max_value",
+        "exec.cost_gc_fee_max_value",
+        "exec.cost_contingency_max_value",
+        "exec.cost_grand_total_max_value",
+        "exec.delta_max_value_capacity",
+        "exec.delta_max_value_cost",
+        "exec.delta_max_value_ready",
+    ]
+    for token in max_value_tokens:
+        if token not in replacements or not str(replacements[token]).strip():
+            replacements[token] = max_value_label
 
 
 def _prepare_report_text_replacements(

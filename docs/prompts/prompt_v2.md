@@ -333,7 +333,7 @@ Call `check_site_readiness(site_name)`. This returns:
 - `files` — dict keyed by doc_type, each value has `name`, `id`, `webViewLink`
 - `missing_docs` — list of missing document types
 - `message` — human-readable summary with filenames
-- `p1_assignee_name` — full name of the P1 Accountable person from Wrike (use as `meta.prepared_by`)
+- `p1_assignee_name` — full name of the P1 Accountable person from Wrike (use as `meta.prepared_by`; if missing, use `[Not found - P1 Assignee not set in Wrike]`)
 - `p1_assignee_email` — email of the P1 Accountable person (pass to `send_dd_report_email` as `additional_recipients`)
 
 ### Step 2.5 — Retrieve Wrike comments
@@ -408,9 +408,10 @@ Rules:
 - Use RayCon `grandTotal` for MinWork and MaxCapacity unless Wrike comments contain team-provided cost analysis that should override it
 - Capacity = student count, not room count
 - `MinWork` = only the work required to reach E-occupancy compliance
-- `MaxCapacity` = the highest student count supportable by the space
+- `MaxCapacity` = the current ISP `Ideal` scenario until a more explicit upstream label exists
 - `MaxValue` = the highest capacity achievable for the least amount of money
 - MaxValue remains a separate scenario to solve; do not assume RayCon's Ideal scenario is MaxValue
+- If MaxValue is not explicitly defined, leave it for the server fallback label rather than inventing a number
 
 **`exec_summary.q4_summary` — Timeline by Spec Tier**
 Per spec tier:
@@ -527,25 +528,26 @@ The template provides labels — the agent fills only the values. No dollar sign
 | `exec.e_mvp_capacity` | ISP (MinWork tier analysis student count) | Integer (students) | `36` |
 | `exec.e_mvp_cost` | ISP (MinWork room list → `get_cost_estimate`) | Dollar amount | `$185,000` |
 | `exec.f_mvp_ready` | Agent (SIR timelines + MinWork construction estimate) | MM/YY | `01/27` |
-| `exec.e_max_capacity_capacity` | ISP / Wrike (highest supportable student count) | Integer (students) | `54` |
-| `exec.e_max_capacity_cost` | Wrike / Agent synthesis | Dollar amount | `$290,000` |
+| `exec.e_max_capacity_capacity` | ISP / Wrike (use current ISP `Ideal` scenario as MaxCapacity) | Integer (students) | `54` |
+| `exec.e_max_capacity_cost` | RayCon / Wrike override (paired to current ISP `Ideal` scenario) | Dollar amount | `$290,000` |
 | `exec.f_max_capacity_ready` | Agent (SIR timelines + max-capacity construction estimate) | MM/YY | `04/27` |
-| `exec.e_max_value_capacity` | Wrike / Agent synthesis | Integer (students) | `42` |
-| `exec.e_max_value_cost` | Wrike / Agent synthesis | Dollar amount | `$240,000` |
-| `exec.f_max_value_ready` | Agent (SIR timelines + max-value construction estimate) | MM/YY | `03/27` |
+| `exec.e_max_value_capacity` | Wrike / Agent synthesis when explicitly defined | Integer (students) | `42` |
+| `exec.e_max_value_cost` | Wrike / Agent synthesis when explicitly defined | Dollar amount | `$240,000` |
+| `exec.f_max_value_ready` | Agent (SIR timelines + max-value construction estimate) when explicitly defined | MM/YY | `03/27` |
 
 Rules:
 - Cost = single midpoint number (50% confidence), NOT a range. Wrike comments override API numbers.
 - Timeline = MM/YY format only. Never "Fall 2027" or season names.
 - Capacity = student count from ISP tier analysis.
-- `MaxCapacity` = highest student count supportable by the space.
+- `MaxCapacity` = the current ISP `Ideal` scenario until upstream naming changes.
 - `MaxValue` = highest capacity achievable for the least amount of money.
+- If MaxValue is not explicitly defined, do not invent it.
 
 ### exec — Build Delta Analysis (server-computed, do NOT fill)
 
 ### exec — Detailed Cost Breakdown (fixed row table)
 
-Populate MinWork and MaxCapacity from `get_cost_estimate.report_data_fields`. MaxValue remains separate and may be filled later when that scenario is defined.
+Populate MinWork and MaxCapacity from `get_cost_estimate.report_data_fields`. Treat the current ISP/RayCon `Ideal` scenario as MaxCapacity. MaxValue remains separate and may be filled later when that scenario is defined.
 
 | Row | MinWork token | MaxCapacity token | MaxValue token |
 |---|---|---|---|

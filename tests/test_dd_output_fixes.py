@@ -307,6 +307,62 @@ class TestCheckReportCompleteness:
         assert "exec.cost_demolition_mvp" in result["raw_template_tokens"]
         assert "raw template token" in result["summary"]
 
+
+class TestReportNormalizationDefaults:
+    @patch("due_diligence_reporter.server.build_site_summary")
+    @patch("due_diligence_reporter.server.find_site_record")
+    def test_normalize_report_replacements_prefers_wrike_p1(
+        self,
+        mock_find_site_record: MagicMock,
+        mock_build_site_summary: MagicMock,
+    ) -> None:
+        from due_diligence_reporter.server import _normalize_report_replacements
+
+        mock_find_site_record.return_value = {"id": "wrike-1"}
+        mock_build_site_summary.return_value = {
+            "p1_assignee_name": "Jane Owner",
+            "p1_assignee_email": "jane@example.com",
+        }
+
+        replacements, _, _, _ = _normalize_report_replacements(
+            report_data={"meta": {"prepared_by": "DD Report Agent"}},
+            site_name="Alpha Atlanta 345",
+            report_date="04/02/2026",
+            drive_folder_url="https://drive.google.com/drive/folders/folder123",
+        )
+
+        assert replacements["meta.prepared_by"] == "Jane Owner"
+
+    @patch("due_diligence_reporter.server.build_site_summary")
+    @patch("due_diligence_reporter.server.find_site_record")
+    def test_normalize_report_replacements_fills_max_value_wip_labels(
+        self,
+        mock_find_site_record: MagicMock,
+        mock_build_site_summary: MagicMock,
+    ) -> None:
+        from due_diligence_reporter.server import _normalize_report_replacements
+
+        mock_find_site_record.return_value = {"id": "wrike-1"}
+        mock_build_site_summary.return_value = {}
+
+        replacements, _, _, _ = _normalize_report_replacements(
+            report_data={
+                "exec": {
+                    "c_answer": "Conditional",
+                    "e_mvp_capacity": "25",
+                    "e_mvp_cost": "$401,000",
+                    "f_mvp_ready": "10/27",
+                },
+            },
+            site_name="Alpha Atlanta 345",
+            report_date="04/02/2026",
+            drive_folder_url="https://drive.google.com/drive/folders/folder123",
+        )
+
+        assert replacements["exec.c_answer"] == "Yes see notes"
+        assert replacements["exec.e_max_value_capacity"] == "[Not found - MaxValue scenario not yet defined]"
+        assert replacements["exec.delta_max_value_cost"] == "[Not found - MaxValue scenario not yet defined]"
+
     @patch("due_diligence_reporter.server.requests.get")
     def test_optional_params_passed_correctly(self, mock_get: MagicMock) -> None:
         import asyncio
