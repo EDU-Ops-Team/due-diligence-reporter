@@ -150,6 +150,29 @@ class TestCommentClassification:
         assert classify_comment_to_section("") == "general"
 
 
+class TestWrikeSiteSummary:
+    @patch("due_diligence_reporter.wrike.extract_p1_from_record")
+    def test_build_site_summary_includes_p1_assignee(self, mock_extract_p1: MagicMock) -> None:
+        from due_diligence_reporter.wrike import build_site_summary
+
+        mock_extract_p1.return_value = {
+            "name": "Jane Owner",
+            "email": "jane@example.com",
+        }
+        record = {
+            "id": "wrike-1",
+            "title": "Alpha Atlanta 345",
+            "customFields": [],
+            "permalink": "https://wrike.example/item",
+            "description": "site",
+        }
+
+        summary = build_site_summary(record)
+
+        assert summary["p1_assignee_name"] == "Jane Owner"
+        assert summary["p1_assignee_email"] == "jane@example.com"
+
+
 # ---------------------------------------------------------------------------
 # MatterBot integration
 # ---------------------------------------------------------------------------
@@ -259,6 +282,30 @@ class TestCheckReportCompleteness:
         assert result["status"] == "success"
         assert result["ready_to_send"] is True
         assert result["invalid_can_we_answer"] is None
+
+    def test_rejects_raw_template_tokens(self) -> None:
+        from due_diligence_reporter.server import check_report_completeness
+
+        gc = MagicMock()
+        gc.export_google_doc_as_text.return_value = (
+            "Can we do this?\n"
+            "Yes see notes Education Regulatory Approval: Required have not done "
+            "Occupancy path: Change of use required, needs work Zoning: Use Permit Required (Public approval)\n"
+            "Build Scenarios\n"
+            "exec.cost_demolition_mvp exec.e_max_capacity_cost\n"
+        )
+
+        with patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ):
+            result = asyncio.run(check_report_completeness("doc123"))
+
+        assert result["status"] == "success"
+        assert result["ready_to_send"] is False
+        assert result["raw_template_token_count"] == 2
+        assert "exec.cost_demolition_mvp" in result["raw_template_tokens"]
+        assert "raw template token" in result["summary"]
 
     @patch("due_diligence_reporter.server.requests.get")
     def test_optional_params_passed_correctly(self, mock_get: MagicMock) -> None:

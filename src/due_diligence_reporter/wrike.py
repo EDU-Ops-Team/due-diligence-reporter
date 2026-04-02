@@ -777,6 +777,7 @@ def build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
     school_type = extract_school_type_from_record(record)
     stage = extract_stage_from_record(record)
     drive_folder_url = extract_google_folder_from_record(record)
+    p1_profile = extract_p1_from_record(record)
 
     return {
         "id": record.get("id"),
@@ -785,6 +786,8 @@ def build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
         "school_type": school_type,
         "stage": stage,
         "drive_folder_url": drive_folder_url,
+        "p1_assignee_name": p1_profile.get("name") if p1_profile else None,
+        "p1_assignee_email": p1_profile.get("email") if p1_profile else None,
         "custom_fields": record.get("customFields", []),
         "permalink": record.get("permalink"),
         "description": record.get("description", ""),

@@ -2171,13 +2171,26 @@ async def check_report_completeness(doc_id: str) -> dict[str, Any]:
 
             unresolved_tokens = re.findall(r"\{\{([^}]+)\}\}", text)
             unresolved_token_count = len(unresolved_tokens)
+            raw_template_tokens = _extract_raw_template_tokens(text)
+            raw_template_token_count = len(raw_template_tokens)
             pending_labels = re.findall(r"\[(?:Not found|Pending)[^\]]+\]", text, re.IGNORECASE)
             pending_section_count = len(pending_labels)
             invalid_can_we_answer = _extract_invalid_can_we_answer(text)
-            ready_to_send = unresolved_token_count == 0 and invalid_can_we_answer is None
+            ready_to_send = (
+                unresolved_token_count == 0
+                and raw_template_token_count == 0
+                and invalid_can_we_answer is None
+            )
 
             if ready_to_send and pending_section_count == 0:
                 summary = "Report complete. All fields filled."
+            elif raw_template_token_count:
+                summary = (
+                    "Report NOT ready to send. "
+                    f"{raw_template_token_count} raw template token(s) leaked into the document: "
+                    + ", ".join(raw_template_tokens[:10])
+                    + (" ..." if raw_template_token_count > 10 else "")
+                )
             elif invalid_can_we_answer is not None:
                 summary = (
                     "Report NOT ready to send. "
@@ -2204,6 +2217,8 @@ async def check_report_completeness(doc_id: str) -> dict[str, Any]:
                 "ready_to_send": ready_to_send,
                 "unresolved_token_count": unresolved_token_count,
                 "unresolved_tokens": unresolved_tokens,
+                "raw_template_token_count": raw_template_token_count,
+                "raw_template_tokens": raw_template_tokens,
                 "pending_section_count": pending_section_count,
                 "pending_sections": pending_labels,
                 "invalid_can_we_answer": invalid_can_we_answer,
@@ -2237,6 +2252,17 @@ def _extract_invalid_can_we_answer(text: str) -> str | None:
     if normalize_can_we_answer(answer) in ALLOWED_CAN_WE_ANSWERS:
         return answer
     return answer
+
+
+def _extract_raw_template_tokens(text: str) -> list[str]:
+    """Return canonical token names that appear as bare text in the document."""
+    found: list[str] = []
+    for token in TEMPLATE_TOKENS:
+        if f"{{{{{token}}}}}" in text:
+            continue
+        if token in text:
+            found.append(token)
+    return found
 
 
 @mcp.tool()

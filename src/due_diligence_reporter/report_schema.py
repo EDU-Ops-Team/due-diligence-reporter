@@ -29,6 +29,8 @@ LEGACY_CAN_WE_ANSWER_ALIASES: dict[str, str] = {
     "conditional": "Yes see notes",
 }
 
+MISSING_P1_ASSIGNEE_LABEL = "[Not found - P1 Assignee not set in Wrike]"
+
 
 TEMPLATE_TOKENS: list[str] = [
     "meta.site_name",
@@ -205,6 +207,7 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "site.school_type": "meta.school_type",
     "site.marketing_name": "meta.marketing_name",
     "site.prepared_by": "meta.prepared_by",
+    "site.p1_assignee_name": "meta.prepared_by",
     "p1_assignee_name": "meta.prepared_by",
     "exec_summary.acquisition_conditions": "exec.acquisition_conditions",
     "exec_summary.risk_notes": "exec.risk_notes",
@@ -223,6 +226,53 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "appendix.floorplan_viability_link": "sources.isp_link",
     "appendix.isp_link": "sources.isp_link",
 }
+
+
+def _resolve_prepared_by(flat: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return the preferred Prepared By value and its source label."""
+    candidates = (
+        ("p1_assignee_name", "p1_assignee"),
+        ("site.p1_assignee_name", "p1_assignee"),
+        ("meta.prepared_by", "agent"),
+        ("site.prepared_by", "agent"),
+    )
+    for key, source in candidates:
+        value = flat.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip(), source
+    return None, None
+
+
+def _clean_exec_section_value(value: Any, *, section: str) -> str | None:
+    """Normalize acquisition/risk section text and remove mixed headings."""
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+
+    lower = text.lower()
+    if section == "acquisition_conditions":
+        if lower.startswith("conditions:"):
+            text = text[len("conditions:"):].strip()
+        split_markers = ("risks to note:", "risk to note:")
+        for marker in split_markers:
+            idx = text.lower().find(marker)
+            if idx != -1:
+                text = text[:idx].strip()
+                break
+    elif section == "risk_notes":
+        split_markers = ("risks to note:", "risk to note:")
+        for marker in split_markers:
+            idx = lower.find(marker)
+            if idx != -1:
+                text = text[idx + len(marker):].strip()
+                break
+        if text.lower().startswith("conditions:"):
+            return None
+
+    return text or None
 
 
 def normalize_report_data(
@@ -251,9 +301,27 @@ def normalize_report_data(
             if canonical in TEMPLATE_TOKEN_SET:
                 token_sources[canonical] = f"alias:{alias}"
 
-    if "meta.prepared_by" not in flat:
-        flat["meta.prepared_by"] = "EDU Ops Team"
-        token_sources["meta.prepared_by"] = "default"
+    prepared_by, prepared_by_source = _resolve_prepared_by(flat)
+    if prepared_by:
+        flat["meta.prepared_by"] = prepared_by
+        token_sources["meta.prepared_by"] = prepared_by_source or "agent"
+    else:
+        flat["meta.prepared_by"] = MISSING_P1_ASSIGNEE_LABEL
+        token_sources["meta.prepared_by"] = "missing_p1_assignee"
+
+    acquisition_conditions = _clean_exec_section_value(
+        flat.get("exec.acquisition_conditions"),
+        section="acquisition_conditions",
+    )
+    if acquisition_conditions is not None:
+        flat["exec.acquisition_conditions"] = acquisition_conditions
+
+    risk_notes = _clean_exec_section_value(
+        flat.get("exec.risk_notes"),
+        section="risk_notes",
+    )
+    if risk_notes is not None:
+        flat["exec.risk_notes"] = risk_notes
 
     can_we_answer = flat.get("exec.c_answer")
     if isinstance(can_we_answer, str):

@@ -438,6 +438,9 @@ Rules:
 - "Risks to note" = confirmed evidence from documents of a real threat to timeline or viability only
 - No "executive review recommended" or "consider before proceeding" language
 - No speculative or generic items in either field
+- Do not include the literal labels `Conditions:` or `Risks to note:` in the field values
+- Do not put risk items in `exec.acquisition_conditions`
+- Do not put lease or landlord negotiation items in `exec.risk_notes`
 
 ### Step 6 — Generate the V2 report
 Call `create_dd_report(site_name, drive_folder_url, report_data, token_evidence=evidence)` with the assembled data dict. See "V2 Report Data Schema" section below for exact token keys.
@@ -501,7 +504,7 @@ You may pass keys as either:
 | `meta.school_type` | School type (e.g., "K-8 Microschool") | Wrike record or default |
 | `meta.marketing_name` | Marketing name if different from site name | Wrike record |
 | `meta.report_date` | Report date MM/DD/YYYY | Auto-populated |
-| `meta.prepared_by` | P1 Accountable person's name | `p1_assignee_name` from Step 2 readiness check; fall back to `EDU Ops Team` if not set |
+| `meta.prepared_by` | P1 Accountable person's name | `p1_assignee_name` from Step 2 readiness check; if missing, use `[Not found - P1 Assignee not set in Wrike]` |
 | `meta.drive_folder_url` | Google Drive folder URL for the site | Auto-populated |
 
 ### exec — "Can we do this?" card (pick-menu dimensions)

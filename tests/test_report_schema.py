@@ -8,6 +8,7 @@ from due_diligence_reporter.report_schema import (
     ALLOWED_CAN_WE_ANSWERS,
     AGENT_KEY_ALIASES,
     LINK_TOKENS,
+    MISSING_P1_ASSIGNEE_LABEL,
     TEMPLATE_TOKEN_SET,
     TEMPLATE_TOKENS,
     compute_deltas,
@@ -187,7 +188,7 @@ class TestNormalization:
         )
         assert replacements["meta.site_name"] == "Alpha Metro"
         assert replacements["meta.report_date"] == "03/19/2026"
-        assert replacements["meta.prepared_by"] == "EDU Ops Team"
+        assert replacements["meta.prepared_by"] == MISSING_P1_ASSIGNEE_LABEL
 
     def test_pick_menu_tokens_pass_through(self):
         report_data = {
@@ -214,7 +215,70 @@ class TestNormalization:
             report_date="01/01/2026",
         )
         assert replacements["meta.prepared_by"] == "Jane Owner"
-        assert sources["meta.prepared_by"] == "alias:p1_assignee_name"
+        assert sources["meta.prepared_by"] == "p1_assignee"
+
+    def test_p1_assignee_overrides_agent_prepared_by(self):
+        report_data = {
+            "meta": {"prepared_by": "DD Report Agent"},
+            "p1_assignee_name": "Jane Owner",
+        }
+        replacements, _, _, sources = normalize_report_data(
+            report_data,
+            site_name="Test",
+            report_date="01/01/2026",
+        )
+        assert replacements["meta.prepared_by"] == "Jane Owner"
+        assert sources["meta.prepared_by"] == "p1_assignee"
+
+    def test_site_p1_assignee_name_sets_prepared_by(self):
+        report_data = {"site": {"p1_assignee_name": "Jordan Lead"}}
+        replacements, _, _, sources = normalize_report_data(
+            report_data,
+            site_name="Test",
+            report_date="01/01/2026",
+        )
+        assert replacements["meta.prepared_by"] == "Jordan Lead"
+        assert sources["meta.prepared_by"] == "p1_assignee"
+
+    def test_acquisition_conditions_strips_risk_section(self):
+        report_data = {
+            "exec": {
+                "acquisition_conditions": (
+                    "Conditions: - Condition lease on SUP approval "
+                    "- Confirm owner approval "
+                    "Risks to note: - Traffic study may delay submission"
+                ),
+            },
+        }
+        replacements, _, _, _ = normalize_report_data(
+            report_data,
+            site_name="Test",
+            report_date="01/01/2026",
+        )
+        assert replacements["exec.acquisition_conditions"].startswith(
+            "- Condition lease on SUP approval"
+        )
+        assert "Risks to note:" not in replacements["exec.acquisition_conditions"]
+        assert "Traffic study may delay submission" not in replacements["exec.acquisition_conditions"]
+
+    def test_risk_notes_strips_heading(self):
+        report_data = {
+            "exec": {
+                "risk_notes": (
+                    "Risks to note: - State Fire Marshal review blocks permit "
+                    "- HVAC replacement scope unknown"
+                ),
+            },
+        }
+        replacements, _, _, _ = normalize_report_data(
+            report_data,
+            site_name="Test",
+            report_date="01/01/2026",
+        )
+        assert replacements["exec.risk_notes"].startswith(
+            "- State Fire Marshal review blocks permit"
+        )
+        assert "Risks to note:" not in replacements["exec.risk_notes"]
 
     @pytest.mark.parametrize(
         ("raw_value", "expected"),
