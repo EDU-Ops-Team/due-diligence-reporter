@@ -8,8 +8,13 @@ import pytest
 
 from due_diligence_reporter.report_pipeline import (
     PipelineResult,
+    ReportTrace,
+    TraceEvent,
+    _extract_source_read_issues,
+    _merge_cached_report_fields,
     check_site_readiness_direct,
     match_site_in_shared_cache,
+    run_dd_report_agent,
     process_site_pipeline,
 )
 
@@ -207,6 +212,88 @@ class TestProcessSitePipeline:
         assert result.status == "error"
         assert "Drive API error" in result.error
 
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_readiness_payload_error(self, mock_readiness):
+        """Treats readiness payload errors as pipeline errors."""
+        mock_readiness.return_value = {
+            "sir_found": False,
+            "isp_found": False,
+            "inspection_found": False,
+            "report_exists": False,
+            "error": "bad_url",
+        }
+
+        gc = MagicMock()
+        result = process_site_pipeline(
+            gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"], {}, "system prompt", _make_settings(),
+        )
+
+        assert result.status == "error"
+        assert result.error == "bad_url"
+
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_agent_exception_becomes_generation_failed(self, mock_readiness, mock_agent):
+        """Raised agent exceptions degrade to generation_failed."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        mock_agent.side_effect = RuntimeError("Anthropic timeout")
+
+        gc = MagicMock()
+        result = process_site_pipeline(
+            gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"], {}, "system prompt", _make_settings(),
+        )
+
+        assert result.status == "generation_failed"
+        assert result.error == "Anthropic timeout"
+
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_completeness_payload_error_returns_error(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+    ):
+        """Treats completeness payload errors as pipeline errors."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+        }
+
+        async def fake_completeness(doc_id):
+            return {
+                "status": "error",
+                "error": "check_report_completeness failed",
+                "message": "export broke",
+            }
+
+        mock_completeness.side_effect = fake_completeness
+
+        gc = MagicMock()
+        result = process_site_pipeline(
+            gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"], {}, "system prompt", _make_settings(),
+        )
+
+        assert result.status == "error"
+        assert result.doc_id == "doc123"
+        assert "export broke" in (result.error or "")
+
 
 # ---------------------------------------------------------------------------
 # PipelineResult dataclass
@@ -233,3 +320,189 @@ class TestPipelineResult:
         )
         assert r.doc_id == "abc"
         assert r.pending_count == 2
+
+
+class TestAgentToolMerging:
+    def test_merge_cached_report_fields_fills_missing_values_only(self):
+        merged = _merge_cached_report_fields(
+            {
+                "report_data": {
+                    "exec.e_mvp_cost": "$100,000",
+                },
+            },
+            {
+                "exec.e_mvp_cost": "$86,000",
+                "exec.cost_demolition_mvp": "$0",
+            },
+        )
+
+        assert merged["report_data"]["exec.e_mvp_cost"] == "$100,000"
+        assert merged["report_data"]["exec.cost_demolition_mvp"] == "$0"
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
+    @patch("due_diligence_reporter.report_pipeline.anthropic.Anthropic")
+    def test_run_dd_report_agent_merges_cost_fields_and_stops_after_first_report(
+        self,
+        mock_anthropic,
+        mock_route_tool_call_sync,
+    ):
+        class FakeToolUse:
+            def __init__(self, tool_id, name, tool_input):
+                self.type = "tool_use"
+                self.id = tool_id
+                self.name = name
+                self.input = tool_input
+
+        response = MagicMock()
+        response.content = [
+            FakeToolUse("tool-1", "get_cost_estimate", {"total_building_sf": 1000}),
+            FakeToolUse(
+                "tool-2",
+                "create_dd_report",
+                {
+                    "site_name": "Alpha Keller",
+                    "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                    "report_data": {"exec.e_mvp_capacity": "25"},
+                },
+            ),
+            FakeToolUse(
+                "tool-3",
+                "create_dd_report",
+                {
+                    "site_name": "Alpha Keller",
+                    "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                    "report_data": {},
+                },
+            ),
+        ]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = response
+        mock_anthropic.return_value = mock_client
+
+        mock_route_tool_call_sync.side_effect = [
+            {
+                "status": "success",
+                "report_data_fields": {
+                    "exec.e_max_capacity_cost": "$245,000",
+                    "exec.cost_demolition_max_capacity": "$5,200",
+                },
+            },
+            {
+                "status": "success",
+                "document": {
+                    "id": "doc123",
+                    "url": "https://docs.google.com/document/d/doc123",
+                },
+                "replacements_applied": 10,
+                "unfilled_template_tokens": 0,
+            },
+        ]
+
+        result = run_dd_report_agent("Alpha Keller", "system prompt", "claude-test")
+
+        assert result["success"] is True
+        assert mock_route_tool_call_sync.call_count == 2
+        create_call = mock_route_tool_call_sync.call_args_list[1]
+        create_input = create_call.args[1]
+        assert create_input["report_data"]["exec.e_mvp_capacity"] == "25"
+        assert create_input["report_data"]["exec.e_max_capacity_cost"] == "$245,000"
+        assert create_input["report_data"]["exec.cost_demolition_max_capacity"] == "$5,200"
+
+
+class TestSourceReadAlerts:
+    def test_extracts_sir_and_building_inspection_read_issues(self):
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-04-01T00:00:00+00:00",
+            events=[
+                TraceEvent(
+                    timestamp="2026-04-01T00:00:01+00:00",
+                    event_type="tool_call",
+                    tool_name="read_drive_document",
+                    input_summary={"file_name": "Alpha Keller SIR.pdf"},
+                    output_summary={"status": "error", "error": "Failed to read document"},
+                ),
+                TraceEvent(
+                    timestamp="2026-04-01T00:00:02+00:00",
+                    event_type="tool_call",
+                    tool_name="read_drive_document",
+                    input_summary={
+                        "file_name": "Alpha Keller Building Inspection Report.pdf",
+                    },
+                    output_summary={
+                        "status": "ok",
+                        "content_preview": "[PDF text extraction returned no text. This may be an image-only PDF that requires OCR.]",
+                    },
+                ),
+                TraceEvent(
+                    timestamp="2026-04-01T00:00:03+00:00",
+                    event_type="tool_call",
+                    tool_name="read_drive_document",
+                    input_summary={"file_name": "Alpha Keller ISP.pdf"},
+                    output_summary={"status": "error", "error": "Ignore ISP failures here"},
+                ),
+            ],
+        )
+
+        issues = _extract_source_read_issues(trace)
+
+        assert len(issues) == 2
+        assert issues[0]["doc_type"] == "SIR"
+        assert issues[1]["doc_type"] == "Building Inspection"
+
+    @patch("due_diligence_reporter.report_pipeline._save_pipeline_trace")
+    @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_generation_failure_posts_source_review_alert(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_chat,
+        mock_save_trace,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        mock_save_trace.return_value = "https://drive.google.com/trace"
+        mock_agent.return_value = {
+            "success": False,
+            "error": "Agent completed without creating a report",
+            "trace": ReportTrace(
+                site_name="Alpha Keller",
+                started_at="2026-04-01T00:00:00+00:00",
+                events=[
+                    TraceEvent(
+                        timestamp="2026-04-01T00:00:01+00:00",
+                        event_type="tool_call",
+                        tool_name="read_drive_document",
+                        input_summary={"file_name": "Alpha Keller SIR.pdf"},
+                        output_summary={"status": "error", "error": "Failed to read document"},
+                    ),
+                ],
+            ),
+        }
+        settings = _make_settings()
+        settings.google_chat_webhook_url = "https://chat.example/webhook"
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            settings,
+        )
+
+        assert result.status == "generation_failed"
+        assert result.trace_url == "https://drive.google.com/trace"
+        mock_chat.assert_called_once()
+        message = mock_chat.call_args.args[1]
+        assert "DD Source Review Needed -- Alpha Keller" in message
+        assert "SIR" in message
+        assert "Failed to read document" in message

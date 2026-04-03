@@ -24,8 +24,10 @@ from .server import (
     _classify_document_type,
 )
 from .utils import (
+    escape_html_text,
     extract_folder_id_from_url,
     post_google_chat_message,
+    sanitize_http_url,
     send_email,
 )
 
@@ -402,12 +404,14 @@ def check_site_readiness_direct(
 def run_dd_report_agent(
     site_title: str,
     system_prompt: str,
+    model_id: str,
 ) -> dict[str, Any]:
     """Run Claude as a tool-calling agent to generate one DD report.
 
     Args:
         site_title: Site name to generate the report for.
         system_prompt: Full system prompt text.
+        model_id: Anthropic model ID to use.
 
     Returns a dict with keys: success, doc_id, doc_url, error.
     """
@@ -431,13 +435,14 @@ def run_dd_report_agent(
 
     doc_id: str | None = None
     doc_url: str | None = None
+    cached_report_fields: dict[str, Any] = {}
     max_iterations = 40  # Safety limit
 
     for iteration in range(max_iterations):
         logger.info("Agent iteration %d for site: %s", iteration + 1, site_title)
 
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=model_id,
             max_tokens=8192,
             system=system_prompt,
             tools=TOOL_DEFINITIONS,
@@ -464,7 +469,9 @@ def run_dd_report_agent(
         tool_results: list[dict[str, Any]] = []
         for tool_use in tool_uses:
             logger.info("Executing tool: %s", tool_use.name)
-            tool_input = tool_use.input
+            tool_input = dict(tool_use.input)
+            if tool_use.name == "create_dd_report":
+                tool_input = _merge_cached_report_fields(tool_input, cached_report_fields)
 
             t0 = time.monotonic()
             tool_error: str | None = None
@@ -497,12 +504,20 @@ def run_dd_report_agent(
                     trace.doc_id = doc_id
                     trace.tokens_filled = result.get("replacements_applied", 0)
                     trace.tokens_unfilled = result.get("unfilled_template_tokens", 0)
+            elif isinstance(result, dict):
+                report_fields = result.get("report_data_fields")
+                if isinstance(report_fields, dict):
+                    cached_report_fields.update(report_fields)
 
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
                 "content": json.dumps(result),
             })
+
+            if doc_id:
+                logger.info("Report created during tool batch, skipping remaining tool calls")
+                break
 
         messages.append({"role": "user", "content": tool_results})
 
@@ -539,6 +554,20 @@ class PipelineResult:
     pending_count: int = 0
     error: str | None = None
     trace_url: str | None = None
+    trace: ReportTrace | None = None
+
+
+def _get_payload_error(result: dict[str, Any]) -> str | None:
+    """Return a normalized error string for tool-style payloads."""
+    error = result.get("error")
+    if not error and result.get("status") != "error":
+        return None
+    message = result.get("message")
+    if message and message != error:
+        return f"{error}: {message}" if error else str(message)
+    if error:
+        return str(error)
+    return "Unknown tool error"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -634,6 +663,9 @@ def _summarize_tool_output(result: Any) -> dict[str, Any]:
         summary["file_count"] = len(result["files"])
     if "content" in result and isinstance(result["content"], str):
         summary["content_length"] = len(result["content"])
+        preview = result["content"][:200].strip()
+        if preview.startswith("[") or len(result["content"]) <= 200:
+            summary["content_preview"] = preview
     if "message" in result:
         msg = str(result["message"])
         summary["message"] = msg[:300] if len(msg) > 300 else msg
@@ -645,6 +677,305 @@ def _summarize_tool_output(result: Any) -> dict[str, Any]:
         summary["unfilled_template_tokens"] = result["unfilled_template_tokens"]
 
     return summary
+
+
+def _merge_cached_report_fields(
+    tool_input: dict[str, Any],
+    cached_report_fields: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge cached tool report_data_fields into create_dd_report input."""
+    if not cached_report_fields:
+        return tool_input
+
+    merged = dict(tool_input)
+    report_data = merged.get("report_data")
+    if not isinstance(report_data, dict):
+        report_data = {}
+    else:
+        report_data = dict(report_data)
+
+    for key, value in cached_report_fields.items():
+        report_data.setdefault(key, value)
+
+    merged["report_data"] = report_data
+    return merged
+
+
+def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
+    """Return human-readable names for missing required DD docs."""
+    missing: list[str] = []
+    if not readiness.get("sir_found", False):
+        missing.append("SIR")
+    if not readiness.get("isp_found", False):
+        missing.append("ISP")
+    if not readiness.get("inspection_found", False):
+        missing.append("Building Inspection")
+    return missing
+
+
+def _source_doc_type_for_alert(file_name: str) -> str | None:
+    """Return the monitored source-doc label for a filename."""
+    name = file_name.lower()
+    if "sir" in name:
+        return "SIR"
+    if "building inspection" in name or "inspection report" in name:
+        return "Building Inspection"
+    return None
+
+
+def _extract_source_read_issues(trace: ReportTrace | None) -> list[dict[str, str]]:
+    """Return unreadable SIR / Building Inspection events from a run trace."""
+    if trace is None:
+        return []
+
+    issues: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for event in trace.events:
+        if event.tool_name != "read_drive_document":
+            continue
+        file_name = str(event.input_summary.get("file_name", "")).strip()
+        doc_type = _source_doc_type_for_alert(file_name)
+        if not doc_type:
+            continue
+
+        output = event.output_summary
+        preview = str(output.get("content_preview", ""))
+        problem = (
+            event.error
+            or str(output.get("error", "")).strip()
+            or str(output.get("message", "")).strip()
+        )
+        has_issue = (
+            bool(problem)
+            or output.get("status") == "error"
+            or output.get("content_length") == 0
+            or "returned no text" in preview.lower()
+            or "requires ocr" in preview.lower()
+        )
+        if not has_issue:
+            continue
+
+        key = (doc_type, file_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        issues.append({
+            "doc_type": doc_type,
+            "file_name": file_name or doc_type,
+            "problem": problem or "Document could not be read cleanly",
+        })
+
+    return issues
+
+
+def _notify_source_read_issues(
+    webhook_url: str,
+    site_title: str,
+    trace: ReportTrace | None,
+    *,
+    drive_folder_url: str = "",
+    trace_url: str = "",
+) -> None:
+    """Alert the team when SIR or Building Inspection reads fail."""
+    issues = _extract_source_read_issues(trace)
+    if not webhook_url or not issues:
+        return
+
+    lines = [
+        f"DD Source Review Needed -- {site_title}",
+        "Issue reading required source document(s). Please review.",
+    ]
+    for issue in issues:
+        lines.append(f"- {issue['doc_type']}: {issue['file_name']}")
+        lines.append(f"  Problem: {issue['problem']}")
+    if drive_folder_url:
+        lines.append(f"Drive: {drive_folder_url}")
+    if trace_url:
+        lines.append(f"Trace: {trace_url}")
+    msg = "\n".join(lines)
+
+    for url in [u.strip() for u in webhook_url.split(",") if u.strip()]:
+        try:
+            post_google_chat_message(url, msg)
+        except Exception as e:
+            logger.error(
+                "Failed to post source review alert for '%s' to %s: %s",
+                site_title,
+                url[:60],
+                e,
+            )
+
+
+def _resolve_readiness_result(
+    site_title: str,
+    readiness: dict[str, Any],
+) -> PipelineResult | None:
+    """Convert readiness payload into an early pipeline result when applicable."""
+    readiness_error = _get_payload_error(readiness)
+    if readiness_error:
+        logger.error("Readiness check failed for '%s': %s", site_title, readiness_error)
+        return PipelineResult(site_title=site_title, status="error", error=readiness_error)
+
+    missing_docs = _missing_required_docs(readiness)
+    if missing_docs:
+        return PipelineResult(
+            site_title=site_title,
+            status="waiting_on_docs",
+            missing_docs=missing_docs,
+        )
+
+    if readiness.get("report_exists", False):
+        logger.info("'%s' - report already exists, skipping", site_title)
+        return PipelineResult(site_title=site_title, status="report_exists")
+
+    return None
+
+
+def _run_pipeline_agent(
+    site_title: str,
+    system_prompt: str,
+    settings: Settings,
+) -> tuple[dict[str, Any] | None, PipelineResult | None]:
+    """Run report generation and map failures into a PipelineResult."""
+    logger.info("'%s' - all docs present, generating report...", site_title)
+    try:
+        agent_result = run_dd_report_agent(
+            site_title,
+            system_prompt,
+            settings.anthropic_report_model,
+        )
+    except Exception as e:
+        logger.error("Report generation crashed for '%s': %s", site_title, e)
+        return None, PipelineResult(
+            site_title=site_title,
+            status="generation_failed",
+            error=str(e),
+        )
+
+    if agent_result.get("success"):
+        return agent_result, None
+
+    err = agent_result.get("error", "unknown error")
+    logger.error("Report generation failed for '%s': %s", site_title, err)
+    return None, PipelineResult(
+        site_title=site_title,
+        status="generation_failed",
+        error=err,
+        trace=agent_result.get("trace"),
+    )
+
+
+def _save_pipeline_trace(
+    gc: GoogleClient,
+    drive_folder_url: str,
+    site_title: str,
+    trace: ReportTrace | None,
+) -> str | None:
+    """Persist a report trace JSON beside the generated report."""
+    if not trace:
+        return None
+
+    folder_id = extract_folder_id_from_url(drive_folder_url)
+    if not folder_id:
+        return None
+
+    trace_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    trace_name = f"{site_title} DD Report Trace - {trace_date}.json"
+    try:
+        trace_json = json.dumps(trace.to_dict(), indent=2)
+        trace_file = gc.upload_file_to_folder(
+            folder_id=folder_id,
+            file_name=trace_name,
+            file_bytes=trace_json.encode("utf-8"),
+            mime_type="application/json",
+        )
+        logger.info("Saved report trace: %s", trace_name)
+        return trace_file.get("webViewLink")
+    except Exception as e:
+        logger.warning("Failed to save report trace: %s", e)
+        return None
+
+
+def _check_generated_report(
+    site_title: str,
+    doc_id: str,
+    doc_url: str,
+) -> tuple[dict[str, Any] | None, PipelineResult | None]:
+    """Run completeness check and convert failures into a PipelineResult."""
+    import asyncio
+    from . import server as srv
+
+    completeness = asyncio.run(srv.check_report_completeness(doc_id))
+    completeness_error = _get_payload_error(completeness)
+    if completeness_error:
+        logger.error("Completeness check failed for '%s': %s", site_title, completeness_error)
+        return None, PipelineResult(
+            site_title=site_title,
+            status="error",
+            doc_id=doc_id,
+            doc_url=doc_url,
+            error=completeness_error,
+        )
+
+    if completeness.get("ready_to_send", False):
+        return completeness, None
+
+    return None, PipelineResult(
+        site_title=site_title,
+        status="report_incomplete",
+        doc_id=doc_id,
+        doc_url=doc_url,
+        unresolved_tokens=completeness.get("unresolved_tokens", []),
+    )
+
+
+def _email_pipeline_report(
+    settings: Settings,
+    site_title: str,
+    doc_url: str,
+    p1_email: str | None,
+) -> None:
+    """Send the completed DD report email when email settings are configured."""
+    if not settings.email_sender or not settings.email_app_password:
+        return
+
+    recipients = [
+        r.strip()
+        for r in settings.dd_report_email_recipients.split(",")
+        if r.strip()
+    ] if settings.dd_report_email_recipients else []
+
+    if p1_email and p1_email.lower() not in {r.lower() for r in recipients}:
+        recipients.append(p1_email)
+
+    safe_site_name = escape_html_text(site_title)
+    safe_report_url = sanitize_http_url(doc_url)
+    report_link_html = "<p>Report link unavailable.</p>"
+    if safe_report_url:
+        report_link_html = (
+            f'<p><a href="{safe_report_url}" '
+            'style="font-size:16px;font-weight:bold;">'
+            "View Report in Google Docs</a></p>"
+        )
+
+    html_body = f"""
+<html><body>
+<h2>Due Diligence Report - {safe_site_name}</h2>
+<p>A new Due Diligence report has been generated for <strong>{safe_site_name}</strong>.</p>
+{report_link_html}
+</body></html>
+"""
+    try:
+        send_email(
+            sender=settings.email_sender,
+            app_password=settings.email_app_password,
+            recipients=recipients,
+            subject=f"DD Report Ready - {site_title}",
+            html_body=html_body,
+        )
+        logger.info("Email sent for '%s' to %s", site_title, recipients)
+    except Exception as e:
+        logger.error("Failed to send email for '%s': %s", site_title, e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -667,121 +998,65 @@ def process_site_pipeline(
 
     Returns a PipelineResult describing what happened.
     """
-    import asyncio
-    from . import server as srv
-
-    # 1. Check readiness
     try:
         readiness = check_site_readiness_direct(
-            gc, drive_folder_url, match_terms, shared_cache,
-            site_title=site_title, site_address=site_address,
+            gc,
+            drive_folder_url,
+            match_terms,
+            shared_cache,
+            site_title=site_title,
+            site_address=site_address,
         )
     except Exception as e:
         logger.error("Failed to check readiness for '%s': %s", site_title, e)
         return PipelineResult(site_title=site_title, status="error", error=str(e))
 
-    sir_found = readiness.get("sir_found", False)
-    isp_found = readiness.get("isp_found", False)
-    inspection_found = readiness.get("inspection_found", False)
-    report_exists = readiness.get("report_exists", False)
+    readiness_result = _resolve_readiness_result(site_title, readiness)
+    if readiness_result is not None:
+        return readiness_result
 
-    # Case 1: Missing required documents
-    if not sir_found or not isp_found or not inspection_found:
-        missing = []
-        if not sir_found:
-            missing.append("SIR")
-        if not isp_found:
-            missing.append("ISP")
-        if not inspection_found:
-            missing.append("Building Inspection")
-        return PipelineResult(
-            site_title=site_title, status="waiting_on_docs", missing_docs=missing,
+    agent_result, generation_result = _run_pipeline_agent(site_title, system_prompt, settings)
+    if generation_result is not None:
+        generation_result.trace_url = _save_pipeline_trace(
+            gc,
+            drive_folder_url,
+            site_title,
+            generation_result.trace,
         )
-
-    # Case 2: Report already exists
-    if report_exists:
-        logger.info("'%s' — report already exists, skipping", site_title)
-        return PipelineResult(site_title=site_title, status="report_exists")
-
-    # Case 3: All docs present, no report yet — generate
-    logger.info("'%s' — all docs present, generating report...", site_title)
-    agent_result = run_dd_report_agent(site_title, system_prompt)
-
-    if not agent_result.get("success"):
-        err = agent_result.get("error", "unknown error")
-        logger.error("Report generation failed for '%s': %s", site_title, err)
-        return PipelineResult(
-            site_title=site_title, status="generation_failed", error=err,
+        _notify_source_read_issues(
+            settings.google_chat_webhook_url,
+            site_title,
+            generation_result.trace,
+            drive_folder_url=drive_folder_url,
+            trace_url=generation_result.trace_url or "",
         )
+        return generation_result
+    assert agent_result is not None
 
     doc_id = agent_result["doc_id"]
     doc_url = agent_result.get("doc_url", "")
+    trace_url = _save_pipeline_trace(
+        gc,
+        drive_folder_url,
+        site_title,
+        agent_result.get("trace"),
+    )
+    _notify_source_read_issues(
+        settings.google_chat_webhook_url,
+        site_title,
+        agent_result.get("trace"),
+        drive_folder_url=drive_folder_url,
+        trace_url=trace_url or "",
+    )
 
-    # 3b. Save provenance trace to Drive
-    trace: ReportTrace | None = agent_result.get("trace")
-    trace_url: str | None = None
-    if trace:
-        folder_id = extract_folder_id_from_url(drive_folder_url)
-        if folder_id:
-            trace_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            trace_name = f"{site_title} DD Report Trace - {trace_date}.json"
-            try:
-                trace_json = json.dumps(trace.to_dict(), indent=2)
-                trace_file = gc.upload_file_to_folder(
-                    folder_id=folder_id,
-                    file_name=trace_name,
-                    file_bytes=trace_json.encode("utf-8"),
-                    mime_type="application/json",
-                )
-                trace_url = trace_file.get("webViewLink")
-                logger.info("Saved report trace: %s", trace_name)
-            except Exception as e:
-                logger.warning("Failed to save report trace: %s", e)
+    completeness, completeness_result = _check_generated_report(site_title, doc_id, doc_url)
+    if completeness_result is not None:
+        completeness_result.trace_url = trace_url
+        completeness_result.trace = agent_result.get("trace")
+        return completeness_result
+    assert completeness is not None
 
-    # 4. Check completeness
-    completeness = asyncio.run(srv.check_report_completeness(doc_id))
-
-    if not completeness.get("ready_to_send", False):
-        unresolved = completeness.get("unresolved_tokens", [])
-        return PipelineResult(
-            site_title=site_title,
-            status="report_incomplete",
-            doc_id=doc_id,
-            doc_url=doc_url,
-            unresolved_tokens=unresolved,
-        )
-
-    # 5. Send email (to configured recipients + P1 Assignee)
-    if settings.email_sender and settings.email_app_password:
-        base_recipients = [
-            r.strip()
-            for r in settings.dd_report_email_recipients.split(",")
-            if r.strip()
-        ] if settings.dd_report_email_recipients else []
-
-        # Add P1 Assignee if available and not already in list
-        if p1_email and p1_email.lower() not in {r.lower() for r in base_recipients}:
-            base_recipients.append(p1_email)
-
-        recipients = base_recipients
-        html_body = f"""
-<html><body>
-<h2>Due Diligence Report — {site_title}</h2>
-<p>A new Due Diligence report has been generated for <strong>{site_title}</strong>.</p>
-<p><a href="{doc_url}" style="font-size:16px;font-weight:bold;">View Report in Google Docs</a></p>
-</body></html>
-"""
-        try:
-            send_email(
-                sender=settings.email_sender,
-                app_password=settings.email_app_password,
-                recipients=recipients,
-                subject=f"DD Report Ready — {site_title}",
-                html_body=html_body,
-            )
-            logger.info("Email sent for '%s' to %s", site_title, recipients)
-        except Exception as e:
-            logger.error("Failed to send email for '%s': %s", site_title, e)
+    _email_pipeline_report(settings, site_title, doc_url, p1_email)
 
     return PipelineResult(
         site_title=site_title,
@@ -790,10 +1065,10 @@ def process_site_pipeline(
         doc_url=doc_url,
         pending_count=completeness.get("pending_section_count", 0),
         trace_url=trace_url,
+        trace=agent_result.get("trace"),
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Google Chat notification per pipeline result
 # ─────────────────────────────────────────────────────────────────────────────
 

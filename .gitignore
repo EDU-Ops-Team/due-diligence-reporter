@@ -15,6 +15,7 @@ env/
 
 # uv
 uv.lock
+.uv-cache/
 
 # Environment / secrets
 .env
@@ -33,6 +34,9 @@ oauth_response.json
 # Tool caches
 .ruff_cache/
 .mypy_cache/
+pytest-cache-files-*/
+tests/_tmp/
+_tmp_report/
 
 # OS
 .DS_Store

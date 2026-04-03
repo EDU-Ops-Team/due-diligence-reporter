@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -17,19 +18,24 @@ from .classifier import classify_by_keywords, classify_document, match_file_to_s
 from .config import get_settings
 from .google_client import GoogleClient
 from .report_schema import (
+    ALLOWED_CAN_WE_ANSWERS,
     LINK_DISPLAY_LABELS,
     LINK_TOKENS,
+    MISSING_P1_ASSIGNEE_LABEL,
     TEMPLATE_TOKENS,
     TOKEN_SOURCES,
     compute_deltas,
+    normalize_can_we_answer,
     normalize_report_data,
 )
 from .utils import (
     build_hyperlink_requests,
     build_replace_all_text_requests,
+    escape_html_text,
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
     find_text_index_in_doc,
+    sanitize_http_url,
     send_email,
 )
 from .wrike import (
@@ -69,6 +75,8 @@ EXPORTABLE_MIME_TYPES: set[str] = {
     "application/vnd.google-apps.presentation",
     GOOGLE_SHEETS_MIME,
 }
+
+CAN_WE_SECTION_DELIMITER = "Education Regulatory Approval:"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # E-OCCUPANCY SKILL DATA
@@ -458,27 +466,10 @@ def _school_zone(score: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# COST ESTIMATE — Building Optimizer API + per-SF code-required item estimates
+# COST ESTIMATE - RayCon API
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Components that map to each DD report cost category (v2 API)
-_FINISH_WORK_COMPONENTS = {"floors", "walls", "ceiling"}
-_MEP_COMPONENTS = {"hvac", "lighting"}   # electrical (lighting) + mechanical; plumbing → bathrooms
-_FFE_COMPONENTS = {"tech", "millwork", "security"}
-_BATHROOM_COMPONENTS = {"plumbing", "fixtures"}  # restroom rooms only
-_SPRINKLER_COMPONENTS = {"sprinkler"}
-_FIRE_ALARM_COMPONENTS = {
-    "fireAlarm", "emergencyLighting", "egressHardware",
-    "fireCompliance", "fireMonitoring",
-}
-
-# Per-SF cost ranges for items NOT available in the Optimizer API
-_PER_SF_RANGES: dict[str, tuple[float, float]] = {
-    "structural": (8.0, 25.0),    # foundation/structural remediation
-    "ada": (2.0, 8.0),            # ADA / accessibility upgrades
-}
-
-# Region key aliases — map common city/state names to API region keys
+# Region key aliases - map common city/state names to API region keys
 _REGION_ALIASES: dict[str, str] = {
     "austin": "austin",
     "texas": "austin",
@@ -502,69 +493,35 @@ def _resolve_region(region_hint: str) -> str:
     return _REGION_ALIASES.get(region_hint.lower().strip(), "default")
 
 
-def _build_rooms_payload(
-    rooms: list[dict[str, Any]],
-    finish_level: int,
-) -> list[dict[str, Any]]:
-    """Build a rooms list for the v2 API with all components set to finish_level.
+_RAYCON_BREAKDOWN_ROWS: tuple[tuple[str, str], ...] = (
+    ("demolition", "Demolition"),
+    ("framing_doors", "Framing / Doors"),
+    ("mep_fire_life_safety", "MEP / Fire / Life Safety"),
+    ("plumbing_bathrooms", "Plumbing / Bathrooms"),
+    ("finish_work", "Finish Work"),
+    ("furniture", "Furniture"),
+    ("tech_security_signage", "Tech / Security / Signage"),
+    ("other_hard_costs", "Other Hard Costs"),
+    ("soft_costs", "Soft Costs"),
+    ("gc_fee", "GC Fee"),
+    ("contingency", "Contingency"),
+    ("grand_total", "Grand Total"),
+)
 
-    Fire-safety components (sprinkler, fireAlarm, emergencyLighting, egressHardware,
-    fireCompliance, fireMonitoring) are always included — the API returns $0 at level 0
-    and real costs at level >= 1.
-    """
-    # Fire-safety components present on every v2 room type
-    _FIRE_SAFETY = [
-        "fireAlarm", "sprinkler", "emergencyLighting",
-        "egressHardware", "fireCompliance", "fireMonitoring",
-    ]
-    component_keys_by_type: dict[str, list[str]] = {
-        "learningroom":  ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
-        "hallway":       ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "office":        ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
-        "conferenceroom":["floors", "walls", "ceiling", "lighting", "hvac", "tech", "security"] + _FIRE_SAFETY,
-        "breakroom":     ["floors", "walls", "ceiling", "lighting", "hvac", "millwork", "appliances", "security"] + _FIRE_SAFETY,
-        "restroom":      ["floors", "walls", "ceiling", "lighting", "plumbing", "fixtures", "security"] + _FIRE_SAFETY,
-        "limitlessroom": ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
-        "rocketroom":    ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
-        "multipurpose":  ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "reception":     ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "storage":       ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "lobby":         ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "otherroom":     ["floors", "walls", "ceiling", "lighting", "hvac", "security"] + _FIRE_SAFETY,
-        "workshop":      ["floors", "walls", "ceiling", "lighting", "hvac", "tech", "millwork", "security"] + _FIRE_SAFETY,
-    }
-    default_keys = ["floors", "walls", "ceiling", "lighting"] + _FIRE_SAFETY
-    result = []
-    for room in rooms:
-        room_type = room.get("type", "otherroom")
-        keys = component_keys_by_type.get(room_type, default_keys)
-        result.append({
-            "type": room_type,
-            "sqft": room.get("sqft", 400),
-            "levels": {k: finish_level for k in keys},
+
+def _build_raycon_rooms_payload(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build a RayCon-compatible rooms payload from ISP room data."""
+    payload: list[dict[str, Any]] = []
+    for index, room in enumerate(rooms, start=1):
+        payload.append({
+            "name": str(room.get("name") or f"Room {index}"),
+            "type": str(room.get("type") or "otherroom"),
+            "sqft": int(room.get("sqft", 400)),
+            "perimeterLinearFt": int(room.get("perimeterLinearFt", 0)),
+            "wallHeightFt": int(room.get("wallHeightFt", 10)),
+            "floor": str(room.get("floor") or room.get("floorLabel") or "1st Floor"),
         })
-    return result
-
-
-def _sum_components(api_rooms: list[dict[str, Any]], component_keys: set[str]) -> float:
-    """Sum component subtotals across all rooms for the given component keys."""
-    total = 0.0
-    for room in api_rooms:
-        for comp in room.get("components", []):
-            if comp.get("key") in component_keys:
-                total += comp.get("subtotal", 0.0)
-    return total
-
-
-def _sum_bathroom_components(api_rooms: list[dict[str, Any]]) -> float:
-    """Sum plumbing + fixtures only for restroom-type rooms."""
-    total = 0.0
-    for room in api_rooms:
-        if room.get("type") == "restroom":
-            for comp in room.get("components", []):
-                if comp.get("key") in _BATHROOM_COMPONENTS:
-                    total += comp.get("subtotal", 0.0)
-    return total
+    return payload
 
 
 def _auto_generate_rooms(total_sf: int, classroom_count: int) -> list[dict[str, Any]]:
@@ -584,20 +541,183 @@ def _auto_generate_rooms(total_sf: int, classroom_count: int) -> list[dict[str, 
     return rooms
 
 
-def _call_pricing_api(
-    api_url: str,
-    rooms_payload: list[dict[str, Any]],
+def _build_raycon_request_payload(
+    *,
+    site_name: str,
+    total_building_sf: int,
     region: str,
+    room_list: list[dict[str, Any]],
+    address: str | None = None,
+    inspection_summary: str | None = None,
+    sir_summary: str | None = None,
 ) -> dict[str, Any]:
-    """POST to the Building Optimizer v2 /v1/estimate endpoint."""
-    resp = requests.post(
-        f"{api_url}/v1/estimate",
-        headers={"Content-Type": "application/json"},
-        json={"rooms": rooms_payload, "region": region, "fees": {}},
-        timeout=30,
+    """Build the POST body for RayCon chat."""
+    payload: dict[str, Any] = {
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Calculate two deterministic school conversion scenarios for this space: "
+                    "MVP (minimum work / as-is) and Ideal (max capacity). "
+                    "Return structured estimate cards and cost breakdowns for both."
+                ),
+            }
+        ],
+        "space": {
+            "name": site_name or "School Conversion",
+            "rooms": _build_raycon_rooms_payload(room_list),
+            "spaceDetails": {
+                "address": address or "",
+                "totalArea": total_building_sf,
+                "grossFloorArea": total_building_sf,
+            },
+            "metadata": {
+                "roomCount": len(room_list),
+                "totalSqft": total_building_sf,
+            },
+            "source": "isp",
+        },
+        "region": region,
+        "temperature": 0,
+        "max_tool_rounds": 8,
+    }
+    drive_doc_summaries: dict[str, str] = {}
+    if inspection_summary:
+        drive_doc_summaries["inspection"] = inspection_summary
+    if sir_summary:
+        drive_doc_summaries["sir"] = sir_summary
+    if drive_doc_summaries:
+        payload["drive_doc_summaries"] = drive_doc_summaries
+    return payload
+
+
+def _read_raycon_done_event(response: requests.Response) -> dict[str, Any]:
+    """Read an SSE stream and return the JSON payload from the final done event."""
+    current_event = ""
+    data_lines: list[str] = []
+    error_message = ""
+    for raw_line in response.iter_lines(decode_unicode=True):
+        if raw_line is None:
+            continue
+        line = raw_line.strip()
+        if not line:
+            if current_event == "done" and data_lines:
+                return json.loads("\n".join(data_lines))
+            if current_event == "error" and data_lines:
+                error_payload = json.loads("\n".join(data_lines))
+                error_message = error_payload.get("message", "Unknown RayCon error")
+            current_event = ""
+            data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            current_event = line.partition(":")[2].strip()
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line.partition(":")[2].lstrip())
+    if error_message:
+        raise ValueError(error_message)
+    raise ValueError("RayCon stream ended before a done event was received")
+
+
+def _call_raycon_api(
+    api_url: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """POST to RayCon /v1/chat and return the final structured response."""
+    response = requests.post(
+        f"{api_url}/v1/chat",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        },
+        json=payload,
+        timeout=60,
+        stream=True,
     )
-    resp.raise_for_status()
-    return resp.json()  # type: ignore[no-any-return]
+    response.raise_for_status()
+    return _read_raycon_done_event(response)
+
+
+def _extract_raycon_scenario(
+    response_data: dict[str, Any],
+    scenario_key: str,
+    card_label_hint: str,
+) -> dict[str, Any]:
+    """Extract one scenario from RayCon structured output with card fallback."""
+    structured = response_data.get("structured", {})
+    scenario = structured.get(scenario_key)
+    if isinstance(scenario, dict):
+        return scenario
+    cards = response_data.get("estimate_cards", {}).get("cards", [])
+    for card in cards:
+        label = str(card.get("label", "")).lower()
+        if card_label_hint in label:
+            return {
+                "categories": card.get("costBreakdown", []),
+                "grandTotal": card.get("totals", {}).get("grandTotal", 0),
+                "softCosts": card.get("totals", {}).get("softCosts", 0),
+                "gcFee": card.get("totals", {}).get("gcFee", 0),
+                "contingency": card.get("totals", {}).get("contingency", 0),
+                "furniture": card.get("totals", {}).get("furniture", 0),
+            }
+    return {}
+
+
+def _match_breakdown_bucket(category_name: str) -> str:
+    """Normalize a RayCon category label into a fixed report row key."""
+    label = category_name.lower()
+    if "demo" in label:
+        return "demolition"
+    if any(term in label for term in ("framing", "drywall", "partition", "door")):
+        return "framing_doors"
+    if any(term in label for term in ("mep", "hvac", "electrical", "sprinkler", "fire", "alarm", "lighting")):
+        return "mep_fire_life_safety"
+    if any(term in label for term in ("plumbing", "restroom", "bathroom", "fixture")):
+        return "plumbing_bathrooms"
+    if "finish" in label:
+        return "finish_work"
+    if "furniture" in label:
+        return "furniture"
+    if any(term in label for term in ("internet", "low voltage", "security", "signage", "wayfinding", "tech")):
+        return "tech_security_signage"
+    return "other_hard_costs"
+
+
+def _format_currency(value: float | int | None) -> str:
+    """Format a numeric amount as a whole-dollar string."""
+    amount = float(value or 0)
+    return f"${round(amount):,}"
+
+
+def _build_breakdown_fields(
+    scenario_suffix: str,
+    scenario_data: dict[str, Any],
+) -> dict[str, str]:
+    """Build fixed-row report fields from a RayCon scenario."""
+    bucket_totals = {row_key: 0.0 for row_key, _ in _RAYCON_BREAKDOWN_ROWS}
+    for category in scenario_data.get("categories", []):
+        row_key = _match_breakdown_bucket(str(category.get("category", "")))
+        bucket_totals[row_key] += float(category.get("subtotal", 0) or 0)
+    bucket_totals["soft_costs"] = float(scenario_data.get("softCosts", 0) or 0)
+    bucket_totals["gc_fee"] = float(scenario_data.get("gcFee", 0) or 0)
+    bucket_totals["contingency"] = float(scenario_data.get("contingency", 0) or 0)
+    bucket_totals["grand_total"] = float(scenario_data.get("grandTotal", 0) or 0)
+    if not bucket_totals["furniture"]:
+        bucket_totals["furniture"] = float(scenario_data.get("furniture", 0) or 0)
+    return {
+        f"exec.cost_{row_key}_{scenario_suffix}": _format_currency(bucket_totals[row_key])
+        for row_key, _ in _RAYCON_BREAKDOWN_ROWS
+    }
+
+
+def _blank_breakdown_fields(scenario_suffix: str) -> dict[str, str]:
+    """Return blank placeholders for a scenario that is not modeled yet."""
+    return {
+        f"exec.cost_{row_key}_{scenario_suffix}": ""
+        for row_key, _ in _RAYCON_BREAKDOWN_ROWS
+    }
 
 
 def _classify_document_type(filename: str) -> str:
@@ -830,41 +950,44 @@ async def get_site_record(site_name_or_id: str) -> dict[str, Any]:
             "message": "site_name_or_id must be a non-empty string",
         }
 
-    try:
-        record = find_site_record(site_name_or_id=site_name_or_id)
+    def _work() -> dict[str, Any]:
+        try:
+            record = find_site_record(site_name_or_id=site_name_or_id)
 
-        if not record:
-            logger.warning("No Site Record found for: %s", site_name_or_id)
+            if not record:
+                logger.warning("No Site Record found for: %s", site_name_or_id)
+                return {
+                    "status": "error",
+                    "error": "Site record not found",
+                    "message": (
+                        f"Could not find a Wrike Site Record matching '{site_name_or_id}'. "
+                        "Try using the exact site name, a Wrike ID, or a Wrike permalink."
+                    ),
+                }
+
+            summary = build_site_summary(record)
+            logger.info(
+                "Found Site Record: %s (id=%s, stage=%s)",
+                summary.get("title"),
+                summary.get("id"),
+                summary.get("stage"),
+            )
+
             return {
-                "status": "error",
-                "error": "Site record not found",
-                "message": (
-                    f"Could not find a Wrike Site Record matching '{site_name_or_id}'. "
-                    "Try using the exact site name, a Wrike ID, or a Wrike permalink."
-                ),
+                "status": "success",
+                "site": summary,
+                "message": f"Found Site Record: {summary.get('title')}",
             }
 
-        summary = build_site_summary(record)
-        logger.info(
-            "Found Site Record: %s (id=%s, stage=%s)",
-            summary.get("title"),
-            summary.get("id"),
-            summary.get("stage"),
-        )
+        except Exception as e:
+            logger.error("Failed to fetch Site Record: %s", e)
+            return {
+                "status": "error",
+                "error": "Wrike API error",
+                "message": str(e),
+            }
 
-        return {
-            "status": "success",
-            "site": summary,
-            "message": f"Found Site Record: {summary.get('title')}",
-        }
-
-    except Exception as e:
-        logger.error("Failed to fetch Site Record: %s", e)
-        return {
-            "status": "error",
-            "error": "Wrike API error",
-            "message": str(e),
-        }
+    return await asyncio.to_thread(_work)
 
 
 @mcp.tool()
@@ -913,66 +1036,67 @@ async def list_drive_documents(
             ),
         }
 
-    try:
-        gc = _make_google_client()
+    def _work() -> dict[str, Any]:
+        try:
+            gc = _make_google_client()
 
-        # List all files in the site folder recursively (root + all subfolders)
-        all_site_files_raw = gc.list_files_recursive(folder_id, max_depth=2)
-        site_files = [
-            {**f, "doc_type": _classify_document_type(f.get("name", ""))}
-            for f in all_site_files_raw
-        ]
-        logger.info(
-            "Found %d files in site folder (recursive, max_depth=2) %s",
-            len(site_files), folder_id,
-        )
-
-        # Search shared folders if site_name was provided
-        shared_folder_files: list[dict[str, Any]] = []
-        address: str | None = None
-        if site_name.strip():
-            record = find_site_record(site_name_or_id=site_name)
-            if record:
-                summary = build_site_summary(record)
-                address = summary.get("address")
-            match_terms = _build_site_match_terms(site_name.strip(), address)
-            shared_docs = _find_site_docs_in_shared_folders(
-                gc, match_terms,
-                site_title=site_name.strip(), site_address=address,
+            all_site_files_raw = gc.list_files_recursive(folder_id, max_depth=2)
+            site_files = [
+                {**f, "doc_type": _classify_document_type(f.get("name", ""))}
+                for f in all_site_files_raw
+            ]
+            logger.info(
+                "Found %d files in site folder (recursive, max_depth=2) %s",
+                len(site_files), folder_id,
             )
-            for doc_type, doc in shared_docs.items():
-                if doc is not None:
-                    shared_folder_files.append(doc)
-            if shared_folder_files:
-                logger.info(
-                    "Found %d files in shared folders for '%s'",
-                    len(shared_folder_files),
-                    site_name,
+
+            shared_folder_files: list[dict[str, Any]] = []
+            address: str | None = None
+            if site_name.strip():
+                record = find_site_record(site_name_or_id=site_name)
+                if record:
+                    summary = build_site_summary(record)
+                    address = summary.get("address")
+                match_terms = _build_site_match_terms(site_name.strip(), address)
+                shared_docs = _find_site_docs_in_shared_folders(
+                    gc, match_terms,
+                    site_title=site_name.strip(), site_address=address,
                 )
+                for _, doc in shared_docs.items():
+                    if doc is not None:
+                        shared_folder_files.append(doc)
+                if shared_folder_files:
+                    logger.info(
+                        "Found %d files in shared folders for '%s'",
+                        len(shared_folder_files),
+                        site_name,
+                    )
 
-        total_files = len(site_files) + len(shared_folder_files)
+            total_files = len(site_files) + len(shared_folder_files)
 
-        return {
-            "status": "success",
-            "folder_id": folder_id,
-            "drive_folder_url": drive_folder_url,
-            "site_folder_files": site_files,
-            "shared_folder_files": shared_folder_files,
-            "total_file_count": total_files,
-            "message": (
-                f"Found {len(site_files)} files in site folder (recursive), "
-                f"and {len(shared_folder_files)} files in shared folders "
-                f"({total_files} total)"
-            ),
-        }
+            return {
+                "status": "success",
+                "folder_id": folder_id,
+                "drive_folder_url": drive_folder_url,
+                "site_folder_files": site_files,
+                "shared_folder_files": shared_folder_files,
+                "total_file_count": total_files,
+                "message": (
+                    f"Found {len(site_files)} files in site folder (recursive), "
+                    f"and {len(shared_folder_files)} files in shared folders "
+                    f"({total_files} total)"
+                ),
+            }
 
-    except Exception as e:
-        logger.error("Failed to list Drive documents: %s", e)
-        return {
-            "status": "error",
-            "error": "Google Drive API error",
-            "message": str(e),
-        }
+        except Exception as e:
+            logger.error("Failed to list Drive documents: %s", e)
+            return {
+                "status": "error",
+                "error": "Google Drive API error",
+                "message": str(e),
+            }
+
+    return await asyncio.to_thread(_work)
 
 
 @mcp.tool()
@@ -1003,111 +1127,109 @@ async def read_drive_document(file_id: str, file_name: str) -> dict[str, Any]:
             "message": "file_id must be a non-empty string",
         }
 
-    try:
-        gc = _make_google_client()
-
-        # Determine MIME type by fetching file metadata
-        logger.info("Fetching metadata for file: %s", file_id)
+    def _work() -> dict[str, Any]:
         try:
-            file_metadata: dict[str, Any] = (
-                gc.drive_service.files()
-                .get(
-                    fileId=file_id,
-                    fields="id,name,mimeType,size",
-                    supportsAllDrives=True,
-                )
-                .execute()
-            )
-        except Exception as meta_err:
-            logger.warning(
-                "Could not fetch metadata for %s, inferring type from name: %s",
-                file_id,
-                meta_err,
-            )
-            file_metadata = {"mimeType": _infer_mime_from_name(file_name)}
+            gc = _make_google_client()
 
-        mime_type: str = file_metadata.get("mimeType", "")
-        logger.info("File %s has MIME type: %s", file_id, mime_type)
-
-        text_content: str = ""
-
-        if mime_type in EXPORTABLE_MIME_TYPES:
-            # Google Workspace file — export as plain text
-            text_content = gc.export_google_doc_as_text(file_id)
-
-        elif mime_type == PDF_MIME or file_name.lower().endswith(".pdf"):
-            # PDF — download bytes then extract text
-            pdf_bytes = gc.download_file_bytes(file_id)
-            text_content = extract_text_from_pdf_bytes(pdf_bytes)
-            if not text_content:
-                logger.warning(
-                    "PDF text extraction returned empty for %s — may be image-only", file_id
-                )
-                text_content = (
-                    "[PDF text extraction returned no text. "
-                    "This may be an image-only PDF that requires OCR.]"
-                )
-
-        elif mime_type.startswith("text/") or file_name.lower().endswith(
-            (".txt", ".md", ".csv")
-        ):
-            # Plain text file — download directly
-            raw_bytes = gc.download_file_bytes(file_id)
-            text_content = raw_bytes.decode("utf-8", errors="replace")
-
-        else:
-            logger.warning(
-                "Unsupported MIME type %s for file %s — attempting generic download",
-                mime_type,
-                file_id,
-            )
+            logger.info("Fetching metadata for file: %s", file_id)
             try:
+                file_metadata: dict[str, Any] = (
+                    gc.drive_service.files()
+                    .get(
+                        fileId=file_id,
+                        fields="id,name,mimeType,size",
+                        supportsAllDrives=True,
+                    )
+                    .execute()
+                )
+            except Exception as meta_err:
+                logger.warning(
+                    "Could not fetch metadata for %s, inferring type from name: %s",
+                    file_id,
+                    meta_err,
+                )
+                file_metadata = {"mimeType": _infer_mime_from_name(file_name)}
+
+            mime_type: str = file_metadata.get("mimeType", "")
+            logger.info("File %s has MIME type: %s", file_id, mime_type)
+
+            text_content: str = ""
+
+            if mime_type in EXPORTABLE_MIME_TYPES:
+                text_content = gc.export_google_doc_as_text(file_id)
+
+            elif mime_type == PDF_MIME or file_name.lower().endswith(".pdf"):
+                pdf_bytes = gc.download_file_bytes(file_id)
+                text_content = extract_text_from_pdf_bytes(pdf_bytes)
+                if not text_content:
+                    logger.warning(
+                        "PDF text extraction returned empty for %s — may be image-only", file_id
+                    )
+                    text_content = (
+                        "[PDF text extraction returned no text. "
+                        "This may be an image-only PDF that requires OCR.]"
+                    )
+
+            elif mime_type.startswith("text/") or file_name.lower().endswith(
+                (".txt", ".md", ".csv")
+            ):
                 raw_bytes = gc.download_file_bytes(file_id)
                 text_content = raw_bytes.decode("utf-8", errors="replace")
-            except Exception as dl_err:
-                logger.error("Could not download file %s: %s", file_id, dl_err)
-                text_content = (
-                    f"[Could not extract text from file with MIME type: {mime_type}]"
+
+            else:
+                logger.warning(
+                    "Unsupported MIME type %s for file %s — attempting generic download",
+                    mime_type,
+                    file_id,
                 )
+                try:
+                    raw_bytes = gc.download_file_bytes(file_id)
+                    text_content = raw_bytes.decode("utf-8", errors="replace")
+                except Exception as dl_err:
+                    logger.error("Could not download file %s: %s", file_id, dl_err)
+                    text_content = (
+                        f"[Could not extract text from file with MIME type: {mime_type}]"
+                    )
 
-        logger.info(
-            "read_drive_document: extracted %d characters from %s", len(text_content), file_name
-        )
-
-        # Truncate very large documents to avoid exceeding the LLM context window.
-        max_chars = 50_000
-        truncated = False
-        original_length = len(text_content)
-        if original_length > max_chars:
-            text_content = text_content[:max_chars]
-            truncated = True
-            logger.warning(
-                "Truncated %s from %d to %d characters", file_name, original_length, max_chars
+            logger.info(
+                "read_drive_document: extracted %d characters from %s", len(text_content), file_name
             )
 
-        return {
-            "status": "success",
-            "file_id": file_id,
-            "file_name": file_name,
-            "mime_type": mime_type,
-            "character_count": original_length,
-            "truncated": truncated,
-            "text": text_content,
-            "message": (
-                f"Successfully read {original_length} characters from '{file_name}'"
-                + (f" (truncated to {max_chars} chars)" if truncated else "")
-            ),
-        }
+            max_chars = 50_000
+            truncated = False
+            original_length = len(text_content)
+            if original_length > max_chars:
+                text_content = text_content[:max_chars]
+                truncated = True
+                logger.warning(
+                    "Truncated %s from %d to %d characters", file_name, original_length, max_chars
+                )
 
-    except Exception as e:
-        logger.error("Failed to read Drive document %s: %s", file_id, e)
-        return {
-            "status": "error",
-            "error": "Failed to read document",
-            "file_id": file_id,
-            "file_name": file_name,
-            "message": str(e),
-        }
+            return {
+                "status": "success",
+                "file_id": file_id,
+                "file_name": file_name,
+                "mime_type": mime_type,
+                "character_count": original_length,
+                "truncated": truncated,
+                "text": text_content,
+                "message": (
+                    f"Successfully read {original_length} characters from '{file_name}'"
+                    + (f" (truncated to {max_chars} chars)" if truncated else "")
+                ),
+            }
+
+        except Exception as e:
+            logger.error("Failed to read Drive document %s: %s", file_id, e)
+            return {
+                "status": "error",
+                "error": "Failed to read document",
+                "file_id": file_id,
+                "file_name": file_name,
+                "message": str(e),
+            }
+
+    return await asyncio.to_thread(_work)
 
 
 def _infer_mime_from_name(file_name: str) -> str:
@@ -1447,36 +1569,14 @@ async def get_cost_estimate(
     region: str = "default",
     rooms: list[dict[str, Any]] | None = None,
     classroom_count: int = 0,
+    site_name: str = "",
+    address: str = "",
+    inspection_summary: str = "",
+    sir_summary: str = "",
 ) -> dict[str, Any]:
-    """Estimate renovation costs for a school conversion using the Building Optimizer.
-
-    Calls the Building Optimizer pricing API at two finish levels (Refresh = low,
-    Alpha = high) to produce low/high cost ranges. Adds per-SF estimates for
-    code-required items not in the API (structural, sprinkler, fire alarm, ADA).
-
-    Call this tool in Step 3 after reading source documents (or after apply_e_occupancy_skill
-    confirms the site is worth pursuing). Copy all values from report_data_fields into
-    report_data before calling create_dd_report.
-
-    Args:
-        total_building_sf: Gross building area in square feet (from Wrike or documents).
-        region: Location hint for regional cost multiplier. Accepts city or state name
-            (e.g., "Austin", "TX", "Florida", "California") or API keys
-            ("austin", "miami", "sanfrancisco", "default"). Defaults to "default"
-            (national average) when unknown.
-        rooms: Optional list of rooms from ISP output. Each item: {"type": str, "sqft": int}.
-            Valid types: learningroom, hallway, office, conferenceroom, breakroom, restroom,
-            limitlessroom, rocketroom, multipurpose, reception, storage, lobby, otherroom,
-            workshop. If omitted, a default school layout is generated from classroom_count
-            and total_building_sf.
-        classroom_count: Number of classrooms (used only when rooms is not provided).
-
-    Returns:
-        Dict with low/high cost ranges for all Q3 cost categories and ready-to-use
-        report_data_fields for all q3.* fields.
-    """
+    """Estimate MinWork and MaxCapacity costs for a school conversion using RayCon."""
     logger.info(
-        "Tool called: get_cost_estimate — total_sf=%d, region=%s, rooms_provided=%s",
+        "Tool called: get_cost_estimate - total_sf=%d, region=%s, rooms_provided=%s",
         total_building_sf,
         region,
         rooms is not None,
@@ -1491,127 +1591,391 @@ async def get_cost_estimate(
 
     settings = get_settings()
     api_url = settings.pricing_api_url
-
     resolved_region = _resolve_region(region)
     room_list = rooms if rooms else _auto_generate_rooms(total_building_sf, classroom_count)
-    rooms_note = "ISP room list" if rooms else f"auto-generated ({len(room_list)} rooms from {classroom_count or 'inferred'} classrooms)"
-
+    rooms_note = (
+        "ISP room list"
+        if rooms
+        else f"auto-generated ({len(room_list)} rooms from {classroom_count or 'inferred'} classrooms)"
+    )
     logger.info("Using %s, region=%s, %d rooms", rooms_note, resolved_region, len(room_list))
 
+    def _work() -> dict[str, Any]:
+        try:
+            payload = _build_raycon_request_payload(
+                site_name=site_name,
+                total_building_sf=total_building_sf,
+                region=resolved_region,
+                room_list=room_list,
+                address=address or None,
+                inspection_summary=inspection_summary or None,
+                sir_summary=sir_summary or None,
+            )
+            raycon_data = _call_raycon_api(api_url, payload)
+        except requests.HTTPError as e:
+            logger.error("RayCon API HTTP error: %s", e)
+            return {"status": "error", "error": "RayCon API error", "message": str(e)}
+        except Exception as e:
+            logger.error("RayCon API call failed: %s", e)
+            return {"status": "error", "error": "RayCon API error", "message": str(e)}
+
+        mvp_data = _extract_raycon_scenario(raycon_data, "costs_mvp", "mvp")
+        max_capacity_data = _extract_raycon_scenario(raycon_data, "costs_ideal", "ideal")
+        if not mvp_data and not max_capacity_data:
+            return {
+                "status": "error",
+                "error": "RayCon API error",
+                "message": "RayCon response did not include any cost scenarios",
+            }
+
+        report_fields: dict[str, str] = {}
+        if mvp_data:
+            report_fields["exec.e_mvp_cost"] = _format_currency(mvp_data.get("grandTotal"))
+            report_fields.update(_build_breakdown_fields("mvp", mvp_data))
+        else:
+            logger.warning("RayCon did not return MVP scenario; blanking MVP cost fields")
+            report_fields["exec.e_mvp_cost"] = ""
+            report_fields.update(_blank_breakdown_fields("mvp"))
+        if max_capacity_data:
+            report_fields["exec.e_max_capacity_cost"] = _format_currency(max_capacity_data.get("grandTotal"))
+            report_fields.update(_build_breakdown_fields("max_capacity", max_capacity_data))
+        else:
+            logger.warning("RayCon did not return MaxCapacity scenario; blanking MaxCapacity cost fields")
+            report_fields["exec.e_max_capacity_cost"] = ""
+            report_fields.update(_blank_breakdown_fields("max_capacity"))
+        report_fields.update(_blank_breakdown_fields("max_value"))
+
+        scenario_parts = []
+        if mvp_data:
+            scenario_parts.append(f"MinWork at {_format_currency(mvp_data.get('grandTotal'))}")
+        if max_capacity_data:
+            scenario_parts.append(f"MaxCapacity at {_format_currency(max_capacity_data.get('grandTotal'))}")
+
+        return {
+            "status": "success",
+            "region": resolved_region,
+            "total_sf": total_building_sf,
+            "rooms_used": rooms_note,
+            "room_count": len(room_list),
+            "cost_summary": {
+                "minwork": _format_currency(mvp_data.get("grandTotal")) if mvp_data else None,
+                "max_capacity": _format_currency(max_capacity_data.get("grandTotal")) if max_capacity_data else None,
+            },
+            "raycon_estimate_cards": raycon_data.get("estimate_cards", {}),
+            "raycon_structured": raycon_data.get("structured", {}),
+            "report_data_fields": report_fields,
+            "message": (
+                f"RayCon estimated {' and '.join(scenario_parts)} "
+                f"({resolved_region} region, {len(room_list)} rooms, {total_building_sf:,} SF). "
+                "Copy report_data_fields into report_data as flat top-level keys."
+            ),
+        }
+
+    return await asyncio.to_thread(_work)
+
+
+def _normalize_report_replacements(
+    report_data: dict[str, Any],
+    site_name: str,
+    report_date: str,
+    drive_folder_url: str,
+) -> tuple[dict[str, str], list[str], list[str], dict[str, str]]:
+    """Normalize report data and annotate computed token sources."""
+    report_data = _inject_wrike_report_defaults(report_data, site_name)
+    replacements, unmatched, unfilled, token_sources = normalize_report_data(
+        report_data,
+        site_name=site_name,
+        report_date=report_date,
+    )
+    if "exec.c_answer" in replacements:
+        normalized_answer = normalize_can_we_answer(replacements["exec.c_answer"])
+        if normalized_answer is not None:
+            replacements["exec.c_answer"] = normalized_answer
+    _fill_max_value_placeholders(replacements)
+    _fill_max_capacity_placeholders(replacements)
+    compute_deltas(replacements)
+    for delta_token in (
+        "exec.delta_max_capacity_capacity",
+        "exec.delta_max_capacity_cost",
+        "exec.delta_max_capacity_ready",
+        "exec.delta_max_value_capacity",
+        "exec.delta_max_value_cost",
+        "exec.delta_max_value_ready",
+    ):
+        if delta_token in replacements and token_sources.get(delta_token) == "unfilled":
+            token_sources[delta_token] = "computed"
+
+    replacements.setdefault("meta.drive_folder_url", drive_folder_url)
+    return replacements, unmatched, unfilled, token_sources
+
+
+def _inject_wrike_report_defaults(
+    report_data: dict[str, Any],
+    site_name: str,
+) -> dict[str, Any]:
+    """Inject authoritative Wrike defaults that should not depend on agent output."""
+    enriched = json.loads(json.dumps(report_data))
     try:
-        # Call API at level 1 (Refresh) for LOW estimates
-        low_payload = _build_rooms_payload(room_list, finish_level=1)
-        low_resp = _call_pricing_api(api_url, low_payload, resolved_region)
-        low_rooms = low_resp["data"]["rooms"]
-
-        # Call API at level 3 (Alpha) for HIGH estimates
-        high_payload = _build_rooms_payload(room_list, finish_level=3)
-        high_resp = _call_pricing_api(api_url, high_payload, resolved_region)
-        high_rooms = high_resp["data"]["rooms"]
-
-    except requests.HTTPError as e:
-        logger.error("Pricing API HTTP error: %s", e)
-        return {"status": "error", "error": "Pricing API error", "message": str(e)}
+        record = find_site_record(site_name_or_id=site_name)
     except Exception as e:
-        logger.error("Pricing API call failed: %s", e)
-        return {"status": "error", "error": "Pricing API error", "message": str(e)}
+        logger.warning("Could not fetch Wrike defaults for '%s': %s", site_name, e)
+        record = None
 
-    # Map API component sums to DD report cost categories
-    finish_low  = _sum_components(low_rooms,  _FINISH_WORK_COMPONENTS)
-    finish_high = _sum_components(high_rooms, _FINISH_WORK_COMPONENTS)
-    mep_low     = _sum_components(low_rooms,  _MEP_COMPONENTS)
-    mep_high    = _sum_components(high_rooms, _MEP_COMPONENTS)
-    ffe_low     = _sum_components(low_rooms,  _FFE_COMPONENTS)
-    ffe_high    = _sum_components(high_rooms, _FFE_COMPONENTS)
-    bath_low    = _sum_bathroom_components(low_rooms)
-    bath_high   = _sum_bathroom_components(high_rooms)
-    sprinkler_low  = _sum_components(low_rooms,  _SPRINKLER_COMPONENTS)
-    sprinkler_high = _sum_components(high_rooms, _SPRINKLER_COMPONENTS)
-    fa_low         = _sum_components(low_rooms,  _FIRE_ALARM_COMPONENTS)
-    fa_high        = _sum_components(high_rooms, _FIRE_ALARM_COMPONENTS)
+    if not record:
+        enriched["p1_assignee_name"] = MISSING_P1_ASSIGNEE_LABEL
+        return enriched
 
-    # Per-SF estimates for items still not in the Optimizer API
-    sf = total_building_sf
-    struct_low,  struct_high = sf * _PER_SF_RANGES["structural"][0], sf * _PER_SF_RANGES["structural"][1]
-    ada_low,     ada_high    = sf * _PER_SF_RANGES["ada"][0],        sf * _PER_SF_RANGES["ada"][1]
+    summary = build_site_summary(record)
+    p1_name = summary.get("p1_assignee_name")
+    p1_email = summary.get("p1_assignee_email")
 
-    # Subtotals (before contingency)
-    sub_low  = finish_low  + mep_low  + ffe_low  + bath_low  + struct_low  + sprinkler_low  + fa_low  + ada_low
-    sub_high = finish_high + mep_high + ffe_high + bath_high + struct_high + sprinkler_high + fa_high + ada_high
+    if isinstance(p1_name, str) and p1_name.strip():
+        enriched["p1_assignee_name"] = p1_name.strip()
+        site_block = enriched.get("site")
+        if not isinstance(site_block, dict):
+            site_block = {}
+            enriched["site"] = site_block
+        site_block["p1_assignee_name"] = p1_name.strip()
+    # When Wrike P1 is absent, leave p1_assignee_name unset so _resolve_prepared_by
+    # falls through to agent-provided meta.prepared_by (e.g. from LocationOS getSite)
 
-    cont_low  = sub_low  * 0.15
-    cont_high = sub_high * 0.20
+    if isinstance(p1_email, str) and p1_email.strip():
+        enriched["p1_assignee_email"] = p1_email.strip()
 
-    total_low  = sub_low  + cont_low
-    total_high = sub_high + cont_high
+    return enriched
 
-    def fmt(n: float) -> str:
-        return f"{round(n):,}"
 
-    report_fields: dict[str, str] = {
-        "q3.structural_low":    fmt(struct_low),
-        "q3.structural_high":   fmt(struct_high),
-        "q3.mep_low":           fmt(mep_low),
-        "q3.mep_high":          fmt(mep_high),
-        "q3.sprinkler_low":     fmt(sprinkler_low),
-        "q3.sprinkler_high":    fmt(sprinkler_high),
-        "q3.fire_alarm_low":    fmt(fa_low),
-        "q3.fire_alarm_high":   fmt(fa_high),
-        "q3.ada_low":           fmt(ada_low),
-        "q3.ada_high":          fmt(ada_high),
-        "q3.bathrooms_low":     fmt(bath_low),
-        "q3.bathrooms_high":    fmt(bath_high),
-        "q3.finish_work_low":   fmt(finish_low),
-        "q3.finish_work_high":  fmt(finish_high),
-        "q3.ffe_low":           fmt(ffe_low),
-        "q3.ffe_high":          fmt(ffe_high),
-        "q3.contingency_low":   fmt(cont_low),
-        "q3.contingency_high":  fmt(cont_high),
-        "q3.total_low":         fmt(total_low),
-        "q3.total_high":        fmt(total_high),
-        "q3.calculated_budget": f"${fmt(total_low)} – ${fmt(total_high)}",
-        "q3.budget_formula":    (
-            "Building Optimizer v2 (finish, MEP, FF&E, bathrooms, sprinkler, fire alarm) + "
-            f"per-SF estimates (structural ${_PER_SF_RANGES['structural'][0]:.0f}–${_PER_SF_RANGES['structural'][1]:.0f}/SF, "
-            f"ADA ${_PER_SF_RANGES['ada'][0]:.0f}–${_PER_SF_RANGES['ada'][1]:.0f}/SF) + 15–20% contingency"
-        ),
-        "q3.budget_status":     "[Review against acquisition budget]",
-        "q3.key_cost_risks":    (
-            "Structural condition unknown pending field inspection\n"
-            "Sprinkler installation required if system not present\n"
-            "Fire alarm upgrade required for E-occupancy code compliance\n"
-            "ADA scope may increase significantly depending on inspection findings\n"
-            "Finish cost range reflects Refresh vs. Alpha standard"
-        ),
+def _find_existing_report_doc(
+    gc: GoogleClient,
+    *,
+    folder_id: str,
+    doc_name: str,
+) -> dict[str, Any] | None:
+    """Return an existing same-name DD report in the site folder, if present."""
+    try:
+        files = gc.list_files_in_folder(folder_id)
+    except Exception as e:
+        logger.warning("Could not list folder %s while checking for existing report: %s", folder_id, e)
+        return None
+
+    for file_info in files:
+        if file_info.get("name") == doc_name:
+            return file_info
+    return None
+
+
+def _fill_max_value_placeholders(replacements: dict[str, str]) -> None:
+    """Fill MaxValue fields with explicit WIP labels until the scenario is defined."""
+    max_value_label = "[Not found - MaxValue scenario not yet defined]"
+    max_value_tokens = [
+        "exec.e_max_value_capacity",
+        "exec.e_max_value_cost",
+        "exec.f_max_value_ready",
+        "exec.cost_demolition_max_value",
+        "exec.cost_framing_doors_max_value",
+        "exec.cost_mep_fire_life_safety_max_value",
+        "exec.cost_plumbing_bathrooms_max_value",
+        "exec.cost_finish_work_max_value",
+        "exec.cost_furniture_max_value",
+        "exec.cost_tech_security_signage_max_value",
+        "exec.cost_other_hard_costs_max_value",
+        "exec.cost_soft_costs_max_value",
+        "exec.cost_gc_fee_max_value",
+        "exec.cost_contingency_max_value",
+        "exec.cost_grand_total_max_value",
+        "exec.delta_max_value_capacity",
+        "exec.delta_max_value_cost",
+        "exec.delta_max_value_ready",
+    ]
+    for token in max_value_tokens:
+        if token not in replacements or not str(replacements[token]).strip():
+            replacements[token] = max_value_label
+
+
+def _fill_max_capacity_placeholders(replacements: dict[str, str]) -> None:
+    """Fill missing MaxCapacity and MVP capacity fields with explicit sourced gap labels."""
+    max_capacity_label = "[Not found - ISP Ideal scenario not extracted]"
+    for token in (
+        "exec.e_max_capacity_capacity",
+        "exec.f_max_capacity_ready",
+        "exec.delta_max_capacity_capacity",
+        "exec.delta_max_capacity_ready",
+    ):
+        if token not in replacements or not str(replacements[token]).strip():
+            replacements[token] = max_capacity_label
+    if not str(replacements.get("exec.e_mvp_capacity", "")).strip():
+        replacements["exec.e_mvp_capacity"] = "[Not found - ISP MinWork tier analysis not extracted]"
+
+
+def _prepare_report_text_replacements(
+    replacements: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Swap link URLs for display labels and keep the original URL targets."""
+    text_replacements = dict(replacements)
+    link_urls: dict[str, str] = {}
+    for token in LINK_TOKENS:
+        value = text_replacements.get(token, "")
+        if value.startswith("http") and token in LINK_DISPLAY_LABELS:
+            link_urls[token] = value
+            text_replacements[token] = LINK_DISPLAY_LABELS[token]
+    return text_replacements, link_urls
+
+
+def _apply_report_hyperlinks(
+    gc: GoogleClient,
+    doc_id: str,
+    replacements: dict[str, str],
+    link_urls: dict[str, str],
+) -> dict[str, Any]:
+    """Apply hyperlink styling for URL-backed template tokens."""
+    hyperlink_trace: dict[str, Any] = {
+        "candidates": {},
+        "found_in_doc": [],
+        "not_found_in_doc": [],
+        "missing_from_agent": [],
+        "non_url_values": {},
+        "unmapped_agent_urls": [],
+        "applied": 0,
+        "error": None,
     }
+    hyperlink_trace["missing_from_agent"] = [t for t in LINK_TOKENS if t not in replacements]
+    hyperlink_trace["non_url_values"] = {
+        key: replacements[key][:120]
+        for key in LINK_TOKENS
+        if key in replacements and not replacements[key].startswith("http")
+    }
+    hyperlink_trace["unmapped_agent_urls"] = [
+        key for key, value in replacements.items()
+        if key not in LINK_TOKENS and value.startswith("http")
+    ]
 
+    if hyperlink_trace["missing_from_agent"]:
+        logger.warning(
+            "Hyperlinks: agent did not provide values for: %s",
+            hyperlink_trace["missing_from_agent"],
+        )
+    if hyperlink_trace["non_url_values"]:
+        logger.info(
+            "Hyperlinks: link tokens with non-URL values: %s",
+            hyperlink_trace["non_url_values"],
+        )
+    if hyperlink_trace["unmapped_agent_urls"]:
+        logger.warning(
+            "Hyperlinks: agent provided URLs under keys not in LINK_TOKENS: %s",
+            hyperlink_trace["unmapped_agent_urls"],
+        )
+
+    try:
+        hyperlink_trace["candidates"] = {
+            key: {"label": LINK_DISPLAY_LABELS.get(key, value), "url": value[:200]}
+            for key, value in link_urls.items()
+        }
+        if not link_urls:
+            logger.info("Hyperlinks: no URL candidates found in link tokens")
+            return hyperlink_trace
+
+        logger.info("Hyperlinks: %d URL candidates: %s", len(link_urls), list(link_urls.keys()))
+        doc_body = gc.get_document(doc_id).get("body", {})
+        hl_result = build_hyperlink_requests(doc_body, link_urls, LINK_TOKENS, LINK_DISPLAY_LABELS)
+        hyperlink_trace["found_in_doc"] = hl_result.found_tokens
+        hyperlink_trace["not_found_in_doc"] = hl_result.not_found_tokens
+        if not hl_result.requests:
+            logger.warning(
+                "Hyperlinks: display labels not found in doc body - 0 of %d candidates matched",
+                len(link_urls),
+            )
+            return hyperlink_trace
+
+        gc.batch_update_document(doc_id, hl_result.requests)
+        hyperlink_trace["applied"] = len(hl_result.requests)
+        logger.info(
+            "Applied %d hyperlinks to document %s: %s",
+            hyperlink_trace["applied"],
+            doc_id,
+            hl_result.found_tokens,
+        )
+    except Exception as e:
+        logger.warning("Hyperlink insertion failed (report still usable): %s", e)
+        hyperlink_trace["error"] = str(e)
+
+    return hyperlink_trace
+
+
+def _build_report_trace_data(
+    site_name: str,
+    report_date: str,
+    doc_id: str,
+    doc_url: str | None,
+    replacements: dict[str, str],
+    unfilled: list[str],
+    unmatched: list[str],
+    hyperlink_trace: dict[str, Any],
+    token_evidence: dict[str, str] | None,
+) -> dict[str, Any]:
+    """Build the report trace payload persisted beside the DD report."""
+    evidence = token_evidence or {}
+    token_report = {
+        token: {
+            "value": replacements.get(token, "")[:200],
+            "source": TOKEN_SOURCES.get(token, "Unknown"),
+            "filled": token not in unfilled,
+            **({"evidence": evidence[token][:500]} if token in evidence else {}),
+        }
+        for token in TEMPLATE_TOKENS
+        if token not in LINK_TOKENS
+    }
     return {
-        "status": "success",
-        "region": resolved_region,
-        "total_sf": total_building_sf,
-        "rooms_used": rooms_note,
-        "room_count": len(room_list),
-        "cost_summary": {
-            "finish_work":   f"${fmt(finish_low)} – ${fmt(finish_high)}",
-            "mep":           f"${fmt(mep_low)} – ${fmt(mep_high)}",
-            "ffe":           f"${fmt(ffe_low)} – ${fmt(ffe_high)}",
-            "bathrooms":     f"${fmt(bath_low)} – ${fmt(bath_high)}",
-            "structural":    f"${fmt(struct_low)} – ${fmt(struct_high)}",
-            "sprinkler":     f"${fmt(sprinkler_low)} – ${fmt(sprinkler_high)}",
-            "fire_alarm":    f"${fmt(fa_low)} – ${fmt(fa_high)}",
-            "ada":           f"${fmt(ada_low)} – ${fmt(ada_high)}",
-            "contingency":   f"${fmt(cont_low)} – ${fmt(cont_high)}",
-            "grand_total":   f"${fmt(total_low)} – ${fmt(total_high)}",
-        },
-        "report_data_fields": report_fields,
-        "message": (
-            f"Cost estimate: ${fmt(total_low)} – ${fmt(total_high)} "
-            f"({resolved_region} region, {len(room_list)} rooms, {total_building_sf:,} SF). "
-            "IMPORTANT: Copy all report_data_fields directly into report_data as flat "
-            "top-level keys (e.g. report_data['q3.structural_low'] = '24,000'). "
-            "Do NOT nest them under q3.cost_estimate_table."
-        ),
+        "site_name": site_name,
+        "date": report_date,
+        "report_doc_id": doc_id,
+        "report_doc_url": doc_url,
+        "token_report": token_report,
+        "unmatched_keys": unmatched,
+        "unfilled_tokens": unfilled,
+        "hyperlinks": hyperlink_trace,
     }
+
+
+def _upload_report_trace(
+    gc: GoogleClient,
+    folder_id: str,
+    site_name: str,
+    report_date: str,
+    doc_id: str,
+    trace_data: dict[str, Any],
+) -> None:
+    """Upload the report trace JSON and link it from the generated report."""
+    trace_name = f"{site_name} Report Trace - {report_date.replace('/', '-')}.json"
+    trace_json = json.dumps(trace_data, indent=2)
+    trace_file = gc.upload_file_to_folder(
+        folder_id=folder_id,
+        file_name=trace_name,
+        file_bytes=trace_json.encode("utf-8"),
+        mime_type="application/json",
+    )
+    trace_url = trace_file.get("webViewLink", "")
+    logger.info("Uploaded report trace: %s", trace_url)
+    if not trace_url:
+        return
+
+    trace_label = LINK_DISPLAY_LABELS.get("sources.trace_link", trace_url)
+    gc.batch_update_document(
+        doc_id,
+        build_replace_all_text_requests({"sources.trace_link": trace_label}),
+    )
+    doc_body = gc.get_document(doc_id).get("body", {})
+    start_idx = find_text_index_in_doc(doc_body, trace_label)
+    if start_idx is None:
+        return
+
+    gc.batch_update_document(doc_id, [{
+        "updateTextStyle": {
+            "range": {"startIndex": start_idx, "endIndex": start_idx + len(trace_label)},
+            "textStyle": {"link": {"url": trace_url}},
+            "fields": "link",
+        }
+    }])
+    logger.info("Linked trace report in doc: %s", trace_label)
 
 
 @mcp.tool()
@@ -1621,23 +1985,7 @@ async def create_dd_report(
     report_data: dict[str, Any],
     token_evidence: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Create a completed DD report Google Doc for a site.
-
-    Copies the V2 executive one-pager template to the site's Drive folder,
-    names it "[Site Name] DD Report - [MM/DD/YYYY]", then fills all
-    {{PLACEHOLDER}} tokens using Google Docs API replaceAllText.
-
-    Args:
-        site_name: Site name used for the report document title.
-        drive_folder_url: Google Drive folder URL for the site (report is saved here).
-        report_data: Nested dict with all report sections and field values.
-        token_evidence: Optional dict mapping token names to the raw excerpt from the
-            source document that supports the token value. Included in the report trace
-            so reviewers can verify each field back to its source.
-
-    Returns:
-        Dict with the URL of the newly created DD report Google Doc.
-    """
+    """Create a completed DD report Google Doc for a site."""
     logger.info("Tool called: create_dd_report")
     logger.info(
         "create_dd_report params: site_name=%s, drive_folder_url=%s",
@@ -1651,7 +1999,6 @@ async def create_dd_report(
             "error": "Missing parameter",
             "message": "site_name must be a non-empty string",
         }
-
     if not drive_folder_url or not drive_folder_url.strip():
         return {
             "status": "error",
@@ -1664,9 +2011,7 @@ async def create_dd_report(
         return {
             "status": "error",
             "error": "Invalid folder URL",
-            "message": (
-                f"Could not extract a Google Drive folder ID from: {drive_folder_url}"
-            ),
+            "message": f"Could not extract a Google Drive folder ID from: {drive_folder_url}",
         }
 
     settings = get_settings()
@@ -1681,256 +2026,120 @@ async def create_dd_report(
             ),
         }
 
-    # Build the document name
     today_str = datetime.now().strftime("%m/%d/%Y")
     doc_name = f"{site_name.strip()} DD Report - {today_str}"
-
     logger.info("Creating DD report: %s", doc_name)
 
-    try:
-        gc = _make_google_client()
+    def _work() -> dict[str, Any]:
+        try:
+            gc = _make_google_client()
+            existing_doc = _find_existing_report_doc(gc, folder_id=folder_id, doc_name=doc_name)
+            if existing_doc:
+                existing_doc_id = existing_doc.get("id")
+                existing_doc_url = existing_doc.get("webViewLink")
+                logger.info("Existing DD report found, reusing: %s (id=%s)", doc_name, existing_doc_id)
+                return {
+                    "status": "success",
+                    "document": {
+                        "id": existing_doc_id,
+                        "name": doc_name,
+                        "url": existing_doc_url,
+                    },
+                    "replacements_applied": 0,
+                    "unmatched_agent_keys": 0,
+                    "unfilled_template_tokens": 0,
+                    "hyperlinks_applied": 0,
+                    "message": f"DD report already exists: {existing_doc_url}",
+                }
 
-        # Step 1: Copy the template to the site's Drive folder
-        logger.info(
-            "Copying template %s to folder %s as '%s'", template_id, folder_id, doc_name
-        )
-        copied_doc = gc.copy_document(
-            template_id=template_id,
-            name=doc_name,
-            parent_folder_id=folder_id,
-        )
+            logger.info("Copying template %s to folder %s as '%s'", template_id, folder_id, doc_name)
+            copied_doc = gc.copy_document(
+                template_id=template_id,
+                name=doc_name,
+                parent_folder_id=folder_id,
+            )
+            doc_id = copied_doc.get("id")
+            doc_url = copied_doc.get("webViewLink")
+            if not doc_id or not isinstance(doc_id, str):
+                raise RuntimeError("Invalid document ID returned from copy operation")
 
-        doc_id = copied_doc.get("id")
-        doc_url = copied_doc.get("webViewLink")
-
-        if not doc_id or not isinstance(doc_id, str):
-            raise RuntimeError("Invalid document ID returned from copy operation")
-
-        logger.info("Copied template to new document: %s (id=%s)", doc_name, doc_id)
-
-        # Step 2: Normalize report_data → template-aligned replacements
-        replacements, unmatched, unfilled, token_sources = normalize_report_data(
-            report_data, site_name=site_name.strip(), report_date=today_str,
-        )
-        compute_deltas(replacements)
-        # Mark deltas that were computed (not agent-filled)
-        for delta_token in ("exec.delta_capacity", "exec.delta_cost", "exec.delta_ready"):
-            if delta_token in replacements and token_sources.get(delta_token) == "unfilled":
-                token_sources[delta_token] = "computed"
-
-        # Inject the generated doc URL (not in the agent's report_data)
-        replacements.setdefault("meta.drive_folder_url", drive_folder_url)
-
-        logger.info(
-            "Normalization: %d replacements, %d unmatched keys, %d unfilled tokens",
-            len(replacements), len(unmatched), len(unfilled),
-        )
-        if unmatched:
-            logger.warning("Unmatched agent keys (no template token): %s", unmatched)
-
-        # Step 3: Build and apply replaceAllText batch update
-        text_replacements = dict(replacements)
-
-        # Step 3a: Swap URL values with display labels for link tokens.
-        # Save the original URLs so the hyperlink builder can set link targets.
-        link_urls: dict[str, str] = {}
-        for token in LINK_TOKENS:
-            value = text_replacements.get(token, "")
-            if value.startswith("http") and token in LINK_DISPLAY_LABELS:
-                link_urls[token] = value
-                text_replacements[token] = LINK_DISPLAY_LABELS[token]
-
-        replace_requests = build_replace_all_text_requests(text_replacements)
-
-        if replace_requests:
-            gc.batch_update_document(doc_id, replace_requests)
+            logger.info("Copied template to new document: %s (id=%s)", doc_name, doc_id)
+            replacements, unmatched, unfilled, _token_sources = _normalize_report_replacements(
+                report_data=report_data,
+                site_name=site_name.strip(),
+                report_date=today_str,
+                drive_folder_url=drive_folder_url,
+            )
             logger.info(
-                "Applied %d text replacements to document %s", len(replace_requests), doc_id
+                "Normalization: %d replacements, %d unmatched keys, %d unfilled tokens",
+                len(replacements), len(unmatched), len(unfilled),
             )
-        else:
-            logger.warning("No placeholder replacements to apply — report_data may be empty")
+            if unmatched:
+                logger.warning("Unmatched agent keys (no template token): %s", unmatched)
 
-        # Step 3b: Hyperlink display labels (convert label text to clickable links)
-        hyperlink_trace: dict[str, Any] = {
-            "candidates": {},
-            "found_in_doc": [],
-            "not_found_in_doc": [],
-            "missing_from_agent": [],
-            "non_url_values": {},
-            "unmapped_agent_urls": [],
-            "applied": 0,
-            "error": None,
-        }
-
-        # Pre-flight: which link tokens did the agent not provide at all?
-        missing_from_agent = [t for t in LINK_TOKENS if t not in replacements]
-        if missing_from_agent:
-            logger.warning(
-                "Hyperlinks: agent did not provide values for: %s", missing_from_agent,
-            )
-        hyperlink_trace["missing_from_agent"] = missing_from_agent
-
-        # Pre-flight: which link tokens have non-URL values?
-        non_url_values = {
-            k: replacements[k][:120] for k in LINK_TOKENS
-            if k in replacements and not replacements[k].startswith("http")
-        }
-        if non_url_values:
-            logger.info("Hyperlinks: link tokens with non-URL values: %s", non_url_values)
-        hyperlink_trace["non_url_values"] = non_url_values
-
-        # Pre-flight: did the agent provide URLs under keys NOT in LINK_TOKENS?
-        unmapped_agent_urls = [
-            k for k, v in replacements.items()
-            if k not in LINK_TOKENS and v.startswith("http")
-        ]
-        if unmapped_agent_urls:
-            logger.warning(
-                "Hyperlinks: agent provided URLs under keys not in LINK_TOKENS: %s",
-                unmapped_agent_urls,
-            )
-        hyperlink_trace["unmapped_agent_urls"] = unmapped_agent_urls
-
-        # Build and apply hyperlinks using display labels
-        try:
-            hyperlink_trace["candidates"] = {
-                k: {"label": LINK_DISPLAY_LABELS.get(k, v), "url": v[:200]}
-                for k, v in link_urls.items()
-            }
-
-            if not link_urls:
-                logger.info("Hyperlinks: no URL candidates found in link tokens")
+            text_replacements, link_urls = _prepare_report_text_replacements(replacements)
+            replace_requests = build_replace_all_text_requests(text_replacements)
+            if replace_requests:
+                gc.batch_update_document(doc_id, replace_requests)
+                logger.info("Applied %d text replacements to document %s", len(replace_requests), doc_id)
             else:
-                logger.info(
-                    "Hyperlinks: %d URL candidates: %s",
-                    len(link_urls), list(link_urls.keys()),
-                )
-                doc_struct = gc.get_document(doc_id)
-                doc_body = doc_struct.get("body", {})
-                hl_result = build_hyperlink_requests(
-                    doc_body, link_urls, LINK_TOKENS, LINK_DISPLAY_LABELS,
-                )
-                hyperlink_trace["found_in_doc"] = hl_result.found_tokens
-                hyperlink_trace["not_found_in_doc"] = hl_result.not_found_tokens
+                logger.warning("No placeholder replacements to apply - report_data may be empty")
 
-                if not hl_result.requests:
-                    logger.warning(
-                        "Hyperlinks: display labels not found in doc body — "
-                        "0 of %d candidates matched", len(link_urls),
-                    )
-                else:
-                    gc.batch_update_document(doc_id, hl_result.requests)
-                    hyperlink_trace["applied"] = len(hl_result.requests)
-                    logger.info(
-                        "Applied %d hyperlinks to document %s: %s",
-                        hyperlink_trace["applied"], doc_id, hl_result.found_tokens,
-                    )
-        except Exception as e:
-            logger.warning(
-                "Hyperlink insertion failed (report still usable): %s", e,
+            hyperlink_trace = _apply_report_hyperlinks(
+                gc=gc,
+                doc_id=doc_id,
+                replacements=replacements,
+                link_urls=link_urls,
             )
-            hyperlink_trace["error"] = str(e)
 
-        logger.info("DD report created successfully: %s", doc_url)
+            logger.info("DD report created successfully: %s", doc_url)
+            trace_data = _build_report_trace_data(
+                site_name=site_name.strip(),
+                report_date=today_str,
+                doc_id=doc_id,
+                doc_url=doc_url,
+                replacements=replacements,
+                unfilled=unfilled,
+                unmatched=unmatched,
+                hyperlink_trace=hyperlink_trace,
+                token_evidence=token_evidence,
+            )
+            try:
+                _upload_report_trace(
+                    gc=gc,
+                    folder_id=folder_id,
+                    site_name=site_name.strip(),
+                    report_date=today_str,
+                    doc_id=doc_id,
+                    trace_data=trace_data,
+                )
+            except Exception as e:
+                logger.warning("Failed to upload report trace (report still valid): %s", e)
 
-        # Step 4: Upload report trace JSON to the same Drive folder
-        evidence = token_evidence or {}
-        token_report = {
-            token: {
-                "value": replacements.get(token, "")[:200],
-                "source": TOKEN_SOURCES.get(token, "Unknown"),
-                "filled": token not in unfilled,
-                **({"evidence": evidence[token][:500]} if token in evidence else {}),
+            return {
+                "status": "success",
+                "document": {"id": doc_id, "name": doc_name, "url": doc_url},
+                "replacements_applied": len(replace_requests),
+                "unmatched_agent_keys": len(unmatched),
+                "unfilled_template_tokens": len(unfilled),
+                "hyperlinks_applied": hyperlink_trace["applied"],
+                "message": f"DD report created: {doc_url}",
             }
-            for token in TEMPLATE_TOKENS
-            if token not in LINK_TOKENS
-        }
-
-        trace_data = {
-            "site_name": site_name.strip(),
-            "date": today_str,
-            "report_doc_id": doc_id,
-            "report_doc_url": doc_url,
-            "token_report": token_report,
-            "unmatched_keys": unmatched,
-            "unfilled_tokens": unfilled,
-            "hyperlinks": hyperlink_trace,
-        }
-        try:
-            trace_name = f"{site_name.strip()} Report Trace - {today_str.replace('/', '-')}.json"
-            trace_json = json.dumps(trace_data, indent=2)
-            trace_file = gc.upload_file_to_folder(
-                folder_id=folder_id,
-                file_name=trace_name,
-                file_bytes=trace_json.encode("utf-8"),
-                mime_type="application/json",
-            )
-            trace_url = trace_file.get("webViewLink", "")
-            logger.info("Uploaded report trace: %s", trace_url)
-
-            # Fill {{sources.trace_link}} with display label and hyperlink it
-            if trace_url:
-                trace_label = LINK_DISPLAY_LABELS.get("sources.trace_link", trace_url)
-                gc.batch_update_document(doc_id, build_replace_all_text_requests(
-                    {"sources.trace_link": trace_label},
-                ))
-                doc_struct = gc.get_document(doc_id)
-                doc_body = doc_struct.get("body", {})
-                start_idx = find_text_index_in_doc(doc_body, trace_label)
-                if start_idx is not None:
-                    gc.batch_update_document(doc_id, [{
-                        "updateTextStyle": {
-                            "range": {
-                                "startIndex": start_idx,
-                                "endIndex": start_idx + len(trace_label),
-                            },
-                            "textStyle": {"link": {"url": trace_url}},
-                            "fields": "link",
-                        }
-                    }])
-                    logger.info("Linked trace report in doc: %s", trace_label)
         except Exception as e:
-            logger.warning("Failed to upload report trace (report still valid): %s", e)
+            logger.error("Failed to create DD report: %s", e)
+            return {
+                "status": "error",
+                "error": "Failed to create DD report",
+                "message": str(e),
+            }
 
-        return {
-            "status": "success",
-            "document": {
-                "id": doc_id,
-                "name": doc_name,
-                "url": doc_url,
-            },
-            "replacements_applied": len(replace_requests),
-            "unmatched_agent_keys": len(unmatched),
-            "unfilled_template_tokens": len(unfilled),
-            "hyperlinks_applied": hyperlink_trace["applied"],
-            "message": f"DD report created: {doc_url}",
-        }
-
-    except Exception as e:
-        logger.error("Failed to create DD report: %s", e)
-        return {
-            "status": "error",
-            "error": "Failed to create DD report",
-            "message": str(e),
-        }
+    return await asyncio.to_thread(_work)
 
 
 @mcp.tool()
 async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
-    """Check whether a site has all required DD documents and whether a report already exists.
-
-    Looks up the site's Drive folder, lists and classifies all files, then reports
-    which key documents (SIR, ISP, building inspection, Phase I ESA) are present and
-    whether a DD Report has already been created.
-
-    Args:
-        site_name_or_id: Site name, Wrike record ID, or Wrike permalink URL.
-
-    Returns:
-        Dict with sir_found, isp_found, inspection_found, report_exists, missing_docs,
-        ready_for_report, and a files map keyed by doc_type.
-    """
-    logger.info("Tool called: check_site_readiness — %s", site_name_or_id)
+    """Check whether a site has all required DD documents and whether a report already exists."""
+    logger.info("Tool called: check_site_readiness - %s", site_name_or_id)
 
     if not site_name_or_id or not site_name_or_id.strip():
         return {
@@ -1939,147 +2148,136 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
             "message": "site_name_or_id must be a non-empty string",
         }
 
-    try:
-        record = find_site_record(site_name_or_id=site_name_or_id)
-        if not record:
+    def _work() -> dict[str, Any]:
+        try:
+            record = find_site_record(site_name_or_id=site_name_or_id)
+            if not record:
+                return {
+                    "status": "error",
+                    "error": "Site record not found",
+                    "message": f"Could not find a Wrike Site Record matching '{site_name_or_id}'.",
+                }
+
+            summary = build_site_summary(record)
+            site_title = summary.get("title", site_name_or_id)
+            address = summary.get("address")
+            drive_folder_url = summary.get("drive_folder_url")
+            if not drive_folder_url:
+                return {
+                    "status": "error",
+                    "error": "No Drive folder",
+                    "message": f"Site record '{site_title}' has no Google Drive folder URL in Wrike.",
+                }
+
+            folder_id = extract_folder_id_from_url(drive_folder_url)
+            if not folder_id:
+                return {
+                    "status": "error",
+                    "error": "Invalid Drive folder URL",
+                    "message": f"Could not parse folder ID from: {drive_folder_url}",
+                }
+
+            gc = _make_google_client()
+            match_terms = _build_site_match_terms(site_title, address)
+            logger.info("Match terms for '%s': %s", site_title, match_terms)
+            shared_docs = _find_site_docs_in_shared_folders(
+                gc, match_terms, site_title=site_title, site_address=address,
+            )
+            all_site_files = [
+                {**file_info, "doc_type": _classify_document_type(file_info.get("name", ""))}
+                for file_info in gc.list_files_recursive(folder_id, max_depth=2)
+            ]
+
+            files_by_type: dict[str, dict[str, Any] | None] = {
+                "sir": shared_docs.get("sir"),
+                "isp": shared_docs.get("isp"),
+                "building_inspection": shared_docs.get("building_inspection"),
+                "phase_i_esa": None,
+                "dd_report": None,
+            }
+            for file_info in all_site_files:
+                doc_type = file_info.get("doc_type", "unknown")
+                if doc_type in files_by_type and files_by_type[doc_type] is None:
+                    files_by_type[doc_type] = file_info
+                elif doc_type in files_by_type and files_by_type[doc_type] is not None:
+                    existing_mime = files_by_type[doc_type].get("mimeType", "")
+                    new_mime = file_info.get("mimeType", "")
+                    if existing_mime != PDF_MIME and new_mime == PDF_MIME:
+                        files_by_type[doc_type] = file_info
+
+            still_missing = [
+                doc_type for doc_type in ("sir", "isp", "building_inspection")
+                if files_by_type[doc_type] is None
+            ]
+            if still_missing:
+                unknown_files = [file_info for file_info in all_site_files if file_info.get("doc_type") == "unknown"]
+                for file_info in unknown_files:
+                    file_name = file_info.get("name", "")
+                    file_id = file_info.get("id")
+                    doc_type, confidence = classify_document(file_name, file_id=file_id, gc=gc, site_name=site_title)
+                    if doc_type in still_missing and files_by_type.get(doc_type) is None:
+                        file_info["doc_type"] = doc_type
+                        files_by_type[doc_type] = file_info
+                        still_missing.remove(doc_type)
+                        logger.info(
+                            "LLM classified site file '%s' as %s (conf=%.2f) for '%s'",
+                            file_name, doc_type, confidence, site_title,
+                        )
+                    if not still_missing:
+                        break
+
+            sir_found = files_by_type["sir"] is not None
+            isp_found = files_by_type["isp"] is not None
+            inspection_found = files_by_type["building_inspection"] is not None
+            report_exists = files_by_type["dd_report"] is not None
+
+            missing_docs: list[str] = []
+            if not sir_found:
+                missing_docs.append("sir")
+            if not isp_found:
+                missing_docs.append("isp")
+            if not inspection_found:
+                missing_docs.append("building_inspection")
+
+            ready_for_report = sir_found and isp_found and inspection_found and not report_exists
+            p1_profile = extract_p1_from_record(record)
+            p1_email = p1_profile.get("email") if p1_profile else None
+            p1_name = p1_profile.get("name") if p1_profile else None
+
+            return {
+                "status": "success",
+                "site_title": site_title,
+                "p1_assignee_name": p1_name,
+                "p1_assignee_email": p1_email,
+                "sir_found": sir_found,
+                "isp_found": isp_found,
+                "inspection_found": inspection_found,
+                "report_exists": report_exists,
+                "missing_docs": missing_docs,
+                "ready_for_report": ready_for_report,
+                "files": files_by_type,
+                "drive_folder_url": drive_folder_url,
+                "message": "\n".join([
+                    f"Site '{site_title}' document readiness:",
+                    f"  SIR: {'found - ' + (files_by_type.get('sir') or {}).get('name', '') if sir_found else 'not found'}",
+                    f"  ISP: {'found - ' + (files_by_type.get('isp') or {}).get('name', '') if isp_found else 'not found'}",
+                    f"  Building Inspection: {'found - ' + (files_by_type.get('building_inspection') or {}).get('name', '') if inspection_found else 'not found'}",
+                    f"  DD Report: {'exists - ' + (files_by_type.get('dd_report') or {}).get('name', '') if report_exists else 'not yet created'}",
+                    "",
+                    "Ready for report generation." if ready_for_report else (
+                        "Not ready - " + ", ".join(missing_docs) + " missing." if missing_docs else "Report already exists."
+                    ),
+                ]),
+            }
+        except Exception as e:
+            logger.error("check_site_readiness failed: %s", e)
             return {
                 "status": "error",
-                "error": "Site record not found",
-                "message": f"Could not find a Wrike Site Record matching '{site_name_or_id}'.",
+                "error": "check_site_readiness failed",
+                "message": str(e),
             }
 
-        summary = build_site_summary(record)
-        site_title = summary.get("title", site_name_or_id)
-        address = summary.get("address")
-        drive_folder_url = summary.get("drive_folder_url")
-
-        if not drive_folder_url:
-            return {
-                "status": "error",
-                "error": "No Drive folder",
-                "message": f"Site record '{site_title}' has no Google Drive folder URL in Wrike.",
-            }
-
-        folder_id = extract_folder_id_from_url(drive_folder_url)
-        if not folder_id:
-            return {
-                "status": "error",
-                "error": "Invalid Drive folder URL",
-                "message": f"Could not parse folder ID from: {drive_folder_url}",
-            }
-
-        gc = _make_google_client()
-
-        # 1. Search the three shared folders (SIR/, ISP/, Building Inspection/)
-        match_terms = _build_site_match_terms(site_title, address)
-        logger.info("Match terms for '%s': %s", site_title, match_terms)
-        shared_docs = _find_site_docs_in_shared_folders(
-            gc, match_terms,
-            site_title=site_title, site_address=address,
-        )
-
-        # 2. Recursively list + classify files in the site's own folder (fallback)
-        all_site_files = [
-            {**f, "doc_type": _classify_document_type(f.get("name", ""))}
-            for f in gc.list_files_recursive(folder_id, max_depth=2)
-        ]
-
-        # 3. Build files_by_type — shared folders take priority, site folder fills gaps
-        files_by_type: dict[str, dict[str, Any] | None] = {
-            "sir": shared_docs.get("sir"),
-            "isp": shared_docs.get("isp"),
-            "building_inspection": shared_docs.get("building_inspection"),
-            "phase_i_esa": None,
-            "dd_report": None,
-        }
-        for f in all_site_files:
-            dt = f.get("doc_type", "unknown")
-            if dt in files_by_type and files_by_type[dt] is None:
-                files_by_type[dt] = f
-            elif dt in files_by_type and files_by_type[dt] is not None:
-                # Prefer PDF over converted Google Doc
-                existing_mime = files_by_type[dt].get("mimeType", "")
-                new_mime = f.get("mimeType", "")
-                if existing_mime != PDF_MIME and new_mime == PDF_MIME:
-                    files_by_type[dt] = f
-
-        # 4. LLM classification for unknown site folder files if docs are still missing
-        still_missing = [
-            k for k in ("sir", "isp", "building_inspection")
-            if files_by_type[k] is None
-        ]
-        if still_missing:
-            unknown_files = [f for f in all_site_files if f.get("doc_type") == "unknown"]
-            for f in unknown_files:
-                fname = f.get("name", "")
-                fid = f.get("id")
-                doc_type, conf = classify_document(
-                    fname, file_id=fid, gc=gc, site_name=site_title,
-                )
-                if doc_type in still_missing and files_by_type.get(doc_type) is None:
-                    f["doc_type"] = doc_type
-                    files_by_type[doc_type] = f
-                    still_missing.remove(doc_type)
-                    logger.info(
-                        "LLM classified site file '%s' as %s (conf=%.2f) for '%s'",
-                        fname, doc_type, conf, site_title,
-                    )
-                if not still_missing:
-                    break
-
-        sir_found = files_by_type["sir"] is not None
-        isp_found = files_by_type["isp"] is not None
-        inspection_found = files_by_type["building_inspection"] is not None
-        report_exists = files_by_type["dd_report"] is not None
-
-        missing_docs: list[str] = []
-        if not sir_found:
-            missing_docs.append("sir")
-        if not isp_found:
-            missing_docs.append("isp")
-        if not inspection_found:
-            missing_docs.append("building_inspection")
-
-        ready_for_report = sir_found and isp_found and inspection_found and not report_exists
-
-        # Resolve P1 Assignee name + email from Wrike contact
-        p1_profile = extract_p1_from_record(record)
-        p1_email = p1_profile.get("email") if p1_profile else None
-        p1_name = p1_profile.get("name") if p1_profile else None
-
-        return {
-            "status": "success",
-            "site_title": site_title,
-            "p1_assignee_name": p1_name,
-            "p1_assignee_email": p1_email,
-            "sir_found": sir_found,
-            "isp_found": isp_found,
-            "inspection_found": inspection_found,
-            "report_exists": report_exists,
-            "missing_docs": missing_docs,
-            "ready_for_report": ready_for_report,
-            "files": files_by_type,
-            "drive_folder_url": drive_folder_url,
-            "message": "\n".join([
-                f"Site '{site_title}' document readiness:",
-                f"  SIR: {'found — ' + (files_by_type.get('sir') or {}).get('name', '') if sir_found else 'not found'}",
-                f"  ISP: {'found — ' + (files_by_type.get('isp') or {}).get('name', '') if isp_found else 'not found'}",
-                f"  Building Inspection: {'found — ' + (files_by_type.get('building_inspection') or {}).get('name', '') if inspection_found else 'not found'}",
-                f"  DD Report: {'exists — ' + (files_by_type.get('dd_report') or {}).get('name', '') if report_exists else 'not yet created'}",
-                "",
-                "Ready for report generation." if ready_for_report else (
-                    "Not ready — " + ", ".join(missing_docs) + " missing." if missing_docs else "Report already exists."
-                ),
-            ]),
-        }
-
-    except Exception as e:
-        logger.error("check_site_readiness failed: %s", e)
-        return {
-            "status": "error",
-            "error": "check_site_readiness failed",
-            "message": str(e),
-        }
+    return await asyncio.to_thread(_work)
 
 
 @mcp.tool()
@@ -2087,7 +2285,7 @@ async def check_report_completeness(doc_id: str) -> dict[str, Any]:
     """Check a generated DD report Google Doc for unresolved placeholders and pending sections.
 
     Reads the document text, scans for any remaining {{token}} patterns (unfilled
-    placeholders — hard block) and [Not found / Pending] gap labels (acceptable sourced gaps).
+    placeholders - hard block) and [Not found / Pending] gap labels (acceptable sourced gaps).
 
     Args:
         doc_id: Google Docs file ID of the generated DD report.
@@ -2096,7 +2294,7 @@ async def check_report_completeness(doc_id: str) -> dict[str, Any]:
         Dict with ready_to_send flag, unresolved_token_count, unresolved_tokens list,
         pending_section_count, pending_sections list, and a human-readable summary.
     """
-    logger.info("Tool called: check_report_completeness — doc_id=%s", doc_id)
+    logger.info("Tool called: check_report_completeness - doc_id=%s", doc_id)
 
     if not doc_id or not doc_id.strip():
         return {
@@ -2105,54 +2303,105 @@ async def check_report_completeness(doc_id: str) -> dict[str, Any]:
             "message": "doc_id must be a non-empty string",
         }
 
-    try:
-        gc = _make_google_client()
-        text = gc.export_google_doc_as_text(doc_id)
+    def _work() -> dict[str, Any]:
+        try:
+            gc = _make_google_client()
+            text = gc.export_google_doc_as_text(doc_id)
 
-        # Find unresolved {{token}} patterns — these are hard blocks
-        unresolved_tokens = re.findall(r"\{\{([^}]+)\}\}", text)
-        unresolved_token_count = len(unresolved_tokens)
-
-        # Find all [Not found — ...] and [Pending...] labels
-        pending_labels = re.findall(r"\[Not found\s*—[^]]+\]", text, re.IGNORECASE)
-        pending_section_count = len(pending_labels)
-
-        ready_to_send = unresolved_token_count == 0
-
-        if ready_to_send and pending_section_count == 0:
-            summary = "Report complete. All fields filled."
-        elif ready_to_send:
-            summary = (
-                f"Report complete. {pending_section_count} field(s) pending "
-                f"(data not yet available): {'; '.join(pending_labels[:5])}"
-                + (" ..." if len(pending_labels) > 5 else "")
-            )
-        else:
-            summary = (
-                f"Report NOT ready to send. {unresolved_token_count} unfilled placeholder(s): "
-                + ", ".join(f"{{{{{t}}}}}" for t in unresolved_tokens[:10])
-                + (" ..." if len(unresolved_tokens) > 10 else "")
+            unresolved_tokens = re.findall(r"\{\{([^}]+)\}\}", text)
+            unresolved_token_count = len(unresolved_tokens)
+            raw_template_tokens = _extract_raw_template_tokens(text)
+            raw_template_token_count = len(raw_template_tokens)
+            pending_labels = re.findall(r"\[(?:Not found|Pending)[^\]]+\]", text, re.IGNORECASE)
+            pending_section_count = len(pending_labels)
+            invalid_can_we_answer = _extract_invalid_can_we_answer(text)
+            ready_to_send = (
+                unresolved_token_count == 0
+                and raw_template_token_count == 0
+                and invalid_can_we_answer is None
             )
 
-        return {
-            "status": "success",
-            "doc_id": doc_id,
-            "ready_to_send": ready_to_send,
-            "unresolved_token_count": unresolved_token_count,
-            "unresolved_tokens": unresolved_tokens,
-            "pending_section_count": pending_section_count,
-            "pending_sections": pending_labels,
-            "summary": summary,
-            "message": summary,
-        }
+            if ready_to_send and pending_section_count == 0:
+                summary = "Report complete. All fields filled."
+            elif raw_template_token_count:
+                summary = (
+                    "Report NOT ready to send. "
+                    f"{raw_template_token_count} raw template token(s) leaked into the document: "
+                    + ", ".join(raw_template_tokens[:10])
+                    + (" ..." if raw_template_token_count > 10 else "")
+                )
+            elif invalid_can_we_answer is not None:
+                summary = (
+                    "Report NOT ready to send. "
+                    "Can we do this? must be one of "
+                    f"{', '.join(sorted(ALLOWED_CAN_WE_ANSWERS))}. "
+                    f"Found: {invalid_can_we_answer!r}"
+                )
+            elif ready_to_send:
+                summary = (
+                    f"Report complete. {pending_section_count} field(s) pending "
+                    f"(data not yet available): {'; '.join(pending_labels[:5])}"
+                    + (" ..." if len(pending_labels) > 5 else "")
+                )
+            else:
+                summary = (
+                    f"Report NOT ready to send. {unresolved_token_count} unfilled placeholder(s): "
+                    + ", ".join(f"{{{{{t}}}}}" for t in unresolved_tokens[:10])
+                    + (" ..." if len(unresolved_tokens) > 10 else "")
+                )
 
-    except Exception as e:
-        logger.error("check_report_completeness failed: %s", e)
-        return {
-            "status": "error",
-            "error": "check_report_completeness failed",
-            "message": str(e),
-        }
+            return {
+                "status": "success",
+                "doc_id": doc_id,
+                "ready_to_send": ready_to_send,
+                "unresolved_token_count": unresolved_token_count,
+                "unresolved_tokens": unresolved_tokens,
+                "raw_template_token_count": raw_template_token_count,
+                "raw_template_tokens": raw_template_tokens,
+                "pending_section_count": pending_section_count,
+                "pending_sections": pending_labels,
+                "invalid_can_we_answer": invalid_can_we_answer,
+                "summary": summary,
+                "message": summary,
+            }
+
+        except Exception as e:
+            logger.error("check_report_completeness failed: %s", e)
+            return {
+                "status": "error",
+                "error": "check_report_completeness failed",
+                "message": str(e),
+            }
+
+    return await asyncio.to_thread(_work)
+
+
+def _extract_invalid_can_we_answer(text: str) -> str | None:
+    """Return the raw Can we answer when it is present but not canonical."""
+    section_match = re.search(r"Can we do this\?\s+([^\r\n]+)", text, re.IGNORECASE)
+    if not section_match:
+        return None
+
+    raw_value = section_match.group(1)
+    if CAN_WE_SECTION_DELIMITER in raw_value:
+        raw_value = raw_value.split(CAN_WE_SECTION_DELIMITER, 1)[0]
+    answer = " ".join(raw_value.replace("*", " ").split()).strip()
+    if not answer or answer in ALLOWED_CAN_WE_ANSWERS:
+        return None
+    if normalize_can_we_answer(answer) in ALLOWED_CAN_WE_ANSWERS:
+        return answer
+    return answer
+
+
+def _extract_raw_template_tokens(text: str) -> list[str]:
+    """Return canonical token names that appear as bare text in the document."""
+    found: list[str] = []
+    for token in TEMPLATE_TOKENS:
+        if f"{{{{{token}}}}}" in text:
+            continue
+        if token in text:
+            found.append(token)
+    return found
 
 
 @mcp.tool()
@@ -2169,7 +2418,7 @@ async def get_site_comments(site_name_or_id: str) -> dict[str, Any]:
     Returns:
         Dict with comments grouped by section, plus a flat list of all comments.
     """
-    logger.info("Tool called: get_site_comments — %s", site_name_or_id)
+    logger.info("Tool called: get_site_comments - %s", site_name_or_id)
 
     if not site_name_or_id or not site_name_or_id.strip():
         return {
@@ -2178,61 +2427,58 @@ async def get_site_comments(site_name_or_id: str) -> dict[str, Any]:
             "message": "site_name_or_id must be a non-empty string",
         }
 
-    try:
-        record = find_site_record(site_name_or_id=site_name_or_id)
-        if not record:
-            return {
-                "status": "error",
-                "error": "Site record not found",
-                "message": f"Could not find a Wrike Site Record matching '{site_name_or_id}'.",
-            }
+    def _work() -> dict[str, Any]:
+        try:
+            record = find_site_record(site_name_or_id=site_name_or_id)
+            if not record:
+                return {
+                    "status": "error",
+                    "error": "Site record not found",
+                    "message": f"Could not find a Wrike Site Record matching '{site_name_or_id}'.",
+                }
 
-        record_id = record.get("id")
-        if not record_id:
-            return {"status": "error", "error": "No record ID", "message": "Record has no ID."}
+            record_id = record.get("id")
+            if not record_id:
+                return {"status": "error", "error": "No record ID", "message": "Record has no ID."}
 
-        comments = get_record_comments(record_id=record_id)
+            comments = get_record_comments(record_id=record_id)
+            if not comments:
+                return {
+                    "status": "success",
+                    "site_title": record.get("title", site_name_or_id),
+                    "comment_count": 0,
+                    "by_section": {},
+                    "all_comments": [],
+                    "message": f"No comments found on Wrike record for '{record.get('title', site_name_or_id)}'.",
+                }
 
-        if not comments:
+            by_section: dict[str, list[dict[str, Any]]] = {}
+            for comment in comments:
+                section = classify_comment_to_section(comment["text"])
+                by_section.setdefault(section, []).append(comment)
+
             return {
                 "status": "success",
                 "site_title": record.get("title", site_name_or_id),
-                "comment_count": 0,
-                "by_section": {},
-                "all_comments": [],
-                "message": f"No comments found on Wrike record for '{record.get('title', site_name_or_id)}'.",
+                "comment_count": len(comments),
+                "by_section": by_section,
+                "all_comments": comments,
+                "message": (
+                    f"Found {len(comments)} comment(s) on '{record.get('title', site_name_or_id)}'. "
+                    f"Sections: {', '.join(sorted(by_section.keys()))}."
+                ),
             }
 
-        # Group by section
-        by_section: dict[str, list[dict[str, Any]]] = {}
-        for c in comments:
-            section = classify_comment_to_section(c["text"])
-            by_section.setdefault(section, []).append(c)
+        except Exception as e:
+            logger.error("get_site_comments failed: %s", e)
+            return {
+                "status": "error",
+                "error": "get_site_comments failed",
+                "message": str(e),
+            }
 
-        return {
-            "status": "success",
-            "site_title": record.get("title", site_name_or_id),
-            "comment_count": len(comments),
-            "by_section": by_section,
-            "all_comments": comments,
-            "message": (
-                f"Found {len(comments)} comment(s) on '{record.get('title', site_name_or_id)}'. "
-                f"Sections: {', '.join(sorted(by_section.keys()))}."
-            ),
-        }
+    return await asyncio.to_thread(_work)
 
-    except Exception as e:
-        logger.error("get_site_comments failed: %s", e)
-        return {
-            "status": "error",
-            "error": "get_site_comments failed",
-            "message": str(e),
-        }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MatterBot integration
-# ─────────────────────────────────────────────────────────────────────────────
 
 MATTERBOT_BASE_URL = "https://matterbot-1819903979408.us-central1.run.app"
 MATTERBOT_TIMEOUT_SECONDS = 30
@@ -2252,14 +2498,14 @@ async def generate_marketing_pack(
     marketing images from a Matterport scan. The rendered images are deposited
     into the site's M1 Property Acquired subfolder in Google Drive.
 
-    This is fire-and-forget — MatterBot processes asynchronously. The images
+    This is fire-and-forget - MatterBot processes asynchronously. The images
     will appear in the Drive folder once generation completes (typically 5-15
     minutes depending on room count and tier).
 
     Args:
         space_sid: Matterport space SID (from the scan URL or Wrike record).
         space_name: Space / site name (used for Drive folder matching).
-        tier: Rendering quality tier — "standard" or "premium".
+        tier: Rendering quality tier - "standard" or "premium".
         max_rooms: Maximum rooms to render. 0 = service default (~12).
         room_types: Comma-separated room type filter (e.g., "classroom,commons,gym").
             Empty string = all room types.
@@ -2268,7 +2514,7 @@ async def generate_marketing_pack(
         Dict with status and the request URL that was fired.
     """
     logger.info(
-        "Tool called: generate_marketing_pack — space_sid=%s, space_name=%s, tier=%s",
+        "Tool called: generate_marketing_pack - space_sid=%s, space_name=%s, tier=%s",
         space_sid, space_name, tier,
     )
 
@@ -2277,6 +2523,13 @@ async def generate_marketing_pack(
             "status": "error",
             "error": "Missing parameter",
             "message": "space_sid must be a non-empty string (Matterport space SID).",
+        }
+    normalized_space_sid = space_sid.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", normalized_space_sid):
+        return {
+            "status": "error",
+            "error": "Invalid parameter",
+            "message": "space_sid may contain only letters, numbers, underscores, and hyphens.",
         }
     if not space_name or not space_name.strip():
         return {
@@ -2291,7 +2544,7 @@ async def generate_marketing_pack(
             "message": f"tier must be 'standard' or 'premium', got '{tier}'.",
         }
 
-    url = f"{MATTERBOT_BASE_URL}/api/batch/generate-marketing-pack/{space_sid.strip()}"
+    url = f"{MATTERBOT_BASE_URL}/api/batch/generate-marketing-pack/{normalized_space_sid}"
     params: dict[str, str | int] = {"space_name": space_name.strip()}
     if tier != "standard":
         params["tier"] = tier
@@ -2300,43 +2553,40 @@ async def generate_marketing_pack(
     if room_types.strip():
         params["room_types"] = room_types.strip()
 
-    try:
-        resp = requests.get(url, params=params, timeout=MATTERBOT_TIMEOUT_SECONDS)
-        resp.raise_for_status()
+    def _work() -> dict[str, Any]:
+        try:
+            resp = requests.get(url, params=params, timeout=MATTERBOT_TIMEOUT_SECONDS)
+            resp.raise_for_status()
+            logger.info("MatterBot marketing pack triggered: %s (status=%d)", url, resp.status_code)
+            return {
+                "status": "success",
+                "message": (
+                    f"Marketing pack generation triggered for '{space_name.strip()}' "
+                    f"(tier={tier}). Images will appear in the site's M1 folder "
+                    "once MatterBot finishes processing (typically 5-15 minutes)."
+                ),
+                "request_url": resp.url,
+                "http_status": resp.status_code,
+            }
+        except requests.Timeout:
+            logger.warning("MatterBot request timed out for space %s", normalized_space_sid)
+            return {
+                "status": "error",
+                "error": "MatterBot timeout",
+                "message": (
+                    f"MatterBot did not respond within {MATTERBOT_TIMEOUT_SECONDS}s. "
+                    "The service may be starting up - retry in a minute."
+                ),
+            }
+        except requests.RequestException as e:
+            logger.error("MatterBot request failed: %s", e)
+            return {
+                "status": "error",
+                "error": "MatterBot request failed",
+                "message": str(e),
+            }
 
-        logger.info(
-            "MatterBot marketing pack triggered: %s (status=%d)",
-            url, resp.status_code,
-        )
-
-        return {
-            "status": "success",
-            "message": (
-                f"Marketing pack generation triggered for '{space_name.strip()}' "
-                f"(tier={tier}). Images will appear in the site's M1 folder "
-                "once MatterBot finishes processing (typically 5-15 minutes)."
-            ),
-            "request_url": resp.url,
-            "http_status": resp.status_code,
-        }
-
-    except requests.Timeout:
-        logger.warning("MatterBot request timed out for space %s", space_sid)
-        return {
-            "status": "error",
-            "error": "MatterBot timeout",
-            "message": (
-                f"MatterBot did not respond within {MATTERBOT_TIMEOUT_SECONDS}s. "
-                "The service may be starting up — retry in a minute."
-            ),
-        }
-    except requests.RequestException as e:
-        logger.error("MatterBot request failed: %s", e)
-        return {
-            "status": "error",
-            "error": "MatterBot request failed",
-            "message": str(e),
-        }
+    return await asyncio.to_thread(_work)
 
 
 @mcp.tool()
@@ -2350,7 +2600,7 @@ async def save_skill_report(
 
     Creates a document named "{skill_name} Assessment - {site_name}" containing
     the full structured skill output. The tool formats the data into a readable
-    document — pass the complete result dict from the skill tool.
+    document - pass the complete result dict from the skill tool.
 
     Args:
         skill_name: Skill name (e.g., "E-Occupancy", "School Approval").
@@ -2362,7 +2612,7 @@ async def save_skill_report(
     Returns:
         Dict with status, doc_url, and doc_id.
     """
-    logger.info("Tool called: save_skill_report — skill=%s, site=%s", skill_name, site_name)
+    logger.info("Tool called: save_skill_report - skill=%s, site=%s", skill_name, site_name)
 
     if not skill_name or not site_name or not drive_folder_url or not skill_data:
         return {
@@ -2379,48 +2629,47 @@ async def save_skill_report(
             "message": f"Could not extract folder ID from: {drive_folder_url}",
         }
 
-    gc = _make_google_client()
-    today_str = datetime.now().strftime("%m/%d/%Y")
-    doc_name = f"{skill_name} Assessment - {site_name}"
+    def _work() -> dict[str, Any]:
+        gc = _make_google_client()
+        today_str = datetime.now().strftime("%m/%d/%Y")
+        doc_name = f"{skill_name} Assessment - {site_name}"
+        content = _format_skill_document(skill_name, site_name, today_str, skill_data)
 
-    # Format the skill data into a readable document
-    content = _format_skill_document(skill_name, site_name, today_str, skill_data)
+        target_folder_id = folder_id
+        try:
+            subfolders = gc.list_subfolders(folder_id)
+            for subfolder in subfolders:
+                if subfolder.get("name", "").lower().startswith("m1"):
+                    target_folder_id = subfolder["id"]
+                    logger.info("Found M1 subfolder: %s", subfolder["name"])
+                    break
+            else:
+                logger.warning("M1 subfolder not found for '%s', saving to site root", site_name)
+        except Exception as e:
+            logger.warning("Failed to list subfolders for '%s': %s - saving to site root", site_name, e)
 
-    # Try to find M1 subfolder; fall back to site root
-    target_folder_id = folder_id
-    try:
-        subfolders = gc.list_subfolders(folder_id)
-        for sf in subfolders:
-            sf_name = sf.get("name", "").lower()
-            if sf_name.startswith("m1"):
-                target_folder_id = sf["id"]
-                logger.info("Found M1 subfolder: %s", sf["name"])
-                break
-        else:
-            logger.warning("M1 subfolder not found for '%s', saving to site root", site_name)
-    except Exception as e:
-        logger.warning("Failed to list subfolders for '%s': %s — saving to site root", site_name, e)
+        try:
+            doc = gc.create_document(
+                name=doc_name,
+                folder_id=target_folder_id,
+                text_content=content,
+            )
+            return {
+                "status": "success",
+                "doc_id": doc.get("id", ""),
+                "doc_url": doc.get("webViewLink", ""),
+                "doc_name": doc_name,
+                "message": f"Created '{doc_name}' in Drive",
+            }
+        except Exception as e:
+            logger.error("save_skill_report failed: %s", e)
+            return {
+                "status": "error",
+                "error": "Failed to create document",
+                "message": str(e),
+            }
 
-    try:
-        doc = gc.create_document(
-            name=doc_name,
-            folder_id=target_folder_id,
-            text_content=content,
-        )
-        return {
-            "status": "success",
-            "doc_id": doc.get("id", ""),
-            "doc_url": doc.get("webViewLink", ""),
-            "doc_name": doc_name,
-            "message": f"Created '{doc_name}' in Drive",
-        }
-    except Exception as e:
-        logger.error("save_skill_report failed: %s", e)
-        return {
-            "status": "error",
-            "error": "Failed to create document",
-            "message": str(e),
-        }
+    return await asyncio.to_thread(_work)
 
 
 def _format_skill_document(
@@ -2556,7 +2805,7 @@ async def send_dd_report_email(
     Returns:
         Dict indicating success or error with recipient details.
     """
-    logger.info("Tool called: send_dd_report_email — site=%s", site_name)
+    logger.info("Tool called: send_dd_report_email - site=%s", site_name)
 
     if not site_name or not report_url:
         return {
@@ -2566,7 +2815,6 @@ async def send_dd_report_email(
         }
 
     settings = get_settings()
-
     if not settings.email_sender or not settings.email_app_password:
         return {
             "status": "error",
@@ -2574,23 +2822,24 @@ async def send_dd_report_email(
             "message": "EMAIL_SENDER and EMAIL_APP_PASSWORD must be set.",
         }
 
-    # Build recipient list: configured recipients + additional (e.g., P1 Assignee)
     base_recipients = [
-        r.strip() for r in settings.dd_report_email_recipients.split(",") if r.strip()
+        recipient.strip()
+        for recipient in settings.dd_report_email_recipients.split(",")
+        if recipient.strip()
     ] if settings.dd_report_email_recipients else []
-
     extra_recipients = [
-        r.strip() for r in additional_recipients.split(",") if r.strip()
+        recipient.strip()
+        for recipient in additional_recipients.split(",")
+        if recipient.strip()
     ] if additional_recipients else []
 
-    # Deduplicate while preserving order
     seen: set[str] = set()
     recipients: list[str] = []
-    for r in base_recipients + extra_recipients:
-        r_lower = r.lower()
-        if r_lower not in seen:
-            seen.add(r_lower)
-            recipients.append(r)
+    for recipient in base_recipients + extra_recipients:
+        recipient_lower = recipient.lower()
+        if recipient_lower not in seen:
+            seen.add(recipient_lower)
+            recipients.append(recipient)
 
     if not recipients:
         return {
@@ -2599,39 +2848,52 @@ async def send_dd_report_email(
             "message": "No recipients configured and no additional_recipients provided.",
         }
 
-    subject = f"DD Report Ready — {site_name}"
+    subject = f"DD Report Ready - {site_name}"
+    safe_site_name = escape_html_text(site_name)
+    safe_key_findings = escape_html_text(key_findings)
+    safe_report_url = sanitize_http_url(report_url)
+    if not safe_report_url:
+        return {
+            "status": "error",
+            "error": "Invalid report_url",
+            "message": "report_url must be a valid http or https URL.",
+        }
+
     html_body = f"""
 <html><body>
-<h2>Due Diligence Report — {site_name}</h2>
-<p>A new Due Diligence report has been generated for <strong>{site_name}</strong>.</p>
-<p><a href="{report_url}" style="font-size:16px;font-weight:bold;">View Report in Google Docs</a></p>
+<h2>Due Diligence Report - {safe_site_name}</h2>
+<p>A new Due Diligence report has been generated for <strong>{safe_site_name}</strong>.</p>
+<p><a href="{safe_report_url}" style="font-size:16px;font-weight:bold;">View Report in Google Docs</a></p>
 <h3>Key Findings</h3>
-<pre style="background:#f5f5f5;padding:12px;border-radius:4px;">{key_findings}</pre>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;">{safe_key_findings}</pre>
 <p style="color:#888;font-size:12px;">Generated automatically by the Alpha DD Reporter.</p>
 </body></html>
 """
 
-    try:
-        send_email(
-            sender=settings.email_sender,
-            app_password=settings.email_app_password,
-            recipients=recipients,
-            subject=subject,
-            html_body=html_body,
-        )
-        return {
-            "status": "success",
-            "recipients": recipients,
-            "subject": subject,
-            "message": f"Email sent to {len(recipients)} recipient(s): {', '.join(recipients)}",
-        }
-    except Exception as e:
-        logger.error("send_dd_report_email failed: %s", e)
-        return {
-            "status": "error",
-            "error": "Email send failed",
-            "message": str(e),
-        }
+    def _work() -> dict[str, Any]:
+        try:
+            send_email(
+                sender=settings.email_sender,
+                app_password=settings.email_app_password,
+                recipients=recipients,
+                subject=subject,
+                html_body=html_body,
+            )
+            return {
+                "status": "success",
+                "recipients": recipients,
+                "subject": subject,
+                "message": f"Email sent to {len(recipients)} recipient(s): {', '.join(recipients)}",
+            }
+        except Exception as e:
+            logger.error("send_dd_report_email failed: %s", e)
+            return {
+                "status": "error",
+                "error": "Email send failed",
+                "message": str(e),
+            }
+
+    return await asyncio.to_thread(_work)
 
 
 def main() -> None:

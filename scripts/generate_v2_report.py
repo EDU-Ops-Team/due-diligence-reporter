@@ -2,7 +2,7 @@
 """
 generate_v2_report.py — Manual V2 DD report generation for a single site.
 
-Uses prompt_v2.md and the V2 template.
+Uses docs/prompts/prompt_v2.md and the V2 template.
 
 Run:
     uv run python scripts/generate_v2_report.py --site "Alpha Keller"
@@ -74,9 +74,9 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
         srv.send_dd_report_email = _skip_email  # type: ignore[assignment]
 
     # Load the V2 agent system prompt
-    prompt_path = _project_root / "prompt_v2.md"
+    prompt_path = _project_root / "docs" / "prompts" / "prompt_v2.md"
     if not prompt_path.exists():
-        logger.error("prompt_v2.md not found at %s", prompt_path)
+        logger.error("Prompt file not found at %s", prompt_path)
         sys.exit(1)
     system_prompt = prompt_path.read_text(encoding="utf-8")
 
@@ -129,7 +129,11 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
 
     if skip_readiness:
         logger.info("--skip-readiness: bypassing readiness gate, calling agent directly")
-        agent_result = run_dd_report_agent(site_title, system_prompt)
+        agent_result = run_dd_report_agent(
+            site_title,
+            system_prompt,
+            settings.anthropic_report_model,
+        )
 
         print(f"\n{'=' * 60}")
         print(f"V2 Report — {site_title}")

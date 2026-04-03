@@ -22,12 +22,12 @@ The agent gathers facts. It does not make recommendations. The decision belongs 
 
 The V2 DD Report is a **structured executive one-pager** — not the multi-page narrative of V1. It uses structured checklists, pick-menu dimensions, and bare values instead of prose paragraphs.
 
-**28 template tokens** across three sections:
+**70 template tokens** across three sections:
 
 | Section | Count | What it covers |
 |---------|-------|----------------|
 | **meta** | 7 | Site name, address, school type, marketing name, report date, prepared by, Drive folder link |
-| **exec** | 15 | "Can we do this?" card (4 pick-menu dimensions), cost/capacity/timeline grid (6 values + 3 server-computed deltas), lease conditions, risk notes |
+| **exec** | 57 | "Can we do this?" card (4 pick-menu dimensions), build scenarios table (9 values), detailed cost breakdown table (36 values), build delta analysis (6 server-computed deltas), lease conditions, risk notes |
 | **sources** | 6 | Links to SIR, Building Inspection, ISP, E-Occupancy Assessment, School Approval Assessment, Report Trace |
 
 ### "Can we do this?" card
@@ -36,24 +36,53 @@ Four dimensions, each a fixed pick-menu:
 
 | Dimension | Source | Options |
 |-----------|--------|---------|
-| `exec.c_answer` | Agent synthesis | YES / NO / CONDITIONAL |
+| `exec.c_answer` | Agent synthesis | Yes / Yes see notes / No |
 | `exec.c_zoning` | SIR | Permitted by right / Use Permit Required (Admin) / Use Permit Required (Public) / Prohibited |
 | `exec.c_occupancy` | E-Occupancy skill | Has E-Occupancy / Change of use required, meets E-Occupancy / Change of use required, needs work |
 | `exec.c_edreg` | School Approval skill | Not required / Required and have done / Required have not done |
 
-### Cost / Capacity / Timeline grid
+### Build Scenarios and Delta Analysis
 
-Two tiers (MVP and Ideal) with server-computed deltas:
+The report now uses three scenarios:
 
-| Row | MVP token | Ideal token | Delta (auto-computed) |
-|-----|-----------|-------------|----------------------|
-| Capacity | `exec.e_mvp_capacity` | `exec.e_ideal_capacity` | `exec.delta_capacity` |
-| Cost | `exec.e_mvp_cost` | `exec.e_ideal_cost` | `exec.delta_cost` |
-| Timeline | `exec.f_mvp_ready` | `exec.f_ideal_ready` | `exec.delta_ready` |
+- `MinWork`: minimum work required to reach E-occupancy compliance. The token names remain `*_mvp_*` for backward compatibility.
+- `MaxCapacity`: the highest student count supportable by the space.
+- `MaxValue`: the highest capacity achievable for the least amount of money.
 
-Rules: cost = single midpoint number (not a range), timeline = MM/YY format only, Wrike comments override API numbers.
+| Row | MinWork token | MaxCapacity token | MaxValue token |
+|-----|---------------|-------------------|----------------|
+| Capacity | `exec.e_mvp_capacity` | `exec.e_max_capacity_capacity` | `exec.e_max_value_capacity` |
+| Cost | `exec.e_mvp_cost` | `exec.e_max_capacity_cost` | `exec.e_max_value_cost` |
+| Timeline | `exec.f_mvp_ready` | `exec.f_max_capacity_ready` | `exec.f_max_value_ready` |
 
-### Conditions and Risk Notes
+Delta analysis compares each scenario against MinWork:
+
+| Row | MaxCapacity delta | MaxValue delta |
+|-----|-------------------|----------------|
+| Capacity | `exec.delta_max_capacity_capacity` | `exec.delta_max_value_capacity` |
+| Cost | `exec.delta_max_capacity_cost` | `exec.delta_max_value_cost` |
+| Timeline | `exec.delta_max_capacity_ready` | `exec.delta_max_value_ready` |
+
+Rules: cost = single midpoint number (not a range), timeline = MM/YY format only, and Wrike comments override API numbers.
+
+### Detailed Cost Breakdown
+
+The report also carries a fixed-row cost table across the same three scenario columns. These rows are normalized from RayCon's variable category labels so the template layout stays stable:
+
+- Demolition
+- Framing / Doors
+- MEP / Fire / Life Safety
+- Plumbing / Bathrooms
+- Finish Work
+- Furniture
+- Tech / Security / Signage
+- Other Hard Costs
+- Soft Costs
+- GC Fee
+- Contingency
+- Grand Total
+
+### Notes for Acquistion Negoations and Risk Notes
 
 Two separate tokens with distinct classification rules:
 
@@ -82,7 +111,7 @@ Both require per-bullet source citations. `risk_notes` must cite a specific docu
 Human (chat)   │       report_pipeline.py  │  shared pipeline module
     │          │          ┌────────────────┘
     │          │          │
-    │  prompt_v2.md       │  same tools, same prompt
+    │  docs/prompts/prompt_v2.md │  same tools, same prompt
     ▼          ▼          ▼
 Claude AI Agent ◄─────────┘
     │
@@ -98,7 +127,7 @@ Claude AI Agent ◄─────────┘
 │  ├─ read_drive_document      (Drive file reader)         │
 │  ├─ apply_e_occupancy_skill  (E-Occ scoring)             │
 │  ├─ apply_school_approval_skill (State registration)     │
-│  ├─ get_cost_estimate        (Building Optimizer API)    │
+│  ├─ get_cost_estimate        (RayCon API)                │
 │  ├─ create_dd_report         (Template copy + fill)      │
 │  ├─ check_site_readiness     (Doc presence gate)         │
 │  ├─ check_report_completeness (Token scan)               │
@@ -108,7 +137,7 @@ Claude AI Agent ◄─────────┘
 │  └─ send_dd_report_email     (Gmail SMTP)                │
 │                                                          │
 │  Report Schema:                                          │
-│  └─ report_schema.py         (28 tokens + alias map)     │
+│  └─ report_schema.py         (70 tokens + alias map)     │
 └──────────────┬───────────────────────────────────────────┘
                │
     ┌──────────┼──────────────────────────┐
@@ -323,11 +352,11 @@ Three skill tools analyze the source data and produce structured outputs. The fi
 2. **Normalize report_data** — `normalize_report_data()` from `report_schema.py`:
    - Flattens nested dicts to dot-separated keys
    - Injects defaults for `meta.site_name` and `meta.report_date`
-   - Applies the **alias map** (26 aliases) to translate known agent key variations to canonical token names
-   - Filters to only keys matching the 28 canonical template tokens
+   - Applies the alias map to translate known agent key variations to canonical token names
+   - Filters to only keys matching the 34 canonical template tokens
    - Returns diagnostics: replacements applied, unmatched keys, unfilled tokens, token sources
 
-3. **Compute deltas** — Server-side computation of `exec.delta_capacity`, `exec.delta_cost`, `exec.delta_ready` from MVP/Ideal pairs
+3. **Compute deltas** — Server-side computation of the MaxCapacity and MaxValue delta columns against MinWork
 
 4. **Fill template** — `batchUpdate` to Docs API with `replaceAllText` per token. Link tokens (`sources.*`, `meta.drive_folder_url`) are inserted as clickable hyperlinks with display labels.
 
@@ -479,7 +508,7 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 
 | File | What It Is |
 |------|-----------|
-| `prompt_v2.md` | Agent system prompt — V2 workflow, exec summary format, report data schema |
+| `docs/prompts/prompt_v2.md` | Agent system prompt — V2 workflow, exec summary format, report data schema |
 | `src/due_diligence_reporter/server.py` | MCP server — 13 tools + embedded skill logic |
 | `src/due_diligence_reporter/report_pipeline.py` | Shared pipeline — readiness check, Claude agent loop, notifications |
 | `src/due_diligence_reporter/report_schema.py` | Template token list (28), alias map (26), `normalize_report_data()`, `compute_deltas()` |

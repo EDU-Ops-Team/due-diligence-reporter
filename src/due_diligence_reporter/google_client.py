@@ -14,6 +14,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaInMemoryUpload
 
+from .utils import escape_drive_query_literal
+
 logger = logging.getLogger("[google_client]")
 
 
@@ -495,9 +497,10 @@ class GoogleClient:
 
     def file_exists_in_folder(self, folder_id: str, file_name: str) -> bool:
         """Check if a file with the exact name already exists in a folder."""
+        escaped_file_name = escape_drive_query_literal(file_name)
         query = (
             f"'{folder_id}' in parents"
-            f" and name='{file_name}'"
+            f" and name='{escaped_file_name}'"
             " and trashed=false"
         )
         try:

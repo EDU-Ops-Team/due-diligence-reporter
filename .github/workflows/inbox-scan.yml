@@ -40,18 +40,12 @@ jobs:
 
       - name: Verify required secrets
         run: |
-          [ -n "${{ secrets.WRIKE_ACCESS_TOKEN }}" ]         || { echo "WRIKE_ACCESS_TOKEN missing"; exit 1; }
-          [ -n "${{ secrets.OPENAI_API_KEY }}" ]             || { echo "OPENAI_API_KEY missing"; exit 1; }
-          [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]          || { echo "ANTHROPIC_API_KEY missing"; exit 1; }
-          [ -n "${{ secrets.DD_TEMPLATE_V2_GOOGLE_DOC_ID }}" ] || { echo "DD_TEMPLATE_V2_GOOGLE_DOC_ID missing"; exit 1; }
-          [ -n "${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}" ] || { echo "GOOGLE_DRIVE_ROOT_FOLDER_ID missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ]            || { echo "OAUTH_CLIENT_ID missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ]        || { echo "OAUTH_CLIENT_SECRET missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ]        || { echo "OAUTH_REFRESH_TOKEN missing"; exit 1; }
-          [ -n "${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}" ]    || { echo "GOOGLE_CHAT_WEBHOOK_URL missing"; exit 1; }
-          [ -n "${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}" ] || { echo "DD_REPORT_EMAIL_RECIPIENTS missing"; exit 1; }
-          [ -n "${{ secrets.EMAIL_SENDER }}" ]               || { echo "EMAIL_SENDER missing"; exit 1; }
-          [ -n "${{ secrets.EMAIL_APP_PASSWORD }}" ]         || { echo "EMAIL_APP_PASSWORD missing"; exit 1; }
+          [ -n "${{ secrets.SIR_FOLDER_ID }}" ]              || { echo "SIR_FOLDER_ID missing"; exit 1; }
+          [ -n "${{ secrets.ISP_FOLDER_ID }}" ]              || { echo "ISP_FOLDER_ID missing"; exit 1; }
+          [ -n "${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}" ] || { echo "BUILDING_INSPECTION_FOLDER_ID missing"; exit 1; }
           echo "All required secrets are present"
 
       - name: Create .env file from secrets
@@ -65,6 +59,7 @@ jobs:
           DD_REPORT_EMAIL_RECIPIENTS: ${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          SIR_NOTIFICATION_RECIPIENTS: ${{ secrets.SIR_NOTIFICATION_RECIPIENTS }}
 
           SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
           ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
@@ -80,6 +75,7 @@ jobs:
           echo "DD_REPORT_EMAIL_RECIPIENTS=${DD_REPORT_EMAIL_RECIPIENTS}" >> .env
           echo "EMAIL_SENDER=${EMAIL_SENDER}" >> .env
           echo "EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}" >> .env
+          echo "SIR_NOTIFICATION_RECIPIENTS=${SIR_NOTIFICATION_RECIPIENTS}" >> .env
 
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
