@@ -160,7 +160,7 @@ The `q2.floorplan_viability` field should read like:
 ### What the ISP does NOT contain
 
 - **Construction timeline** — not present in the Program Fit Analysis. Use `[Not found — ISP does not include construction timeline]`
-- **Cost estimates** — costs come from the RayCon API (`get_cost_estimate`), not the ISP
+- **Cost estimates** — costs come from the RayCon API (`get_cost_estimate`), not the ISP. **Do not read cost figures from the ISP and write them into `exec.e_mvp_cost` or `exec.e_max_capacity_cost` directly — always call `get_cost_estimate` and use `report_data_fields` from its response.**
 - **Renderings** — not present in the ISP
 
 ---
@@ -333,7 +333,7 @@ Call `check_site_readiness(site_name)`. This returns:
 - `files` — dict keyed by doc_type, each value has `name`, `id`, `webViewLink`
 - `missing_docs` — list of missing document types
 - `message` — human-readable summary with filenames
-- `p1_assignee_name` — full name of the P1 Accountable person from Wrike (use as `meta.prepared_by`; if missing or blank, call LocationOS `getSite` for the site and use the `accountable` DRI's name from the response as `meta.prepared_by` instead; only use `[Not found - P1 Assignee not set in Wrike]` if both sources return nothing)
+- `p1_assignee_name` — full name of the P1 Accountable person from Wrike (use as `meta.prepared_by`; if missing or blank, call LocationOS `getSite` for the site and use the `accountable` DRI's name from the response as `meta.prepared_by` instead; only use `[Not found - P1 Assignee not set in Wrike]` if both sources return nothing). **Never invent a name or use a placeholder like "DD Report Agent" — only real human names or the exact label above are acceptable.**
 - `p1_assignee_email` — email of the P1 Accountable person (pass to `send_dd_report_email` as `additional_recipients`)
 
 ### Step 2.5 — Retrieve Wrike comments
@@ -370,7 +370,7 @@ For **every** document found in the `files` dict, call `read_drive_document(file
 ### Step 5 — Apply skill tools (auto-publishes assessments to Drive)
 - `apply_e_occupancy_skill(..., site_name=<site_name>, drive_folder_url=<drive_folder_url>)` with data from the building inspection
 - `apply_school_approval_skill(state, site_name=<site_name>, drive_folder_url=<drive_folder_url>)` from the site address
-- `get_cost_estimate(total_building_sf, rooms=[...])` using the ISP room list (if ISP was found)
+- `get_cost_estimate(total_building_sf, rooms=[...])` using the ISP room list — **required whenever ISP was found; do not skip even if the ISP contains cost figures**
 
 **Always pass `site_name` and `drive_folder_url`** to both skill tools. This auto-publishes the full assessment as a Google Doc in the site's M1 subfolder. The returned `doc_url` should be included in `report_data` as:
 - `sources.e_occupancy_link` ← `doc_url` from `apply_e_occupancy_skill`
