@@ -157,6 +157,17 @@ The `q2.floorplan_viability` field should read like:
 
 - `appendix.isp_link` ← Google Drive web link to the ISP file
 
+### 5. Capacity by scenario → exec summary fields
+
+The ISP defines multiple cost/capacity scenarios (also called "tiers"). Extract the student count for **each** tier separately:
+
+| ISP tier name | Maps to |
+|---|---|
+| `absolute_min` / MinWork | `exec.e_mvp_capacity` |
+| `ideal` / Ideal | `exec.e_max_capacity_capacity` |
+
+**These are two distinct numbers.** Do not use the same student count for both fields. If the ISP defines only one scenario, use a sourced gap label for the missing tier (e.g., `[Not found — ISP does not define an Ideal scenario]`). Look for a "Student Capacity" or "Max Students" line within each scenario block or tier summary table.
+
 ### What the ISP does NOT contain
 
 - **Construction timeline** — not present in the Program Fit Analysis. Use `[Not found — ISP does not include construction timeline]`
@@ -372,6 +383,8 @@ For **every** document found in the `files` dict, call `read_drive_document(file
 - `apply_school_approval_skill(state, site_name=<site_name>, drive_folder_url=<drive_folder_url>)` from the site address
 - `get_cost_estimate(total_building_sf, rooms=[...])` using the ISP room list — **required whenever ISP was found; do not skip even if the ISP contains cost figures**
 
+After `get_cost_estimate` returns, **copy every key from `report_data_fields` directly into `report_data`**. Do not selectively copy only the grand totals — all line items (`exec.cost_demolition_mvp`, `exec.cost_framing_doors_mvp`, etc.) must be transferred. The `report_data_fields` dict from the response is the authoritative source for all cost breakdown rows.
+
 **Always pass `site_name` and `drive_folder_url`** to both skill tools. This auto-publishes the full assessment as a Google Doc in the site's M1 subfolder. The returned `doc_url` should be included in `report_data` as:
 - `sources.e_occupancy_link` ← `doc_url` from `apply_e_occupancy_skill`
 - `sources.school_approval_link` ← `doc_url` from `apply_school_approval_skill`
@@ -476,6 +489,18 @@ Rules:
 - Do not include the literal labels `Conditions:` or `Risks to note:` in the field values
 - Do not put risk items in `exec.acquisition_conditions`
 - Do not put lease or landlord negotiation items in `exec.risk_notes`
+
+### Step 5.7 — Synthesize exec.risk_notes
+
+Before calling `create_dd_report`, explicitly populate `exec.risk_notes` by reviewing all findings gathered in Steps 4–5.5. For each source, ask: "Did I find confirmed evidence of a real threat to timeline or viability?"
+
+Check each of these in order:
+1. **Building Inspection** — Overall Feasibility / Conversion Risk level; non-functional or undersized HVAC; fire alarm aged and requiring full replacement; shared building systems with confirmed capacity shortfall; structural deficiencies (active leaks, foundation cracking)
+2. **SIR** — Sequential permit blockers (State Fire Marshal must precede City permit); zoning variance/CUP with uncertain outcome; traffic study or pre-app required before permit can be filed
+3. **Shovels.ai** — Deferred maintenance signal (no permits in 10 years); open permits that create title/close risk; demolition permits indicating prior major structural work
+4. **Phase I ESA** — Any unresolved environmental findings
+
+Write each confirmed finding as a bullet citing its source document and the exact language that triggered the flag. If no qualifying findings exist after reviewing all sources, set `exec.risk_notes` to `""` (empty — do not invent items). Do not leave `exec.risk_notes` unpopulated by default.
 
 ### Step 6 — Generate the V2 report
 Call `create_dd_report(site_name, drive_folder_url, report_data, token_evidence=evidence)` with the assembled data dict. See "V2 Report Data Schema" section below for exact token keys.

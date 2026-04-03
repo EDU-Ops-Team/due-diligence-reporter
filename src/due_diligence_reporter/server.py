@@ -2009,16 +2009,22 @@ def _normalize_report_replacements(
     _fill_max_value_placeholders(replacements)
     _fill_max_capacity_placeholders(replacements)
     compute_deltas(replacements)
-    for delta_token in (
+    _delta_tokens = {
         "exec.delta_max_capacity_capacity",
         "exec.delta_max_capacity_cost",
         "exec.delta_max_capacity_ready",
         "exec.delta_max_value_capacity",
         "exec.delta_max_value_cost",
         "exec.delta_max_value_ready",
-    ):
+    }
+    for delta_token in _delta_tokens:
         if delta_token in replacements and token_sources.get(delta_token) == "unfilled":
             token_sources[delta_token] = "computed"
+    # Remove delta tokens from unfilled if compute_deltas resolved them to real values
+    unfilled = [
+        t for t in unfilled
+        if t not in _delta_tokens or replacements.get(t, "").startswith("[")
+    ]
 
     replacements.setdefault("meta.drive_folder_url", drive_folder_url)
     return replacements, unmatched, unfilled, token_sources
