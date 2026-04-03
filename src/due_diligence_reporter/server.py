@@ -1563,6 +1563,321 @@ async def apply_school_approval_skill(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Shovels.ai permit history helpers
+# ---------------------------------------------------------------------------
+
+def _call_shovels_search(api_key: str, base_url: str, address: str) -> dict[str, Any] | None:
+    """Search for an address and return the first result dict, or None if not found."""
+    resp = requests.get(
+        f"{base_url}/addresses/search",
+        params={"q": address, "size": 1},
+        headers={"X-API-Key": api_key},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    items = resp.json().get("items", [])
+    return items[0] if items else None
+
+
+def _call_shovels_metrics(api_key: str, base_url: str, geo_id: str) -> dict[str, Any]:
+    """Get current permit metrics for an address geo_id."""
+    resp = requests.get(
+        f"{base_url}/addresses/{geo_id}/metrics/current",
+        headers={"X-API-Key": api_key},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _call_shovels_permits(
+    api_key: str, base_url: str, geo_id: str, from_date: str, to_date: str
+) -> list[dict[str, Any]]:
+    """Get up to 50 permits for an address within the given date range."""
+    resp = requests.get(
+        f"{base_url}/permits/search",
+        params={"geo_id": geo_id, "permit_from": from_date, "permit_to": to_date, "size": 50},
+        headers={"X-API-Key": api_key},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json().get("items", [])
+
+
+_SHOVELS_SYSTEM_TAGS: dict[str, set[str]] = {
+    "HVAC_PERMIT": {"hvac", "mechanical", "heating", "cooling", "air conditioning"},
+    "ROOF_PERMIT": {"roof", "reroof", "roofing"},
+    "ELECTRICAL_PERMIT": {"electrical", "electric"},
+    "PLUMBING_PERMIT": {"plumbing"},
+}
+
+
+def _analyze_permit_flags(
+    metrics: dict[str, Any], permits: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Analyze permit metrics and history for DD risk signals. Returns list of flag dicts."""
+    flags: list[dict[str, Any]] = []
+
+    # OPEN_PERMIT — unresolved construction work (acquisition condition)
+    active = metrics.get("permit_active_count") or 0
+    in_review = metrics.get("permit_in_review_count") or 0
+    if active > 0 or in_review > 0:
+        n = active + in_review
+        flags.append({
+            "flag_type": "OPEN_PERMIT",
+            "severity": "acquisition_condition",
+            "description": (
+                f"{n} open/active permit(s) — unresolved construction work must be "
+                "resolved before lease execution"
+            ),
+            "evidence": f"Shovels metrics: permit_active_count={active}, permit_in_review_count={in_review}",
+        })
+
+    # DEMO_PERMIT — demolition work found in history (acquisition condition)
+    for p in permits:
+        tags = [t.lower() for t in (p.get("tags") or [])]
+        ptype = (p.get("type") or "").lower()
+        pdesc = (p.get("description") or "").lower()
+        if "demolition" in tags or "demolition" in ptype or "demolition" in pdesc:
+            flags.append({
+                "flag_type": "DEMO_PERMIT",
+                "severity": "acquisition_condition",
+                "description": (
+                    f"Demolition permit found ({p.get('file_date', 'date unknown')}) — "
+                    "verify scope and structural impact before proceeding"
+                ),
+                "evidence": (
+                    f"Permit: type={p.get('type')}, tags={p.get('tags')}, status={p.get('status')}"
+                ),
+            })
+            break  # flag once even if multiple demo permits exist
+
+    # DEFERRED_MAINTENANCE — no permit activity in 10-year window (risk note)
+    if (metrics.get("permit_count") or 0) == 0 and not permits:
+        flags.append({
+            "flag_type": "DEFERRED_MAINTENANCE",
+            "severity": "risk_note",
+            "description": (
+                "No permit activity in the last 10 years — potential deferred maintenance signal; "
+                "building systems may not have been serviced or inspected"
+            ),
+            "evidence": "Shovels metrics: permit_count=0 over 10-year window",
+        })
+
+    # LOW_INSPECTION_QUALITY — pass rate below 70% (risk note)
+    pass_rate = metrics.get("avg_inspection_pass_rate")
+    if pass_rate is not None and pass_rate < 0.70:
+        flags.append({
+            "flag_type": "LOW_INSPECTION_QUALITY",
+            "severity": "risk_note",
+            "description": (
+                f"Low inspection pass rate ({pass_rate:.0%}) — history of failed inspections; "
+                "verify workmanship quality with building inspector"
+            ),
+            "evidence": f"Shovels metrics: avg_inspection_pass_rate={pass_rate}",
+        })
+
+    # Info-level system permits — evidence for cross-referencing with building inspection
+    seen_info: set[str] = set()
+    for p in permits:
+        tags = {t.lower() for t in (p.get("tags") or [])}
+        pdesc = (p.get("description") or "").lower()
+        for flag_type, keywords in _SHOVELS_SYSTEM_TAGS.items():
+            if flag_type in seen_info:
+                continue
+            if tags & keywords or any(k in pdesc for k in keywords):
+                seen_info.add(flag_type)
+                label = flag_type.replace("_PERMIT", "").replace("_", " ").title()
+                flags.append({
+                    "flag_type": flag_type,
+                    "severity": "info",
+                    "description": (
+                        f"{label} permit on file "
+                        f"({p.get('file_date', 'date unknown')}, status: {p.get('status', 'unknown')})"
+                    ),
+                    "evidence": (
+                        f"Permit: type={p.get('type')}, tags={p.get('tags')}, "
+                        f"job_value={p.get('job_value')}, status={p.get('status')}"
+                    ),
+                })
+
+    return flags
+
+
+def _format_permit_report_fields(risk_flags: list[dict[str, Any]]) -> dict[str, str]:
+    """Format acquisition_condition and risk_note flags as bullet text for report fields.
+
+    Info-severity flags are excluded — they are evidence only, not report content.
+    """
+    conditions: list[str] = []
+    risks: list[str] = []
+    for flag in risk_flags:
+        if flag["severity"] == "acquisition_condition":
+            conditions.append(f"- {flag['description']} (Shovels.ai permit data)")
+        elif flag["severity"] == "risk_note":
+            risks.append(f"- {flag['description']} (Shovels.ai permit data)")
+    return {
+        "exec.acquisition_conditions": "\n".join(conditions),
+        "exec.risk_notes": "\n".join(risks),
+    }
+
+
+@mcp.tool()
+async def get_permit_history(
+    address: str,
+    site_name: str = "",
+    drive_folder_url: str = "",
+) -> dict[str, Any]:
+    """Fetch permit history for a property from Shovels.ai and identify DD risk flags.
+
+    Calls the Shovels.ai API to retrieve permit counts, inspection quality metrics,
+    and full permit history for a property address. Analyzes the history for
+    acquisition condition triggers and risk signals.
+
+    If site_name and drive_folder_url are provided, the full assessment is
+    automatically saved as a Google Doc in the site's Drive folder.
+
+    Args:
+        address: Full property address (e.g., "345 Peachtree St NE, Atlanta, GA 30308").
+        site_name: Site name — pass to auto-publish the assessment as a Google Doc.
+        drive_folder_url: Site Drive folder URL — pass to auto-publish.
+
+    Returns:
+        Dict with status, coverage, metrics, permits, risk_flags,
+        report_data_fields, and doc_url (if auto-published).
+    """
+    logger.info("Tool called: get_permit_history — address=%s", address)
+
+    settings = get_settings()
+    api_key = settings.shovels_api_key
+    base_url = settings.shovels_api_base_url
+
+    if not api_key:
+        return {
+            "status": "error",
+            "error": "Configuration error",
+            "message": "SHOVELS_API_KEY is not configured",
+        }
+
+    def _work() -> dict[str, Any]:
+        # Step A — resolve address to geo_id
+        try:
+            search_result = _call_shovels_search(api_key, base_url, address)
+        except requests.HTTPError as e:
+            logger.error("Shovels address search HTTP error: %s", e)
+            return {"status": "error", "error": "Shovels API error", "message": str(e)}
+        except Exception as e:
+            logger.error("Shovels address search failed: %s", e)
+            return {"status": "error", "error": "Shovels API error", "message": str(e)}
+
+        if search_result is None:
+            logger.info("Shovels.ai: address not found in coverage — %s", address)
+            return {
+                "status": "success",
+                "coverage": "not_found",
+                "address_searched": address,
+                "risk_flags": [],
+                "report_data_fields": {
+                    "exec.acquisition_conditions": "",
+                    "exec.risk_notes": "",
+                },
+                "message": (
+                    "[Not found — Shovels.ai did not match this address; permit history unavailable]"
+                ),
+            }
+
+        geo_id = search_result.get("geo_id", "")
+        normalized_address = search_result.get("name", address)
+
+        # Step B — get current metrics
+        try:
+            metrics = _call_shovels_metrics(api_key, base_url, geo_id)
+        except Exception as e:
+            logger.error("Shovels metrics call failed: %s", e)
+            return {"status": "error", "error": "Shovels API error", "message": str(e)}
+
+        # Step C — get permit history (last 10 years, up to 50 permits)
+        today = datetime.now()
+        from_date = f"{today.year - 10}-{today.month:02d}-{today.day:02d}"
+        to_date = today.strftime("%Y-%m-%d")
+        try:
+            permits = _call_shovels_permits(api_key, base_url, geo_id, from_date, to_date)
+        except Exception as e:
+            logger.error("Shovels permits call failed: %s", e)
+            return {"status": "error", "error": "Shovels API error", "message": str(e)}
+
+        # Extract property attributes from the first permit that carries them
+        property_attributes: dict[str, Any] = {}
+        for p in permits:
+            if p.get("property_year_built") and "year_built" not in property_attributes:
+                property_attributes["year_built"] = p["property_year_built"]
+            if p.get("property_building_area") and "building_area" not in property_attributes:
+                property_attributes["building_area"] = p["property_building_area"]
+            if p.get("property_lot_size") and "lot_size" not in property_attributes:
+                property_attributes["lot_size"] = p["property_lot_size"]
+            if p.get("property_story_count") and "story_count" not in property_attributes:
+                property_attributes["story_count"] = p["property_story_count"]
+            if len(property_attributes) == 4:
+                break
+
+        risk_flags = _analyze_permit_flags(metrics, permits)
+        report_data_fields = _format_permit_report_fields(risk_flags)
+
+        condition_count = sum(1 for f in risk_flags if f["severity"] == "acquisition_condition")
+        risk_count = sum(1 for f in risk_flags if f["severity"] == "risk_note")
+
+        return {
+            "status": "success",
+            "coverage": "found",
+            "geo_id": geo_id,
+            "normalized_address": normalized_address,
+            "metrics": {
+                "permit_count": metrics.get("permit_count"),
+                "permit_active_count": metrics.get("permit_active_count"),
+                "permit_in_review_count": metrics.get("permit_in_review_count"),
+                "permit_final_count": metrics.get("permit_final_count"),
+                "permit_inactive_count": metrics.get("permit_inactive_count"),
+                "total_job_value": (metrics.get("total_job_value") or 0) // 100,
+                "avg_inspection_pass_rate": metrics.get("avg_inspection_pass_rate"),
+            },
+            "property_attributes": property_attributes,
+            "permits": permits,
+            "risk_flags": risk_flags,
+            "report_data_fields": report_data_fields,
+            "message": (
+                f"Shovels.ai: {metrics.get('permit_count', 0)} permit(s) found at {normalized_address}. "
+                f"{condition_count} acquisition condition(s), {risk_count} risk note(s)."
+            ),
+        }
+
+    result = await asyncio.to_thread(_work)
+
+    # Auto-publish to Drive if address was found and site context provided
+    if (
+        result.get("status") == "success"
+        and result.get("coverage") == "found"
+        and site_name
+        and drive_folder_url
+    ):
+        try:
+            pub = await save_skill_report(
+                skill_name="Permit History",
+                site_name=site_name,
+                drive_folder_url=drive_folder_url,
+                skill_data=result,
+            )
+            if pub.get("status") == "success":
+                result["doc_url"] = pub["doc_url"]
+                result["doc_id"] = pub["doc_id"]
+                logger.info("Auto-published Permit History assessment: %s", pub["doc_url"])
+        except Exception as e:
+            logger.warning("Failed to auto-publish Permit History assessment: %s", e)
+            result["publish_status"] = "failed"
+
+    return result
+
+
 @mcp.tool()
 async def get_cost_estimate(
     total_building_sf: int,
@@ -1694,16 +2009,22 @@ def _normalize_report_replacements(
     _fill_max_value_placeholders(replacements)
     _fill_max_capacity_placeholders(replacements)
     compute_deltas(replacements)
-    for delta_token in (
+    _delta_tokens = {
         "exec.delta_max_capacity_capacity",
         "exec.delta_max_capacity_cost",
         "exec.delta_max_capacity_ready",
         "exec.delta_max_value_capacity",
         "exec.delta_max_value_cost",
         "exec.delta_max_value_ready",
-    ):
+    }
+    for delta_token in _delta_tokens:
         if delta_token in replacements and token_sources.get(delta_token) == "unfilled":
             token_sources[delta_token] = "computed"
+    # Remove delta tokens from unfilled if compute_deltas resolved them to real values
+    unfilled = [
+        t for t in unfilled
+        if t not in _delta_tokens or replacements.get(t, "").startswith("[")
+    ]
 
     replacements.setdefault("meta.drive_folder_url", drive_folder_url)
     return replacements, unmatched, unfilled, token_sources
@@ -1924,6 +2245,12 @@ def _build_report_trace_data(
         for token in TEMPLATE_TOKENS
         if token not in LINK_TOKENS
     }
+    # Collect any non-template keys from token_evidence (e.g. full API payloads)
+    # into a dedicated supplemental_evidence section so they are visible in the trace.
+    template_key_set = set(TEMPLATE_TOKENS)
+    supplemental_evidence = {
+        k: v for k, v in evidence.items() if k not in template_key_set
+    }
     return {
         "site_name": site_name,
         "date": report_date,
@@ -1933,6 +2260,7 @@ def _build_report_trace_data(
         "unmatched_keys": unmatched,
         "unfilled_tokens": unfilled,
         "hyperlinks": hyperlink_trace,
+        **({"supplemental_evidence": supplemental_evidence} if supplemental_evidence else {}),
     }
 
 

@@ -69,6 +69,16 @@ class Settings(BaseSettings):
         description="Base URL for the RayCon pricing API",
     )
 
+    # Shovels.ai permit history API
+    shovels_api_key: str = Field(
+        "",
+        description="Shovels.ai API key for permit history lookups",
+    )
+    shovels_api_base_url: str = Field(
+        "https://api.shovels.ai/v2",
+        description="Base URL for the Shovels.ai API",
+    )
+
     # LLM model IDs
     openai_filename_model: str = Field(
         "gpt-4o-mini",
