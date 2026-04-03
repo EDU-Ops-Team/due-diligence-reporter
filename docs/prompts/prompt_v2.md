@@ -376,6 +376,40 @@ For **every** document found in the `files` dict, call `read_drive_document(file
 - `sources.e_occupancy_link` ← `doc_url` from `apply_e_occupancy_skill`
 - `sources.school_approval_link` ← `doc_url` from `apply_school_approval_skill`
 
+### Step 5.5 — Retrieve permit history (Shovels.ai)
+
+Call `get_permit_history(address, site_name=<site_name>, drive_folder_url=<drive_folder_url>)` using the full property address from the Wrike site record. **Always pass `site_name` and `drive_folder_url`.**
+
+**Never skip this step.** The SIR reflects what the broker disclosed; Shovels.ai reflects what was actually filed with the jurisdiction. They are independent signals.
+
+**When `coverage == "found"`:**
+
+1. Merge `report_data_fields["exec.acquisition_conditions"]` bullets into your `exec.acquisition_conditions` content — do not overwrite the full field with only permit data.
+2. Merge `report_data_fields["exec.risk_notes"]` bullets into your `exec.risk_notes` content.
+3. Add permit metrics to `token_evidence` for `exec.risk_notes`: `"Shovels.ai: {permit_count} permits (10-yr window), {permit_active_count} active, avg inspection pass rate {avg_inspection_pass_rate:.0%}"`
+4. Cross-reference `info`-severity flags with building inspection findings:
+   - `HVAC_PERMIT` present + inspection confirms recent system → note corroboration in evidence
+   - No `HVAC_PERMIT` + inspection shows aged HVAC → strengthen the deferred-maintenance risk note
+   - Apply the same logic for `ROOF_PERMIT` and `ELECTRICAL_PERMIT`
+5. Store the full Shovels result in `token_evidence` under the key `"shovels.permit_history"` so it appears verbatim in the trace report:
+   ```
+   token_evidence["shovels.permit_history"] = json.dumps({
+       "normalized_address": ...,
+       "metrics": ...,
+       "property_attributes": ...,
+       "risk_flags": ...,
+       "permits": ...,   # full list
+   })
+   ```
+
+**When `coverage == "not_found"`:**
+
+Store `token_evidence["shovels.permit_history"] = message` (the gap label string). Do not add the gap label to the report fields themselves.
+
+**When `status == "error"`:**
+
+Store `token_evidence["shovels.permit_history"] = "[Not found — Shovels.ai API error; permit history unavailable]"` and proceed.
+
 ### Executive Summary Format
 
 The executive summary uses **structured checklists, not narrative prose**. No editorializing — state facts only.
