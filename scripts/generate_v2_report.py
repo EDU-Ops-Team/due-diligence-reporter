@@ -1,15 +1,15 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-generate_v2_report.py — Manual V2 DD report generation for a single site.
+generate_v3_report.py â€” Manual V3 DD report generation for a single site.
 
-Uses docs/prompts/prompt_v2.md and the V2 template.
+Uses docs/prompts/prompt_v3.md and the V3 template.
 
 Run:
-    uv run python scripts/generate_v2_report.py --site "Alpha Keller"
+    uv run python scripts/generate_v3_report.py --site "Alpha Keller"
 
 Environment (from .env):
     WRIKE_ACCESS_TOKEN, GOOGLE_CLIENT_CONFIG, GOOGLE_TOKEN_FILE,
-    ANTHROPIC_API_KEY, DD_TEMPLATE_V2_GOOGLE_DOC_ID,
+    ANTHROPIC_API_KEY, DD_TEMPLATE_V3_GOOGLE_DOC_ID,
     GOOGLE_DRIVE_ROOT_FOLDER_ID, OPENAI_API_KEY
 """
 
@@ -49,10 +49,10 @@ from due_diligence_reporter.wrike import (
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s â€” %(message)s",
     handlers=[logging.StreamHandler()],
 )
-logger = logging.getLogger("generate_v2_report")
+logger = logging.getLogger("generate_v3_report")
 
 
 def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = False) -> None:
@@ -74,7 +74,7 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
         srv.send_dd_report_email = _skip_email  # type: ignore[assignment]
 
     # Load the V2 agent system prompt
-    prompt_path = _project_root / "docs" / "prompts" / "prompt_v2.md"
+    prompt_path = _project_root / "docs" / "prompts" / "prompt_v3.md"
     if not prompt_path.exists():
         logger.error("Prompt file not found at %s", prompt_path)
         sys.exit(1)
@@ -125,7 +125,7 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
     match_terms = _build_site_match_terms(site_title, address)
     p1_email = extract_p1_email_from_record(record)
 
-    logger.info("Generating V2 report for: %s", site_title)
+    logger.info("Generating V3 report for: %s", site_title)
 
     if skip_readiness:
         logger.info("--skip-readiness: bypassing readiness gate, calling agent directly")
@@ -136,13 +136,13 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
         )
 
         print(f"\n{'=' * 60}")
-        print(f"V2 Report — {site_title}")
+        print(f"V3 Report â€” {site_title}")
         print(f"{'=' * 60}")
         if agent_result.get("success"):
-            print(f"  Status: report_created")
+            print("  Status: report_created")
             print(f"  Report: {agent_result.get('doc_url', '(no URL)')}")
         else:
-            print(f"  Status: generation_failed")
+            print("  Status: generation_failed")
             print(f"  Error: {agent_result.get('error', 'unknown')}")
         print(f"{'=' * 60}")
         return
@@ -160,7 +160,7 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
 
     # Print result
     print(f"\n{'=' * 60}")
-    print(f"V2 Report — {site_title}")
+    print(f"V3 Report â€” {site_title}")
     print(f"{'=' * 60}")
     print(f"  Status: {result.status}")
     if result.doc_url:
@@ -175,9 +175,10 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate a V2 DD report for a single site")
+    parser = argparse.ArgumentParser(description="Generate a V3 DD report for a single site")
     parser.add_argument("--site", type=str, required=True, help="Site name (substring match)")
     parser.add_argument("--no-email", action="store_true", help="Suppress all email sending")
     parser.add_argument("--skip-readiness", action="store_true", help="Bypass readiness gate, call agent directly")
     args = parser.parse_args()
     main(site_filter=args.site, no_email=args.no_email, skip_readiness=args.skip_readiness)
+

@@ -24,7 +24,6 @@ from .report_schema import (
     MISSING_P1_ASSIGNEE_LABEL,
     TEMPLATE_TOKENS,
     TOKEN_SOURCES,
-    compute_deltas,
     normalize_can_we_answer,
     normalize_report_data,
 )
@@ -41,7 +40,6 @@ from .utils import (
 from .wrike import (
     build_site_summary,
     classify_comment_to_section,
-    extract_p1_email_from_record,
     extract_p1_from_record,
     find_site_record,
     get_record_comments,
@@ -77,6 +75,8 @@ EXPORTABLE_MIME_TYPES: set[str] = {
 }
 
 CAN_WE_SECTION_DELIMITER = "Education Regulatory Approval:"
+V3_CAN_WE_HEADING = "Can this school be open in time for the current school year?"
+LEGACY_CAN_WE_HEADING = "Can we do this?"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # E-OCCUPANCY SKILL DATA
@@ -558,7 +558,7 @@ def _build_raycon_request_payload(
                 "role": "user",
                 "content": (
                     "Calculate two deterministic school conversion scenarios for this space: "
-                    "MVP (minimum work / as-is) and Ideal (max capacity). "
+                    "Fastest Open and Max Capacity scenarios. "
                     "Return structured estimate cards and cost breakdowns for both."
                 ),
             }
@@ -1889,7 +1889,7 @@ async def get_cost_estimate(
     inspection_summary: str = "",
     sir_summary: str = "",
 ) -> dict[str, Any]:
-    """Estimate MinWork and MaxCapacity costs for a school conversion using RayCon."""
+    """Estimate Fastest Open and Max Capacity costs for a school conversion using RayCon."""
     logger.info(
         "Tool called: get_cost_estimate - total_sf=%d, region=%s, rooms_provided=%s",
         total_building_sf,
@@ -1945,26 +1945,27 @@ async def get_cost_estimate(
 
         report_fields: dict[str, str] = {}
         if mvp_data:
-            report_fields["exec.e_mvp_cost"] = _format_currency(mvp_data.get("grandTotal"))
-            report_fields.update(_build_breakdown_fields("mvp", mvp_data))
+            report_fields["exec.fastest_open_capex"] = _format_currency(mvp_data.get("grandTotal"))
+            report_fields.update(_build_breakdown_fields("fastest_open", mvp_data))
         else:
-            logger.warning("RayCon did not return MVP scenario; blanking MVP cost fields")
-            report_fields["exec.e_mvp_cost"] = ""
-            report_fields.update(_blank_breakdown_fields("mvp"))
+            logger.warning("RayCon did not return Fastest Open scenario; blanking Fastest Open cost fields")
+            report_fields["exec.fastest_open_capex"] = ""
+            report_fields.update(_blank_breakdown_fields("fastest_open"))
         if max_capacity_data:
-            report_fields["exec.e_max_capacity_cost"] = _format_currency(max_capacity_data.get("grandTotal"))
+            report_fields["exec.max_capacity_capex"] = _format_currency(max_capacity_data.get("grandTotal"))
             report_fields.update(_build_breakdown_fields("max_capacity", max_capacity_data))
         else:
-            logger.warning("RayCon did not return MaxCapacity scenario; blanking MaxCapacity cost fields")
-            report_fields["exec.e_max_capacity_cost"] = ""
+            logger.warning("RayCon did not return Max Capacity scenario; blanking Max Capacity cost fields")
+            report_fields["exec.max_capacity_capex"] = ""
             report_fields.update(_blank_breakdown_fields("max_capacity"))
+        report_fields.update(_blank_breakdown_fields("recommended_path"))
         report_fields.update(_blank_breakdown_fields("max_value"))
 
         scenario_parts = []
         if mvp_data:
-            scenario_parts.append(f"MinWork at {_format_currency(mvp_data.get('grandTotal'))}")
+            scenario_parts.append(f"Fastest Open at {_format_currency(mvp_data.get('grandTotal'))}")
         if max_capacity_data:
-            scenario_parts.append(f"MaxCapacity at {_format_currency(max_capacity_data.get('grandTotal'))}")
+            scenario_parts.append(f"Max Capacity at {_format_currency(max_capacity_data.get('grandTotal'))}")
 
         return {
             "status": "success",
@@ -1973,7 +1974,7 @@ async def get_cost_estimate(
             "rooms_used": rooms_note,
             "room_count": len(room_list),
             "cost_summary": {
-                "minwork": _format_currency(mvp_data.get("grandTotal")) if mvp_data else None,
+                "fastest_open": _format_currency(mvp_data.get("grandTotal")) if mvp_data else None,
                 "max_capacity": _format_currency(max_capacity_data.get("grandTotal")) if max_capacity_data else None,
             },
             "raycon_estimate_cards": raycon_data.get("estimate_cards", {}),
@@ -1995,7 +1996,7 @@ def _normalize_report_replacements(
     report_date: str,
     drive_folder_url: str,
 ) -> tuple[dict[str, str], list[str], list[str], dict[str, str]]:
-    """Normalize report data and annotate computed token sources."""
+    """Normalize report data and fill permissive V3 gap labels."""
     report_data = _inject_wrike_report_defaults(report_data, site_name)
     replacements, unmatched, unfilled, token_sources = normalize_report_data(
         report_data,
@@ -2006,25 +2007,10 @@ def _normalize_report_replacements(
         normalized_answer = normalize_can_we_answer(replacements["exec.c_answer"])
         if normalized_answer is not None:
             replacements["exec.c_answer"] = normalized_answer
-    _fill_max_value_placeholders(replacements)
+    _fill_recommended_path_placeholders(replacements)
+    _fill_fastest_open_placeholders(replacements)
     _fill_max_capacity_placeholders(replacements)
-    compute_deltas(replacements)
-    _delta_tokens = {
-        "exec.delta_max_capacity_capacity",
-        "exec.delta_max_capacity_cost",
-        "exec.delta_max_capacity_ready",
-        "exec.delta_max_value_capacity",
-        "exec.delta_max_value_cost",
-        "exec.delta_max_value_ready",
-    }
-    for delta_token in _delta_tokens:
-        if delta_token in replacements and token_sources.get(delta_token) == "unfilled":
-            token_sources[delta_token] = "computed"
-    # Remove delta tokens from unfilled if compute_deltas resolved them to real values
-    unfilled = [
-        t for t in unfilled
-        if t not in _delta_tokens or replacements.get(t, "").startswith("[")
-    ]
+    _fill_max_value_placeholders(replacements)
 
     replacements.setdefault("meta.drive_folder_url", drive_folder_url)
     return replacements, unmatched, unfilled, token_sources
@@ -2085,47 +2071,53 @@ def _find_existing_report_doc(
     return None
 
 
-def _fill_max_value_placeholders(replacements: dict[str, str]) -> None:
-    """Fill MaxValue fields with explicit WIP labels until the scenario is defined."""
-    max_value_label = "[Not found - MaxValue scenario not yet defined]"
-    max_value_tokens = [
-        "exec.e_max_value_capacity",
-        "exec.e_max_value_cost",
-        "exec.f_max_value_ready",
-        "exec.cost_demolition_max_value",
-        "exec.cost_framing_doors_max_value",
-        "exec.cost_mep_fire_life_safety_max_value",
-        "exec.cost_plumbing_bathrooms_max_value",
-        "exec.cost_finish_work_max_value",
-        "exec.cost_furniture_max_value",
-        "exec.cost_tech_security_signage_max_value",
-        "exec.cost_other_hard_costs_max_value",
-        "exec.cost_soft_costs_max_value",
-        "exec.cost_gc_fee_max_value",
-        "exec.cost_contingency_max_value",
-        "exec.cost_grand_total_max_value",
-        "exec.delta_max_value_capacity",
-        "exec.delta_max_value_cost",
-        "exec.delta_max_value_ready",
-    ]
-    for token in max_value_tokens:
+def _fill_scenario_placeholders(
+    replacements: dict[str, str],
+    *,
+    scenario: str,
+    label: str,
+) -> None:
+    """Fill missing V3 scenario summary and detailed breakdown fields."""
+    for metric in ("capacity", "capex", "open_date"):
+        token = f"exec.{scenario}_{metric}"
         if token not in replacements or not str(replacements[token]).strip():
-            replacements[token] = max_value_label
+            replacements[token] = label
+    for row_key, _ in _RAYCON_BREAKDOWN_ROWS:
+        token = f"exec.cost_{row_key}_{scenario}"
+        if token not in replacements or not str(replacements[token]).strip():
+            replacements[token] = label
+
+
+def _fill_recommended_path_placeholders(replacements: dict[str, str]) -> None:
+    _fill_scenario_placeholders(
+        replacements,
+        scenario="recommended_path",
+        label="[Not found - Recommended Path scenario not provided]",
+    )
+
+
+def _fill_fastest_open_placeholders(replacements: dict[str, str]) -> None:
+    _fill_scenario_placeholders(
+        replacements,
+        scenario="fastest_open",
+        label="[Not found - Fastest Open scenario not extracted]",
+    )
 
 
 def _fill_max_capacity_placeholders(replacements: dict[str, str]) -> None:
-    """Fill missing MaxCapacity and MVP capacity fields with explicit sourced gap labels."""
-    max_capacity_label = "[Not found - ISP Ideal scenario not extracted]"
-    for token in (
-        "exec.e_max_capacity_capacity",
-        "exec.f_max_capacity_ready",
-        "exec.delta_max_capacity_capacity",
-        "exec.delta_max_capacity_ready",
-    ):
-        if token not in replacements or not str(replacements[token]).strip():
-            replacements[token] = max_capacity_label
-    if not str(replacements.get("exec.e_mvp_capacity", "")).strip():
-        replacements["exec.e_mvp_capacity"] = "[Not found - ISP MinWork tier analysis not extracted]"
+    _fill_scenario_placeholders(
+        replacements,
+        scenario="max_capacity",
+        label="[Not found - Max Capacity scenario not extracted]",
+    )
+
+
+def _fill_max_value_placeholders(replacements: dict[str, str]) -> None:
+    _fill_scenario_placeholders(
+        replacements,
+        scenario="max_value",
+        label="[Not found - Max Value scenario not yet defined]",
+    )
 
 
 def _prepare_report_text_replacements(
@@ -2343,13 +2335,19 @@ async def create_dd_report(
         }
 
     settings = get_settings()
-    template_id = settings.dd_template_v2_google_doc_id
+    template_id = settings.dd_template_v3_google_doc_id
+    if not template_id and settings.dd_template_v2_google_doc_id:
+        template_id = settings.dd_template_v2_google_doc_id
+        logger.warning(
+            "Using legacy DD_TEMPLATE_V2_GOOGLE_DOC_ID fallback. "
+            "Set DD_TEMPLATE_V3_GOOGLE_DOC_ID for V3 template runs.",
+        )
     if not template_id:
         return {
             "status": "error",
             "error": "Missing configuration",
             "message": (
-                "DD_TEMPLATE_V2_GOOGLE_DOC_ID is not configured. "
+                "DD_TEMPLATE_V3_GOOGLE_DOC_ID is not configured. "
                 "Set this environment variable to the Google Doc template ID."
             ),
         }
@@ -2642,7 +2640,7 @@ async def check_report_completeness(doc_id: str) -> dict[str, Any]:
             raw_template_token_count = len(raw_template_tokens)
             pending_labels = re.findall(r"\[(?:Not found|Pending)[^\]]+\]", text, re.IGNORECASE)
             pending_section_count = len(pending_labels)
-            invalid_can_we_answer = _extract_invalid_can_we_answer(text)
+            invalid_can_we_answer, can_we_heading = _extract_invalid_can_we_answer(text)
             ready_to_send = (
                 unresolved_token_count == 0
                 and raw_template_token_count == 0
@@ -2661,7 +2659,7 @@ async def check_report_completeness(doc_id: str) -> dict[str, Any]:
             elif invalid_can_we_answer is not None:
                 summary = (
                     "Report NOT ready to send. "
-                    "Can we do this? must be one of "
+                    f"{can_we_heading} must be one of "
                     f"{', '.join(sorted(ALLOWED_CAN_WE_ANSWERS))}. "
                     f"Found: {invalid_can_we_answer!r}"
                 )
@@ -2704,21 +2702,27 @@ async def check_report_completeness(doc_id: str) -> dict[str, Any]:
     return await asyncio.to_thread(_work)
 
 
-def _extract_invalid_can_we_answer(text: str) -> str | None:
-    """Return the raw Can we answer when it is present but not canonical."""
-    section_match = re.search(r"Can we do this\?\s+([^\r\n]+)", text, re.IGNORECASE)
-    if not section_match:
-        return None
+def _extract_invalid_can_we_answer(text: str) -> tuple[str | None, str]:
+    """Return non-canonical answer and detected heading label."""
+    heading_patterns = (
+        V3_CAN_WE_HEADING,
+        LEGACY_CAN_WE_HEADING,
+    )
+    for heading in heading_patterns:
+        section_match = re.search(re.escape(heading) + r"\s+([^\r\n]+)", text, re.IGNORECASE)
+        if not section_match:
+            continue
+        raw_value = section_match.group(1)
+        if CAN_WE_SECTION_DELIMITER in raw_value:
+            raw_value = raw_value.split(CAN_WE_SECTION_DELIMITER, 1)[0]
+        answer = " ".join(raw_value.replace("*", " ").split()).strip()
+        if not answer or answer in ALLOWED_CAN_WE_ANSWERS:
+            return None, heading
+        if normalize_can_we_answer(answer) in ALLOWED_CAN_WE_ANSWERS:
+            return answer, heading
+        return answer, heading
 
-    raw_value = section_match.group(1)
-    if CAN_WE_SECTION_DELIMITER in raw_value:
-        raw_value = raw_value.split(CAN_WE_SECTION_DELIMITER, 1)[0]
-    answer = " ".join(raw_value.replace("*", " ").split()).strip()
-    if not answer or answer in ALLOWED_CAN_WE_ANSWERS:
-        return None
-    if normalize_can_we_answer(answer) in ALLOWED_CAN_WE_ANSWERS:
-        return answer
-    return answer
+    return None, V3_CAN_WE_HEADING
 
 
 def _extract_raw_template_tokens(text: str) -> list[str]:

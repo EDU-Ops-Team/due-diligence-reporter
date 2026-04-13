@@ -19,7 +19,7 @@ Environment (from .env):
     WRIKE_ACCESS_TOKEN, GOOGLE_CLIENT_CONFIG, GOOGLE_TOKEN_FILE,
     OPENAI_API_KEY, GOOGLE_CHAT_WEBHOOK_URL, ANTHROPIC_API_KEY,
     SIR_FOLDER_ID, ISP_FOLDER_ID, BUILDING_INSPECTION_FOLDER_ID,
-    DD_TEMPLATE_V2_GOOGLE_DOC_ID, GOOGLE_DRIVE_ROOT_FOLDER_ID,
+    DD_TEMPLATE_V3_GOOGLE_DOC_ID, GOOGLE_DRIVE_ROOT_FOLDER_ID,
     EMAIL_SENDER, EMAIL_APP_PASSWORD, DD_REPORT_EMAIL_RECIPIENTS
 """
 
@@ -216,7 +216,8 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     if not site_records:
         logger.info("Wrike site records unavailable — skipping pipeline phase")
         return
-    if not settings.dd_template_v2_google_doc_id or not settings.google_drive_root_folder_id:
+    template_id = settings.dd_template_v3_google_doc_id or settings.dd_template_v2_google_doc_id
+    if not template_id or not settings.google_drive_root_folder_id:
         logger.info("DD report generation settings missing — skipping pipeline phase")
         return
 
@@ -224,7 +225,7 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     logger.info("Pipeline phase: %d unique site(s) received new uploads", len(unique_sites))
 
     # Load the agent system prompt
-    prompt_path = _project_root / "docs" / "prompts" / "prompt_v2.md"
+    prompt_path = _project_root / "docs" / "prompts" / "prompt_v3.md"
     if not prompt_path.exists():
         logger.error("System prompt not found at %s — aborting pipeline phase", prompt_path)
         return

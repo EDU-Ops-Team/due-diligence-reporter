@@ -38,9 +38,13 @@ class Settings(BaseSettings):
     )
 
     # DD Report Templates
+    dd_template_v3_google_doc_id: str = Field(
+        "",
+        description="Google Doc ID of the V3 DD report template",
+    )
     dd_template_v2_google_doc_id: str = Field(
         "",
-        description="Google Doc ID of the V2 DD report template",
+        description="Legacy fallback Google Doc ID for DD report template",
     )
 
     # Google Drive root folder containing all site folders

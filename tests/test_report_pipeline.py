@@ -1,4 +1,4 @@
-"""Tests for the report pipeline module."""
+﻿"""Tests for the report pipeline module."""
 
 from __future__ import annotations
 
@@ -157,7 +157,7 @@ class TestProcessSitePipeline:
             "doc_url": "https://docs.google.com/document/d/doc123",
         }
 
-        # Mock the async completeness check — asyncio.run() will call the coroutine
+        # Mock the async completeness check â€” asyncio.run() will call the coroutine
         async def fake_completeness(doc_id):
             return {"ready_to_send": True, "pending_section_count": 0}
 
@@ -327,17 +327,17 @@ class TestAgentToolMerging:
         merged = _merge_cached_report_fields(
             {
                 "report_data": {
-                    "exec.e_mvp_cost": "$100,000",
+                    "exec.fastest_open_capex": "$100,000",
                 },
             },
             {
-                "exec.e_mvp_cost": "$86,000",
-                "exec.cost_demolition_mvp": "$0",
+                "exec.fastest_open_capex": "$86,000",
+                "exec.cost_demolition_fastest_open": "$0",
             },
         )
 
-        assert merged["report_data"]["exec.e_mvp_cost"] == "$100,000"
-        assert merged["report_data"]["exec.cost_demolition_mvp"] == "$0"
+        assert merged["report_data"]["exec.fastest_open_capex"] == "$100,000"
+        assert merged["report_data"]["exec.cost_demolition_fastest_open"] == "$0"
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
@@ -363,7 +363,7 @@ class TestAgentToolMerging:
                 {
                     "site_name": "Alpha Keller",
                     "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
-                    "report_data": {"exec.e_mvp_capacity": "25"},
+                    "report_data": {"exec.fastest_open_capacity": "25"},
                 },
             ),
             FakeToolUse(
@@ -384,7 +384,7 @@ class TestAgentToolMerging:
             {
                 "status": "success",
                 "report_data_fields": {
-                    "exec.e_max_capacity_cost": "$245,000",
+                    "exec.max_capacity_capex": "$245,000",
                     "exec.cost_demolition_max_capacity": "$5,200",
                 },
             },
@@ -405,8 +405,8 @@ class TestAgentToolMerging:
         assert mock_route_tool_call_sync.call_count == 2
         create_call = mock_route_tool_call_sync.call_args_list[1]
         create_input = create_call.args[1]
-        assert create_input["report_data"]["exec.e_mvp_capacity"] == "25"
-        assert create_input["report_data"]["exec.e_max_capacity_cost"] == "$245,000"
+        assert create_input["report_data"]["exec.fastest_open_capacity"] == "25"
+        assert create_input["report_data"]["exec.max_capacity_capex"] == "$245,000"
         assert create_input["report_data"]["exec.cost_demolition_max_capacity"] == "$5,200"
 
 
@@ -506,3 +506,4 @@ class TestSourceReadAlerts:
         assert "DD Source Review Needed -- Alpha Keller" in message
         assert "SIR" in message
         assert "Failed to read document" in message
+

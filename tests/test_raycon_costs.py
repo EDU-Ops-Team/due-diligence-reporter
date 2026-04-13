@@ -1,4 +1,4 @@
-"""Tests for RayCon cost parsing and breakdown normalization."""
+﻿"""Tests for RayCon cost parsing and breakdown normalization."""
 
 from __future__ import annotations
 
@@ -58,3 +58,4 @@ def test_build_breakdown_fields_normalizes_categories() -> None:
     assert fields["exec.cost_gc_fee_max_capacity"] == "$15,000"
     assert fields["exec.cost_contingency_max_capacity"] == "$33,000"
     assert fields["exec.cost_grand_total_max_capacity"] == "$245,000"
+

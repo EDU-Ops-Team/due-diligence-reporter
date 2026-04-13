@@ -1,4 +1,4 @@
-"""Unit tests for Shovels.ai permit history helpers and trace integration."""
+﻿"""Unit tests for Shovels.ai permit history helpers and trace integration."""
 
 from __future__ import annotations
 
@@ -233,7 +233,7 @@ def test_format_permit_report_fields_empty_flags():
 
 
 # ---------------------------------------------------------------------------
-# Trace report — supplemental_evidence section
+# Trace report â€” supplemental_evidence section
 # ---------------------------------------------------------------------------
 
 
@@ -276,3 +276,4 @@ def test_trace_supplemental_evidence_template_keys_not_duplicated():
     trace = _build_report_trace_data(**_minimal_trace_args(token_evidence=evidence))
     assert first_token not in trace.get("supplemental_evidence", {})
     assert "shovels.permit_history" in trace["supplemental_evidence"]
+

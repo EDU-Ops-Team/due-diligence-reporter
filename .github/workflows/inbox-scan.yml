@@ -1,9 +1,9 @@
-name: Inbox Scan
+﻿name: Inbox Scan
 
 on:
   schedule:
-    - cron: '*/15 11-23 * * 1-5'  # Every 15 min, 6AM–6PM Central (UTC 11–23), Mon–Fri
-    - cron: '*/15 0-2 * * 1-5'    # Every 15 min, 6PM–8PM Central (UTC 0–2 next day), Mon–Fri
+    - cron: '*/15 11-23 * * 1-5'  # Every 15 min, 6AMâ€“6PM Central (UTC 11â€“23), Monâ€“Fri
+    - cron: '*/15 0-2 * * 1-5'    # Every 15 min, 6PMâ€“8PM Central (UTC 0â€“2 next day), Monâ€“Fri
   workflow_dispatch:
     inputs:
       scan_only:
@@ -53,7 +53,7 @@ jobs:
           WRIKE_ACCESS_TOKEN: ${{ secrets.WRIKE_ACCESS_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          DD_TEMPLATE_V2_GOOGLE_DOC_ID: ${{ secrets.DD_TEMPLATE_V2_GOOGLE_DOC_ID }}
+          DD_TEMPLATE_V3_GOOGLE_DOC_ID: ${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}
           GOOGLE_DRIVE_ROOT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}
           GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
           DD_REPORT_EMAIL_RECIPIENTS: ${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}
@@ -69,7 +69,7 @@ jobs:
           echo "WRIKE_ACCESS_TOKEN=${WRIKE_ACCESS_TOKEN}" >> .env
           echo "OPENAI_API_KEY=${OPENAI_API_KEY}" >> .env
           echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> .env
-          echo "DD_TEMPLATE_V2_GOOGLE_DOC_ID=${DD_TEMPLATE_V2_GOOGLE_DOC_ID}" >> .env
+          echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID=${DD_TEMPLATE_V3_GOOGLE_DOC_ID}" >> .env
           echo "GOOGLE_DRIVE_ROOT_FOLDER_ID=${GOOGLE_DRIVE_ROOT_FOLDER_ID}" >> .env
           echo "GOOGLE_CHAT_WEBHOOK_URL=${GOOGLE_CHAT_WEBHOOK_URL}" >> .env
           echo "DD_REPORT_EMAIL_RECIPIENTS=${DD_REPORT_EMAIL_RECIPIENTS}" >> .env
@@ -139,3 +139,4 @@ jobs:
 
       - name: Done
         run: echo "Inbox scan completed"
+
