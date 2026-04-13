@@ -37,8 +37,10 @@ jobs:
           [ -n "${{ secrets.MCP_HIVE_ID }}" ] || { echo "MCP_HIVE_ID missing"; exit 1; }
           [ -n "${{ secrets.WRIKE_ACCESS_TOKEN }}" ] || { echo "WRIKE_ACCESS_TOKEN missing"; exit 1; }
           [ -n "${{ secrets.OPENAI_API_KEY }}" ] || { echo "OPENAI_API_KEY missing"; exit 1; }
-          [ -n "${{ secrets.DD_TEMPLATE_GOOGLE_DOC_ID }}" ] || { echo "DD_TEMPLATE_GOOGLE_DOC_ID missing"; exit 1; }
-          [ -n "${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}" ] || { echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID missing"; exit 1; }
+          if [ -z "${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}" ] && [ -z "${{ secrets.DD_TEMPLATE_GOOGLE_DOC_ID }}" ]; then
+            echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID or DD_TEMPLATE_GOOGLE_DOC_ID must be set"
+            exit 1
+          fi
           [ -n "${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}" ] || { echo "GOOGLE_DRIVE_ROOT_FOLDER_ID missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ] || { echo "OAUTH_CLIENT_ID missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ] || { echo "OAUTH_CLIENT_SECRET missing"; exit 1; }
@@ -78,11 +80,15 @@ jobs:
           OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
           OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
         run: |
+          TEMPLATE_DOC_ID="${DD_TEMPLATE_V3_GOOGLE_DOC_ID:-$DD_TEMPLATE_GOOGLE_DOC_ID}"
+          if [ -z "${DD_TEMPLATE_V3_GOOGLE_DOC_ID}" ]; then
+            echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID not set; falling back to DD_TEMPLATE_GOOGLE_DOC_ID"
+          fi
           touch .env
           echo "WRIKE_ACCESS_TOKEN=${WRIKE_ACCESS_TOKEN}" >> .env
           echo "OPENAI_API_KEY=${OPENAI_API_KEY}" >> .env
           echo "DD_TEMPLATE_GOOGLE_DOC_ID=${DD_TEMPLATE_GOOGLE_DOC_ID}" >> .env
-          echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID=${DD_TEMPLATE_V3_GOOGLE_DOC_ID}" >> .env
+          echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID=${TEMPLATE_DOC_ID}" >> .env
           echo "GOOGLE_DRIVE_ROOT_FOLDER_ID=${GOOGLE_DRIVE_ROOT_FOLDER_ID}" >> .env
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env

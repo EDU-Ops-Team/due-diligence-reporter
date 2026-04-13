@@ -1,4 +1,4 @@
-﻿name: Daily DD Check
+name: Daily DD Check
 
 on:
   schedule:

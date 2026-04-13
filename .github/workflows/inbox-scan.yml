@@ -1,4 +1,4 @@
-﻿name: Inbox Scan
+name: Inbox Scan
 
 on:
   schedule:
