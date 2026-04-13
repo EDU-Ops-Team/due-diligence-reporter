@@ -1,4 +1,4 @@
-"""Tests for DD report output fixes."""
+﻿"""Tests for DD report output fixes."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from due_diligence_reporter.wrike import classify_comment_to_section
 
 
 # ---------------------------------------------------------------------------
-# Scope of Work stray numbers — consecutive newline collapse
+# Scope of Work stray numbers â€” consecutive newline collapse
 # ---------------------------------------------------------------------------
 
 class TestScopeOfWorkNewlineCollapse:
@@ -92,7 +92,7 @@ class TestFindTextIndex:
 
 
 # ---------------------------------------------------------------------------
-# Fix 4: PDF mimeType preference — tested via logic check
+# Fix 4: PDF mimeType preference â€” tested via logic check
 # ---------------------------------------------------------------------------
 
 class TestPdfMimePreference:
@@ -247,7 +247,7 @@ class TestCheckReportCompleteness:
 
         gc = MagicMock()
         gc.export_google_doc_as_text.return_value = (
-            "Can we do this?\n"
+            "Can this school be open in time for the current school year?\n"
             "YES Education Regulatory Approval: Not required "
             "Occupancy path: Has E-Occupancy Zoning: Permitted by right\n"
         )
@@ -261,14 +261,14 @@ class TestCheckReportCompleteness:
         assert result["status"] == "success"
         assert result["ready_to_send"] is False
         assert result["invalid_can_we_answer"] == "YES"
-        assert "Can we do this?" in result["summary"]
+        assert "Can this school be open in time for the current school year?" in result["summary"]
 
     def test_accepts_canonical_can_we_answer(self) -> None:
         from due_diligence_reporter.server import check_report_completeness
 
         gc = MagicMock()
         gc.export_google_doc_as_text.return_value = (
-            "Can we do this?\n"
+            "Can this school be open in time for the current school year?\n"
             "Yes see notes Education Regulatory Approval: Not required "
             "Occupancy path: Has E-Occupancy Zoning: Permitted by right\n"
         )
@@ -288,11 +288,11 @@ class TestCheckReportCompleteness:
 
         gc = MagicMock()
         gc.export_google_doc_as_text.return_value = (
-            "Can we do this?\n"
+            "Can this school be open in time for the current school year?\n"
             "Yes see notes Education Regulatory Approval: Required have not done "
             "Occupancy path: Change of use required, needs work Zoning: Use Permit Required (Public approval)\n"
             "Build Scenarios\n"
-            "exec.cost_demolition_mvp exec.e_max_capacity_cost\n"
+            "exec.cost_demolition_fastest_open exec.max_capacity_capex\n"
         )
 
         with patch(
@@ -304,7 +304,7 @@ class TestCheckReportCompleteness:
         assert result["status"] == "success"
         assert result["ready_to_send"] is False
         assert result["raw_template_token_count"] == 2
-        assert "exec.cost_demolition_mvp" in result["raw_template_tokens"]
+        assert "exec.cost_demolition_fastest_open" in result["raw_template_tokens"]
         assert "raw template token" in result["summary"]
 
 
@@ -360,8 +360,8 @@ class TestReportNormalizationDefaults:
         )
 
         assert replacements["exec.c_answer"] == "Yes see notes"
-        assert replacements["exec.e_max_value_capacity"] == "[Not found - MaxValue scenario not yet defined]"
-        assert replacements["exec.delta_max_value_cost"] == "[Not found - MaxValue scenario not yet defined]"
+        assert replacements["exec.max_value_capacity"] == "[Not found - Max Value scenario not yet defined]"
+        assert replacements["exec.max_value_capex"] == "[Not found - Max Value scenario not yet defined]"
 
     @patch("due_diligence_reporter.server.find_site_record")
     def test_inject_wrike_defaults_sets_missing_p1_label_when_lookup_misses(
@@ -632,12 +632,12 @@ class TestAsyncOffloading:
             result = asyncio.run(get_cost_estimate(total_building_sf=1000, classroom_count=2))
 
         assert result["status"] == "success"
-        assert result["report_data_fields"]["exec.e_mvp_cost"] == "$86,000"
-        assert result["report_data_fields"]["exec.e_max_capacity_cost"] == "$245,000"
-        assert result["report_data_fields"]["exec.cost_finish_work_mvp"] == "$42,000"
+        assert result["report_data_fields"]["exec.fastest_open_capex"] == "$86,000"
+        assert result["report_data_fields"]["exec.max_capacity_capex"] == "$245,000"
+        assert result["report_data_fields"]["exec.cost_finish_work_fastest_open"] == "$42,000"
         assert result["report_data_fields"]["exec.cost_demolition_max_capacity"] == "$5,200"
         assert result["report_data_fields"]["exec.cost_framing_doors_max_capacity"] == "$26,500"
-        assert result["report_data_fields"]["exec.cost_tech_security_signage_mvp"] == "$4,100"
+        assert result["report_data_fields"]["exec.cost_tech_security_signage_fastest_open"] == "$4,100"
         assert result["report_data_fields"]["exec.cost_soft_costs_max_capacity"] == "$22,000"
         assert result["report_data_fields"]["exec.cost_grand_total_max_capacity"] == "$245,000"
         assert result["report_data_fields"]["exec.cost_grand_total_max_value"] == ""
@@ -690,15 +690,13 @@ class TestAsyncOffloading:
             new=AsyncMock(side_effect=run_inline),
         ) as mock_to_thread, patch(
             "due_diligence_reporter.server.get_settings",
-            return_value=MagicMock(dd_template_v2_google_doc_id="template123"),
+            return_value=MagicMock(dd_template_v3_google_doc_id="template123"),
         ), patch(
             "due_diligence_reporter.server._make_google_client",
             return_value=gc,
         ), patch(
             "due_diligence_reporter.server.normalize_report_data",
             return_value=({}, [], [], {}),
-        ), patch(
-            "due_diligence_reporter.server.compute_deltas",
         ), patch(
             "due_diligence_reporter.server.build_replace_all_text_requests",
             return_value=[],
@@ -731,7 +729,7 @@ class TestAsyncOffloading:
             new=AsyncMock(side_effect=run_inline),
         ), patch(
             "due_diligence_reporter.server.get_settings",
-            return_value=MagicMock(dd_template_v2_google_doc_id="template123"),
+            return_value=MagicMock(dd_template_v3_google_doc_id="template123"),
         ), patch(
             "due_diligence_reporter.server._make_google_client",
             return_value=gc,
@@ -748,3 +746,5 @@ class TestAsyncOffloading:
         assert result["status"] == "success"
         assert result["document"]["id"] == "doc-existing"
         gc.copy_document.assert_not_called()
+
+

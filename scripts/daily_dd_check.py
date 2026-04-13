@@ -15,7 +15,7 @@ Run:
 Environment (from .env):
     WRIKE_ACCESS_TOKEN, GOOGLE_CLIENT_CONFIG, GOOGLE_TOKEN_FILE,
     ANTHROPIC_API_KEY, GOOGLE_CHAT_WEBHOOK_URL, DD_REPORT_EMAIL_RECIPIENTS,
-    EMAIL_SENDER, EMAIL_APP_PASSWORD, DD_TEMPLATE_V2_GOOGLE_DOC_ID,
+    EMAIL_SENDER, EMAIL_APP_PASSWORD, DD_TEMPLATE_V3_GOOGLE_DOC_ID,
     GOOGLE_DRIVE_ROOT_FOLDER_ID, OPENAI_API_KEY
 """
 
@@ -69,7 +69,7 @@ def main(site_filter: str | None = None) -> None:
     wrike_cfg = load_wrike_config()
 
     # Load the agent system prompt
-    prompt_path = _project_root / "docs" / "prompts" / "prompt_v2.md"
+    prompt_path = _project_root / "docs" / "prompts" / "prompt_v3.md"
     if not prompt_path.exists():
         logger.error("System prompt not found at %s — aborting", prompt_path)
         sys.exit(1)

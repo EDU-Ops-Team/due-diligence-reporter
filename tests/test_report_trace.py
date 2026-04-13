@@ -1,4 +1,4 @@
-"""Tests for the report generation provenance trace."""
+﻿"""Tests for the report generation provenance trace."""
 
 from __future__ import annotations
 
@@ -159,3 +159,4 @@ class TestSummarizeToolOutput:
         result = {"status": "success", "message": "m" * 500}
         summary = _summarize_tool_output(result)
         assert len(summary["message"]) == 300
+

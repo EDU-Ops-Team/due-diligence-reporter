@@ -1,4 +1,4 @@
-"""Tests for the hyperlink request builder."""
+﻿"""Tests for the hyperlink request builder."""
 
 from __future__ import annotations
 
@@ -66,10 +66,10 @@ class TestBuildHyperlinkRequests:
     def test_skips_gap_labels(self):
         """Non-URL values (gap labels) are not hyperlinked."""
         doc_body = _make_doc_body([
-            (5, "[Not found — SIR not yet in shared Drive folder]"),
+            (5, "[Not found â€” SIR not yet in shared Drive folder]"),
         ])
         replacements = {
-            "sources.sir_link": "[Not found — SIR not yet in shared Drive folder]",
+            "sources.sir_link": "[Not found â€” SIR not yet in shared Drive folder]",
         }
 
         result = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
@@ -348,3 +348,4 @@ class TestFindTextIndexSplitRuns:
         assert find_text_index_in_doc(
             doc_body, "https://docs.google.com/document/d/abc123"
         ) == 100
+

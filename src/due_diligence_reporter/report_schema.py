@@ -1,11 +1,4 @@
-"""DD Report template token schema, agent key aliases, and normalization.
-
-This module is the single source of truth for the {{token}} placeholders
-in the V2 Google Doc DD report template. It also provides an alias map that
-translates commonly-observed agent key variations to their canonical template
-token, and a ``normalize_report_data`` function used by ``create_dd_report``
-to maximize the number of placeholders that get filled.
-"""
+﻿"""DD Report V3 template token schema, aliases, and normalization."""
 
 from __future__ import annotations
 
@@ -31,80 +24,72 @@ LEGACY_CAN_WE_ANSWER_ALIASES: dict[str, str] = {
 
 MISSING_P1_ASSIGNEE_LABEL = "[Not found - P1 Assignee not set in Wrike]"
 
+SCENARIOS: tuple[str, ...] = (
+    "recommended_path",
+    "fastest_open",
+    "max_capacity",
+    "max_value",
+)
 
-TEMPLATE_TOKENS: list[str] = [
-    "meta.site_name",
-    "meta.city_state_zip",
-    "meta.school_type",
-    "meta.marketing_name",
-    "meta.report_date",
-    "meta.prepared_by",
-    "meta.drive_folder_url",
-    "exec.c_answer",
-    "exec.c_edreg",
-    "exec.c_occupancy",
-    "exec.c_zoning",
-    "exec.e_mvp_capacity",
-    "exec.e_mvp_cost",
-    "exec.f_mvp_ready",
-    "exec.e_max_capacity_capacity",
-    "exec.e_max_capacity_cost",
-    "exec.f_max_capacity_ready",
-    "exec.e_max_value_capacity",
-    "exec.e_max_value_cost",
-    "exec.f_max_value_ready",
-    "exec.cost_demolition_mvp",
-    "exec.cost_demolition_max_capacity",
-    "exec.cost_demolition_max_value",
-    "exec.cost_framing_doors_mvp",
-    "exec.cost_framing_doors_max_capacity",
-    "exec.cost_framing_doors_max_value",
-    "exec.cost_mep_fire_life_safety_mvp",
-    "exec.cost_mep_fire_life_safety_max_capacity",
-    "exec.cost_mep_fire_life_safety_max_value",
-    "exec.cost_plumbing_bathrooms_mvp",
-    "exec.cost_plumbing_bathrooms_max_capacity",
-    "exec.cost_plumbing_bathrooms_max_value",
-    "exec.cost_finish_work_mvp",
-    "exec.cost_finish_work_max_capacity",
-    "exec.cost_finish_work_max_value",
-    "exec.cost_furniture_mvp",
-    "exec.cost_furniture_max_capacity",
-    "exec.cost_furniture_max_value",
-    "exec.cost_tech_security_signage_mvp",
-    "exec.cost_tech_security_signage_max_capacity",
-    "exec.cost_tech_security_signage_max_value",
-    "exec.cost_other_hard_costs_mvp",
-    "exec.cost_other_hard_costs_max_capacity",
-    "exec.cost_other_hard_costs_max_value",
-    "exec.cost_soft_costs_mvp",
-    "exec.cost_soft_costs_max_capacity",
-    "exec.cost_soft_costs_max_value",
-    "exec.cost_gc_fee_mvp",
-    "exec.cost_gc_fee_max_capacity",
-    "exec.cost_gc_fee_max_value",
-    "exec.cost_contingency_mvp",
-    "exec.cost_contingency_max_capacity",
-    "exec.cost_contingency_max_value",
-    "exec.cost_grand_total_mvp",
-    "exec.cost_grand_total_max_capacity",
-    "exec.cost_grand_total_max_value",
-    "exec.delta_max_capacity_capacity",
-    "exec.delta_max_capacity_cost",
-    "exec.delta_max_capacity_ready",
-    "exec.delta_max_value_capacity",
-    "exec.delta_max_value_cost",
-    "exec.delta_max_value_ready",
-    "exec.acquisition_conditions",
-    "exec.risk_notes",
-    "sources.sir_link",
-    "sources.inspection_link",
-    "sources.isp_link",
-    "sources.e_occupancy_link",
-    "sources.school_approval_link",
-    "sources.trace_link",
-]
+SUMMARY_TOKEN_BASES: tuple[tuple[str, str], ...] = (
+    ("capacity", "ISP"),
+    ("capex", "Agent"),
+    ("open_date", "Agent"),
+)
 
+COST_TOKEN_BASES: tuple[str, ...] = (
+    "cost_demolition",
+    "cost_framing_doors",
+    "cost_mep_fire_life_safety",
+    "cost_plumbing_bathrooms",
+    "cost_finish_work",
+    "cost_furniture",
+    "cost_tech_security_signage",
+    "cost_other_hard_costs",
+    "cost_soft_costs",
+    "cost_gc_fee",
+    "cost_contingency",
+    "cost_grand_total",
+)
+
+
+def _build_template_tokens() -> list[str]:
+    tokens: list[str] = [
+        "meta.site_name",
+        "meta.city_state_zip",
+        "meta.school_type",
+        "meta.marketing_name",
+        "meta.report_date",
+        "meta.prepared_by",
+        "meta.drive_folder_url",
+        "exec.c_answer",
+        "exec.c_edreg",
+        "exec.c_occupancy",
+        "exec.c_zoning",
+    ]
+
+    for scenario in SCENARIOS:
+        for metric, _source in SUMMARY_TOKEN_BASES:
+            tokens.append(f"exec.{scenario}_{metric}")
+
+    for base in COST_TOKEN_BASES:
+        for scenario in SCENARIOS:
+            tokens.append(f"exec.{base}_{scenario}")
+
+    tokens.extend([
+        "exec.acquisition_conditions",
+        "exec.risk_notes",
+        "sources.sir_link",
+        "sources.inspection_link",
+        "sources.isp_link",
+        "sources.e_occupancy_link",
+        "sources.school_approval_link",
+        "sources.trace_link",
+    ])
+    return tokens
+
+
+TEMPLATE_TOKENS: list[str] = _build_template_tokens()
 TEMPLATE_TOKEN_SET: frozenset[str] = frozenset(TEMPLATE_TOKENS)
 
 
@@ -119,60 +104,25 @@ TOKEN_SOURCES: dict[str, str] = {
     "exec.c_zoning": "SIR",
     "exec.c_occupancy": "E-Occupancy",
     "exec.c_edreg": "School Approval",
-    "exec.e_mvp_capacity": "ISP",
-    "exec.e_mvp_cost": "ISP",
-    "exec.f_mvp_ready": "Agent",
-    "exec.e_max_capacity_capacity": "ISP",
-    "exec.e_max_capacity_cost": "Agent",
-    "exec.f_max_capacity_ready": "Agent",
-    "exec.e_max_value_capacity": "Agent",
-    "exec.e_max_value_cost": "Agent",
-    "exec.f_max_value_ready": "Agent",
-    "exec.cost_demolition_mvp": "RayCon",
-    "exec.cost_demolition_max_capacity": "RayCon",
-    "exec.cost_demolition_max_value": "Agent",
-    "exec.cost_framing_doors_mvp": "RayCon",
-    "exec.cost_framing_doors_max_capacity": "RayCon",
-    "exec.cost_framing_doors_max_value": "Agent",
-    "exec.cost_mep_fire_life_safety_mvp": "RayCon",
-    "exec.cost_mep_fire_life_safety_max_capacity": "RayCon",
-    "exec.cost_mep_fire_life_safety_max_value": "Agent",
-    "exec.cost_plumbing_bathrooms_mvp": "RayCon",
-    "exec.cost_plumbing_bathrooms_max_capacity": "RayCon",
-    "exec.cost_plumbing_bathrooms_max_value": "Agent",
-    "exec.cost_finish_work_mvp": "RayCon",
-    "exec.cost_finish_work_max_capacity": "RayCon",
-    "exec.cost_finish_work_max_value": "Agent",
-    "exec.cost_furniture_mvp": "RayCon",
-    "exec.cost_furniture_max_capacity": "RayCon",
-    "exec.cost_furniture_max_value": "Agent",
-    "exec.cost_tech_security_signage_mvp": "RayCon",
-    "exec.cost_tech_security_signage_max_capacity": "RayCon",
-    "exec.cost_tech_security_signage_max_value": "Agent",
-    "exec.cost_other_hard_costs_mvp": "RayCon",
-    "exec.cost_other_hard_costs_max_capacity": "RayCon",
-    "exec.cost_other_hard_costs_max_value": "Agent",
-    "exec.cost_soft_costs_mvp": "RayCon",
-    "exec.cost_soft_costs_max_capacity": "RayCon",
-    "exec.cost_soft_costs_max_value": "Agent",
-    "exec.cost_gc_fee_mvp": "RayCon",
-    "exec.cost_gc_fee_max_capacity": "RayCon",
-    "exec.cost_gc_fee_max_value": "Agent",
-    "exec.cost_contingency_mvp": "RayCon",
-    "exec.cost_contingency_max_capacity": "RayCon",
-    "exec.cost_contingency_max_value": "Agent",
-    "exec.cost_grand_total_mvp": "RayCon",
-    "exec.cost_grand_total_max_capacity": "RayCon",
-    "exec.cost_grand_total_max_value": "Agent",
-    "exec.delta_max_capacity_capacity": "Computed",
-    "exec.delta_max_capacity_cost": "Computed",
-    "exec.delta_max_capacity_ready": "Computed",
-    "exec.delta_max_value_capacity": "Computed",
-    "exec.delta_max_value_cost": "Computed",
-    "exec.delta_max_value_ready": "Computed",
     "exec.acquisition_conditions": "Agent",
     "exec.risk_notes": "Agent",
 }
+
+for scenario in SCENARIOS:
+    for metric, default_source in SUMMARY_TOKEN_BASES:
+        source = default_source
+        if scenario in {"fastest_open", "max_capacity"} and metric == "capex":
+            source = "RayCon"
+        if scenario == "recommended_path" and metric == "capacity":
+            source = "Agent"
+        TOKEN_SOURCES[f"exec.{scenario}_{metric}"] = source
+
+for base in COST_TOKEN_BASES:
+    for scenario in SCENARIOS:
+        source = "Agent"
+        if scenario in {"fastest_open", "max_capacity"}:
+            source = "RayCon"
+        TOKEN_SOURCES[f"exec.{base}_{scenario}"] = source
 
 
 LINK_TOKENS: frozenset[str] = frozenset({
@@ -212,26 +162,40 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "exec_summary.acquisition_conditions": "exec.acquisition_conditions",
     "exec_summary.risk_notes": "exec.risk_notes",
     "exec.c_permitting": "exec.c_edreg",
-    "exec.f_ready_mm_yy": "exec.f_mvp_ready",
-    "e_ideal_capacity": "exec.e_max_capacity_capacity",
-    "e_ideal_cost": "exec.e_max_capacity_cost",
-    "f_ideal_ready": "exec.f_max_capacity_ready",
-    "ideal_capacity": "exec.e_max_capacity_capacity",
-    "ideal_cost": "exec.e_max_capacity_cost",
-    "ideal_ready": "exec.f_max_capacity_ready",
-    "exec.e_ideal_capacity": "exec.e_max_capacity_capacity",
-    "exec.e_ideal_cost": "exec.e_max_capacity_cost",
-    "exec.f_ideal_ready": "exec.f_max_capacity_ready",
-    "exec.delta_capacity": "exec.delta_max_capacity_capacity",
-    "exec.delta_cost": "exec.delta_max_capacity_cost",
-    "exec.delta_ready": "exec.delta_max_capacity_ready",
-    "exec.e_ideal_capcity": "exec.e_max_capacity_capacity",
     "appendix.sir_link": "sources.sir_link",
     "appendix.inspection_link": "sources.inspection_link",
     "appendix.building_inspection_link": "sources.inspection_link",
     "appendix.floorplan_viability_link": "sources.isp_link",
     "appendix.isp_link": "sources.isp_link",
 }
+
+LEGACY_V2_ALIASES: dict[str, str] = {
+    "exec.e_mvp_capacity": "exec.fastest_open_capacity",
+    "exec.e_mvp_cost": "exec.fastest_open_capex",
+    "exec.f_mvp_ready": "exec.fastest_open_open_date",
+    "exec.e_max_capacity_capacity": "exec.max_capacity_capacity",
+    "exec.e_max_capacity_cost": "exec.max_capacity_capex",
+    "exec.f_max_capacity_ready": "exec.max_capacity_open_date",
+    "exec.e_max_value_capacity": "exec.max_value_capacity",
+    "exec.e_max_value_cost": "exec.max_value_capex",
+    "exec.f_max_value_ready": "exec.max_value_open_date",
+    "exec.f_ready_mm_yy": "exec.fastest_open_open_date",
+    "e_ideal_capacity": "exec.max_capacity_capacity",
+    "e_ideal_cost": "exec.max_capacity_capex",
+    "f_ideal_ready": "exec.max_capacity_open_date",
+    "ideal_capacity": "exec.max_capacity_capacity",
+    "ideal_cost": "exec.max_capacity_capex",
+    "ideal_ready": "exec.max_capacity_open_date",
+    "exec.e_ideal_capacity": "exec.max_capacity_capacity",
+    "exec.e_ideal_capcity": "exec.max_capacity_capacity",
+    "exec.e_ideal_cost": "exec.max_capacity_capex",
+    "exec.f_ideal_ready": "exec.max_capacity_open_date",
+}
+
+for base in COST_TOKEN_BASES:
+    LEGACY_V2_ALIASES[f"exec.{base}_mvp"] = f"exec.{base}_fastest_open"
+
+AGENT_KEY_ALIASES.update(LEGACY_V2_ALIASES)
 
 
 def _resolve_prepared_by(flat: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -315,19 +279,10 @@ def normalize_report_data(
         flat["meta.prepared_by"] = MISSING_P1_ASSIGNEE_LABEL
         token_sources["meta.prepared_by"] = "missing_p1_assignee"
 
-    acquisition_conditions = _clean_exec_section_value(
-        flat.get("exec.acquisition_conditions"),
-        section="acquisition_conditions",
-    )
-    if acquisition_conditions is not None:
-        flat["exec.acquisition_conditions"] = acquisition_conditions
-
-    risk_notes = _clean_exec_section_value(
-        flat.get("exec.risk_notes"),
-        section="risk_notes",
-    )
-    if risk_notes is not None:
-        flat["exec.risk_notes"] = risk_notes
+    for section in ("acquisition_conditions", "risk_notes"):
+        cleaned = _clean_exec_section_value(flat.get(f"exec.{section}"), section=section)
+        if cleaned is not None:
+            flat[f"exec.{section}"] = cleaned
 
     can_we_answer = flat.get("exec.c_answer")
     if isinstance(can_we_answer, str):
@@ -343,7 +298,10 @@ def normalize_report_data(
     unmatched_keys: list[str] = []
     for key, value in flat.items():
         if key in TEMPLATE_TOKEN_SET:
-            replacements[key] = value
+            if isinstance(value, str):
+                replacements[key] = value
+            elif value is not None:
+                replacements[key] = str(value)
         else:
             unmatched_keys.append(key)
 
@@ -359,154 +317,10 @@ def normalize_report_data(
     )
     if unmatched_keys:
         logger.info("Unmatched agent keys: %s", sorted(unmatched_keys))
-    if unfilled_tokens:
-        logger.debug("Unfilled tokens: %s", sorted(unfilled_tokens))
 
     return replacements, sorted(unmatched_keys), sorted(unfilled_tokens), token_sources
 
 
 def normalize_can_we_answer(value: str) -> str | None:
-    """Normalize legacy or case-variant answers to the canonical allowed values."""
+    """Normalize legacy or case-variant answers to canonical allowed values."""
     return LEGACY_CAN_WE_ANSWER_ALIASES.get(value.strip().rstrip(".,;:?!").lower())
-
-
-def _parse_dollar(value: str) -> int | None:
-    """Parse a dollar string like '$185,000' into an integer."""
-    cleaned = value.replace("$", "").replace(",", "").strip()
-    try:
-        return int(cleaned)
-    except ValueError:
-        try:
-            return int(float(cleaned))
-        except ValueError:
-            return None
-
-
-def _format_dollar(amount: int) -> str:
-    """Format an integer as a dollar string like '$105,000'."""
-    if amount < 0:
-        return f"-${abs(amount):,}"
-    return f"${amount:,}"
-
-
-def _parse_mm_yy(value: str) -> tuple[int, int] | None:
-    """Parse 'MM/YY' into (month, year_2digit). Returns None on failure."""
-    parts = value.strip().split("/")
-    if len(parts) != 2:
-        return None
-    try:
-        month, year = int(parts[0]), int(parts[1])
-        if 1 <= month <= 12 and 0 <= year <= 99:
-            return month, year
-        return None
-    except ValueError:
-        return None
-
-
-def _month_diff(base: tuple[int, int], comparison: tuple[int, int]) -> int:
-    """Compute month difference (comparison - base) from (month, year_2digit) tuples."""
-    base_total = base[1] * 12 + base[0]
-    comparison_total = comparison[1] * 12 + comparison[0]
-    return comparison_total - base_total
-
-
-def _compute_capacity_delta(
-    replacements: dict[str, str],
-    comparison_token: str,
-    delta_token: str,
-    label: str,
-) -> None:
-    base_value = replacements.get("exec.e_mvp_capacity", "").strip()
-    comparison_value = replacements.get(comparison_token, "").strip()
-    if not base_value or not comparison_value or delta_token in replacements:
-        return
-    try:
-        delta = int(comparison_value) - int(base_value)
-        sign = "+" if delta > 0 else ""
-        replacements[delta_token] = f"{sign}{delta}"
-    except ValueError:
-        logger.debug(
-            "Could not compute %s capacity delta: minwork=%s, comparison=%s",
-            label,
-            base_value,
-            comparison_value,
-        )
-
-
-def _compute_cost_delta(
-    replacements: dict[str, str],
-    comparison_token: str,
-    delta_token: str,
-    label: str,
-) -> None:
-    base_value = replacements.get("exec.e_mvp_cost", "").strip()
-    comparison_value = replacements.get(comparison_token, "").strip()
-    if not base_value or not comparison_value or delta_token in replacements:
-        return
-    base_cost = _parse_dollar(base_value)
-    comparison_cost = _parse_dollar(comparison_value)
-    if base_cost is None or comparison_cost is None:
-        logger.debug(
-            "Could not parse %s cost values: minwork=%s, comparison=%s",
-            label,
-            base_value,
-            comparison_value,
-        )
-        return
-    delta = comparison_cost - base_cost
-    sign = "+" if delta > 0 else ""
-    replacements[delta_token] = f"{sign}{_format_dollar(delta)}"
-
-
-def _compute_ready_delta(
-    replacements: dict[str, str],
-    comparison_token: str,
-    delta_token: str,
-    label: str,
-) -> None:
-    base_value = replacements.get("exec.f_mvp_ready", "").strip()
-    comparison_value = replacements.get(comparison_token, "").strip()
-    if not base_value or not comparison_value or delta_token in replacements:
-        return
-    base_ready = _parse_mm_yy(base_value)
-    comparison_ready = _parse_mm_yy(comparison_value)
-    if not base_ready or not comparison_ready:
-        logger.debug(
-            "Could not parse %s timeline values: minwork=%s, comparison=%s",
-            label,
-            base_value,
-            comparison_value,
-        )
-        return
-    diff = _month_diff(base_ready, comparison_ready)
-    sign = "+" if diff > 0 else ""
-    replacements[delta_token] = f"{sign}{diff} mo"
-
-
-def compute_deltas(replacements: dict[str, str]) -> None:
-    """Compute delta columns for MaxCapacity and MaxValue against MinWork."""
-    comparisons = (
-        (
-            "max_capacity",
-            "exec.e_max_capacity_capacity",
-            "exec.e_max_capacity_cost",
-            "exec.f_max_capacity_ready",
-            "exec.delta_max_capacity_capacity",
-            "exec.delta_max_capacity_cost",
-            "exec.delta_max_capacity_ready",
-        ),
-        (
-            "max_value",
-            "exec.e_max_value_capacity",
-            "exec.e_max_value_cost",
-            "exec.f_max_value_ready",
-            "exec.delta_max_value_capacity",
-            "exec.delta_max_value_cost",
-            "exec.delta_max_value_ready",
-        ),
-    )
-
-    for label, cap_token, cost_token, ready_token, cap_delta, cost_delta, ready_delta in comparisons:
-        _compute_capacity_delta(replacements, cap_token, cap_delta, label)
-        _compute_cost_delta(replacements, cost_token, cost_delta, label)
-        _compute_ready_delta(replacements, ready_token, ready_delta, label)

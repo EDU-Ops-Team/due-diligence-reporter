@@ -1,4 +1,4 @@
-"""Tests for the inbox scanner module."""
+﻿"""Tests for the inbox scanner module."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ class TestGenerateDriveFilename:
 
 
 # ---------------------------------------------------------------------------
-# Classification — now uses classify_document() from classifier.py
+# Classification â€” now uses classify_document() from classifier.py
 # ---------------------------------------------------------------------------
 
 
@@ -234,7 +234,7 @@ class TestWalkParts:
 
 
 # ---------------------------------------------------------------------------
-# Idempotency — already-processed emails
+# Idempotency â€” already-processed emails
 # ---------------------------------------------------------------------------
 
 
@@ -353,3 +353,4 @@ class TestScanResults:
     def test_has_site_identity_requires_title_or_id(self):
         assert has_site_identity([{"site_title": None, "matched_site_id": None}]) is False
         assert has_site_identity([{"site_title": "Alpha Keller", "matched_site_id": None}]) is True
+
