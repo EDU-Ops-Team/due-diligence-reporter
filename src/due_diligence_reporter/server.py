@@ -16,6 +16,7 @@ from tenacity import retry
 from .classifier import classify_by_keywords, classify_document, match_file_to_site_llm
 from .config import get_settings
 from .google_client import GoogleClient
+from .google_doc_builder import build_dd_report_doc
 from .report_schema import (
     ALLOWED_CAN_WE_ANSWERS,
     LINK_DISPLAY_LABELS,
@@ -28,8 +29,6 @@ from .report_schema import (
 )
 from .retry import retry_config
 from .utils import (
-    build_hyperlink_requests,
-    build_replace_all_text_requests,
     escape_html_text,
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
@@ -2266,7 +2265,11 @@ def _upload_report_trace(
     doc_id: str,
     trace_data: dict[str, Any],
 ) -> None:
-    """Upload the report trace JSON and link it from the generated report."""
+    """Upload the report trace JSON and link it from the generated report.
+
+    Finds the "Report Trace" row in the source documents table and
+    inserts the trace label as a hyperlink in the link cell.
+    """
     trace_name = f"{site_name} Report Trace - {report_date.replace('/', '-')}.json"
     trace_json = json.dumps(trace_data, indent=2)
     trace_file = gc.upload_file_to_folder(
@@ -2281,23 +2284,100 @@ def _upload_report_trace(
         return
 
     trace_label = LINK_DISPLAY_LABELS.get("sources.trace_link", trace_url)
-    gc.batch_update_document(
-        doc_id,
-        build_replace_all_text_requests({"sources.trace_link": trace_label}),
-    )
-    doc_body = gc.get_document(doc_id).get("body", {})
-    start_idx = find_text_index_in_doc(doc_body, trace_label)
-    if start_idx is None:
-        return
 
-    gc.batch_update_document(doc_id, [{
-        "updateTextStyle": {
-            "range": {"startIndex": start_idx, "endIndex": start_idx + len(trace_label)},
-            "textStyle": {"link": {"url": trace_url}},
-            "fields": "link",
-        }
-    }])
-    logger.info("Linked trace report in doc: %s", trace_label)
+    # Find the Report Trace row in the source documents table.
+    # The builder inserts the trace link cell as empty; we look for
+    # the "Report Trace" label in column 0 and insert into column 1.
+    doc = gc.get_document(doc_id)
+    doc_body = doc.get("body", {})
+    body_content = doc_body.get("content", [])
+
+    trace_cell_idx = _find_trace_link_cell(body_content)
+    if trace_cell_idx is not None:
+        # Insert trace label text and apply hyperlink styling
+        gc.batch_update_document(doc_id, [
+            {
+                "insertText": {
+                    "location": {"index": trace_cell_idx},
+                    "text": trace_label,
+                }
+            },
+            {
+                "updateTextStyle": {
+                    "range": {
+                        "startIndex": trace_cell_idx,
+                        "endIndex": trace_cell_idx + len(trace_label),
+                    },
+                    "textStyle": {
+                        "link": {"url": trace_url},
+                        "foregroundColor": {
+                            "color": {
+                                "rgbColor": {"red": 0.067, "green": 0.333, "blue": 0.800},
+                            },
+                        },
+                    },
+                    "fields": "link,foregroundColor",
+                }
+            },
+        ])
+        logger.info("Linked trace report in doc: %s", trace_label)
+    else:
+        # Fallback: search for any existing trace label text
+        start_idx = find_text_index_in_doc(doc_body, trace_label)
+        if start_idx is not None:
+            gc.batch_update_document(doc_id, [{
+                "updateTextStyle": {
+                    "range": {
+                        "startIndex": start_idx,
+                        "endIndex": start_idx + len(trace_label),
+                    },
+                    "textStyle": {"link": {"url": trace_url}},
+                    "fields": "link",
+                }
+            }])
+            logger.info("Linked trace report in doc (fallback): %s", trace_label)
+        else:
+            logger.warning("Could not find trace link cell in document")
+
+
+def _find_trace_link_cell(body_content: list[dict[str, Any]]) -> int | None:
+    """Find the insertion index for the trace link cell in the source docs table.
+
+    Scans tables for a row whose first cell contains "Report Trace" and
+    returns the start index of the second cell's first paragraph.
+    """
+    for element in body_content:
+        if "table" not in element:
+            continue
+        for row in element["table"].get("tableRows", []):
+            cells = row.get("tableCells", [])
+            if len(cells) < 2:
+                continue
+            # Check if first cell contains "Report Trace"
+            cell0_text = _extract_cell_text(cells[0])
+            if "Report Trace" in cell0_text:
+                # Return the start index of the second cell's content
+                cell1_content = cells[1].get("content", [])
+                if cell1_content:
+                    first_para = cell1_content[0]
+                    if "paragraph" in first_para:
+                        elements = first_para["paragraph"].get("elements", [])
+                        if elements:
+                            return elements[0].get("startIndex", 0)
+                        return first_para.get("startIndex", 0)
+    return None
+
+
+def _extract_cell_text(cell: dict[str, Any]) -> str:
+    """Extract all text from a table cell."""
+    texts: list[str] = []
+    for content_el in cell.get("content", []):
+        if "paragraph" in content_el:
+            for pe in content_el["paragraph"].get("elements", []):
+                text_run = pe.get("textRun")
+                if text_run:
+                    texts.append(text_run.get("content", ""))
+    return "".join(texts)
 
 
 @mcp.tool()
@@ -2336,24 +2416,6 @@ async def create_dd_report(
             "message": f"Could not extract a Google Drive folder ID from: {drive_folder_url}",
         }
 
-    settings = get_settings()
-    template_id = settings.dd_template_v3_google_doc_id
-    if not template_id and settings.dd_template_v2_google_doc_id:
-        template_id = settings.dd_template_v2_google_doc_id
-        logger.warning(
-            "Using legacy DD_TEMPLATE_V2_GOOGLE_DOC_ID fallback. "
-            "Set DD_TEMPLATE_V3_GOOGLE_DOC_ID for V3 template runs.",
-        )
-    if not template_id:
-        return {
-            "status": "error",
-            "error": "Missing configuration",
-            "message": (
-                "DD_TEMPLATE_V3_GOOGLE_DOC_ID is not configured. "
-                "Set this environment variable to the Google Doc template ID."
-            ),
-        }
-
     today_str = datetime.now().strftime("%m/%d/%Y")
     doc_name = f"{site_name.strip()} DD Report - {today_str}"
     logger.info("Creating DD report: %s", doc_name)
@@ -2380,18 +2442,18 @@ async def create_dd_report(
                     "message": f"DD report already exists: {existing_doc_url}",
                 }
 
-            logger.info("Copying template %s to folder %s as '%s'", template_id, folder_id, doc_name)
-            copied_doc = gc.copy_document(
-                template_id=template_id,
+            logger.info("Creating blank document in folder %s as '%s'", folder_id, doc_name)
+            new_doc = gc.create_document(
                 name=doc_name,
-                parent_folder_id=folder_id,
+                folder_id=folder_id,
+                text_content="",
             )
-            doc_id = copied_doc.get("id")
-            doc_url = copied_doc.get("webViewLink")
+            doc_id = new_doc.get("id")
+            doc_url = new_doc.get("webViewLink")
             if not doc_id or not isinstance(doc_id, str):
-                raise RuntimeError("Invalid document ID returned from copy operation")
+                raise RuntimeError("Invalid document ID returned from create operation")
 
-            logger.info("Copied template to new document: %s (id=%s)", doc_name, doc_id)
+            logger.info("Created blank document: %s (id=%s)", doc_name, doc_id)
             replacements, unmatched, unfilled, _token_sources = _normalize_report_replacements(
                 report_data=report_data,
                 site_name=site_name.strip(),
@@ -2405,20 +2467,32 @@ async def create_dd_report(
             if unmatched:
                 logger.warning("Unmatched agent keys (no template token): %s", unmatched)
 
-            text_replacements, link_urls = _prepare_report_text_replacements(replacements)
-            replace_requests = build_replace_all_text_requests(text_replacements)
-            if replace_requests:
-                gc.batch_update_document(doc_id, replace_requests)
-                logger.info("Applied %d text replacements to document %s", len(replace_requests), doc_id)
-            else:
-                logger.warning("No placeholder replacements to apply - report_data may be empty")
-
-            hyperlink_trace = _apply_report_hyperlinks(
-                gc=gc,
+            # Build the document structure programmatically
+            builder_result = build_dd_report_doc(
+                docs_service=gc.docs_service,
+                drive_service=gc.drive_service,
                 doc_id=doc_id,
                 replacements=replacements,
-                link_urls=link_urls,
+                site_title=site_name.strip(),
             )
+
+            hyperlink_trace = {
+                "candidates": {},
+                "found_in_doc": builder_result.get("found_tokens", []),
+                "not_found_in_doc": builder_result.get("not_found_tokens", []),
+                "missing_from_agent": [t for t in LINK_TOKENS if t not in replacements],
+                "non_url_values": {
+                    key: replacements[key][:120]
+                    for key in LINK_TOKENS
+                    if key in replacements and not replacements[key].startswith("http")
+                },
+                "unmapped_agent_urls": [
+                    key for key, value in replacements.items()
+                    if key not in LINK_TOKENS and value.startswith("http")
+                ],
+                "applied": builder_result.get("applied", 0),
+                "error": None,
+            }
 
             logger.info("DD report created successfully: %s", doc_url)
             trace_data = _build_report_trace_data(
@@ -2447,7 +2521,7 @@ async def create_dd_report(
             return {
                 "status": "success",
                 "document": {"id": doc_id, "name": doc_name, "url": doc_url},
-                "replacements_applied": len(replace_requests),
+                "replacements_applied": len(replacements),
                 "unmatched_agent_keys": len(unmatched),
                 "unfilled_template_tokens": len(unfilled),
                 "hyperlinks_applied": hyperlink_trace["applied"],

@@ -680,7 +680,7 @@ class TestAsyncOffloading:
         from due_diligence_reporter.server import create_dd_report
 
         gc = MagicMock()
-        gc.copy_document.return_value = {
+        gc.create_document.return_value = {
             "id": "doc123",
             "webViewLink": "https://docs.google.com/document/d/doc123",
         }
@@ -694,17 +694,14 @@ class TestAsyncOffloading:
             "due_diligence_reporter.server.asyncio.to_thread",
             new=AsyncMock(side_effect=run_inline),
         ) as mock_to_thread, patch(
-            "due_diligence_reporter.server.get_settings",
-            return_value=MagicMock(dd_template_v3_google_doc_id="template123"),
-        ), patch(
             "due_diligence_reporter.server._make_google_client",
             return_value=gc,
         ), patch(
             "due_diligence_reporter.server.normalize_report_data",
             return_value=({}, [], [], {}),
         ), patch(
-            "due_diligence_reporter.server.build_replace_all_text_requests",
-            return_value=[],
+            "due_diligence_reporter.server.build_dd_report_doc",
+            return_value={"applied": 0, "found_tokens": [], "not_found_tokens": []},
         ):
             result = asyncio.run(create_dd_report(
                 site_name="Alpha",
@@ -713,7 +710,7 @@ class TestAsyncOffloading:
             ))
 
         assert result["status"] == "success"
-        gc.copy_document.assert_called_once()
+        gc.create_document.assert_called_once()
         mock_to_thread.assert_awaited_once()
 
     def test_create_dd_report_reuses_existing_same_day_doc(self) -> None:
@@ -733,9 +730,6 @@ class TestAsyncOffloading:
             "due_diligence_reporter.server.asyncio.to_thread",
             new=AsyncMock(side_effect=run_inline),
         ), patch(
-            "due_diligence_reporter.server.get_settings",
-            return_value=MagicMock(dd_template_v3_google_doc_id="template123"),
-        ), patch(
             "due_diligence_reporter.server._make_google_client",
             return_value=gc,
         ), patch(
@@ -750,6 +744,6 @@ class TestAsyncOffloading:
 
         assert result["status"] == "success"
         assert result["document"]["id"] == "doc-existing"
-        gc.copy_document.assert_not_called()
+        gc.create_document.assert_not_called()
 
 

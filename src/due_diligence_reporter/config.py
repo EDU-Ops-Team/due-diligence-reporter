@@ -37,14 +37,15 @@ class Settings(BaseSettings):
         description="OAuth scopes for Drive, Docs, and Gmail operations",
     )
 
-    # DD Report Templates
+    # DD Report Templates (deprecated — reports are now built programmatically)
     dd_template_v3_google_doc_id: str = Field(
         "",
-        description="Google Doc ID of the V3 DD report template",
+        description="Deprecated: Google Doc ID of the V3 DD report template. "
+        "Reports are now built programmatically via google_doc_builder.",
     )
     dd_template_v2_google_doc_id: str = Field(
         "",
-        description="Legacy fallback Google Doc ID for DD report template",
+        description="Deprecated: Legacy fallback Google Doc ID for DD report template.",
     )
 
     # Google Drive root folder containing all site folders
