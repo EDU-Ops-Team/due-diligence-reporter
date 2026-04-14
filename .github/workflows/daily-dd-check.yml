@@ -2,7 +2,7 @@ name: Daily DD Check
 
 on:
   schedule:
-    - cron: '0 14 * * 1-5'  # 9 AM Central (UTC-5), Mondayâ€“Friday
+    - cron: '0 14 * * 1-5'  # 9 AM Central (UTC-5), Monday-Friday
   workflow_dispatch:
     inputs:
       site:
@@ -36,19 +36,19 @@ jobs:
 
       - name: Verify required secrets
         run: |
-          [ -n "${{ secrets.WRIKE_ACCESS_TOKEN }}" ]         || { echo "âŒ WRIKE_ACCESS_TOKEN missing"; exit 1; }
-          [ -n "${{ secrets.OPENAI_API_KEY }}" ]             || { echo "âŒ OPENAI_API_KEY missing"; exit 1; }
-          [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]          || { echo "âŒ ANTHROPIC_API_KEY missing"; exit 1; }
-          [ -n "${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}" ] || { echo "âŒ DD_TEMPLATE_V3_GOOGLE_DOC_ID missing"; exit 1; }
-          [ -n "${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}" ] || { echo "âŒ GOOGLE_DRIVE_ROOT_FOLDER_ID missing"; exit 1; }
-          [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ]            || { echo "âŒ OAUTH_CLIENT_ID missing"; exit 1; }
-          [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ]        || { echo "âŒ OAUTH_CLIENT_SECRET missing"; exit 1; }
-          [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ]        || { echo "âŒ OAUTH_REFRESH_TOKEN missing"; exit 1; }
-          [ -n "${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}" ]    || { echo "âŒ GOOGLE_CHAT_WEBHOOK_URL missing"; exit 1; }
-          [ -n "${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}" ] || { echo "âŒ DD_REPORT_EMAIL_RECIPIENTS missing"; exit 1; }
-          [ -n "${{ secrets.EMAIL_SENDER }}" ]               || { echo "âŒ EMAIL_SENDER missing"; exit 1; }
-          [ -n "${{ secrets.EMAIL_APP_PASSWORD }}" ]         || { echo "âŒ EMAIL_APP_PASSWORD missing"; exit 1; }
-          echo "âœ… All required secrets are present"
+          [ -n "${{ secrets.WRIKE_ACCESS_TOKEN }}" ]         || { echo "[ERROR] WRIKE_ACCESS_TOKEN missing"; exit 1; }
+          [ -n "${{ secrets.OPENAI_API_KEY }}" ]             || { echo "[ERROR] OPENAI_API_KEY missing"; exit 1; }
+          [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]          || { echo "[ERROR] ANTHROPIC_API_KEY missing"; exit 1; }
+          [ -n "${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}" ] || { echo "[ERROR] _GOOGLE_DOC_ID missing"; exit 1; }
+          [ -n "${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}" ] || { echo "[ERROR] GOOGLE_DRIVE_ROOT_FOLDER_ID missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ]            || { echo "[ERROR] OAUTH_CLIENT_ID missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ]        || { echo "[ERROR] OAUTH_CLIENT_SECRET missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ]        || { echo "[ERROR] OAUTH_REFRESH_TOKEN missing"; exit 1; }
+          [ -n "${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}" ]    || { echo "[ERROR] GOOGLE_CHAT_WEBHOOK_URL missing"; exit 1; }
+          [ -n "${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}" ] || { echo "[ERROR] DD_REPORT_EMAIL_RECIPIENTS missing"; exit 1; }
+          [ -n "${{ secrets.EMAIL_SENDER }}" ]               || { echo "[ERROR] EMAIL_SENDER missing"; exit 1; }
+          [ -n "${{ secrets.EMAIL_APP_PASSWORD }}" ]         || { echo "[ERROR] EMAIL_APP_PASSWORD missing"; exit 1; }
+          echo "[OK] All required secrets are present"
 
       - name: Create .env file from secrets
         env:
@@ -82,7 +82,7 @@ jobs:
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
           echo "BUILDING_INSPECTION_FOLDER_ID=${BUILDING_INSPECTION_FOLDER_ID}" >> .env
-          echo "âœ… Created .env file"
+          echo "[OK] Created .env file"
 
       - name: Write Google OAuth client secrets
         env:
@@ -104,7 +104,7 @@ jobs:
           with open('credentials/client_secrets.json', 'w') as f:
               json.dump(data, f, indent=2)
           "
-          echo "âœ… Wrote credentials/client_secrets.json"
+          echo "[OK] Wrote credentials/client_secrets.json"
 
       - name: Write Google OAuth refresh token
         env:
@@ -129,7 +129,7 @@ jobs:
           with open('.gcp-saved-tokens.json', 'w') as f:
               json.dump(data, f, indent=2)
           "
-          echo "âœ… Wrote .gcp-saved-tokens.json"
+          echo "[OK] Wrote .gcp-saved-tokens.json"
 
       - name: Run daily DD check
         run: |
@@ -140,5 +140,5 @@ jobs:
           fi
 
       - name: Done
-        run: echo "ðŸŽ‰ Daily DD check completed"
+        run: echo "Daily DD check completed"
 
