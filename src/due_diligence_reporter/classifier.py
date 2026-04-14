@@ -92,7 +92,7 @@ def classify_by_filename_llm(
         from openai import OpenAI
 
         settings = get_settings()
-        client = OpenAI(api_key=openai_api_key)
+        client = OpenAI(api_key=openai_api_key, max_retries=2)
 
         user_msg = f"Filename: {filename}"
         if site_name:
@@ -163,7 +163,7 @@ def classify_by_content_llm(
         from openai import OpenAI
 
         settings = get_settings()
-        client = OpenAI(api_key=openai_api_key)
+        client = OpenAI(api_key=openai_api_key, max_retries=2)
 
         response = client.chat.completions.create(
             model=settings.openai_content_model,
@@ -282,12 +282,12 @@ def match_file_to_site_llm(
         from openai import OpenAI
 
         settings = get_settings()
-        client = OpenAI(api_key=openai_api_key)
+        client = OpenAI(api_key=openai_api_key, max_retries=2)
 
         user_msg = f"Site name: {site_title}\n"
         if site_address:
             user_msg += f"Address: {site_address}\n"
-        user_msg += f"\nFilenames in folder:\n"
+        user_msg += "\nFilenames in folder:\n"
         for fn in filenames:
             user_msg += f"- {fn}\n"
 

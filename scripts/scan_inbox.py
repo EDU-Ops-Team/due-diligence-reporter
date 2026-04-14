@@ -34,30 +34,30 @@ from typing import Any
 _project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(_project_root / "src"))
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(_project_root / ".env")
 
-from due_diligence_reporter.config import get_settings
-from due_diligence_reporter.google_client import GoogleClient
-from due_diligence_reporter.inbox_scanner import (
+from due_diligence_reporter.config import get_settings  # noqa: E402
+from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
+from due_diligence_reporter.inbox_scanner import (  # noqa: E402
     build_scan_summary,
     has_site_identity,
     scan_inbox,
 )
-from due_diligence_reporter.report_pipeline import (
+from due_diligence_reporter.report_pipeline import (  # noqa: E402
     list_shared_folders_once,
     post_pipeline_result,
     process_site_pipeline,
 )
-from due_diligence_reporter.server import _build_site_match_terms
-from due_diligence_reporter.utils import (
+from due_diligence_reporter.server import _build_site_match_terms  # noqa: E402
+from due_diligence_reporter.utils import (  # noqa: E402
     escape_html_text,
     post_google_chat_message,
     sanitize_http_url,
     send_email,
 )
-from due_diligence_reporter.wrike import (
+from due_diligence_reporter.wrike import (  # noqa: E402
     _get_active_status_ids,
     _get_all_site_records,
     extract_address_from_record,

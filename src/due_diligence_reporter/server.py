@@ -10,9 +10,8 @@ from datetime import datetime
 from typing import Any
 
 import requests
-
-from dotenv import load_dotenv
 from mcp.server import FastMCP
+from tenacity import retry
 
 from .classifier import classify_by_keywords, classify_document, match_file_to_site_llm
 from .config import get_settings
@@ -27,6 +26,7 @@ from .report_schema import (
     normalize_can_we_answer,
     normalize_report_data,
 )
+from .retry import retry_config
 from .utils import (
     build_hyperlink_requests,
     build_replace_all_text_requests,
@@ -44,9 +44,6 @@ from .wrike import (
     find_site_record,
     get_record_comments,
 )
-
-# Load environment variables from the project-root .env if present
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -602,7 +599,7 @@ def _read_raycon_done_event(response: requests.Response) -> dict[str, Any]:
         line = raw_line.strip()
         if not line:
             if current_event == "done" and data_lines:
-                return json.loads("\n".join(data_lines))
+                return json.loads("\n".join(data_lines))  # type: ignore[no-any-return]
             if current_event == "error" and data_lines:
                 error_payload = json.loads("\n".join(data_lines))
                 error_message = error_payload.get("message", "Unknown RayCon error")
@@ -621,6 +618,7 @@ def _read_raycon_done_event(response: requests.Response) -> dict[str, Any]:
     raise ValueError("RayCon stream ended before a done event was received")
 
 
+@retry(**retry_config())  # type: ignore[untyped-decorator]
 def _call_raycon_api(
     api_url: str,
     payload: dict[str, Any],
@@ -730,6 +728,27 @@ def _classify_document_type(filename: str) -> str:
     return doc_type
 
 
+_US_STATES: frozenset[str] = frozenset({
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana",
+    "maine", "maryland", "massachusetts", "michigan", "minnesota",
+    "mississippi", "missouri", "montana", "nebraska", "nevada",
+    "new hampshire", "new jersey", "new mexico", "new york",
+    "north carolina", "north dakota", "ohio", "oklahoma", "oregon",
+    "pennsylvania", "rhode island", "south carolina", "south dakota",
+    "tennessee", "texas", "utah", "vermont", "virginia", "washington",
+    "west virginia", "wisconsin", "wyoming",
+    "district of columbia",
+})
+
+_STATE_ZIP_RE: re.Pattern[str] = re.compile(
+    r"^[A-Z]{2}(\s+\d{5}(-\d{4})?)?$"  # TX, TX 76248
+    r"|^\w[\w\s]*\s+\d{5}(-\d{4})?$",   # Texas 78746, New York 10001
+    re.IGNORECASE,
+)
+
+
 def _extract_city_from_address(address: str | None) -> str | None:
     """Extract city from a US-style address like '1234 Main St, Keller, TX 76248'.
 
@@ -744,31 +763,11 @@ def _extract_city_from_address(address: str | None) -> str | None:
     if len(parts) < 2:
         return None
 
-    # Matches "TX", "TX 76248", "Texas 78746", "Florida 33431-1234", "Florida"
-    _US_STATES = {
-        "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
-        "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
-        "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana",
-        "maine", "maryland", "massachusetts", "michigan", "minnesota",
-        "mississippi", "missouri", "montana", "nebraska", "nevada",
-        "new hampshire", "new jersey", "new mexico", "new york",
-        "north carolina", "north dakota", "ohio", "oklahoma", "oregon",
-        "pennsylvania", "rhode island", "south carolina", "south dakota",
-        "tennessee", "texas", "utah", "vermont", "virginia", "washington",
-        "west virginia", "wisconsin", "wyoming",
-        "district of columbia",
-    }
-    state_zip_re = re.compile(
-        r"^[A-Z]{2}(\s+\d{5}(-\d{4})?)?$"  # TX, TX 76248
-        r"|^\w[\w\s]*\s+\d{5}(-\d{4})?$",   # Texas 78746, New York 10001
-        re.IGNORECASE,
-    )
-
     for i in range(len(parts) - 1, -1, -1):
         segment = parts[i].strip()
         if not segment:
             continue
-        if state_zip_re.match(segment):
+        if _STATE_ZIP_RE.match(segment):
             continue
         # Skip full state names without zip (e.g. "Florida", "New York")
         if segment.lower() in _US_STATES:
@@ -1567,11 +1566,12 @@ async def apply_school_approval_skill(
 # Shovels.ai permit history helpers
 # ---------------------------------------------------------------------------
 
+@retry(**retry_config())  # type: ignore[untyped-decorator]
 def _call_shovels_search(api_key: str, base_url: str, address: str) -> dict[str, Any] | None:
     """Search for an address and return the first result dict, or None if not found."""
     resp = requests.get(
         f"{base_url}/addresses/search",
-        params={"q": address, "size": 1},
+        params={"q": address, "size": "1"},
         headers={"X-API-Key": api_key},
         timeout=10,
     )
@@ -1580,6 +1580,7 @@ def _call_shovels_search(api_key: str, base_url: str, address: str) -> dict[str,
     return items[0] if items else None
 
 
+@retry(**retry_config())  # type: ignore[untyped-decorator]
 def _call_shovels_metrics(api_key: str, base_url: str, geo_id: str) -> dict[str, Any]:
     """Get current permit metrics for an address geo_id."""
     resp = requests.get(
@@ -1588,21 +1589,22 @@ def _call_shovels_metrics(api_key: str, base_url: str, geo_id: str) -> dict[str,
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()
+    return resp.json()  # type: ignore[no-any-return]
 
 
+@retry(**retry_config())  # type: ignore[untyped-decorator]
 def _call_shovels_permits(
     api_key: str, base_url: str, geo_id: str, from_date: str, to_date: str
 ) -> list[dict[str, Any]]:
     """Get up to 50 permits for an address within the given date range."""
     resp = requests.get(
         f"{base_url}/permits/search",
-        params={"geo_id": geo_id, "permit_from": from_date, "permit_to": to_date, "size": 50},
+        params={"geo_id": geo_id, "permit_from": from_date, "permit_to": to_date, "size": "50"},
         headers={"X-API-Key": api_key},
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json().get("items", [])
+    return resp.json().get("items", [])  # type: ignore[no-any-return]
 
 
 _SHOVELS_SYSTEM_TAGS: dict[str, set[str]] = {
@@ -1681,12 +1683,12 @@ def _analyze_permit_flags(
     # Info-level system permits — evidence for cross-referencing with building inspection
     seen_info: set[str] = set()
     for p in permits:
-        tags = {t.lower() for t in (p.get("tags") or [])}
+        tag_set = {t.lower() for t in (p.get("tags") or [])}
         pdesc = (p.get("description") or "").lower()
         for flag_type, keywords in _SHOVELS_SYSTEM_TAGS.items():
             if flag_type in seen_info:
                 continue
-            if tags & keywords or any(k in pdesc for k in keywords):
+            if tag_set & keywords or any(k in pdesc for k in keywords):
                 seen_info.add(flag_type)
                 label = flag_type.replace("_PERMIT", "").replace("_", " ").title()
                 flags.append({
@@ -2021,7 +2023,7 @@ def _inject_wrike_report_defaults(
     site_name: str,
 ) -> dict[str, Any]:
     """Inject authoritative Wrike defaults that should not depend on agent output."""
-    enriched = json.loads(json.dumps(report_data))
+    enriched: dict[str, Any] = json.loads(json.dumps(report_data))
     try:
         record = find_site_record(site_name_or_id=site_name)
     except Exception as e:
@@ -2525,8 +2527,8 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
                 doc_type = file_info.get("doc_type", "unknown")
                 if doc_type in files_by_type and files_by_type[doc_type] is None:
                     files_by_type[doc_type] = file_info
-                elif doc_type in files_by_type and files_by_type[doc_type] is not None:
-                    existing_mime = files_by_type[doc_type].get("mimeType", "")
+                elif doc_type in files_by_type and (existing := files_by_type[doc_type]) is not None:
+                    existing_mime = existing.get("mimeType", "")
                     new_mime = file_info.get("mimeType", "")
                     if existing_mime != PDF_MIME and new_mime == PDF_MIME:
                         files_by_type[doc_type] = file_info

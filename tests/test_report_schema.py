@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from due_diligence_reporter.report_schema import (
-    ALLOWED_CAN_WE_ANSWERS,
     AGENT_KEY_ALIASES,
+    ALLOWED_CAN_WE_ANSWERS,
     LINK_TOKENS,
     MISSING_P1_ASSIGNEE_LABEL,
     TEMPLATE_TOKEN_SET,

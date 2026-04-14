@@ -11,14 +11,14 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import anthropic
 
+from .classifier import classify_document, match_file_to_site_llm
 from .config import Settings, get_settings
 from .google_client import GoogleClient
-from .classifier import classify_document, match_file_to_site_llm
 from .server import _classify_document_type
 from .utils import (
     escape_html_text,
@@ -416,12 +416,12 @@ def run_dd_report_agent(
     if not anthropic_api_key:
         return {"success": False, "error": "ANTHROPIC_API_KEY not set"}
 
-    client = anthropic.Anthropic(api_key=anthropic_api_key)
+    client = anthropic.Anthropic(api_key=anthropic_api_key, max_retries=2)
 
     # Initialize provenance trace
     trace = ReportTrace(
         site_name=site_title,
-        started_at=datetime.now(timezone.utc).isoformat(),
+        started_at=datetime.now(UTC).isoformat(),
         prompt_version=3,
     )
     run_start = time.monotonic()
@@ -442,8 +442,8 @@ def run_dd_report_agent(
             model=model_id,
             max_tokens=8192,
             system=system_prompt,
-            tools=TOOL_DEFINITIONS,
-            messages=messages,
+            tools=TOOL_DEFINITIONS,  # type: ignore[arg-type]
+            messages=messages,  # type: ignore[arg-type]
         )
 
         # Collect assistant message
@@ -482,7 +482,7 @@ def run_dd_report_agent(
 
             # Record in provenance trace
             trace.add_event(TraceEvent(
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.now(UTC).isoformat(),
                 event_type="tool_call",
                 tool_name=tool_use.name,
                 input_summary=_sanitize_input(tool_input),
@@ -524,7 +524,7 @@ def run_dd_report_agent(
             break
 
     # Finalize trace
-    trace.ended_at = datetime.now(timezone.utc).isoformat()
+    trace.ended_at = datetime.now(UTC).isoformat()
     trace.total_duration_ms = int((time.monotonic() - run_start) * 1000)
     trace.final_status = "success" if doc_id else "no_report"
 
@@ -876,7 +876,7 @@ def _save_pipeline_trace(
     if not folder_id:
         return None
 
-    trace_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    trace_date = datetime.now(UTC).strftime("%Y-%m-%d")
     trace_name = f"{site_title} DD Report Trace - {trace_date}.json"
     try:
         trace_json = json.dumps(trace.to_dict(), indent=2)
@@ -900,6 +900,7 @@ def _check_generated_report(
 ) -> tuple[dict[str, Any] | None, PipelineResult | None]:
     """Run completeness check and convert failures into a PipelineResult."""
     import asyncio
+
     from . import server as srv
 
     completeness = asyncio.run(srv.check_report_completeness(doc_id))

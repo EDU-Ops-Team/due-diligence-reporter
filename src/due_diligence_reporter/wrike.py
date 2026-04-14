@@ -9,6 +9,10 @@ from typing import Any
 
 import requests
 from openai import OpenAI
+from tenacity import retry
+
+from .config import get_settings
+from .retry import retry_config
 
 logger = logging.getLogger("[wrike]")
 
@@ -102,6 +106,30 @@ def _raise_for_wrike_error(resp: requests.Response) -> None:
     raise WrikeError(f"Wrike API error {resp.status_code}: {body}")
 
 
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+@retry(**retry_config())  # type: ignore[untyped-decorator]
+def _wrike_get(
+    url: str,
+    *,
+    headers: dict[str, str],
+    params: dict[str, str] | None = None,
+    timeout: float = WRIKE_TIMEOUT_SECONDS,
+) -> requests.Response:
+    """Make a GET request to the Wrike API with retry on transient errors.
+
+    Raises ``requests.HTTPError`` for retryable status codes (429, 5xx) so that
+    tenacity can intercept them.  Non-retryable errors are raised as ``WrikeError``
+    after retries are exhausted or immediately for 4xx (non-429) responses.
+    """
+    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+    if not resp.ok and resp.status_code in _RETRYABLE_STATUS_CODES:
+        resp.raise_for_status()  # raises HTTPError -> tenacity retries
+    _raise_for_wrike_error(resp)
+    return resp
+
+
 def enrich_custom_fields_with_names(record: dict[str, Any]) -> dict[str, Any]:
     """Enrich custom fields in a Wrike record with human-readable names."""
     custom_fields = record.get("customFields", [])
@@ -114,7 +142,7 @@ def enrich_custom_fields_with_names(record: dict[str, Any]) -> dict[str, Any]:
             enriched_fields.append(field)
             continue
 
-        field_id = field.get("id")
+        field_id: str = field.get("id", "")
         field_name = WRIKE_CUSTOM_FIELD_NAMES.get(field_id, field_id)
         enriched_fields.append(
             {
@@ -207,12 +235,11 @@ def get_contact_profile(
         cfg = load_wrike_config()
 
     try:
-        resp = requests.get(
+        resp = _wrike_get(
             f"https://www.wrike.com/api/v4/contacts/{contact_id}",
             headers=_wrike_headers(cfg.access_token),
             timeout=15,
         )
-        _raise_for_wrike_error(resp)
         data = resp.json().get("data", [])
         if data:
             contact = data[0]
@@ -314,12 +341,11 @@ def _get_active_status_ids(*, access_token: str) -> set[str]:
     url = f"{WRIKE_API_BASE_URL}/workflows"
     logger.info("Fetching Wrike workflows to resolve active status IDs")
 
-    resp = requests.get(
+    resp = _wrike_get(
         url,
         headers=_wrike_headers(access_token),
         timeout=WRIKE_TIMEOUT_SECONDS,
     )
-    _raise_for_wrike_error(resp)
 
     payload: dict[str, Any] = resp.json()
     active_ids: set[str] = set()
@@ -381,12 +407,11 @@ def get_site_record_by_id(
     url = f"{WRIKE_API_BASE_URL}/folders/{record_id}"
     logger.info("Fetching site record: %s", record_id)
 
-    resp = requests.get(
+    resp = _wrike_get(
         url,
         headers=_wrike_headers(cfg.access_token),
         timeout=WRIKE_TIMEOUT_SECONDS,
     )
-    _raise_for_wrike_error(resp)
 
     payload: dict[str, Any] = resp.json()
     data = payload.get("data", [])
@@ -396,7 +421,7 @@ def get_site_record_by_id(
 
     record = data[0]
     logger.info("Site record fetched: %s", record.get("title"))
-    return record
+    return record  # type: ignore[no-any-return]
 
 
 def resolve_permalink_to_id(*, permalink: str, cfg: WrikeConfig | None = None) -> str:
@@ -407,13 +432,12 @@ def resolve_permalink_to_id(*, permalink: str, cfg: WrikeConfig | None = None) -
     url = f"{WRIKE_API_BASE_URL}/folders"
     logger.info("Resolving permalink to record ID: %s", permalink)
 
-    resp = requests.get(
+    resp = _wrike_get(
         url,
         headers=_wrike_headers(cfg.access_token),
         params={"permalink": permalink},
         timeout=WRIKE_TIMEOUT_SECONDS,
     )
-    _raise_for_wrike_error(resp)
 
     payload: dict[str, Any] = resp.json()
     data = payload.get("data", [])
@@ -436,12 +460,11 @@ def _get_all_folder_ids(*, access_token: str) -> list[str]:
     url = f"{WRIKE_API_BASE_URL}/spaces/{WRIKE_SPACE_ID}/folders"
     logger.info("Fetching all folder IDs from space %s", WRIKE_SPACE_ID)
 
-    resp = requests.get(
+    resp = _wrike_get(
         url,
         headers=_wrike_headers(access_token),
         timeout=WRIKE_TIMEOUT_SECONDS,
     )
-    _raise_for_wrike_error(resp)
 
     payload: dict[str, Any] = resp.json()
     folder_ids: list[str] = []
@@ -476,13 +499,12 @@ def _get_all_site_records(*, cfg: WrikeConfig) -> list[dict[str, Any]]:
             len(folder_ids),
         )
 
-        resp = requests.get(
+        resp = _wrike_get(
             url,
             headers=_wrike_headers(cfg.access_token),
             params={"fields": '["customItemTypeId"]'},
             timeout=WRIKE_TIMEOUT_SECONDS,
         )
-        _raise_for_wrike_error(resp)
 
         payload: dict[str, Any] = resp.json()
         data = payload.get("data", [])
@@ -510,9 +532,6 @@ def _match_site_with_llm(
 
     candidates: list[dict[str, Any]] = []
     for record in site_records:
-        if not isinstance(record, dict):
-            continue
-
         record_id = record.get("id")
         title = record.get("title", "")
         address = extract_address_from_record(record) or ""
@@ -530,7 +549,7 @@ def _match_site_with_llm(
                 return record
         return None
 
-    client = OpenAI(api_key=openai_api_key)
+    client = OpenAI(api_key=openai_api_key, max_retries=2)
 
     system_prompt = (
         "You are a site record matching assistant. Given a search query (site name or address) "
@@ -550,8 +569,9 @@ def _match_site_with_llm(
 
     logger.info("Calling OpenAI to match site query: %s", query)
 
+    settings = get_settings()
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=settings.openai_site_match_model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -660,12 +680,11 @@ def get_record_comments(
     url = f"{WRIKE_API_BASE_URL}/folders/{record_id}/comments"
     logger.info("Fetching comments for record: %s", record_id)
 
-    resp = requests.get(
+    resp = _wrike_get(
         url,
         headers=_wrike_headers(cfg.access_token),
         timeout=WRIKE_TIMEOUT_SECONDS,
     )
-    _raise_for_wrike_error(resp)
 
     payload: dict[str, Any] = resp.json()
     raw_comments = payload.get("data", [])

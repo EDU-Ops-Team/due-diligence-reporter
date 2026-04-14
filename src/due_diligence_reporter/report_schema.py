@@ -298,10 +298,7 @@ def normalize_report_data(
     unmatched_keys: list[str] = []
     for key, value in flat.items():
         if key in TEMPLATE_TOKEN_SET:
-            if isinstance(value, str):
-                replacements[key] = value
-            elif value is not None:
-                replacements[key] = str(value)
+            replacements[key] = value
         else:
             unmatched_keys.append(key)
 

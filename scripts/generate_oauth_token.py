@@ -19,11 +19,11 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 _project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(_project_root / "src"))
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(_project_root / ".env")
 
-from due_diligence_reporter.config import get_settings
+from due_diligence_reporter.config import get_settings  # noqa: E402
 
 
 def main() -> None:

@@ -6,8 +6,6 @@ import re
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from due_diligence_reporter.inbox_scanner import (
     AUTO_FILE_CONFIDENCE,
     DOC_TYPE_FILENAME_TEMPLATES,
@@ -15,10 +13,9 @@ from due_diligence_reporter.inbox_scanner import (
     _generate_drive_filename,
     _walk_parts,
     has_site_identity,
-    scan_inbox,
     process_email,
+    scan_inbox,
 )
-
 
 # ---------------------------------------------------------------------------
 # Filename generation

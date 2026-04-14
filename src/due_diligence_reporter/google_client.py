@@ -13,10 +13,18 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaInMemoryUpload
+from tenacity import retry
 
+from .retry import retry_config
 from .utils import escape_drive_query_literal
 
 logger = logging.getLogger("[google_client]")
+
+
+@retry(**retry_config())  # type: ignore[untyped-decorator]
+def _google_api_execute(request: Any) -> Any:
+    """Execute a Google API request with retry on transient errors (429, 5xx)."""
+    return request.execute()
 
 
 class GoogleClient:
@@ -106,7 +114,7 @@ class GoogleClient:
             page_token: str | None = None
 
             while True:
-                response = (
+                response = _google_api_execute(
                     self.drive_service.files()
                     .list(
                         q=query,
@@ -116,7 +124,6 @@ class GoogleClient:
                         pageToken=page_token,
                         orderBy="name_natural",
                     )
-                    .execute()
                 )
                 files.extend(response.get("files", []))
                 page_token = response.get("nextPageToken")
@@ -149,7 +156,7 @@ class GoogleClient:
             page_token: str | None = None
 
             while True:
-                response = (
+                response = _google_api_execute(
                     self.drive_service.files()
                     .list(
                         q=query,
@@ -159,7 +166,6 @@ class GoogleClient:
                         pageToken=page_token,
                         orderBy="name_natural",
                     )
-                    .execute()
                 )
                 folders.extend(response.get("files", []))
                 page_token = response.get("nextPageToken")
@@ -228,10 +234,9 @@ class GoogleClient:
         logger.info("Exporting Google Doc as text: %s", file_id)
 
         try:
-            response = (
+            response = _google_api_execute(
                 self.drive_service.files()
                 .export(fileId=file_id, mimeType="text/plain")
-                .execute()
             )
 
             if isinstance(response, bytes):
@@ -255,7 +260,9 @@ class GoogleClient:
         logger.info("Downloading file bytes: %s", file_id)
 
         try:
-            response = self.drive_service.files().get_media(fileId=file_id).execute()
+            response = _google_api_execute(
+                self.drive_service.files().get_media(fileId=file_id)
+            )
 
             if isinstance(response, bytes):
                 data = response
@@ -293,7 +300,7 @@ class GoogleClient:
         }
 
         try:
-            doc = (
+            doc = _google_api_execute(
                 self.drive_service.files()
                 .copy(
                     fileId=template_id,
@@ -301,14 +308,13 @@ class GoogleClient:
                     supportsAllDrives=True,
                     fields="id,webViewLink,name",
                 )
-                .execute()
             )
             logger.info(
                 "Successfully copied document: %s (id: %s)",
                 name,
                 doc.get("id"),
             )
-            return doc
+            return doc  # type: ignore[no-any-return]
 
         except HttpError as error:
             logger.error("Failed to copy document: %s", error)
@@ -338,16 +344,15 @@ class GoogleClient:
         )
 
         try:
-            response = (
+            response = _google_api_execute(
                 self.docs_service.documents()
                 .batchUpdate(
                     documentId=document_id,
                     body={"requests": requests_list},
                 )
-                .execute()
             )
             logger.info("Successfully batch-updated document: %s", document_id)
-            return response
+            return response  # type: ignore[no-any-return]
 
         except HttpError as error:
             logger.error("Failed to batch update document %s: %s", document_id, error)
@@ -362,12 +367,14 @@ class GoogleClient:
         """
         logger.info("Setting public read permission on file: %s", file_id)
         try:
-            self.drive_service.permissions().create(
-                fileId=file_id,
-                body={"type": "anyone", "role": "reader"},
-                fields="id",
-                supportsAllDrives=True,
-            ).execute()
+            _google_api_execute(
+                self.drive_service.permissions().create(
+                    fileId=file_id,
+                    body={"type": "anyone", "role": "reader"},
+                    fields="id",
+                    supportsAllDrives=True,
+                )
+            )
         except HttpError as error:
             logger.error("Failed to make file %s public: %s", file_id, error)
             raise RuntimeError(f"Failed to set public permission: {error}") from error
@@ -380,8 +387,10 @@ class GoogleClient:
         """
         logger.info("Getting document structure: %s", document_id)
         try:
-            doc = self.docs_service.documents().get(documentId=document_id).execute()
-            return doc
+            doc = _google_api_execute(
+                self.docs_service.documents().get(documentId=document_id)
+            )
+            return doc  # type: ignore[no-any-return]
         except HttpError as error:
             logger.error("Failed to get document %s: %s", document_id, error)
             raise RuntimeError(f"Failed to get document: {error}") from error
@@ -407,50 +416,52 @@ class GoogleClient:
 
         try:
             # 1. Create blank doc
-            doc = (
+            doc = _google_api_execute(
                 self.docs_service.documents()
                 .create(body={"title": name})
-                .execute()
             )
             doc_id: str = doc["documentId"]
 
             # 2. Insert text content
             if text_content:
-                self.docs_service.documents().batchUpdate(
-                    documentId=doc_id,
-                    body={
-                        "requests": [
-                            {
-                                "insertText": {
-                                    "location": {"index": 1},
-                                    "text": text_content,
+                _google_api_execute(
+                    self.docs_service.documents().batchUpdate(
+                        documentId=doc_id,
+                        body={
+                            "requests": [
+                                {
+                                    "insertText": {
+                                        "location": {"index": 1},
+                                        "text": text_content,
+                                    }
                                 }
-                            }
-                        ]
-                    },
-                ).execute()
+                            ]
+                        },
+                    )
+                )
 
             # 3. Move into target folder (remove default 'My Drive' parent, add folder_id)
-            self.drive_service.files().update(
-                fileId=doc_id,
-                addParents=folder_id,
-                removeParents="root",
-                fields="id,name,webViewLink",
-                supportsAllDrives=True,
-            ).execute()
+            _google_api_execute(
+                self.drive_service.files().update(
+                    fileId=doc_id,
+                    addParents=folder_id,
+                    removeParents="root",
+                    fields="id,name,webViewLink",
+                    supportsAllDrives=True,
+                )
+            )
 
             # 4. Fetch final metadata
-            result = (
+            result = _google_api_execute(
                 self.drive_service.files()
                 .get(
                     fileId=doc_id,
                     fields="id,name,webViewLink",
                     supportsAllDrives=True,
                 )
-                .execute()
             )
             logger.info("Created document '%s' (id: %s)", name, doc_id)
-            return result
+            return result  # type: ignore[no-any-return]
 
         except HttpError as error:
             logger.error("Failed to create document '%s': %s", name, error)
@@ -478,7 +489,7 @@ class GoogleClient:
         }
 
         try:
-            result = (
+            result = _google_api_execute(
                 self.drive_service.files()
                 .create(
                     body=body,
@@ -486,10 +497,9 @@ class GoogleClient:
                     fields="id,name,webViewLink",
                     supportsAllDrives=True,
                 )
-                .execute()
             )
             logger.info("Uploaded file: %s (id: %s)", file_name, result.get("id"))
-            return result
+            return result  # type: ignore[no-any-return]
 
         except HttpError as error:
             logger.error("Failed to upload '%s': %s", file_name, error)
@@ -504,7 +514,7 @@ class GoogleClient:
             " and trashed=false"
         )
         try:
-            response = (
+            response = _google_api_execute(
                 self.drive_service.files()
                 .list(
                     q=query,
@@ -512,7 +522,6 @@ class GoogleClient:
                     supportsAllDrives=True,
                     includeItemsFromAllDrives=True,
                 )
-                .execute()
             )
             return len(response.get("files", [])) > 0
         except HttpError as error:
@@ -533,7 +542,7 @@ class GoogleClient:
             page_token: str | None = None
 
             while len(messages) < max_results:
-                response = (
+                response = _google_api_execute(
                     self.gmail_service.users()
                     .messages()
                     .list(
@@ -542,7 +551,6 @@ class GoogleClient:
                         maxResults=min(max_results - len(messages), 100),
                         pageToken=page_token,
                     )
-                    .execute()
                 )
                 messages.extend(response.get("messages", []))
                 page_token = response.get("nextPageToken")
@@ -561,13 +569,12 @@ class GoogleClient:
         logger.info("Fetching Gmail message: %s", message_id)
 
         try:
-            message = (
+            message = _google_api_execute(
                 self.gmail_service.users()
                 .messages()
                 .get(userId="me", id=message_id, format="full")
-                .execute()
             )
-            return message
+            return message  # type: ignore[no-any-return]
 
         except HttpError as error:
             logger.error("Failed to get Gmail message %s: %s", message_id, error)
@@ -581,12 +588,11 @@ class GoogleClient:
         logger.info("Downloading Gmail attachment: msg=%s, att=%s", message_id, attachment_id)
 
         try:
-            attachment = (
+            attachment = _google_api_execute(
                 self.gmail_service.users()
                 .messages()
                 .attachments()
                 .get(userId="me", messageId=message_id, id=attachment_id)
-                .execute()
             )
             data = attachment.get("data", "")
             return base64.urlsafe_b64decode(data)
@@ -614,13 +620,12 @@ class GoogleClient:
         )
 
         try:
-            result = (
+            result = _google_api_execute(
                 self.gmail_service.users()
                 .messages()
                 .modify(userId="me", id=message_id, body=body)
-                .execute()
             )
-            return result
+            return result  # type: ignore[no-any-return]
 
         except HttpError as error:
             logger.error("Failed to modify labels on %s: %s", message_id, error)
@@ -631,13 +636,13 @@ class GoogleClient:
         logger.info("Looking up Gmail label: %s", label_name)
 
         try:
-            response = (
-                self.gmail_service.users().labels().list(userId="me").execute()
+            response = _google_api_execute(
+                self.gmail_service.users().labels().list(userId="me")
             )
             for label in response.get("labels", []):
                 if label.get("name") == label_name:
                     logger.info("Found existing label: %s (id: %s)", label_name, label["id"])
-                    return label["id"]
+                    return label["id"]  # type: ignore[no-any-return]
 
             # Create the label
             body = {
@@ -645,15 +650,14 @@ class GoogleClient:
                 "labelListVisibility": "labelShow",
                 "messageListVisibility": "show",
             }
-            created = (
+            created = _google_api_execute(
                 self.gmail_service.users()
                 .labels()
                 .create(userId="me", body=body)
-                .execute()
             )
             label_id = created["id"]
             logger.info("Created new label: %s (id: %s)", label_name, label_id)
-            return label_id
+            return label_id  # type: ignore[no-any-return]
 
         except HttpError as error:
             logger.error("Failed to get/create label '%s': %s", label_name, error)

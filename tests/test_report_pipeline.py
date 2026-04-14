@@ -4,20 +4,16 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from due_diligence_reporter.report_pipeline import (
     PipelineResult,
     ReportTrace,
     TraceEvent,
     _extract_source_read_issues,
     _merge_cached_report_fields,
-    check_site_readiness_direct,
     match_site_in_shared_cache,
-    run_dd_report_agent,
     process_site_pipeline,
+    run_dd_report_agent,
 )
-
 
 # ---------------------------------------------------------------------------
 # match_site_in_shared_cache

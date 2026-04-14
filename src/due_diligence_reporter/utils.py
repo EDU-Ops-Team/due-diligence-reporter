@@ -80,7 +80,7 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     Returns extracted text (may be empty for image-only PDFs).
     """
     try:
-        from pypdf import PdfReader  # type: ignore[import-untyped]
+        from pypdf import PdfReader
     except ImportError:
         logger.error("pypdf not installed; cannot extract PDF text")
         return ""

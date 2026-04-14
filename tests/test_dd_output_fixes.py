@@ -8,8 +8,6 @@ import re
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from due_diligence_reporter.google_client import GoogleClient
 from due_diligence_reporter.server import (
     MATTERBOT_BASE_URL,
@@ -20,7 +18,6 @@ from due_diligence_reporter.utils import (
     sanitize_http_url,
 )
 from due_diligence_reporter.wrike import classify_comment_to_section
-
 
 # ---------------------------------------------------------------------------
 # Scope of Work stray numbers â€” consecutive newline collapse
@@ -187,6 +184,7 @@ class TestGenerateMarketingPack:
     @patch("due_diligence_reporter.server.requests.get")
     def test_successful_trigger(self, mock_get: MagicMock) -> None:
         import asyncio
+
         from due_diligence_reporter.server import generate_marketing_pack
 
         mock_resp = MagicMock()
@@ -207,6 +205,7 @@ class TestGenerateMarketingPack:
 
     def test_empty_space_sid_returns_error(self) -> None:
         import asyncio
+
         from due_diligence_reporter.server import generate_marketing_pack
 
         result = asyncio.run(generate_marketing_pack(space_sid="", space_name="Test"))
@@ -215,6 +214,7 @@ class TestGenerateMarketingPack:
 
     def test_empty_space_name_returns_error(self) -> None:
         import asyncio
+
         from due_diligence_reporter.server import generate_marketing_pack
 
         result = asyncio.run(generate_marketing_pack(space_sid="abc", space_name=""))
@@ -383,6 +383,7 @@ class TestReportNormalizationDefaults:
     @patch("due_diligence_reporter.server.requests.get")
     def test_optional_params_passed_correctly(self, mock_get: MagicMock) -> None:
         import asyncio
+
         from due_diligence_reporter.server import generate_marketing_pack
 
         mock_resp = MagicMock()
@@ -405,8 +406,10 @@ class TestReportNormalizationDefaults:
     @patch("due_diligence_reporter.server.requests.get")
     def test_timeout_returns_error(self, mock_get: MagicMock) -> None:
         import asyncio
-        from due_diligence_reporter.server import generate_marketing_pack
+
         import requests as _requests
+
+        from due_diligence_reporter.server import generate_marketing_pack
 
         mock_get.side_effect = _requests.Timeout("timed out")
 
@@ -420,8 +423,10 @@ class TestReportNormalizationDefaults:
     @patch("due_diligence_reporter.server.requests.get")
     def test_http_error_returns_error(self, mock_get: MagicMock) -> None:
         import asyncio
-        from due_diligence_reporter.server import generate_marketing_pack
+
         import requests as _requests
+
+        from due_diligence_reporter.server import generate_marketing_pack
 
         mock_get.side_effect = _requests.ConnectionError("refused")
 

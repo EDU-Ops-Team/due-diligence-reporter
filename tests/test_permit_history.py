@@ -8,8 +8,8 @@ import pytest
 import requests
 
 from due_diligence_reporter.server import (
-    _build_report_trace_data,
     _analyze_permit_flags,
+    _build_report_trace_data,
     _call_shovels_metrics,
     _call_shovels_permits,
     _call_shovels_search,
@@ -238,17 +238,17 @@ def test_format_permit_report_fields_empty_flags():
 
 
 def _minimal_trace_args(**overrides) -> dict:
-    base = dict(
-        site_name="Test Site",
-        report_date="2026-04-03",
-        doc_id="doc123",
-        doc_url="https://docs.google.com/doc123",
-        replacements={},
-        unfilled=[],
-        unmatched=[],
-        hyperlink_trace={},
-        token_evidence=None,
-    )
+    base = {
+        "site_name": "Test Site",
+        "report_date": "2026-04-03",
+        "doc_id": "doc123",
+        "doc_url": "https://docs.google.com/doc123",
+        "replacements": {},
+        "unfilled": [],
+        "unmatched": [],
+        "hyperlink_trace": {},
+        "token_evidence": None,
+    }
     return {**base, **overrides}
 
 
