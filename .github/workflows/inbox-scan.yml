@@ -64,6 +64,7 @@ jobs:
           SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
           ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
           BUILDING_INSPECTION_FOLDER_ID: ${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}
+          SHOVELS_API_KEY: ${{ secrets.SHOVELS_API_KEY }}
         run: |
           touch .env
           echo "WRIKE_ACCESS_TOKEN=${WRIKE_ACCESS_TOKEN}" >> .env
@@ -76,6 +77,7 @@ jobs:
           echo "EMAIL_SENDER=${EMAIL_SENDER}" >> .env
           echo "EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}" >> .env
           echo "SIR_NOTIFICATION_RECIPIENTS=${SIR_NOTIFICATION_RECIPIENTS}" >> .env
+          echo "SHOVELS_API_KEY=${SHOVELS_API_KEY}" >> .env
 
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
