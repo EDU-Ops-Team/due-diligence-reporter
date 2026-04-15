@@ -28,6 +28,8 @@ DOC_TYPES = frozenset({
     "phase_i_esa",
     "dd_report",
     "matterport",
+    "e_occupancy_report",
+    "school_approval_report",
     "unknown",
 })
 
@@ -41,6 +43,10 @@ def classify_by_keywords(filename: str) -> tuple[str, float]:
     """Classify a document by filename keywords.  Returns (doc_type, confidence)."""
     name = filename.lower()
 
+    if "e-occupancy" in name or "e occupancy" in name:
+        return "e_occupancy_report", 0.95
+    if "school approval" in name:
+        return "school_approval_report", 0.95
     if "dd report" in name:
         return "dd_report", 0.95
     if "phase i" in name or "phase 1" in name or " esa" in name or name.startswith("esa"):
@@ -72,6 +78,8 @@ Types:
 - phase_i_esa: Phase I Environmental Site Assessment
 - dd_report: Due Diligence Report (the final compiled report)
 - matterport: Matterport 3D scan or virtual tour
+- e_occupancy_report: E-Occupancy Assessment — building conversion scoring for educational use
+- school_approval_report: School Approval Assessment — state education registration requirements
 - unknown: Cannot determine from filename
 
 Return ONLY a JSON object:
@@ -144,6 +152,8 @@ Types:
 - phase_i_esa: Phase I Environmental Site Assessment — environmental contamination, tanks, hazards
 - dd_report: Due Diligence Report — the final compiled report with executive summary
 - matterport: Matterport 3D scan documentation
+- e_occupancy_report: E-Occupancy Assessment — building conversion scoring for educational use
+- school_approval_report: School Approval Assessment — state education registration requirements
 - unknown: Cannot determine
 
 Return ONLY a JSON object:

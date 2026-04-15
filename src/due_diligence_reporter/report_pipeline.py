@@ -333,7 +333,9 @@ def check_site_readiness_direct(
     if not folder_id:
         return {
             "sir_found": False, "isp_found": False, "inspection_found": False,
-            "report_exists": False, "error": "bad_url",
+            "report_exists": False,
+            "e_occupancy_report_found": False, "school_approval_report_found": False,
+            "error": "bad_url",
         }
 
     # 1. Match docs from pre-fetched shared folder cache (substring + LLM fallback)
@@ -354,6 +356,8 @@ def check_site_readiness_direct(
         "isp": shared_docs.get("isp"),
         "building_inspection": shared_docs.get("building_inspection"),
         "dd_report": None,
+        "e_occupancy_report": None,
+        "school_approval_report": None,
     }
     for f in all_site_files:
         dt = f.get("doc_type", "unknown")
@@ -362,7 +366,7 @@ def check_site_readiness_direct(
 
     # 4. LLM classification for unknown site files if docs are still missing
     still_missing = [
-        k for k in ("sir", "isp", "building_inspection")
+        k for k in ("sir", "isp", "building_inspection", "e_occupancy_report", "school_approval_report")
         if files_by_type[k] is None
     ]
     if still_missing:
@@ -389,6 +393,8 @@ def check_site_readiness_direct(
         "isp_found": files_by_type["isp"] is not None,
         "inspection_found": files_by_type["building_inspection"] is not None,
         "report_exists": files_by_type["dd_report"] is not None,
+        "e_occupancy_report_found": files_by_type["e_occupancy_report"] is not None,
+        "school_approval_report_found": files_by_type["school_approval_report"] is not None,
         "all_files": all_site_files,
     }
 
