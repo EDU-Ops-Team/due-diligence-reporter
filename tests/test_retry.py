@@ -10,6 +10,7 @@ import requests
 from due_diligence_reporter.retry import (
     MAX_ATTEMPTS,
     _is_retryable_http_error,
+    _parse_retry_after_seconds,
     api_retry,
     retry_config,
 )
@@ -155,6 +156,44 @@ class TestApiRetryBehaviour:
             not_found()
 
         assert call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests for _parse_retry_after_seconds
+# ---------------------------------------------------------------------------
+
+
+class TestParseRetryAfterSeconds:
+    """Verify Retry-After parsing from Google API 429 error messages."""
+
+    def test_parses_google_api_retry_after_timestamp(self) -> None:
+        """Google API style: 'Retry after 2026-04-15T22:48:00.602Z'"""
+        from datetime import datetime, timedelta, timezone
+
+        # Create a fake error with a timestamp ~15 minutes in the future
+        future = datetime.now(timezone.utc) + timedelta(minutes=15)
+        ts = future.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        exc = Exception(
+            f'<HttpError 429 when requesting https://gmail.googleapis.com/... '
+            f'"User-rate limit exceeded.  Retry after {ts}">'
+        )
+        result = _parse_retry_after_seconds(exc)
+        assert result is not None
+        # Should be ~900 seconds (15 min) + 5 second buffer, give or take
+        assert 890 < result < 920
+
+    def test_returns_none_for_no_retry_after(self) -> None:
+        exc = Exception("Some random error with no timestamp")
+        assert _parse_retry_after_seconds(exc) is None
+
+    def test_returns_minimum_1_second_for_past_timestamp(self) -> None:
+        """If the retry-after time is already past, return 1 second."""
+        exc = Exception(
+            '<HttpError 429 ... "Retry after 2020-01-01T00:00:00.000Z">'
+        )
+        result = _parse_retry_after_seconds(exc)
+        assert result is not None
+        assert result == 1  # max(negative + 5, 1) = 1
 
 
 # ---------------------------------------------------------------------------
