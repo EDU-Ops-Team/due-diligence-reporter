@@ -2,8 +2,8 @@ name: Inbox Scan
 
 on:
   schedule:
-    - cron: '*/15 11-23 * * 1-5'  # Every 15 min, 6AM-6PM Central (UTC 11-23), Mon-Fri
-    - cron: '*/15 0-2 * * 1-5'    # Every 15 min, 6PM-8PM Central (UTC 0-2 next day), Mon-Fri
+    - cron: '0 11-23 * * 1-5'     # Every 60 min, 6AM-6PM Central (UTC 11-23), Mon-Fri
+    - cron: '0 0-2 * * 1-5'       # Every 60 min, 6PM-8PM Central (UTC 0-2 next day), Mon-Fri
   workflow_dispatch:
     inputs:
       scan_only:
