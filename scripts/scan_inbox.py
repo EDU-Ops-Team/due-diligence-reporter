@@ -51,8 +51,12 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
     process_site_pipeline,
 )
 from due_diligence_reporter.server import _build_site_match_terms  # noqa: E402
+from due_diligence_reporter.cds_verification import (  # noqa: E402
+    generate_cds_verification_report,
+)
 from due_diligence_reporter.utils import (  # noqa: E402
     escape_html_text,
+    extract_text_from_pdf_bytes,
     post_google_chat_message,
     sanitize_http_url,
     send_email,
@@ -197,6 +201,87 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
                 logger.info("SIR arrival email sent for '%s' to %s", site, sir_notification_recipients)
             except Exception as e:
                 logger.error("Failed to send SIR arrival email for '%s': %s", site, e)
+
+    # ── CDS Verification Overlay (SCRIPT-04) ─────────────────────────────────
+    # For each SIR upload, generate a verification report (full SIR + overlay)
+    # and email it to CDS recipients so they know exactly what to verify.
+    cds_recipients = [
+        r.strip()
+        for r in settings.cds_notification_recipients.split(",")
+        if r.strip()
+    ]
+
+    if sir_uploads and cds_recipients and settings.email_sender and settings.email_app_password:
+        for sir in sir_uploads:
+            sir_file_id = sir.get("drive_file_id")
+            site = sir.get("site_title") or "Unknown Site"
+            if not sir_file_id:
+                logger.warning("No drive_file_id for SIR '%s' — skipping CDS overlay", site)
+                continue
+
+            try:
+                # 1. Download the SIR PDF and extract text
+                sir_bytes = gc.download_file_bytes(sir_file_id)
+                sir_text = extract_text_from_pdf_bytes(sir_bytes)
+                if not sir_text.strip():
+                    logger.warning("SIR for '%s' has no extractable text — skipping CDS overlay", site)
+                    continue
+
+                # 2. Generate the verification overlay (full SIR + B/C task summary)
+                report = generate_cds_verification_report(sir_text, site_name=site)
+                logger.info(
+                    "CDS overlay for '%s': %d B/C items across %d sections",
+                    site, report.bc_item_count, len(report.sections_with_items),
+                )
+
+                if report.bc_item_count == 0:
+                    logger.info("No B/C items for '%s' — skipping CDS send", site)
+                    continue
+
+                # 3. Upload the overlay markdown as a .md file to the same SIR folder
+                overlay_filename = f"CDS Verification — {site}.md"
+                overlay_bytes = report.markdown.encode("utf-8")
+                overlay_result = gc.upload_file_to_folder(
+                    folder_id=settings.sir_folder_id,
+                    file_name=overlay_filename,
+                    file_bytes=overlay_bytes,
+                    mime_type="text/markdown",
+                )
+                overlay_link = sanitize_http_url(overlay_result.get("webViewLink", ""))
+                logger.info("CDS overlay uploaded: %s (%s)", overlay_filename, overlay_result.get("id"))
+
+                # 4. Email CDS with the overlay link
+                safe_site = escape_html_text(site)
+                if overlay_link:
+                    link_html = (
+                        f'<p><a href="{overlay_link}" style="font-size:16px;font-weight:bold;">'
+                        "Open CDS Verification Report in Google Drive</a></p>"
+                    )
+                else:
+                    link_html = "<p>Verification report link unavailable.</p>"
+
+                cds_html = f"""<html><body>
+<h2>CDS Verification Report — {safe_site}</h2>
+<p>A new Site Investigation Report has been processed for <strong>{safe_site}</strong>.</p>
+<p><strong>{report.bc_item_count} items</strong> require phone/email verification
+across the following sections: {escape_html_text(", ".join(report.sections_with_items))}.</p>
+<p>The report contains the <strong>full AI SIR</strong> with a verification overlay.
+Rows marked <strong>[B]</strong> or <strong>[C]</strong> have three extra columns
+for you to fill in: CDS Verified Finding, CDS Source, and CDS Confidence.</p>
+{link_html}
+<p style="color:#888;font-size:12px;">Sent automatically by the Alpha DD Reporter.</p>
+</body></html>"""
+                send_email(
+                    sender=settings.email_sender,
+                    app_password=settings.email_app_password,
+                    recipients=cds_recipients,
+                    subject=f"CDS Verification — {site} ({report.bc_item_count} items)",
+                    html_body=cds_html,
+                )
+                logger.info("CDS verification email sent for '%s' to %s", site, cds_recipients)
+
+            except Exception as e:
+                logger.error("CDS overlay generation failed for '%s': %s", site, e, exc_info=True)
 
     # ── Phase 2: Pipeline for newly-uploaded sites ───────────────────────────
     if scan_only or dry_run:

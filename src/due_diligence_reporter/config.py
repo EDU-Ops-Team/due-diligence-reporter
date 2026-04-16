@@ -112,6 +112,10 @@ class Settings(BaseSettings):
         "",
         description="Comma-separated recipient email addresses for SIR arrival notifications",
     )
+    cds_notification_recipients: str = Field(
+        "",
+        description="Comma-separated email addresses for CDS verification report delivery",
+    )
 
     # Google Chat
     google_chat_webhook_url: str = Field(
