@@ -36,7 +36,6 @@ Nine-line cost estimate table. Populated from building inspection and ISP data w
 **Q4 — How long will it take?**
 Preliminary milestone schedule (Acquire → Permits → Construction Lock → Regulatory Approval → CO → Ready to Open), permit timeline from SIR, education regulatory timeline from state registration skill, schedule risks.
 
-The report also includes a full **Appendix** linking the SIR, Matterport scan, building inspection, ISP, Phase I ESA, and site Drive folder.
 
 ---
 
@@ -75,7 +74,6 @@ When I call `list_drive_documents`, every file is returned with a `doc_type` fie
 | `isp` | Program Fit Analysis — room assignments, sqft, program fit score, ADA pre-check |
 | `sir` | Site Investigation Report — zoning, AHJ, permits, schedule/cost risks |
 | `building_inspection` | Physical inspection findings |
-| `phase_i_esa` | Phase I Environmental Site Assessment |
 | `matterport` | Matterport scan link or summary |
 | `dd_report` | An already-generated DD Report for this site |
 | `unknown` | Other file — I may still read it if relevant |
@@ -319,7 +317,6 @@ When I tried to populate a field but the data was not available, I use a sourced
 - `[Not found — SIR did not include AHJ contact]`
 - `[Not found — ISP not yet in Drive folder]`
 - `[Not found — building inspection not yet available]`
-- `[Not found — Phase I ESA not in Drive folder]`
 - `[Not found — no cost data in SIR or ISP]`
 - `[Not found — zoning not stated in SIR]`
 
@@ -498,7 +495,6 @@ Check each of these in order:
 1. **Building Inspection** — Overall Feasibility / Conversion Risk level; non-functional or undersized HVAC; fire alarm aged and requiring full replacement; shared building systems with confirmed capacity shortfall; structural deficiencies (active leaks, foundation cracking)
 2. **SIR** — Sequential permit blockers (State Fire Marshal must precede City permit); zoning variance/CUP with uncertain outcome; traffic study or pre-app required before permit can be filed
 3. **Shovels.ai** — Deferred maintenance signal (no permits in 10 years); open permits that create title/close risk; demolition permits indicating prior major structural work
-4. **Phase I ESA** — Any unresolved environmental findings
 
 Write each confirmed finding as a bullet citing its source document and the exact language that triggered the flag. If no qualifying findings exist after reviewing all sources, set `exec.risk_notes` to `""` (empty — do not invent items). Do not leave `exec.risk_notes` unpopulated by default.
 
@@ -658,7 +654,6 @@ Items that are clearly the landlord's responsibility in the current state — de
 - Building-wide systems the landlord controls and has not maintained (whole-building HVAC, shared electrical feeds)
 - Fire-rated separations missing between tenant spaces (code violation landlord must cure)
 - Panic hardware missing on required exit doors (life-safety violation that predates our tenancy)
-- Environmental contamination or Phase I ESA action items → condition lease on environmental clearance
 - Zoning or permit pre-conditions (traffic study, variance, CUP) → condition lease on approval
 
 Format: `"Landlord must [action] before signing — [evidence] (Building Inspection/SIR: [quote])"`
@@ -680,7 +675,6 @@ Format: `"Landlord must [action] before signing — [evidence] (Building Inspect
 - Multi-tenant building where landlord or other tenants control construction access windows — risk to construction timeline
 - HVAC system confirmed non-functional or undersized for school use (not just aged)
 - Fire alarm system confirmed aged and requiring full replacement (not just "recommended")
-- Environmental findings from Phase I ESA that are unresolved
 - Shared building systems (HVAC, electrical) where capacity is confirmed insufficient for school load
 - Zoning variance or CUP required with uncertain outcome — risk to viability
 

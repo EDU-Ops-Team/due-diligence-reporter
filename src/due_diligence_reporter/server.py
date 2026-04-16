@@ -2502,7 +2502,6 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
                 "sir": shared_docs.get("sir"),
                 "isp": shared_docs.get("isp"),
                 "building_inspection": shared_docs.get("building_inspection"),
-                "phase_i_esa": None,
                 "dd_report": None,
             }
             for file_info in all_site_files:

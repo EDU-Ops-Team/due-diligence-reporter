@@ -25,7 +25,6 @@ DOC_TYPES = frozenset({
     "sir",
     "isp",
     "building_inspection",
-    "phase_i_esa",
     "dd_report",
     "matterport",
     "e_occupancy_report",
@@ -49,8 +48,6 @@ def classify_by_keywords(filename: str) -> tuple[str, float]:
         return "school_approval_report", 0.95
     if "dd report" in name:
         return "dd_report", 0.95
-    if "phase i" in name or "phase 1" in name or " esa" in name or name.startswith("esa"):
-        return "phase_i_esa", 0.95
     if re.search(r"\bisp\b", name) or re.search(r"-isp(\.[^.]+)?$", name):
         return "isp", 0.95
     if re.search(r"\bsir\b", name):
@@ -75,7 +72,6 @@ Types:
 - sir: Site Investigation Report (also called Site Inspection Report)
 - isp: Internet Service Provider report / availability report
 - building_inspection: Building Inspection Report or property condition report
-- phase_i_esa: Phase I Environmental Site Assessment
 - dd_report: Due Diligence Report (the final compiled report)
 - matterport: Matterport 3D scan or virtual tour
 - e_occupancy_report: E-Occupancy Assessment — building conversion scoring for educational use
@@ -149,7 +145,6 @@ Types:
 - sir: Site Investigation Report — covers zoning, permits, AHJ info, building code
 - isp: Internet Service Provider report — lists ISPs, speeds, availability
 - building_inspection: Building Inspection Report — covers building condition, systems, deficiencies
-- phase_i_esa: Phase I Environmental Site Assessment — environmental contamination, tanks, hazards
 - dd_report: Due Diligence Report — the final compiled report with executive summary
 - matterport: Matterport 3D scan documentation
 - e_occupancy_report: E-Occupancy Assessment — building conversion scoring for educational use

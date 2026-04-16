@@ -309,7 +309,6 @@ ready_for_report = sir_found AND isp_found AND inspection_found AND NOT report_e
 | **SIR** | Zoning, AHJ contacts, permits required, pre-app meeting, permit timeline, cost risks, schedule risks |
 | **Building Inspection** | Year built, construction type, stories, SF, sprinklers, fire alarm, ADA deficiencies, egress, restrooms, scope of work, conversion risk level |
 | **ISP (Program Fit Analysis)** | Room list with types/sqft, program fit score, classroom count, ADA pre-check score, optimization proposals |
-| **Phase I ESA** | Environmental contamination findings, UST database results |
 | **Matterport** | 3D scan link |
 
 ---
@@ -453,7 +452,6 @@ The bare word `[Pending]` is banned. When a field can't be filled, the agent use
 Examples:
 - `[Not found â€” SIR did not include AHJ contact]`
 - `[Not found â€” ISP not yet in shared Drive folder]`
-- `[Not found â€” Phase I ESA not in Drive folder]`
 - `[Not found â€” building inspection did not state year built]`
 
 This tells `check_report_completeness` and human reviewers exactly why each field is empty.

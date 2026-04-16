@@ -99,20 +99,6 @@ class TestClassifyByKeywordsDDReport:
         )
 
 
-class TestClassifyByKeywordsPhaseIESA:
-    def test_phase_i(self):
-        assert classify_by_keywords("Phase I ESA Report.pdf") == ("phase_i_esa", 0.95)
-
-    def test_phase_1(self):
-        assert classify_by_keywords("Phase 1 Environmental.pdf") == ("phase_i_esa", 0.95)
-
-    def test_esa_in_middle(self):
-        assert classify_by_keywords("ESA Tampa.pdf") == ("phase_i_esa", 0.95)
-
-    def test_esa_underscore(self):
-        assert classify_by_keywords("esa_report.pdf") == ("phase_i_esa", 0.95)
-
-
 class TestClassifyByKeywordsMatterport:
     def test_matterport(self):
         assert classify_by_keywords("Matterport Scan - Tampa.pdf") == (

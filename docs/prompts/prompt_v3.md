@@ -35,7 +35,7 @@ Nine-line cost estimate table. Populated from building inspection and ISP data w
 **Q4 â€” How long will it take?**
 Preliminary milestone schedule (Acquire â†’ Permits â†’ Construction Lock â†’ Regulatory Approval â†’ CO â†’ Ready to Open), permit timeline from SIR, education regulatory timeline from state registration skill, schedule risks.
 
-The report also includes a full **Appendix** linking the SIR, Matterport scan, building inspection, ISP, Phase I ESA, and site Drive folder.
+The report also includes a full **Appendix** linking the SIR, Matterport scan, building inspection, ISP, and site Drive folder.
 
 ---
 
@@ -86,8 +86,10 @@ Structure does the work. Never write a paragraph when bullets will do.
 
 - BAD: "The building inspection revealed several concerns including an aging fire alarm system and a roof that shows signs of deterioration."
 - GOOD:
-  - "Fire alarm: system is 15+ years old, modernization recommended (Building Inspection p.3)"
-  - "Roof: visible deterioration noted, further assessment needed (Building Inspection p.7)"
+  - "Fire alarm: system is 15+ years old, modernization recommended [1]"
+  - "Roof: visible deterioration noted, further assessment needed [2]"
+  - Footnotes: `[1] Building Inspection p.3  [2] Building Inspection p.7`
+  - "[1] Building Inspection p.3  [2] Building Inspection p.7"
 
 ### Front-Load the Finding
 Lead with what matters. Source citation follows.
@@ -105,7 +107,6 @@ Replace terms that require domain knowledge:
 | AHJ | Authority Having Jurisdiction (or just name the department) |
 | CO | Certificate of Occupancy |
 | E-Occupancy | Building conversion for school use |
-| Phase I ESA | Environmental assessment |
 | Sequential blocker | This must be done before the next step can start |
 | Ex parte contact | Direct contact with a decision-maker outside the process |
 
@@ -113,11 +114,15 @@ Exception: Use the abbreviation if it was already defined earlier in the same fi
 audience will have read the full term. Never use an abbreviation without first stating the
 full term.
 
-### Compressed Citations
-One plain-English finding + source reference. No verbatim quotes from statutes or reports.
+### Footnote Citations
+Write clean finding text with a numbered marker. Collect all footnotes at the bottom of the field, one per line.
 
-- BAD: "Per IBC Section 308.3.1, Group E occupancy classification includes buildings used for educational purposes through the 12th grade. The building's current B-occupancy designation requires a change of use application."
-- GOOD: "Change of use required — current B-occupancy must convert to E (school use). Building Inspection p.2"
+- BAD: "Change of use required â€” current B-occupancy must convert to E (school use). Building Inspection p.2"
+- GOOD:
+  - "Change of use required â€” current B-occupancy must convert to E (school use) [1]"
+  - Footnotes: `[1] Building Inspection p.2`
+
+Place all footnotes at the bottom of each field, separated from the bullets by a blank line. Use sequential numbering `[1]`, `[2]`, etc., restarting for each field. No verbatim quotes from statutes or reports.
 
 ### Verb-First for Action Items
 If any bullet implies something needs to happen, start with a verb.
@@ -138,7 +143,6 @@ When I call `list_drive_documents`, every file is returned with a `doc_type` fie
 | `isp` | Program Fit Analysis â€” room assignments, sqft, program fit score, ADA pre-check |
 | `sir` | Site Investigation Report â€” zoning, AHJ, permits, schedule/cost risks |
 | `building_inspection` | Physical inspection findings |
-| `phase_i_esa` | Phase I Environmental Site Assessment |
 | `matterport` | Matterport scan link or summary |
 | `dd_report` | An already-generated DD Report for this site |
 | `e_occupancy_report` | E-Occupancy Assessment â€” score, zone, tier, IBC summary |
@@ -381,7 +385,6 @@ When I tried to populate a field but the data was not available, I use a sourced
 - `[Not found â€” SIR did not include AHJ contact]`
 - `[Not found â€” ISP not yet in Drive folder]`
 - `[Not found â€” building inspection not yet available]`
-- `[Not found â€” Phase I ESA not in Drive folder]`
 - `[Not found â€” no cost data in SIR or ISP]`
 - `[Not found â€” zoning not stated in SIR]`
 
@@ -514,7 +517,6 @@ Check each of these in order:
 1. **Building Inspection** â€” Overall Feasibility / Conversion Risk level; non-functional or undersized HVAC; fire alarm aged and requiring full replacement; shared building systems with confirmed capacity shortfall; structural deficiencies (active leaks, foundation cracking)
 2. **SIR** â€” Sequential permit blockers (State Fire Marshal must precede City permit); zoning variance/CUP with uncertain outcome; traffic study or pre-app required before permit can be filed
 3. **Shovels.ai** â€” Deferred maintenance signal (no permits in 10 years); open permits that create title/close risk; demolition permits indicating prior major structural work
-4. **Phase I ESA** â€” Any unresolved environmental findings
 
 Write each confirmed finding as a bullet citing its source document and the exact language that triggered the flag. If no qualifying findings exist after reviewing all sources, set `exec.risk_notes` to `""` (empty â€” do not invent items). Do not leave `exec.risk_notes` unpopulated by default.
 
@@ -667,7 +669,9 @@ Items that are our buildout responsibility but where the inspection reveals cost
 - Major electrical panel upgrade required
 - ADA deficiencies that must be resolved before occupancy (ramp, restroom reconfiguration)
 
-Format: `"Request TI allowance of approximately $[X] for [summary of scope] (Building Inspection: [evidence])"`
+Format: `"Request TI allowance of approximately $[X] [1]"` with footnote `[1] Scope: [summary of scope] â€” Building Inspection: [evidence]`
+
+Consolidate all TI line items into a single dollar figure. Individual items (sprinkler, restrooms, HVAC, ADA, etc.) belong in the footnote, not the main line.
 
 **Type B â€” Landlord Must Address Before We Sign**
 Items that are clearly the landlord's responsibility in the current state â€” deferred maintenance, building-wide systems failures, or legal violations that exist independent of our tenancy.
@@ -675,10 +679,9 @@ Items that are clearly the landlord's responsibility in the current state â€�
 - Building-wide systems the landlord controls and has not maintained (whole-building HVAC, shared electrical feeds)
 - Fire-rated separations missing between tenant spaces (code violation landlord must cure)
 - Panic hardware missing on required exit doors (life-safety violation that predates our tenancy)
-- Environmental contamination or Phase I ESA action items â†’ condition lease on environmental clearance
 - Zoning or permit pre-conditions (traffic study, variance, CUP) â†’ condition lease on approval
 
-Format: `"Landlord must [action] before signing â€” [evidence] (Building Inspection/SIR: [quote])"`
+Format: `"Landlord must [action] before signing [1]"` with footnote `[1] Building Inspection/SIR: [evidence quote]`
 
 **Classification test:**
 - Type A: "Is this our buildout scope but large enough to negotiate a TI contribution?"
@@ -699,7 +702,6 @@ Apply the Writing Style rules from the section above — mom test, front-loaded 
 - Multi-tenant building where landlord or other tenants control construction access windows â€” risk to construction timeline
 - HVAC system confirmed non-functional or undersized for school use (not just aged)
 - Fire alarm system confirmed aged and requiring full replacement (not just "recommended")
-- Environmental findings from Phase I ESA that are unresolved
 - Shared building systems (HVAC, electrical) where capacity is confirmed insufficient for school load
 - Zoning variance or CUP required with uncertain outcome â€” risk to viability
 
@@ -713,8 +715,11 @@ Apply the Writing Style rules from the section above — mom test, front-loaded 
 
 Format:
 ```
-- State Fire Marshal review is sequential blocker before City permit â€” adds unknown weeks to permit track (SIR: "State Fire Marshal review must be completed before City building permit can be issued")
-- Multi-tenant building; construction access requires LL coordination â€” risk to construction schedule (Building Inspection: "Tenant shares HVAC and electrical systems with adjacent tenants")
+- State Fire Marshal review is sequential blocker before City permit â€” adds unknown weeks to permit track [1]
+- Multi-tenant building; construction access requires LL coordination â€” risk to construction schedule [2]
+
+[1] SIR: State Fire Marshal review must be completed before City building permit can be issued
+[2] Building Inspection: Tenant shares HVAC and electrical systems with adjacent tenants
 ```
 
 ### sources â€” Document links (6 rows)
