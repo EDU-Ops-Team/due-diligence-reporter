@@ -127,6 +127,22 @@ class Settings(BaseSettings):
         "{to:edu.ops@trilogy.com cc:edu.ops@trilogy.com} has:attachment filename:pdf",
         description="Gmail search query for incoming DD documents (to or cc)",
     )
+    inbox_internal_sender_domains: str = Field(
+        "trilogy.com",
+        description=(
+            "Comma-separated email domains treated as internal. "
+            "Attachments from these senders are skipped by the inbox scanner "
+            "to prevent AI-generated documents from creating false readiness."
+        ),
+    )
+    inbox_internal_sender_addresses: str = Field(
+        "",
+        description=(
+            "Comma-separated full email addresses treated as internal "
+            "(for service accounts or addresses on non-internal domains). "
+            "Checked in addition to inbox_internal_sender_domains."
+        ),
+    )
     inbox_processed_label: str = Field(
         "DD-Processed",
         description="Gmail label applied to processed inbox emails",

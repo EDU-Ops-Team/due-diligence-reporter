@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -19,6 +20,9 @@ from .config import Settings
 from .google_client import GoogleClient
 from .utils import extract_city_from_address
 from .wrike import _match_site_with_llm, extract_address_from_record
+
+# Regex to extract the bare email from a From header like "Display Name <user@domain.com>"
+_EMAIL_RE = re.compile(r"<([^>]+)>")
 
 logger = logging.getLogger("[inbox_scanner]")
 
@@ -65,6 +69,46 @@ class ProcessedAttachment:
     drive_file_name: str
 
 
+def _parse_sender_email(from_header: str) -> str:
+    """Extract the bare email address from a From header.
+
+    Handles both ``user@domain.com`` and ``"Display Name" <user@domain.com>``.
+    Returns the lowercase bare address, or the lowered raw string if parsing fails.
+    """
+    match = _EMAIL_RE.search(from_header)
+    if match:
+        return match.group(1).strip().lower()
+    return from_header.strip().lower()
+
+
+def _is_internal_sender(sender: str, settings: Settings) -> bool:
+    """Return True when *sender* matches an internal domain or address.
+
+    Prevents AI-generated documents (SIRs, CDS overlays, etc.) produced by
+    internal processes from being re-filed into the shared vendor folders,
+    which would create false readiness signals in the DD pipeline.
+    """
+    email = _parse_sender_email(sender)
+
+    # Check explicit addresses first (service accounts, noreply, etc.)
+    explicit = [
+        addr.strip().lower()
+        for addr in settings.inbox_internal_sender_addresses.split(",")
+        if addr.strip()
+    ]
+    if email in explicit:
+        return True
+
+    # Check domain
+    domains = [
+        d.strip().lower()
+        for d in settings.inbox_internal_sender_domains.split(",")
+        if d.strip()
+    ]
+    _, _, domain = email.rpartition("@")
+    return domain in domains
+
+
 def scan_inbox(
     gc: GoogleClient,
     site_records: list[dict[str, Any]] | None,
@@ -92,6 +136,7 @@ def scan_inbox(
         "emails_found": len(messages),
         "attachments_uploaded": 0,
         "attachments_skipped": 0,
+        "internal_skipped": 0,
         "emails_processed": 0,
         "errors": [],
         "uploads": [],
@@ -110,6 +155,10 @@ def scan_inbox(
                 site_records=site_records,
                 dry_run=dry_run,
             )
+            if email_result.get("internal_skipped"):
+                results["internal_skipped"] += 1
+                results["emails_processed"] += 1
+                continue
             if email_result.get("uploaded"):
                 results["attachments_uploaded"] += len(email_result["uploaded"])
                 results["uploads"].extend(email_result["uploaded"])
@@ -126,9 +175,10 @@ def scan_inbox(
             results["errors"].append({"message_id": message_id, "error": str(e)})
 
     logger.info(
-        "Inbox scan complete: %d uploaded, %d skipped, %d errors",
+        "Inbox scan complete: %d uploaded, %d skipped, %d internal, %d errors",
         results["attachments_uploaded"],
         results["attachments_skipped"],
+        results["internal_skipped"],
         len(results["errors"]),
     )
     return results
@@ -155,6 +205,19 @@ def process_email(
         metadata.sender,
         len(metadata.attachments),
     )
+
+    # ── Sender filter: skip emails from internal domains/addresses ──────
+    if _is_internal_sender(metadata.sender, settings):
+        logger.info(
+            "Skipping internal sender '%s' (subject: '%s') — "
+            "would create false readiness if filed",
+            metadata.sender,
+            metadata.subject,
+        )
+        # Still mark as processed so we don't re-scan it every run
+        if not dry_run:
+            _mark_email_processed(gc, message_id, label_id)
+        return {"internal_skipped": True, "marked": not dry_run}
 
     uploaded: list[dict[str, Any]] = []
     skipped = 0
@@ -493,6 +556,9 @@ def build_scan_summary(results: dict[str, Any]) -> str:
         f"  Attachments uploaded: {results['attachments_uploaded']}",
         f"  Attachments skipped: {results['attachments_skipped']}",
     ]
+    internal = results.get("internal_skipped", 0)
+    if internal:
+        lines.append(f"  Internal sender skipped: {internal}")
 
     if results.get("uploads"):
         lines.append("\nUploads:")
