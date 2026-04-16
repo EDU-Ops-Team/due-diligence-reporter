@@ -386,7 +386,7 @@ def generate_cds_verification_report(
     annotated_sir = _add_verification_columns_to_table(sir_text, bc_items)
 
     # Step 5: Assemble the full report
-    sections_with_items = sorted(set(item.section for item in bc_items))
+    sections_with_items = sorted({item.section for item in bc_items})
 
     full_report = cover + task_summary + "\n\n---\n\n" + annotated_sir
 

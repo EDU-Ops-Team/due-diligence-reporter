@@ -271,9 +271,9 @@ def _cell_index(table_element: dict[str, Any], row: int, col: int) -> int:
         if "paragraph" in first_para:
             elements = first_para["paragraph"].get("elements", [])
             if elements:
-                return elements[0].get("startIndex", 0)
-            return first_para.get("startIndex", 0)
-        return first_para.get("startIndex", 0)
+                return int(elements[0].get("startIndex", 0))
+            return int(first_para.get("startIndex", 0))
+        return int(first_para.get("startIndex", 0))
     return 0
 
 
@@ -299,8 +299,6 @@ def _build_cell_style_requests(
     bg_color: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Build requests to style a table cell background."""
-    rows = table_element["table"]["tableRows"]
-    cell = rows[row]["tableCells"][col]
     cell_start, cell_end = _table_cell_range(table_element, row, col)
     requests: list[dict[str, Any]] = []
 
@@ -419,7 +417,7 @@ def build_dd_report_doc(
     b.insert_text("\n")
 
     # Header table placeholder
-    header_table_idx = b.insert_table(len(_HEADER_ROWS), 2)
+    b.insert_table(len(_HEADER_ROWS), 2)
 
     # Flush phase 1
     _batch_update(docs_service, doc_id, b.requests)
@@ -1018,11 +1016,12 @@ def _batch_update(
     """Execute a batchUpdate, returning the response."""
     if not requests:
         return None
-    return (
+    result: dict[str, Any] = (
         docs_service.documents()
         .batchUpdate(documentId=doc_id, body={"requests": requests})
         .execute()
     )
+    return result
 
 
 def _find_table(
@@ -1048,5 +1047,5 @@ def _doc_end_index(body_content: list[dict[str, Any]]) -> int:
     if not body_content:
         return 1
     last = body_content[-1]
-    end = last.get("endIndex", 1)
+    end: int = last.get("endIndex", 1)
     return max(end - 1, 1)

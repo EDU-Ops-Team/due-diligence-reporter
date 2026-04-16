@@ -14,10 +14,11 @@ from mcp.server import FastMCP
 from tenacity import retry
 
 from .classifier import (
-    classify_by_keywords,
     classify_document,
-    classify_document_type as _classify_document_type,
     match_file_to_site_llm,
+)
+from .classifier import (
+    classify_document_type as _classify_document_type,
 )
 from .config import get_settings
 from .google_client import GoogleClient
@@ -34,14 +35,16 @@ from .report_schema import (
 )
 from .retry import retry_config
 from .utils import (
-    build_site_match_terms as _build_site_match_terms,
+    build_hyperlink_requests,
     escape_html_text,
-    extract_city_from_address as _extract_city_from_address,
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
     find_text_index_in_doc,
     sanitize_http_url,
     send_email,
+)
+from .utils import (
+    build_site_match_terms as _build_site_match_terms,
 )
 from .wrike import (
     build_site_summary,
@@ -2267,8 +2270,8 @@ def _find_trace_link_cell(body_content: list[dict[str, Any]]) -> int | None:
                     if "paragraph" in first_para:
                         elements = first_para["paragraph"].get("elements", [])
                         if elements:
-                            return elements[0].get("startIndex", 0)
-                        return first_para.get("startIndex", 0)
+                            return int(elements[0].get("startIndex", 0))
+                        return int(first_para.get("startIndex", 0))
     return None
 
 

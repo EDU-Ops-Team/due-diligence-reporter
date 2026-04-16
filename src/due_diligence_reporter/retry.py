@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import requests
@@ -56,7 +56,7 @@ def _parse_retry_after_seconds(exc: BaseException) -> float | None:
     if match:
         try:
             retry_at = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             wait_secs = (retry_at - now).total_seconds()
             # Add a 5-second buffer to avoid racing the edge
             return max(wait_secs + 5, 1)
@@ -112,7 +112,7 @@ def _rate_limit_aware_wait(retry_state: RetryCallState) -> float:
 
     # Fallback: exponential backoff for non-429 errors
     exp = wait_exponential(multiplier=1, min=BACKOFF_MIN, max=BACKOFF_MAX)
-    return exp(retry_state)  # type: ignore[return-value]
+    return exp(retry_state)
 
 
 # Combined retry condition: network-level errors OR retryable HTTP status codes
