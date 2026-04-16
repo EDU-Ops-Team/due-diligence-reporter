@@ -16,10 +16,9 @@ from typing import Any
 
 import anthropic
 
-from .classifier import classify_document, match_file_to_site_llm
+from .classifier import classify_document, classify_document_type, match_file_to_site_llm
 from .config import Settings, get_settings
 from .google_client import GoogleClient
-from .server import _classify_document_type
 from .utils import (
     escape_html_text,
     extract_folder_id_from_url,
@@ -346,7 +345,7 @@ def check_site_readiness_direct(
 
     # 2. Recursively list + classify files in the site's own folder (all subfolders)
     all_site_files = [
-        {**f, "doc_type": _classify_document_type(f.get("name", ""))}
+        {**f, "doc_type": classify_document_type(f.get("name", ""))}
         for f in gc.list_files_recursive(folder_id, max_depth=2)
     ]
 

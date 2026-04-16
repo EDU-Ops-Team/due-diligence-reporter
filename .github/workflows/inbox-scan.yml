@@ -60,6 +60,7 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           SIR_NOTIFICATION_RECIPIENTS: ${{ secrets.SIR_NOTIFICATION_RECIPIENTS }}
+          CDS_NOTIFICATION_RECIPIENTS: ${{ secrets.CDS_NOTIFICATION_RECIPIENTS }}
 
           SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
           ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
@@ -77,6 +78,7 @@ jobs:
           echo "EMAIL_SENDER=${EMAIL_SENDER}" >> .env
           echo "EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}" >> .env
           echo "SIR_NOTIFICATION_RECIPIENTS=${SIR_NOTIFICATION_RECIPIENTS}" >> .env
+          echo "CDS_NOTIFICATION_RECIPIENTS=${CDS_NOTIFICATION_RECIPIENTS}" >> .env
           echo "SHOVELS_API_KEY=${SHOVELS_API_KEY}" >> .env
 
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env

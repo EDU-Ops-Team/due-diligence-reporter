@@ -17,6 +17,7 @@ from typing import Any
 from .classifier import classify_document
 from .config import Settings
 from .google_client import GoogleClient
+from .utils import extract_city_from_address
 from .wrike import _match_site_with_llm, extract_address_from_record
 
 logger = logging.getLogger("[inbox_scanner]")
@@ -318,15 +319,7 @@ def _prefix_original_filename(filename: str) -> str:
     return f"{date_str} - {filename}"
 
 
-def _extract_city_from_address(address: str | None) -> str | None:
-    """Extract the city segment from a US-style address."""
-    if not address:
-        return None
-    parts = [part.strip() for part in address.split(",") if part.strip()]
-    if len(parts) < 2:
-        return None
-    city = parts[-2].strip()
-    return city or None
+# _extract_city_from_address moved to utils.py (imported above)
 
 
 def _site_match_score(filename: str, subject: str, record: dict[str, Any]) -> int:
@@ -342,7 +335,7 @@ def _site_match_score(filename: str, subject: str, record: dict[str, Any]) -> in
         score += 100
 
     address = extract_address_from_record(record)
-    city = _extract_city_from_address(address)
+    city = extract_city_from_address(address)
     if city and city.lower() in haystack:
         score += 25
 

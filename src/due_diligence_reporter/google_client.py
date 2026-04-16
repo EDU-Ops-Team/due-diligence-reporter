@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from google.auth.exceptions import RefreshError, TransportError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -63,7 +64,19 @@ class GoogleClient:
         if not credentials or not credentials.valid:
             if credentials and credentials.refresh_token:
                 logger.info("Refreshing credentials (token missing or expired)")
-                credentials.refresh(Request())
+                try:
+                    credentials.refresh(Request())
+                except (RefreshError, TransportError, OSError) as exc:
+                    logger.error(
+                        "Token refresh failed (%s: %s). "
+                        "If the refresh token was revoked, "
+                        "re-run scripts/generate_oauth_token.py to re-authorize.",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    raise RuntimeError(
+                        f"Google OAuth token refresh failed: {exc}"
+                    ) from exc
             else:
                 logger.info("Starting OAuth flow — browser window will open")
                 flow = InstalledAppFlow.from_client_secrets_file(

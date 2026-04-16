@@ -334,3 +334,13 @@ def match_file_to_site_llm(
     except Exception as e:
         logger.warning("LLM site-match failed for '%s': %s", site_title, e)
         return {}
+
+
+def classify_document_type(filename: str) -> str:
+    """Classify a Drive file by its document type based on the filename.
+
+    Thin wrapper around :func:`classify_by_keywords` for callers that only
+    need the doc_type string (no confidence score).
+    """
+    doc_type, _ = classify_by_keywords(filename)
+    return doc_type

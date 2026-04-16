@@ -50,11 +50,11 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
     post_pipeline_result,
     process_site_pipeline,
 )
-from due_diligence_reporter.server import _build_site_match_terms  # noqa: E402
 from due_diligence_reporter.cds_verification import (  # noqa: E402
     generate_cds_verification_report,
 )
 from due_diligence_reporter.utils import (  # noqa: E402
+    build_site_match_terms as _build_site_match_terms,
     escape_html_text,
     extract_text_from_pdf_bytes,
     post_google_chat_message,

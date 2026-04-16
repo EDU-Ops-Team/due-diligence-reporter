@@ -13,7 +13,12 @@ import requests
 from mcp.server import FastMCP
 from tenacity import retry
 
-from .classifier import classify_by_keywords, classify_document, match_file_to_site_llm
+from .classifier import (
+    classify_by_keywords,
+    classify_document,
+    classify_document_type as _classify_document_type,
+    match_file_to_site_llm,
+)
 from .config import get_settings
 from .google_client import GoogleClient
 from .google_doc_builder import build_dd_report_doc
@@ -29,7 +34,9 @@ from .report_schema import (
 )
 from .retry import retry_config
 from .utils import (
+    build_site_match_terms as _build_site_match_terms,
     escape_html_text,
+    extract_city_from_address as _extract_city_from_address,
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
     find_text_index_in_doc,
@@ -717,111 +724,8 @@ def _blank_breakdown_fields(scenario_suffix: str) -> dict[str, str]:
     }
 
 
-def _classify_document_type(filename: str) -> str:
-    """Classify a Drive file by its document type based on the filename.
-
-    Thin wrapper around :func:`classifier.classify_by_keywords` for backward
-    compatibility.  Returns only the doc_type string (no confidence).
-    """
-    doc_type, _ = classify_by_keywords(filename)
-    return doc_type
-
-
-_US_STATES: frozenset[str] = frozenset({
-    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
-    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
-    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana",
-    "maine", "maryland", "massachusetts", "michigan", "minnesota",
-    "mississippi", "missouri", "montana", "nebraska", "nevada",
-    "new hampshire", "new jersey", "new mexico", "new york",
-    "north carolina", "north dakota", "ohio", "oklahoma", "oregon",
-    "pennsylvania", "rhode island", "south carolina", "south dakota",
-    "tennessee", "texas", "utah", "vermont", "virginia", "washington",
-    "west virginia", "wisconsin", "wyoming",
-    "district of columbia",
-})
-
-_STATE_ZIP_RE: re.Pattern[str] = re.compile(
-    r"^[A-Z]{2}(\s+\d{5}(-\d{4})?)?$"  # TX, TX 76248
-    r"|^\w[\w\s]*\s+\d{5}(-\d{4})?$",   # Texas 78746, New York 10001
-    re.IGNORECASE,
-)
-
-
-def _extract_city_from_address(address: str | None) -> str | None:
-    """Extract city from a US-style address like '1234 Main St, Keller, TX 76248'.
-
-    Splits on commas, walks backward skipping state/zip segments, and returns
-    the first segment that looks like a city name.  Returns ``None`` if parsing
-    fails.
-    """
-    if not address:
-        return None
-
-    parts = [p.strip() for p in address.split(",")]
-    if len(parts) < 2:
-        return None
-
-    for i in range(len(parts) - 1, -1, -1):
-        segment = parts[i].strip()
-        if not segment:
-            continue
-        if _STATE_ZIP_RE.match(segment):
-            continue
-        # Skip full state names without zip (e.g. "Florida", "New York")
-        if segment.lower() in _US_STATES:
-            continue
-        # Skip segments that look like street lines (start with a digit)
-        if re.match(r"^\d", segment):
-            continue
-        return segment
-
-    return None
-
-
-def _build_site_match_terms(
-    site_title: str, address: str | None = None
-) -> list[str]:
-    """Build match terms from a site title and optional address for filename matching.
-
-    Returns terms ordered most-specific first:
-      1. Full site title (backward compat)
-      2. City extracted from address
-      3. Significant words from title (excluding stop words, short words, small numbers)
-    """
-    stop_words = {"alpha", "school", "the", "a", "an"}
-    terms: list[str] = []
-    seen_lower: set[str] = set()
-
-    def _add(term: str) -> None:
-        low = term.lower()
-        if low not in seen_lower:
-            terms.append(term)
-            seen_lower.add(low)
-
-    # 1. Full site title
-    if site_title.strip():
-        _add(site_title.strip())
-
-    # 2. City from address
-    city = _extract_city_from_address(address)
-    if city:
-        _add(city)
-
-    # 3. Significant words from title
-    for word in site_title.split():
-        w = word.strip()
-        low = w.lower()
-        if low in stop_words:
-            continue
-        if len(low) < 3:
-            continue
-        # Skip pure numbers shorter than 4 digits (avoids matching dates like "25")
-        if low.isdigit() and len(low) < 4:
-            continue
-        _add(w)
-
-    return terms
+# _classify_document_type moved to classifier.py (imported above as alias).
+# _extract_city_from_address and _build_site_match_terms moved to utils.py.
 
 
 def _find_site_docs_in_shared_folders(

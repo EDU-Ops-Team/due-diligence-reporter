@@ -36,7 +36,7 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
     process_site_pipeline,
     run_dd_report_agent,
 )
-from due_diligence_reporter.server import _build_site_match_terms  # noqa: E402
+from due_diligence_reporter.utils import build_site_match_terms as _build_site_match_terms  # noqa: E402
 from due_diligence_reporter.wrike import (  # noqa: E402
     _get_active_status_ids,
     _get_all_site_records,
