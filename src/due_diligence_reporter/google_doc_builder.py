@@ -589,12 +589,14 @@ def build_dd_report_doc(
     c_zoning = _resolve_value(replacements, "exec.c_zoning", "[Pending]")
     c_edreg = _resolve_value(replacements, "exec.c_edreg", "[Pending]")
     c_occupancy = _resolve_value(replacements, "exec.c_occupancy", "[Pending]")
+    c_permit_timeline = _resolve_value(replacements, "exec.c_permit_timeline", "[Pending]")
+    c_construction_timeline = _resolve_value(replacements, "exec.c_construction_timeline", "[Pending]")
 
-    can_we_q = "Can this school be open in time for the current school year?\n"
+    can_we_q = "Can this school be open in time for the current school year (8/12 or 9/8)?\n"
     q_start, q_end = b3.insert_text(can_we_q)
     b3.style_text(q_start, q_end - 1, bold=True, font_size=11, font_family="Arial")
 
-    answer_text = f"{c_answer}\n"
+    answer_text = f"{c_answer}, because:\n"
     a_start, a_end = b3.insert_text(answer_text)
     b3.style_text(a_start, a_end - 1, bold=True, font_size=12, font_family="Arial")
 
@@ -602,6 +604,8 @@ def build_dd_report_doc(
         f"Zoning: {c_zoning}\n"
         f"Education Regulatory Approval: {c_edreg}\n"
         f"Occupancy path: {c_occupancy}\n"
+        f"Permit Timeline: {c_permit_timeline}\n"
+        f"Construction Timeline: {c_construction_timeline}\n"
     )
     cl_start, cl_end = b3.insert_text(checklist_text)
     b3.style_text(cl_start, cl_end - 1, font_size=10, font_family="Arial")

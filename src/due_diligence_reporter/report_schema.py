@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 from typing import Any
 
 from .utils import flatten_report_data_for_replacement
@@ -14,6 +15,14 @@ ALLOWED_CAN_WE_ANSWERS: frozenset[str] = frozenset({
     "Yes see notes",
     "No",
 })
+
+# School-year start dates for deterministic c_answer computation.
+# fastest_open_open_date <= SCHOOL_YEAR_DEADLINE → "Yes"; otherwise → "No".
+SCHOOL_YEAR_START_DATES: tuple[date, ...] = (
+    date(2026, 8, 12),  # 08/12/26
+    date(2026, 9, 8),   # 09/08/26
+)
+SCHOOL_YEAR_DEADLINE: date = max(SCHOOL_YEAR_START_DATES)  # 09/08/26
 
 LEGACY_CAN_WE_ANSWER_ALIASES: dict[str, str] = {
     "yes": "Yes",
@@ -66,6 +75,8 @@ def _build_template_tokens() -> list[str]:
         "exec.c_edreg",
         "exec.c_occupancy",
         "exec.c_zoning",
+        "exec.c_permit_timeline",
+        "exec.c_construction_timeline",
     ]
 
     for scenario in SCENARIOS:
@@ -104,6 +115,8 @@ TOKEN_SOURCES: dict[str, str] = {
     "exec.c_zoning": "SIR",
     "exec.c_occupancy": "E-Occupancy",
     "exec.c_edreg": "School Approval",
+    "exec.c_permit_timeline": "Agent",
+    "exec.c_construction_timeline": "Agent",
     "exec.acquisition_conditions": "Agent",
     "exec.risk_notes": "Agent",
 }
@@ -294,6 +307,22 @@ def normalize_report_data(
         else:
             flat["exec.c_answer"] = normalized_answer
 
+    # Deterministic override: compute Yes/No from fastest_open_open_date vs school year deadlines.
+    # If the date is parseable it always overrides the agent's answer.
+    # If unparseable, the agent's normalized answer (or absence) stands.
+    fastest_date_str = flat.get("exec.fastest_open_open_date")
+    if isinstance(fastest_date_str, str):
+        parsed_date = parse_open_date(fastest_date_str)
+        if parsed_date is not None:
+            computed = "Yes" if parsed_date <= SCHOOL_YEAR_DEADLINE else "No"
+            flat["exec.c_answer"] = computed
+            token_sources["exec.c_answer"] = "computed:date_comparison"
+        else:
+            logger.warning(
+                "Could not parse fastest_open_open_date %r; keeping agent c_answer",
+                fastest_date_str,
+            )
+
     replacements: dict[str, str] = {}
     unmatched_keys: list[str] = []
     for key, value in flat.items():
@@ -321,3 +350,19 @@ def normalize_report_data(
 def normalize_can_we_answer(value: str) -> str | None:
     """Normalize legacy or case-variant answers to canonical allowed values."""
     return LEGACY_CAN_WE_ANSWER_ALIASES.get(value.strip().rstrip(".,;:?!").lower())
+
+
+def parse_open_date(value: str) -> date | None:
+    """Parse an open date string to a date object.
+
+    Accepts MM/DD/YY (preferred) or MM/YY (legacy, assumes 1st of month).
+    Returns None if the value cannot be parsed.
+    """
+    cleaned = value.strip()
+    for fmt in ("%m/%d/%y", "%m/%y"):
+        try:
+            dt = datetime.strptime(cleaned, fmt)
+            return dt.date() if fmt == "%m/%d/%y" else date(dt.year, dt.month, 1)
+        except ValueError:
+            continue
+    return None

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from due_diligence_reporter.report_schema import (
@@ -9,9 +11,11 @@ from due_diligence_reporter.report_schema import (
     ALLOWED_CAN_WE_ANSWERS,
     LINK_TOKENS,
     MISSING_P1_ASSIGNEE_LABEL,
+    SCHOOL_YEAR_DEADLINE,
     TEMPLATE_TOKEN_SET,
     TEMPLATE_TOKENS,
     normalize_report_data,
+    parse_open_date,
 )
 
 
@@ -38,7 +42,7 @@ def test_no_alias_is_also_a_template_token() -> None:
 
 
 def test_token_count_v3() -> None:
-    assert len(TEMPLATE_TOKENS) == 79, f"Expected 79 tokens, got {len(TEMPLATE_TOKENS)}"
+    assert len(TEMPLATE_TOKENS) == 81, f"Expected 81 tokens, got {len(TEMPLATE_TOKENS)}"
     assert all("delta_" not in t for t in TEMPLATE_TOKENS)
 
 
@@ -52,7 +56,7 @@ class TestNormalization:
                 "recommended_path_open_date": "03/27",
                 "fastest_open_capacity": "36",
                 "fastest_open_capex": "$185,000",
-                "fastest_open_open_date": "01/27",
+                "fastest_open_open_date": "08/01/26",
                 "max_capacity_capacity": "54",
                 "max_capacity_capex": "$290,000",
                 "max_capacity_open_date": "04/27",
@@ -186,6 +190,69 @@ class TestLinkTokenSets:
     def test_link_tokens_are_valid(self) -> None:
         bad = LINK_TOKENS - TEMPLATE_TOKEN_SET
         assert bad == set(), f"Link tokens not in template: {bad}"
+
+
+class TestParseOpenDate:
+    def test_mm_dd_yy(self) -> None:
+        assert parse_open_date("08/12/26") == date(2026, 8, 12)
+
+    def test_mm_dd_yy_with_whitespace(self) -> None:
+        assert parse_open_date("  08/12/26  ") == date(2026, 8, 12)
+
+    def test_legacy_mm_yy_assumes_first_of_month(self) -> None:
+        assert parse_open_date("08/26") == date(2026, 8, 1)
+
+    def test_invalid_returns_none(self) -> None:
+        assert parse_open_date("Fall 2027") is None
+
+    def test_empty_returns_none(self) -> None:
+        assert parse_open_date("") is None
+
+
+class TestDeterministicCAnswer:
+    def _run(self, fastest_open_date: str, agent_answer: str = "No") -> dict:
+        replacements, _, _, sources = normalize_report_data(
+            {"exec": {"c_answer": agent_answer, "fastest_open_open_date": fastest_open_date}},
+            site_name="Test",
+            report_date="01/01/2026",
+        )
+        return {"replacements": replacements, "sources": sources}
+
+    def test_date_before_deadline_yields_yes(self) -> None:
+        result = self._run("07/15/26")
+        assert result["replacements"]["exec.c_answer"] == "Yes"
+        assert result["sources"]["exec.c_answer"] == "computed:date_comparison"
+
+    def test_date_on_deadline_yields_yes(self) -> None:
+        result = self._run("09/08/26")
+        assert result["replacements"]["exec.c_answer"] == "Yes"
+
+    def test_date_after_deadline_yields_no(self) -> None:
+        result = self._run("09/09/26")
+        assert result["replacements"]["exec.c_answer"] == "No"
+        assert result["sources"]["exec.c_answer"] == "computed:date_comparison"
+
+    def test_far_future_date_yields_no(self) -> None:
+        result = self._run("06/01/27")
+        assert result["replacements"]["exec.c_answer"] == "No"
+
+    def test_legacy_mm_yy_date_before_deadline_yields_yes(self) -> None:
+        # 08/26 parsed as 08/01/26, which is before 09/08/26
+        result = self._run("08/26")
+        assert result["replacements"]["exec.c_answer"] == "Yes"
+
+    def test_overrides_agent_answer(self) -> None:
+        # Agent says "Yes" but date is after deadline
+        result = self._run("10/15/26", agent_answer="Yes")
+        assert result["replacements"]["exec.c_answer"] == "No"
+
+    def test_unparseable_date_keeps_agent_answer(self) -> None:
+        result = self._run("Fall 2027", agent_answer="Yes")
+        assert result["replacements"]["exec.c_answer"] == "Yes"
+        assert result["sources"]["exec.c_answer"] == "agent"
+
+    def test_school_year_deadline_constant(self) -> None:
+        assert SCHOOL_YEAR_DEADLINE == date(2026, 9, 8)
 
 
 class TestPipelineToolDefinitions:

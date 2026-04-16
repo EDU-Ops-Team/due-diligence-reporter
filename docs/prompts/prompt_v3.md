@@ -530,10 +530,10 @@ evidence = {
     "exec.c_edreg": "School Approval Report (Drive): TN requires state approval, not yet obtained, approval_type: state, score: 45",
     "exec.fastest_open_capacity": "ISP: Fastest Open tier = 18 students (4 classrooms Ã— 742â€“665 sqft)",
     "exec.fastest_open_capex": "RayCon costs_mvp.grandTotal returned $850,000 for the Fastest Open scope in 3,066 SF with 4 rooms",
-    "exec.fastest_open_open_date": "SIR: permit timeline 10 weeks + construction est. 12 weeks from today = 07/27 for the Fastest Open scope",
+    "exec.fastest_open_open_date": "SIR: permit timeline 10 weeks + construction est. 12 weeks from today = 07/15/27 for the Fastest Open scope",
     "exec.max_capacity_capacity": "ISP: highest supportable program fit scenario = 54 students",
     "exec.max_capacity_capex": "Wrike cost analysis: 54-student max-capacity layout requires approximately $1,150,000",
-    "exec.max_capacity_open_date": "SIR + inspection scope: max-capacity buildout adds 5 months beyond Fastest Open, target 12/27",
+    "exec.max_capacity_open_date": "SIR + inspection scope: max-capacity buildout adds 5 months beyond Fastest Open, target 12/01/27",
     "exec.acquisition_conditions": "SIR: traffic study required by City of Franklin; Building Inspection: State Fire Marshal sequential blocker",
     "exec.risk_notes": "Building Inspection: fire alarm >15 years old, modernization recommended; RayCon costs_mvp.grandTotal returned $850,000 for 3,066 SF",
 }
@@ -582,16 +582,26 @@ You may pass keys as either:
 | `meta.prepared_by` | P1 Accountable person's name | `p1_assignee_name` from Step 2; if missing, use accountable DRI from LocationOS `getSite`; if both empty, use `[Not found - P1 Assignee not set in Wrike]` |
 | `meta.drive_folder_url` | Google Drive folder URL for the site | Auto-populated |
 
-### exec â€” "Can this school be open in time for the current school year?" card (pick-menu dimensions)
+### exec â€” "Can this school be open in time for the current school year (8/12 or 9/8)?" card
 
-Each dimension uses a **fixed option menu**. Pick exactly one option per field based on the data from the specified source document.
+The pipeline computes `exec.c_answer` deterministically from `exec.fastest_open_open_date`:
+- `fastest_open_open_date` <= **09/08/26** -> `Yes`
+- `fastest_open_open_date` > **09/08/26** -> `No`
 
-| Token | Source | Options (pick one) |
+Provide the date accurately â€” the Yes/No answer follows from it automatically.
+
+The remaining fields use a **fixed option menu**. Pick exactly one option per field based on the data from the specified source document.
+
+`exec.c_permit_timeline` and `exec.c_construction_timeline` are free-text. Apply the Writing Style rules: front-load the finding, compressed citation, no jargon. One concise line each.
+
+| Token | Source | Options / Format |
 |---|---|---|
-| `exec.c_answer` | Agent (synthesize from all sources) | `Yes` / `Yes see notes` / `No` â€” **no other values are valid**; do not use `Conditional` |
+| `exec.c_answer` | Computed from `fastest_open_open_date` | `Yes` / `No` â€” set by pipeline; provide a value as fallback but it will be overridden |
 | `exec.c_zoning` | SIR (zoning designation + permitted uses) | `Permitted by right` / `Use Permit Required (Admin approval)` / `Use Permit Required (Public approval)` / `Prohibited` |
 | `exec.c_occupancy` | E-Occupancy Report (read from Drive) | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
 | `exec.c_edreg` | School Approval Report (read from Drive) | `Not required` / `Required and have done` / `Required have not done` |
+| `exec.c_permit_timeline` | SIR (permit path + timeline estimate) | Concise line â€” e.g., `10 weeks â€” admin CUP, no public hearing (SIR p.3)` |
+| `exec.c_construction_timeline` | ISP + Building Inspection (fastest open scope + construction estimate) | Concise line â€” e.g., `8 weeks â€” minimal TI, 4-classroom layout` |
 
 ### exec â€” Build Scenarios table (bare values)
 
@@ -601,14 +611,14 @@ The template provides labels â€” the agent fills only the values. No dollar
 |---|---|---|---|
 | `exec.fastest_open_capacity` | ISP (Fastest Open tier analysis student count) | Integer (students) | `36` |
 | `exec.fastest_open_capex` | ISP (Fastest Open room list â†’ `get_cost_estimate`) | Dollar amount | `$185,000` |
-| `exec.fastest_open_open_date` | Agent (SIR timelines + Fastest Open construction estimate) | MM/YY | `01/27` |
+| `exec.fastest_open_open_date` | Agent (SIR timelines + Fastest Open construction estimate) | MM/DD/YY | `01/15/27` |
 | `exec.max_capacity_capacity` | ISP / Wrike (use current ISP `Ideal` scenario as Max Capacity) | Integer (students) | `54` |
 | `exec.max_capacity_capex` | RayCon / Wrike override (paired to current ISP `Ideal` scenario) | Dollar amount | `$290,000` |
-| `exec.max_capacity_open_date` | Agent (SIR timelines + max-capacity construction estimate) | MM/YY | `04/27` |
+| `exec.max_capacity_open_date` | Agent (SIR timelines + max-capacity construction estimate) | MM/DD/YY | `04/15/27` |
 
 Rules:
 - Cost = single midpoint number (50% confidence), NOT a range. Wrike comments override API numbers.
-- Timeline = MM/YY format only. Never "Fall 2027" or season names.
+- Timeline = MM/DD/YY format only. Never "Fall 2027" or season names.
 - Capacity = student count from ISP tier analysis.
 - `Max Capacity` = the current ISP `Ideal` scenario until upstream naming changes.
 

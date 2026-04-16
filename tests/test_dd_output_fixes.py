@@ -359,7 +359,8 @@ class TestReportNormalizationDefaults:
             drive_folder_url="https://drive.google.com/drive/folders/folder123",
         )
 
-        assert replacements["exec.c_answer"] == "Yes see notes"
+        # Date 10/27 (Oct 2027) is past both school year deadlines — deterministic "No"
+        assert replacements["exec.c_answer"] == "No"
         assert replacements["exec.max_value_capacity"] == "[Not found - Max Value scenario not yet defined]"
         assert replacements["exec.max_value_capex"] == "[Not found - Max Value scenario not yet defined]"
 

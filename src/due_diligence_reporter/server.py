@@ -81,7 +81,8 @@ EXPORTABLE_MIME_TYPES: set[str] = {
 }
 
 CAN_WE_SECTION_DELIMITER = "Education Regulatory Approval:"
-V3_CAN_WE_HEADING = "Can this school be open in time for the current school year?"
+V3_CAN_WE_HEADING = "Can this school be open in time for the current school year (8/12 or 9/8)?"
+LEGACY_V3_CAN_WE_HEADING = "Can this school be open in time for the current school year?"
 LEGACY_CAN_WE_HEADING = "Can we do this?"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2689,6 +2690,7 @@ def _extract_invalid_can_we_answer(text: str) -> tuple[str | None, str]:
     """Return non-canonical answer and detected heading label."""
     heading_patterns = (
         V3_CAN_WE_HEADING,
+        LEGACY_V3_CAN_WE_HEADING,
         LEGACY_CAN_WE_HEADING,
     )
     for heading in heading_patterns:

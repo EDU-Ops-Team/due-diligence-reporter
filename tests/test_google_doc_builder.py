@@ -296,6 +296,7 @@ class TestTokenCoverage:
         # Executive summary tokens
         cls._BUILDER_TOKENS.update([
             "exec.c_answer", "exec.c_zoning", "exec.c_edreg", "exec.c_occupancy",
+            "exec.c_permit_timeline", "exec.c_construction_timeline",
         ])
 
         # Scenario summary tokens
@@ -333,6 +334,7 @@ class TestTokenCoverage:
         # exec can-we-open tokens
         v3_tokens.update([
             "exec.c_answer", "exec.c_edreg", "exec.c_occupancy", "exec.c_zoning",
+            "exec.c_permit_timeline", "exec.c_construction_timeline",
         ])
 
         # exec scenario summary (2 scenarios × 3 metrics = 6)
@@ -361,8 +363,8 @@ class TestTokenCoverage:
             "sources.trace_link",
         ])
 
-        # 7 meta + 4 can-we-open + 6 scenario summary + 24 cost + 2 narrative + 6 sources = 49
-        assert len(v3_tokens) == 49, f"Expected 49 V3 tokens, got {len(v3_tokens)}"
+        # 7 meta + 6 can-we-open + 6 scenario summary + 24 cost + 2 narrative + 6 sources = 51
+        assert len(v3_tokens) == 51, f"Expected 51 V3 tokens, got {len(v3_tokens)}"
 
         # All V3 tokens should be covered by the builder
         missing = v3_tokens - self._BUILDER_TOKENS
@@ -439,13 +441,15 @@ class TestBuildDdReportDoc:
             "meta.report_date": "04/14/2026",
             "meta.prepared_by": "Jane Smith",
             "meta.drive_folder_url": "https://drive.google.com/drive/folders/abc123",
-            "exec.c_answer": "Yes see notes",
+            "exec.c_answer": "Yes",
             "exec.c_edreg": "FL: Registration required. Timeline: 30 days.",
             "exec.c_occupancy": "78/100 YELLOW - Office general, 6-9 months",
             "exec.c_zoning": "Permitted by right",
+            "exec.c_permit_timeline": "10 weeks — admin CUP, no public hearing (SIR p.3)",
+            "exec.c_construction_timeline": "8 weeks — minimal TI, 4-classroom layout",
             "exec.fastest_open_capacity": "69 students",
             "exec.fastest_open_capex": "$487,000",
-            "exec.fastest_open_open_date": "08/26",
+            "exec.fastest_open_open_date": "07/15/26",
             "exec.max_capacity_capacity": "125 students",
             "exec.max_capacity_capex": "$812,000",
             "exec.max_capacity_open_date": "11/26",
