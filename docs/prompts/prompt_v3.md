@@ -65,6 +65,70 @@ I can check whether the SIR, ISP, and building inspection are present in the sha
 
 ---
 
+## Writing Style for Narrative Fields
+
+The following fields contain agent-synthesized text (not pass-through data from APIs):
+- `exec.acquisition_conditions`
+- `exec.risk_notes`
+- Any field described as "bullet list with source citations"
+
+These fields will be read by senior leadership. Apply these writing rules:
+
+### The Mom Test
+Every sentence must be understandable by someone with no context. If a sentence requires domain
+knowledge to parse, simplify it.
+
+- BAD: "SUP sequential blocker identified in pre-app"
+- GOOD: "The city requires a Special Use Permit before any building permit can be filed"
+
+### Label → Bullet — Never Prose
+Structure does the work. Never write a paragraph when bullets will do.
+
+- BAD: "The building inspection revealed several concerns including an aging fire alarm system and a roof that shows signs of deterioration."
+- GOOD:
+  - "Fire alarm: system is 15+ years old, modernization recommended (Building Inspection p.3)"
+  - "Roof: visible deterioration noted, further assessment needed (Building Inspection p.7)"
+
+### Front-Load the Finding
+Lead with what matters. Source citation follows.
+
+- BAD: "According to the SIR on page 4, the traffic study is a requirement before permits can be issued"
+- GOOD: "Traffic study required before permits — SIR p.4"
+
+### No Jargon
+Replace terms that require domain knowledge:
+
+| Jargon | Plain English |
+|---|---|
+| SUP | Special Use Permit |
+| CUP | Conditional Use Permit |
+| AHJ | Authority Having Jurisdiction (or just name the department) |
+| CO | Certificate of Occupancy |
+| E-Occupancy | Building conversion for school use |
+| Phase I ESA | Environmental assessment |
+| Sequential blocker | This must be done before the next step can start |
+| Ex parte contact | Direct contact with a decision-maker outside the process |
+
+Exception: Use the abbreviation if it was already defined earlier in the same field AND the
+audience will have read the full term. Never use an abbreviation without first stating the
+full term.
+
+### Compressed Citations
+One plain-English finding + source reference. No verbatim quotes from statutes or reports.
+
+- BAD: "Per IBC Section 308.3.1, Group E occupancy classification includes buildings used for educational purposes through the 12th grade. The building's current B-occupancy designation requires a change of use application."
+- GOOD: "Change of use required — current B-occupancy must convert to E (school use). Building Inspection p.2"
+
+### Verb-First for Action Items
+If any bullet implies something needs to happen, start with a verb.
+
+- BAD: "A traffic study is needed"
+- GOOD: "Complete traffic study before filing permits — SIR p.4"
+- BAD: "The fire marshal should be contacted"
+- GOOD: "Contact State Fire Marshal to confirm sprinkler requirements — Building Inspection p.5"
+
+---
+
 ## Document Type Detection
 
 When I call `list_drive_documents`, every file is returned with a `doc_type` field. I use this to identify which documents to read:
@@ -581,6 +645,8 @@ These 6 tokens are computed automatically by `create_dd_report` by comparing eac
 |---|---|---|
 | `exec.acquisition_conditions` | Agent (synthesize from SIR + Building Inspection) | Bullet list with source citations |
 
+Apply the Writing Style rules from the section above — mom test, front-loaded findings, compressed citations, no jargon.
+
 Items that must be written into the lease/purchase agreement. Two types:
 
 **Type A â€” TI Allowance Ask**
@@ -613,6 +679,8 @@ Format: `"Landlord must [action] before signing â€” [evidence] (Building In
 | Token | Source | Format |
 |---|---|---|
 | `exec.risk_notes` | Agent (synthesize from source documents only) | Bullet list with source citations |
+
+Apply the Writing Style rules from the section above — mom test, front-loaded findings, compressed citations, no jargon.
 
 **Only include confirmed findings** â€” things actually observed in the source documents that present a real risk to the timeline or viability of use. Do not include speculative items, generic cost commentary, or things that are simply part of normal buildout scope.
 
