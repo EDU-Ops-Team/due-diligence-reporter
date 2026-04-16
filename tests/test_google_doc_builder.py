@@ -360,11 +360,12 @@ class TestTokenCoverage:
         v3_tokens.update([
             "sources.sir_link", "sources.inspection_link", "sources.isp_link",
             "sources.e_occupancy_link", "sources.school_approval_link",
+            "sources.opening_plan_link",
             "sources.trace_link",
         ])
 
-        # 7 meta + 6 can-we-open + 6 scenario summary + 24 cost + 2 narrative + 6 sources = 51
-        assert len(v3_tokens) == 51, f"Expected 51 V3 tokens, got {len(v3_tokens)}"
+        # 7 meta + 6 can-we-open + 6 scenario summary + 24 cost + 2 narrative + 7 sources = 52
+        assert len(v3_tokens) == 52, f"Expected 52 V3 tokens, got {len(v3_tokens)}"
 
         # All V3 tokens should be covered by the builder
         missing = v3_tokens - self._BUILDER_TOKENS
@@ -460,6 +461,7 @@ class TestBuildDdReportDoc:
             "sources.isp_link": "https://drive.google.com/file/d/isp123",
             "sources.e_occupancy_link": "https://drive.google.com/file/d/eocc123",
             "sources.school_approval_link": "https://drive.google.com/file/d/sa123",
+            "sources.opening_plan_link": "https://drive.google.com/file/d/op123",
             "sources.trace_link": "",  # Not yet uploaded at build time
         }
         # Cost breakdown tokens

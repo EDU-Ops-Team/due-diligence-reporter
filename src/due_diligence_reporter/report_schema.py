@@ -95,6 +95,7 @@ def _build_template_tokens() -> list[str]:
         "sources.isp_link",
         "sources.e_occupancy_link",
         "sources.school_approval_link",
+        "sources.opening_plan_link",
         "sources.trace_link",
     ])
     return tokens
@@ -119,6 +120,7 @@ TOKEN_SOURCES: dict[str, str] = {
     "exec.c_construction_timeline": "Agent",
     "exec.acquisition_conditions": "Agent",
     "exec.risk_notes": "Agent",
+    "sources.opening_plan_link": "Agent",
 }
 
 for scenario in SCENARIOS:
@@ -144,6 +146,7 @@ LINK_TOKENS: frozenset[str] = frozenset({
     "sources.isp_link",
     "sources.e_occupancy_link",
     "sources.school_approval_link",
+    "sources.opening_plan_link",
     "sources.trace_link",
     "meta.drive_folder_url",
 })
@@ -155,6 +158,7 @@ LINK_DISPLAY_LABELS: dict[str, str] = {
     "sources.isp_link": "View ISP",
     "sources.e_occupancy_link": "View E-Occupancy",
     "sources.school_approval_link": "View School Approval",
+    "sources.opening_plan_link": "View Opening Plan",
     "sources.trace_link": "View Report Trace",
     "meta.drive_folder_url": "View Site Folder",
 }

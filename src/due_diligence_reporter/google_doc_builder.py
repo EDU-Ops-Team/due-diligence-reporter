@@ -71,6 +71,7 @@ _SOURCE_DOC_ROWS: list[tuple[str, str]] = [
     ("Program Fit Analysis (ISP)", "sources.isp_link"),
     ("E-Occupancy Assessment", "sources.e_occupancy_link"),
     ("School Approval Assessment", "sources.school_approval_link"),
+    ("Opening Plan", "sources.opening_plan_link"),
     ("Report Trace", "sources.trace_link"),
 ]
 
@@ -84,6 +85,7 @@ _LINK_GAP_LABELS: dict[str, str] = {
     "sources.isp_link": "[Not found - ISP]",
     "sources.e_occupancy_link": "[Not found - E-Occupancy Assessment]",
     "sources.school_approval_link": "[Not found - School Approval Assessment]",
+    "sources.opening_plan_link": "[Not found - Opening Plan]",
     "sources.trace_link": "",
     "meta.drive_folder_url": "",
 }
@@ -850,7 +852,7 @@ def build_dd_report_doc(
     b6 = _DocBuilder(start_index=end_idx)
 
     b6.insert_text("\n")
-    b6.insert_heading("Notes and Source Documents", level=1)
+    b6.insert_heading("Supporting Documents", level=1)
 
     # Acquisition Conditions
     acq_label_start, acq_label_end = b6.insert_text("Acquisition Conditions\n")
@@ -870,8 +872,8 @@ def build_dd_report_doc(
 
     b6.insert_text("\n")
 
-    # Source Documents heading
-    b6.insert_heading("Source Documents", level=2)
+    # Supporting Documents heading
+    b6.insert_heading("Supporting Documents", level=2)
 
     # Source documents table
     b6.insert_table(len(_SOURCE_DOC_ROWS) + 1, 2)  # +1 for header

@@ -42,7 +42,7 @@ def test_no_alias_is_also_a_template_token() -> None:
 
 
 def test_token_count_v3() -> None:
-    assert len(TEMPLATE_TOKENS) == 81, f"Expected 81 tokens, got {len(TEMPLATE_TOKENS)}"
+    assert len(TEMPLATE_TOKENS) == 82, f"Expected 82 tokens, got {len(TEMPLATE_TOKENS)}"
     assert all("delta_" not in t for t in TEMPLATE_TOKENS)
 
 

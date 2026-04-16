@@ -722,7 +722,7 @@ Format:
 [2] Building Inspection: Tenant shares HVAC and electrical systems with adjacent tenants
 ```
 
-### sources â€” Document links (6 rows)
+### sources â€” Document links (7 rows)
 
 | Token | Description | Source |
 |---|---|---|
@@ -731,6 +731,7 @@ Format:
 | `sources.isp_link` | Link to ISP / Program Fit Analysis | Drive file link |
 | `sources.e_occupancy_link` | Link to E-Occupancy Assessment doc | Drive file link of the found document |
 | `sources.school_approval_link` | Link to School Approval Assessment doc | Drive file link of the found document |
+| `sources.opening_plan_link` | Link to Opening Plan Google Doc (M1 folder) | Drive file link; search M1 folder for file named "Opening Plan" |
 | `sources.trace_link` | Link to report trace JSON (auto-populated) | Auto-populated by `create_dd_report` |
 
 ---
