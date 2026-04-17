@@ -594,16 +594,31 @@ Provide the date accurately â€” the Yes/No answer follows from it automatic
 
 The remaining fields use a **fixed option menu**. Pick exactly one option per field based on the data from the specified source document.
 
-`exec.c_permit_timeline` and `exec.c_construction_timeline` are free-text. Apply the Writing Style rules: front-load the finding, compressed citation, no jargon. One concise line each.
+All 5 category fields are **free-text** â€” write them as conditional assumptions when the answer is `Yes`, or as factual blockers when the answer is `No`.
 
-| Token | Source | Options / Format |
+**When `exec.c_answer` = `Yes` â€” write each field as: what must go right for the timeline to hold.**
+Each line should read as a condition or trade-off the team is accepting. Lead with the constraint.
+
+| Token | Source | Format (Yes â€” conditional) |
 |---|---|---|
-| `exec.c_answer` | Computed from `fastest_open_open_date` | `Yes` / `No` â€” set by pipeline; provide a value as fallback but it will be overridden |
-| `exec.c_zoning` | SIR (zoning designation + permitted uses) | `Permitted by right` / `Use Permit Required (Admin approval)` / `Use Permit Required (Public approval)` / `Prohibited` |
-| `exec.c_occupancy` | E-Occupancy Report (read from Drive) | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
-| `exec.c_edreg` | School Approval Report (read from Drive) | `Not required` / `Required and have done` / `Required have not done` |
-| `exec.c_permit_timeline` | SIR (permit path + timeline estimate) | Concise line â€” e.g., `10 weeks â€” admin CUP, no public hearing (SIR p.3)` |
-| `exec.c_construction_timeline` | ISP + Building Inspection (fastest open scope + construction estimate) | Concise line â€” e.g., `8 weeks â€” minimal TI, 4-classroom layout` |
+| `exec.c_answer` | Computed from `fastest_open_open_date` | `Yes` â€” set by pipeline; provide a value as fallback but it will be overridden |
+| `exec.c_zoning` | SIR | Conditional â€” e.g., `CUP filed and approved within 6 weeks â€” no public hearing required [1]` or `Permitted by right â€” no zoning delay` |
+| `exec.c_occupancy` | E-Occupancy Report | Conditional â€” e.g., `Change of use approved within 60-day window â€” scope stays within E-Occupancy estimate [1]` or `No change of use required` |
+| `exec.c_edreg` | School Approval Report | Conditional â€” e.g., `Registration submitted within 30 days and approved before first day [1]` or `No state approval required` |
+| `exec.c_permit_timeline` | SIR (permit path + timeline estimate) | Conditional â€” e.g., `Permits pull within 10 weeks â€” admin CUP only, no public hearing [1]` |
+| `exec.c_construction_timeline` | ISP + Building Inspection | Conditional â€” e.g., `8-week build stays on schedule â€” minimal TI, no structural surprises` |
+
+**When `exec.c_answer` = `No` â€” write each field as: the factual reason that category blocks the timeline.**
+Each line should state the specific finding and why it pushes past both target dates.
+
+| Token | Source | Format (No â€” factual blocker) |
+|---|---|---|
+| `exec.c_answer` | Computed from `fastest_open_open_date` | `No` â€” set by pipeline; provide a value as fallback but it will be overridden |
+| `exec.c_zoning` | SIR | Blocker â€” e.g., `Variance required â€” 6+ month process with uncertain outcome [1]` or `Zoning prohibited â€” no viable path` |
+| `exec.c_occupancy` | E-Occupancy Report | Blocker â€” e.g., `Score 15/100 RED â€” full structural renovation required, 12+ months [1]` |
+| `exec.c_edreg` | School Approval Report | Blocker â€” e.g., `License required â€” 180-day state review process, cannot compress [1]` |
+| `exec.c_permit_timeline` | SIR | Blocker â€” e.g., `State Fire Marshal sequential review â€” unknown additional weeks before City permit [1]` |
+| `exec.c_construction_timeline` | ISP + Building Inspection | Blocker â€” e.g., `45-week build timeline â€” exceeds both 8/12 and 9/8 targets regardless of permit speed` |
 
 ### exec â€” Build Scenarios table (bare values)
 
