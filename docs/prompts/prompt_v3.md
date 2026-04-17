@@ -449,10 +449,10 @@ For **every** document found in the `files` dict, call `read_drive_document(file
 
 **Do not skip reading a document that was found.** Every found document must be read and its data extracted.
 
-After reading the three core documents, search the site's M1 subfolder for an Opening Plan file:
+After reading the three core documents, search the site's M1 subfolder for an existing Opening Plan file:
 - Call `list_drive_documents` and look for any file with "Opening Plan" in the filename
-- If found, set `sources.opening_plan_link` to its Drive URL
-- If not found, leave `sources.opening_plan_link` empty (the report will show the gap label)
+- If found: set `sources.opening_plan_link` to its Drive URL and **skip Step 5.8** (plan already exists)
+- If not found: leave `sources.opening_plan_link` empty for now -- Step 5.8 will generate one
 
 ### Step 5 -- Call RayCon API for cost estimates
 Call `get_cost_estimate(total_building_sf, rooms=[...])` using the ISP room list -- **required whenever ISP was found; do not skip even if the ISP contains cost figures**.
@@ -526,6 +526,21 @@ Check each of these in order:
 3. **Shovels.ai** -- Deferred maintenance signal (no permits in 10 years); open permits that create title/close risk; demolition permits indicating prior major structural work
 
 Write each confirmed finding as a bullet citing its source document and the exact language that triggered the flag. If no qualifying findings exist after reviewing all sources, set `exec.risk_notes` to `""` (empty -- do not invent items). Do not leave `exec.risk_notes` unpopulated by default.
+
+### Step 5.8 -- Generate Opening Plan
+
+If the SIR was read in Step 4 and no Opening Plan was found in Step 4, call `apply_opening_plan_skill`:
+- `site_name`: from the site record
+- `site_address`: full property address from the site record
+- `sir_content`: the full SIR text you read in Step 4
+- `drive_folder_url`: from the site record (triggers auto-publish to M1 folder)
+- `school_approval_data`: the School Approval report text if found in Step 4 (optional)
+- `building_inspection_content`: the Building Inspection text read in Step 4 (optional)
+- `target_open_date`: from the site record if available (optional)
+
+The tool generates the Opening Plan Google Doc (Pass 1 -- SIR baseline, deterministic) and publishes it to the site's M1 Drive folder. Set `sources.opening_plan_link` to the returned `doc_url`.
+
+If the SIR was not found, skip this step -- the Opening Plan cannot be generated without a SIR.
 
 ### Step 6 -- Generate the V3 report
 Call `create_dd_report(site_name, drive_folder_url, report_data, token_evidence=evidence)` with the assembled data dict. See "V3 report Data Schema" section below for exact token keys.

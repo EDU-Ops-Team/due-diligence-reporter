@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -1536,6 +1538,229 @@ async def apply_school_approval_skill(
             result["publish_status"] = "failed"
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Opening Plan v2 skill
+# ---------------------------------------------------------------------------
+
+_OPENING_PLAN_SKILL_DIR = Path(__file__).parent.parent.parent / "docs" / "skills" / "opening-plan-v2"
+
+
+def _load_opening_plan_skill_files() -> dict[str, str]:
+    """Load the Opening Plan v2 SKILL.md and reference files from docs/skills/."""
+    files = {
+        "skill": _OPENING_PLAN_SKILL_DIR / "SKILL.md",
+        "field_mapping": _OPENING_PLAN_SKILL_DIR / "references" / "field-mapping.md",
+        "template_content": _OPENING_PLAN_SKILL_DIR / "references" / "template-content.md",
+        "executive_mindset": _OPENING_PLAN_SKILL_DIR / "references" / "executive-mindset.md",
+    }
+    return {key: path.read_text(encoding="utf-8") for key, path in files.items()}
+
+
+def _build_opening_plan_prompt(
+    skill_files: dict[str, str],
+    site_name: str,
+    site_address: str,
+    sir_content: str,
+    school_approval_data: str = "",
+    building_inspection_content: str = "",
+    target_open_date: str = "",
+) -> str:
+    """Assemble the Claude prompt for Pass 1 (SIR baseline) of the Opening Plan."""
+    sections = [
+        "You are executing Pass 1 of the Opening Plan v2 skill (SIR Baseline only).",
+        "Do NOT launch research agents or perform web research -- this is the deterministic pass.",
+        "Produce a complete Opening Plan document using only the SIR data and reference files below.",
+        "",
+        "=" * 60,
+        "SKILL DEFINITION (Steps 1 and 2 only -- skip Steps 2.9, 3, 3.5, 4):",
+        "=" * 60,
+        skill_files["skill"],
+        "",
+        "=" * 60,
+        "FIELD MAPPING REFERENCE:",
+        "=" * 60,
+        skill_files["field_mapping"],
+        "",
+        "=" * 60,
+        "TEMPLATE CONTENT (section-by-section structure to follow):",
+        "=" * 60,
+        skill_files["template_content"],
+        "",
+        "=" * 60,
+        "EXECUTIVE MINDSET (quality bar to meet):",
+        "=" * 60,
+        skill_files["executive_mindset"],
+        "",
+        "=" * 60,
+        "SITE DATA:",
+        "=" * 60,
+        f"Site Name: {site_name}",
+        f"Address: {site_address}",
+    ]
+    if target_open_date:
+        sections.append(f"Target Open Date: {target_open_date}")
+    sections += [
+        "",
+        "=" * 60,
+        "SIR DOCUMENT (primary data source):",
+        "=" * 60,
+        sir_content,
+    ]
+    if school_approval_data:
+        sections += [
+            "",
+            "=" * 60,
+            "SCHOOL APPROVAL REPORT (pre-enriches Edu Regulatory section):",
+            "=" * 60,
+            school_approval_data,
+        ]
+    if building_inspection_content:
+        sections += [
+            "",
+            "=" * 60,
+            "BUILDING INSPECTION REPORT (enriches Construction section):",
+            "=" * 60,
+            building_inspection_content,
+        ]
+    sections += [
+        "",
+        "=" * 60,
+        "OUTPUT INSTRUCTIONS:",
+        "=" * 60,
+        "Produce the complete Opening Plan in markdown following the template structure exactly.",
+        "Every section must be populated -- use [PLACEHOLDER -- reason] for items that cannot",
+        "be determined from the SIR (refer to the Placeholder Inventory in field-mapping.md).",
+        "Do not add any preamble or closing remarks -- output only the plan content itself.",
+    ]
+    return "\n".join(sections)
+
+
+@mcp.tool()
+async def apply_opening_plan_skill(
+    site_name: str,
+    site_address: str,
+    sir_content: str,
+    drive_folder_url: str = "",
+    school_approval_data: str = "",
+    building_inspection_content: str = "",
+    target_open_date: str = "",
+) -> dict[str, Any]:
+    """Generate an Opening Plan (Permitting Plan) Google Doc for a site using the SIR.
+
+    Runs Pass 1 of the Opening Plan v2 skill: deterministic SIR baseline mapping.
+    Produces a complete plan with every section filled -- no web research.
+    If drive_folder_url is provided, publishes the plan as a Google Doc in the M1 subfolder.
+
+    Args:
+        site_name: Site name (e.g., "Alpha Austin").
+        site_address: Full property address.
+        sir_content: Full text of the SIR document (read via read_drive_document).
+        drive_folder_url: Site's Google Drive folder URL. Triggers auto-publish if set.
+        school_approval_data: Optional School Approval report text for edu regulatory section.
+        building_inspection_content: Optional Building Inspection text.
+        target_open_date: Optional target open date if known from site record.
+
+    Returns:
+        Dict with status, plan_content (markdown), and doc_url/doc_id if published.
+    """
+    logger.info("Tool called: apply_opening_plan_skill - site=%s", site_name)
+
+    if not site_name or not site_address or not sir_content:
+        return {
+            "status": "error",
+            "error": "Missing required parameters",
+            "message": "site_name, site_address, and sir_content are all required",
+        }
+
+    def _work() -> dict[str, Any]:
+        import anthropic
+
+        settings = get_settings()
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return {
+                "status": "error",
+                "error": "ANTHROPIC_API_KEY not set",
+                "message": "Set ANTHROPIC_API_KEY environment variable to use this tool",
+            }
+
+        try:
+            skill_files = _load_opening_plan_skill_files()
+        except FileNotFoundError as e:
+            return {
+                "status": "error",
+                "error": "Skill files not found",
+                "message": str(e),
+            }
+
+        prompt = _build_opening_plan_prompt(
+            skill_files=skill_files,
+            site_name=site_name,
+            site_address=site_address,
+            sir_content=sir_content,
+            school_approval_data=school_approval_data,
+            building_inspection_content=building_inspection_content,
+            target_open_date=target_open_date,
+        )
+
+        client = anthropic.Anthropic(api_key=api_key)
+        try:
+            response = client.messages.create(
+                model=settings.anthropic_report_model,
+                max_tokens=8192,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            plan_content = response.content[0].text if response.content else ""
+        except Exception as e:
+            logger.error("Claude call failed for opening plan: %s", e)
+            return {
+                "status": "error",
+                "error": "Claude API call failed",
+                "message": str(e),
+            }
+
+        result: dict[str, Any] = {
+            "status": "success",
+            "plan_content": plan_content,
+            "doc_url": "",
+            "doc_id": "",
+        }
+
+        if drive_folder_url and plan_content:
+            folder_id = extract_folder_id_from_url(drive_folder_url)
+            if folder_id:
+                try:
+                    gc = _make_google_client()
+                    doc_name = f"Opening Plan - {site_name}"
+                    target_folder_id = folder_id
+                    try:
+                        subfolders = gc.list_subfolders(folder_id)
+                        for subfolder in subfolders:
+                            if subfolder.get("name", "").lower().startswith("m1"):
+                                target_folder_id = subfolder["id"]
+                                logger.info("Found M1 subfolder for opening plan: %s", subfolder["name"])
+                                break
+                    except Exception as e:
+                        logger.warning("Failed to list subfolders: %s -- saving to site root", e)
+
+                    doc = gc.create_document(
+                        name=doc_name,
+                        folder_id=target_folder_id,
+                        text_content=plan_content,
+                    )
+                    result["doc_url"] = doc.get("webViewLink", "")
+                    result["doc_id"] = doc.get("id", "")
+                    logger.info("Opening Plan published: %s", result["doc_url"])
+                except Exception as e:
+                    logger.warning("Failed to publish Opening Plan to Drive: %s", e)
+                    result["publish_status"] = "failed"
+                    result["publish_error"] = str(e)
+
+        return result
+
+    return await asyncio.to_thread(_work)
 
 
 # ---------------------------------------------------------------------------
