@@ -197,6 +197,7 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
                     recipients=sir_notification_recipients,
                     subject=f"SIR Received — {site}",
                     html_body=html_body,
+                    global_cc=settings.global_email_cc,
                 )
                 logger.info("SIR arrival email sent for '%s' to %s", site, sir_notification_recipients)
             except Exception as e:
@@ -277,6 +278,7 @@ for you to fill in: CDS Verified Finding, CDS Source, and CDS Confidence.</p>
                     recipients=cds_recipients,
                     subject=f"CDS Verification — {site} ({report.bc_item_count} items)",
                     html_body=cds_html,
+                    global_cc=settings.global_email_cc,
                 )
                 logger.info("CDS verification email sent for '%s' to %s", site, cds_recipients)
 

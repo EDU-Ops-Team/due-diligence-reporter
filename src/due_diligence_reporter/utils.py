@@ -182,6 +182,7 @@ def send_email(
     recipients: list[str],
     subject: str,
     html_body: str,
+    global_cc: str = "",
 ) -> None:
     """Send an HTML email via Gmail SMTP using an App Password.
 
@@ -191,7 +192,15 @@ def send_email(
         recipients: List of recipient email addresses.
         subject: Email subject line.
         html_body: HTML email body content.
+        global_cc: Comma-separated addresses always added to every email.
     """
+    if global_cc:
+        existing = {r.lower() for r in recipients}
+        for addr in (a.strip() for a in global_cc.split(",") if a.strip()):
+            if addr.lower() not in existing:
+                recipients.append(addr)
+                existing.add(addr.lower())
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = sender

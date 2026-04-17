@@ -548,6 +548,52 @@ class TestEmailEscaping:
         mock_to_thread.assert_awaited_once()
 
 
+class TestGlobalEmailCC:
+    """Tests for global_cc dedup logic in send_email()."""
+
+    def _call_send_email(self, recipients: list[str], global_cc: str) -> list[str]:
+        """Run send_email() with SMTP mocked; return the final recipients list."""
+        from due_diligence_reporter.utils import send_email
+
+        captured: list[str] = []
+
+        def fake_sendmail(sender: str, rcpts: list[str], msg: str) -> None:
+            captured.extend(rcpts)
+
+        with patch("due_diligence_reporter.utils.smtplib.SMTP_SSL") as mock_ssl:
+            mock_server = MagicMock()
+            mock_ssl.return_value.__enter__ = MagicMock(return_value=mock_server)
+            mock_ssl.return_value.__exit__ = MagicMock(return_value=False)
+            mock_server.sendmail.side_effect = fake_sendmail
+            send_email(
+                sender="bot@example.com",
+                app_password="pass",
+                recipients=recipients,
+                subject="Test",
+                html_body="<p>hi</p>",
+                global_cc=global_cc,
+            )
+        return captured
+
+    def test_global_cc_added_when_not_in_recipients(self) -> None:
+        rcpts = self._call_send_email(["a@x.com"], "thomas.barrow@trilogy.com")
+        assert "thomas.barrow@trilogy.com" in rcpts
+
+    def test_global_cc_deduped_case_insensitive(self) -> None:
+        rcpts = self._call_send_email(["Thomas.Barrow@Trilogy.com"], "thomas.barrow@trilogy.com")
+        assert rcpts.count("thomas.barrow@trilogy.com") == 0  # not added again
+        assert len([r for r in rcpts if r.lower() == "thomas.barrow@trilogy.com"]) == 1
+
+    def test_global_cc_empty_string_no_change(self) -> None:
+        rcpts = self._call_send_email(["a@x.com"], "")
+        assert rcpts == ["a@x.com"]
+
+    def test_global_cc_multiple_addresses(self) -> None:
+        rcpts = self._call_send_email(["a@x.com"], "b@x.com, c@x.com")
+        assert "b@x.com" in rcpts
+        assert "c@x.com" in rcpts
+
+
 class TestDriveQueryEscaping:
     def test_escape_drive_query_literal(self) -> None:
         assert escape_drive_query_literal(r"O'Brien\ISP.pdf") == r"O\'Brien\\ISP.pdf"

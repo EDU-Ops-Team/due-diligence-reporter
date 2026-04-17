@@ -116,6 +116,10 @@ class Settings(BaseSettings):
         "",
         description="Comma-separated email addresses for CDS verification report delivery",
     )
+    global_email_cc: str = Field(
+        "",
+        description="Comma-separated email addresses added to every outbound email (e.g. a manager CC)",
+    )
 
     # Google Chat
     google_chat_webhook_url: str = Field(

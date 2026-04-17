@@ -3194,6 +3194,7 @@ async def send_dd_report_email(
                 recipients=recipients,
                 subject=subject,
                 html_body=html_body,
+                global_cc=settings.global_email_cc,
             )
             return {
                 "status": "success",

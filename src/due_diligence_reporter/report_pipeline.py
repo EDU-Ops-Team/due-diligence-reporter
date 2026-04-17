@@ -975,6 +975,7 @@ def _email_pipeline_report(
             recipients=recipients,
             subject=f"DD Report Ready - {site_title}",
             html_body=html_body,
+            global_cc=settings.global_email_cc,
         )
         logger.info("Email sent for '%s' to %s", site_title, recipients)
     except Exception as e:
