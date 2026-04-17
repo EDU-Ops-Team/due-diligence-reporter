@@ -46,6 +46,7 @@ from .utils import (
 from .utils import (
     build_site_match_terms as _build_site_match_terms,
 )
+from .assignment import assign_p1
 from .wrike import (
     build_site_summary,
     classify_comment_to_section,
@@ -829,6 +830,74 @@ def _make_google_client() -> GoogleClient:
         oauth_port=settings.oauth_port,
         scopes=settings.google_scopes,
     )
+
+
+@mcp.tool()
+async def assign_p1_accountable(
+    site_name: str,
+    school_type: str,
+    state: str,
+    city: str = "",
+) -> dict[str, Any]:
+    """Assign a P1 Accountable person to a new site using the three-rule scoring engine.
+
+    Rule 1 (flight scoring, requires SerpAPI key + city):
+      Same-day viable (depart ≤ 7am, return ≥ 8pm, ≤ 3hr each way): +50
+      Nonstop flight: +30
+      Strongly preferred airline available: +15 / not available: -30
+      Preferred airline available: +10
+      Load penalty per existing assigned site: -5
+
+    Rule 2: Contact in same state → fewest total sites wins.
+    Rule 3: Nearest state (Haversine) → fewest sites tiebreaker.
+
+    Growth/Flagship (school_type "250", "1000", "growth", "flagship") auto-assigns
+    Thomas Barrow + Israe Zizaoui. JC Fisher is excluded.
+
+    Args:
+        site_name: Human-readable site name (e.g., "Alpha Austin").
+        school_type: Site school type — "micro", "250", "1000", "growth",
+            "flagship", "jc fisher", or "unknown".
+        state: Two-letter US state abbreviation (e.g., "TX").
+        city: City name — enables Rule 1 flight scoring when provided.
+
+    Returns:
+        Dict with status, rule, assignee_name, assignee_email, score, reasoning.
+    """
+    logger.info(
+        "Tool called: assign_p1_accountable — site=%s type=%s state=%s city=%s",
+        site_name, school_type, state, city,
+    )
+
+    if not school_type or not school_type.strip():
+        return {"status": "error", "error": "Missing parameter", "message": "school_type is required"}
+    if not state or not state.strip():
+        return {"status": "error", "error": "Missing parameter", "message": "state is required"}
+
+    def _work() -> dict[str, Any]:
+        from .wrike import _get_all_site_records, load_wrike_config
+
+        settings = get_settings()
+        cfg = load_wrike_config()
+
+        try:
+            all_records = _get_all_site_records(cfg=cfg)
+        except Exception as e:
+            logger.warning("Could not fetch Wrike records for load counts: %s", e)
+            all_records = []
+
+        result = assign_p1(
+            school_type=school_type,
+            city=city,
+            state=state,
+            settings=settings,
+            all_site_records=all_records,
+            wrike_cfg=cfg,
+        )
+        result["site_name"] = site_name
+        return result
+
+    return await asyncio.to_thread(_work)
 
 
 @mcp.tool()

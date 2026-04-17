@@ -24,7 +24,7 @@ flowchart TD
     HAS_CONTACTS -->|No| NO_CONTACTS["Return empty (None)"]
     HAS_CONTACTS -->|Yes| CITY_CHECK{city provided +<br/>SerpAPI key set?}
 
-    CITY_CHECK -->|Yes| RULE1["<b>Rule 1 — Flight scoring</b><br/>Nonstop +100 · Required airline +25/−200<br/>Preferred +25 · Shortest bonus (Devin only)"]
+    CITY_CHECK -->|Yes| RULE1["<b>Rule 1 — Flight scoring</b><br/>Same-day viable +50 · Nonstop +30<br/>Preferred airline +10 · Strongly preferred +15/−30<br/>Load penalty −5/site"]
     CITY_CHECK -->|No| RULE2
 
     RULE1 --> R1_RESULT{winner found?}

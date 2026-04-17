@@ -121,6 +121,20 @@ class Settings(BaseSettings):
         description="Comma-separated email addresses added to every outbound email (e.g. a manager CC)",
     )
 
+    # P1 Assignment Engine
+    serpapi_key: str = Field(
+        "", description="SerpAPI key for Google Flights search (used by P1 assignment engine)"
+    )
+    p1_team_config: str = Field(
+        "",
+        description=(
+            "JSON array of team member objects for P1 assignment. "
+            'Each entry: {"name", "email", "home_airport", "home_state", '
+            '"preferred_airline", "strongly_preferred_airline"}. '
+            "preferred_airline and strongly_preferred_airline are optional."
+        ),
+    )
+
     # Google Chat
     google_chat_webhook_url: str = Field(
         "", description="Comma-separated Google Chat incoming webhook URLs for notifications"
