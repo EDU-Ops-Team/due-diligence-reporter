@@ -2,7 +2,7 @@
 
 **Version:** 3.0.0
 **Team:** EDU Ops Intelligence
-**Last Updated:** 2026-04-14
+**Last Updated:** 2026-04-17
 
 > **V3 report Format** â€” This prompt produces the V3 structured DD report.
 > Key differences from V1: structured exec summary checklists (not prose),
