@@ -8,6 +8,7 @@ and-replace flow.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from .report_schema import LINK_DISPLAY_LABELS, LINK_TOKENS
@@ -254,6 +255,77 @@ class _DocBuilder:
     def insert_paragraph(self, text: str) -> tuple[int, int]:
         """Insert a normal paragraph with a trailing newline."""
         return self.insert_text(text + "\n")
+
+    def apply_bullets(self, start: int, end: int) -> None:
+        """Apply round-bullet formatting to paragraphs in [start, end)."""
+        self.requests.append({
+            "createParagraphBullets": {
+                "range": {"startIndex": start, "endIndex": end},
+                "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+            }
+        })
+
+
+# ---------------------------------------------------------------------------
+# Bullet/footnote helpers
+# ---------------------------------------------------------------------------
+
+
+def _split_bullets_and_footnotes(text: str) -> tuple[list[str], list[str]]:
+    """Split a multi-line field value into bullet items and footnote lines.
+
+    Bullet items: lines starting with '- ' or '• ' (prefix stripped).
+    The [N] citation markers remain in the bullet text.
+    Footnotes: lines starting with '[N]' or lines after the blank-line separator.
+
+    Example:
+        "- TI allowance ~$45,000 [1]\\n- Landlord must repair roof [2]\\n\\n[1] Bldg Insp p.3\\n[2] Bldg Insp p.7"
+        -> bullets=["TI allowance ~$45,000 [1]", "Landlord must repair roof [2]"]
+           footnotes=["[1] Bldg Insp p.3", "[2] Bldg Insp p.7"]
+    """
+    lines = text.strip().split("\n")
+    bullets: list[str] = []
+    footnotes: list[str] = []
+    in_footnotes = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if bullets:
+                in_footnotes = True
+            continue
+        if in_footnotes or re.match(r"^\[\d+\]", stripped):
+            footnotes.append(stripped)
+            in_footnotes = True
+        else:
+            if stripped.startswith("- "):
+                stripped = stripped[2:]
+            elif stripped.startswith("\u2022 "):
+                stripped = stripped[2:]
+            bullets.append(stripped)
+    return bullets, footnotes
+
+
+def _insert_bulleted_field(builder: "_DocBuilder", value: str) -> None:
+    """Insert a multi-line field with round-bullet formatting and footnotes.
+
+    Bullet lines get Google Docs BULLET_DISC_CIRCLE_SQUARE formatting.
+    Footnote lines (after blank-line separator or starting with [N]) are
+    inserted as 8pt plain text below the bullets.
+    Falls back to a plain paragraph if no bullet lines are detected.
+    """
+    bullets, footnotes = _split_bullets_and_footnotes(value)
+    if not bullets:
+        builder.insert_paragraph(value)
+        return
+    bullet_start = builder.index
+    for item in bullets:
+        builder.insert_paragraph(item)
+    builder.apply_bullets(bullet_start, builder.index)
+    if footnotes:
+        builder.insert_text("\n")
+        for fn in footnotes:
+            fn_start, fn_end = builder.insert_paragraph(fn)
+            builder.style_text(fn_start, fn_end - 1, font_size=8, font_family="Arial")
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +932,7 @@ def build_dd_report_doc(
     b6.style_text(acq_label_start, acq_label_end - 1, bold=True, font_size=11, font_family="Arial")
 
     acq_val = _resolve_value(replacements, "exec.acquisition_conditions", "[No acquisition conditions provided]")
-    b6.insert_paragraph(acq_val)
+    _insert_bulleted_field(b6, acq_val)
 
     b6.insert_text("\n")
 
@@ -869,7 +941,7 @@ def build_dd_report_doc(
     b6.style_text(risk_label_start, risk_label_end - 1, bold=True, font_size=11, font_family="Arial")
 
     risk_val = _resolve_value(replacements, "exec.risk_notes", "[No risks noted]")
-    b6.insert_paragraph(risk_val)
+    _insert_bulleted_field(b6, risk_val)
 
     b6.insert_text("\n")
 

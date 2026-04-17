@@ -18,6 +18,7 @@ from due_diligence_reporter.google_doc_builder import (
     _find_table,
     _resolve_link_value,
     _resolve_value,
+    _split_bullets_and_footnotes,
     build_dd_report_doc,
 )
 from due_diligence_reporter.report_schema import (
@@ -592,3 +593,72 @@ class TestGapLabelsForLinks:
         """Every source doc token has a display label in LINK_DISPLAY_LABELS."""
         for _, token in _SOURCE_DOC_ROWS:
             assert token in LINK_DISPLAY_LABELS, f"No display label for {token}"
+
+
+# ---------------------------------------------------------------------------
+# _split_bullets_and_footnotes
+# ---------------------------------------------------------------------------
+
+
+class TestSplitBulletsAndFootnotes:
+    def test_standard_bullets_with_footnotes(self):
+        text = (
+            "- TI allowance ~$45,000 [1]\n"
+            "- Landlord must repair roof [2]\n"
+            "\n"
+            "[1] Building Inspection p.3\n"
+            "[2] Building Inspection p.7"
+        )
+        bullets, footnotes = _split_bullets_and_footnotes(text)
+        assert bullets == ["TI allowance ~$45,000 [1]", "Landlord must repair roof [2]"]
+        assert footnotes == ["[1] Building Inspection p.3", "[2] Building Inspection p.7"]
+
+    def test_citation_markers_stay_in_bullet_text(self):
+        text = "- Finding one [1]\n\n[1] Source doc p.1"
+        bullets, footnotes = _split_bullets_and_footnotes(text)
+        assert "[1]" in bullets[0]
+        assert bullets[0] == "Finding one [1]"
+
+    def test_no_footnotes(self):
+        text = "- Item one\n- Item two"
+        bullets, footnotes = _split_bullets_and_footnotes(text)
+        assert bullets == ["Item one", "Item two"]
+        assert footnotes == []
+
+    def test_round_bullet_prefix_stripped(self):
+        text = "\u2022 Item one\n\u2022 Item two"
+        bullets, _ = _split_bullets_and_footnotes(text)
+        assert bullets == ["Item one", "Item two"]
+
+    def test_single_line_no_prefix_returns_as_bullet(self):
+        text = "No acquisition conditions required"
+        bullets, footnotes = _split_bullets_and_footnotes(text)
+        assert bullets == ["No acquisition conditions required"]
+        assert footnotes == []
+
+    def test_placeholder_string(self):
+        # "[No ...]" doesn't match ^\[\d+\] so it lands in bullets, not footnotes
+        text = "[No acquisition conditions provided]"
+        bullets, footnotes = _split_bullets_and_footnotes(text)
+        assert bullets == ["[No acquisition conditions provided]"]
+        assert footnotes == []
+
+    def test_footnote_detected_by_pattern_without_blank_line(self):
+        text = "- Risk item [1]\n[1] SIR: evidence here"
+        bullets, footnotes = _split_bullets_and_footnotes(text)
+        assert bullets == ["Risk item [1]"]
+        assert footnotes == ["[1] SIR: evidence here"]
+
+    def test_empty_string(self):
+        bullets, footnotes = _split_bullets_and_footnotes("")
+        assert bullets == []
+        assert footnotes == []
+
+    def test_apply_bullets_adds_correct_request(self):
+        b = _DocBuilder(start_index=10)
+        b.apply_bullets(10, 30)
+        req = b.requests[0]
+        assert "createParagraphBullets" in req
+        assert req["createParagraphBullets"]["bulletPreset"] == "BULLET_DISC_CIRCLE_SQUARE"
+        assert req["createParagraphBullets"]["range"]["startIndex"] == 10
+        assert req["createParagraphBullets"]["range"]["endIndex"] == 30
