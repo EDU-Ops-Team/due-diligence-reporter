@@ -289,9 +289,12 @@ def score_member_flights(
             score -= 30
             notes.append(f"strongly preferred airline ({member.strongly_preferred_airline}) not available -30")
 
-    if member.preferred_airline and member.preferred_airline.lower() in all_airlines:
-        score += 10
-        notes.append(f"preferred airline ({member.preferred_airline}) available +10")
+    if member.preferred_airline:
+        preferred_set = {a.strip().lower() for a in member.preferred_airline.split(",") if a.strip()}
+        matched = preferred_set & all_airlines
+        if matched:
+            score += 10
+            notes.append(f"preferred airline ({', '.join(sorted(matched))}) available +10")
 
     return score, "; ".join(notes)
 
