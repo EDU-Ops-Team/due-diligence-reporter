@@ -7,18 +7,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from due_diligence_reporter.assignment import (
-    AssignmentResult,
     TeamMember,
     assign_p1,
+    build_site_counts,
     check_same_day_viable,
     haversine_km,
     load_team_members,
-    rule1_assign,
     rule2_assign,
     rule3_assign,
-    build_site_counts,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -47,6 +44,8 @@ def _settings(p1_team_config: str = "", serpapi_key: str = "") -> MagicMock:
     s = MagicMock()
     s.p1_team_config = p1_team_config
     s.serpapi_key = serpapi_key
+    s.p1_disabled_names = "Andrea"
+    s.p1_disabled_emails = ""
     return s
 
 
@@ -79,6 +78,27 @@ class TestLoadTeamMembers:
     def test_skips_entries_missing_required_fields(self):
         cfg = '[{"name":"Bad"}]'  # missing email, home_airport, home_state
         members = load_team_members(_settings(p1_team_config=cfg))
+        assert members == []
+
+    def test_skips_disabled_member_by_name(self):
+        cfg = (
+            '['
+            '{"name":"Andrea Smith","email":"andrea@x.com","home_airport":"DEN","home_state":"CO"},'
+            '{"name":"Bob","email":"bob@x.com","home_airport":"AUS","home_state":"TX"}'
+            ']'
+        )
+        members = load_team_members(_settings(p1_team_config=cfg))
+        assert len(members) == 1
+        assert members[0].name == "Bob"
+
+    def test_skips_disabled_member_by_email(self):
+        cfg = '[{"name":"Bob","email":"bob@x.com","home_airport":"DEN","home_state":"CO"}]'
+        settings = _settings(p1_team_config=cfg)
+        settings.p1_disabled_names = ""
+        settings.p1_disabled_emails = "bob@x.com"
+
+        members = load_team_members(settings)
+
         assert members == []
 
 
@@ -230,6 +250,15 @@ class TestAssignP1:
 
     def test_no_team_config_returns_error(self):
         result = assign_p1("micro", "Austin", "TX", _settings(), [], MagicMock())
+        assert result["status"] == "error"
+
+    def test_disabled_member_not_assignable(self):
+        settings = _settings(
+            p1_team_config='[{"name":"Andrea Smith","email":"andrea@t.com","home_airport":"AUS","home_state":"TX"}]',
+        )
+
+        result = assign_p1("micro", "", "TX", settings, [], MagicMock())
+
         assert result["status"] == "error"
 
     def test_rule2_used_when_no_city(self):
