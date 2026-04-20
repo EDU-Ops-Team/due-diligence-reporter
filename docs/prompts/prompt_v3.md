@@ -70,6 +70,7 @@ I can check whether the SIR, ISP, and building inspection are present in the sha
 The following fields contain agent-synthesized text (not pass-through data from APIs):
 - `exec.acquisition_conditions`
 - `exec.risk_notes`
+- `source_quality_notes` (internal renderer field; Supporting Notes only)
 - Any field described as "bullet list with source citations"
 
 These fields will be read by senior leadership. Apply these writing rules:
@@ -122,7 +123,7 @@ Write clean finding text with a numbered marker. Collect all footnotes at the bo
   - "Change of use required -- current B-occupancy must convert to E (school use) [1]"
   - Footnotes: `[1] Building Inspection p.2`
 
-Place all footnotes at the bottom of each field, separated from the bullets by a blank line. Use sequential numbering `[1]`, `[2]`, etc., restarting for each field. No verbatim quotes from statutes or reports.
+Place all footnotes at the bottom of each field, separated from the bullets by a blank line. Use sequential numbering `[1]`, `[2]`, etc., restarting for each field. No verbatim quotes from statutes or reports. Deduplicate identical footnotes within the same field and reuse the same citation number instead of repeating the same note text.
 
 Write list items as plain text without a leading bullet character (- or •). The document builder applies round bullet formatting automatically.
 
@@ -527,6 +528,20 @@ Check each of these in order:
 
 Write each confirmed finding as a bullet citing its source document and the exact language that triggered the flag. If no qualifying findings exist after reviewing all sources, set `exec.risk_notes` to `""` (empty -- do not invent items). Do not leave `exec.risk_notes` unpopulated by default.
 
+### Source Quality Notes
+
+Use `source_quality_notes` only for source-read or source-validation problems:
+- unreadable SIR / ISP / Building Inspection / AI-generated report text
+- image-only or binary files that could not be parsed
+- another site's document that was excluded because the filename/text did not match the current site
+
+Rules:
+- Keep source-quality warnings out of the Executive Summary checklist lines
+- Use a concise gap label in the affected field instead
+- Put the detailed warning once in `source_quality_notes`
+- Do not cite or quote excluded proxy evidence from another site anywhere in the report body
+- Never use another site's SIR, ISP, Building Inspection, or AI-generated report as fallback evidence
+
 ### Step 5.8 -- Generate Opening Plan
 
 If the SIR was read in Step 4 and no Opening Plan was found in Step 4, call `apply_opening_plan_skill`:
@@ -582,6 +597,11 @@ If a document was not found in Step 2, use sourced gap labels for every field th
 - E-Occupancy Report missing â†’ `exec.c_occupancy` = `[Not found - E-Occupancy assessment not yet in Drive folder]`
 - School Approval Report missing â†’ `exec.c_edreg` = `[Not found - School Approval assessment not yet in Drive folder]`
 
+If a required document exists but is unreadable or fails site validation:
+- Use a concise gap label in the affected field, e.g. `[Not found -- School Approval source could not be validated/read]`
+- Add the detailed warning once under `source_quality_notes`
+- Do not repeat extraction-failure or site-mismatch explanations in multiple executive-summary lines
+
 ---
 
 ## Report Data Schema (create_dd_report)
@@ -589,6 +609,9 @@ If a document was not found in Step 2, use sourced gap labels for every field th
 The V3 report is an executive one-pager. 40 tokens total. The agent reads all documents from Drive and calls the RayCon API for cost estimates -- the difference is in what gets written to the template.
 
 When you call `create_dd_report`, the `report_data` dict must use the **exact keys** listed below. Keys that don't match a V3 template token are silently dropped.
+
+One additive exception is allowed for renderer formatting:
+- `source_quality_notes` -- optional internal field rendered under `Supporting Notes -> Source Quality Notes`
 
 You may pass keys as either:
 - **Flat top-level keys**: `report_data["exec.c_zoning"] = "GREEN -- C-2 Commercial, permitted by right"`

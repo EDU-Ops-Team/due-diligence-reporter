@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
 import re
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 import requests
 from mcp.server import FastMCP
 from tenacity import retry
 
+from .assignment import assign_p1
 from .classifier import (
-    classify_document,
+    AI_GENERATED_DOC_TYPES,
     match_file_to_site_llm,
 )
 from .classifier import (
@@ -24,7 +28,7 @@ from .classifier import (
 )
 from .config import get_settings
 from .google_client import GoogleClient
-from .google_doc_builder import build_dd_report_doc
+from .google_doc_builder import SOURCE_QUALITY_NOTES_KEY, build_dd_report_doc
 from .report_schema import (
     ALLOWED_CAN_WE_ANSWERS,
     LINK_DISPLAY_LABELS,
@@ -42,13 +46,12 @@ from .utils import (
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
     find_text_index_in_doc,
+    flatten_report_data_for_replacement,
     sanitize_http_url,
+    score_site_match_strength,
     send_email,
 )
-from .utils import (
-    build_site_match_terms as _build_site_match_terms,
-)
-from .assignment import assign_p1
+from .utils import build_site_match_terms as _build_site_match_terms
 from .wrike import (
     build_site_summary,
     classify_comment_to_section,
@@ -82,6 +85,11 @@ EXPORTABLE_MIME_TYPES: set[str] = {
     "application/vnd.google-apps.presentation",
     GOOGLE_SHEETS_MIME,
 }
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+DOC_MIME = "application/msword"
+MIN_SITE_MATCH_SCORE = 20
+
+_READ_CONTEXT_BY_FILE_ID: dict[str, dict[str, str]] = {}
 
 CAN_WE_SECTION_DELIMITER = "Education Regulatory Approval:"
 V3_CAN_WE_HEADING = "Can this school be open in time for the current school year (8/12 or 9/8)?"
@@ -763,8 +771,6 @@ def _find_site_docs_in_shared_folders(
         "building_inspection": None,
     }
 
-    needles = [t.lower() for t in match_terms if t]
-
     # Keep track of all files per folder for the LLM fallback pass
     all_files_by_type: dict[str, list[dict[str, Any]]] = {}
 
@@ -780,15 +786,15 @@ def _find_site_docs_in_shared_folders(
 
             all_files_by_type[doc_type] = files
 
-            # Pass 1: substring match — collect all matches, prefer PDF over converted Google Doc
-            matches = [
-                f for f in files
-                if any(needle in f.get("name", "").lower() for needle in needles)
-            ]
-            if matches:
-                pdf_matches = [f for f in matches if f.get("mimeType") == PDF_MIME]
-                best = pdf_matches[0] if pdf_matches else matches[0]
-                result[doc_type] = {**best, "doc_type": doc_type}
+            # Pass 1: substring match — choose the strongest site-specific filename.
+            best_match = _pick_best_site_match(
+                files,
+                match_terms,
+                site_title=site_title,
+                site_address=site_address,
+            )
+            if best_match is not None:
+                result[doc_type] = {**best_match, "doc_type": doc_type}
 
         except Exception as e:
             logger.warning(
@@ -812,8 +818,19 @@ def _find_site_docs_in_shared_folders(
                 best_fn = max(llm_matches, key=llm_matches.get)  # type: ignore[arg-type]
                 matched_files = [f for f in files if f.get("name") == best_fn]
                 if matched_files:
-                    pdf_matched = [f for f in matched_files if f.get("mimeType") == PDF_MIME]
-                    best_file = pdf_matched[0] if pdf_matched else matched_files[0]
+                    best_file = _pick_best_site_match(
+                        matched_files,
+                        [best_fn],
+                        site_title=site_title,
+                        site_address=site_address,
+                    )
+                    if best_file is None:
+                        logger.warning(
+                            "Ignoring weak LLM site match for '%s': %s",
+                            site_title,
+                            best_fn,
+                        )
+                        continue
                     result[doc_type] = {**best_file, "doc_type": doc_type}
                     logger.info(
                         "LLM matched '%s' to site '%s' for %s (conf=%.2f)",
@@ -821,6 +838,148 @@ def _find_site_docs_in_shared_folders(
                     )
 
     return result
+
+
+def _pick_best_site_match(
+    files: list[dict[str, Any]],
+    match_terms: list[str],
+    *,
+    site_title: str | None = None,
+    site_address: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the strongest filename match for a site from a file list."""
+    needles = [t.lower() for t in match_terms if t]
+    matches = [
+        f for f in files
+        if any(needle in f.get("name", "").lower() for needle in needles)
+    ]
+    if not matches:
+        return None
+
+    if not site_title:
+        pdf_matches = [f for f in matches if f.get("mimeType") == PDF_MIME]
+        return pdf_matches[0] if pdf_matches else matches[0]
+
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    for file_info in matches:
+        score = score_site_match_strength(
+            file_info.get("name", ""),
+            site_title,
+            site_address,
+        )
+        scored.append((score, int(file_info.get("mimeType") == PDF_MIME), file_info))
+
+    best_score, _, best_file = max(scored, key=lambda item: (item[0], item[1]))
+    if best_score < MIN_SITE_MATCH_SCORE:
+        logger.warning(
+            "Rejecting weak shared-folder filename match for '%s': %s (score=%d)",
+            site_title,
+            best_file.get("name", ""),
+            best_score,
+        )
+        return None
+    return {**best_file, "site_match_score": best_score}
+
+
+def _register_file_read_context(
+    files: list[dict[str, Any]],
+    *,
+    site_title: str,
+    site_address: str | None,
+) -> None:
+    """Store site context so read_drive_document can validate extracted text."""
+    if not site_title.strip():
+        return
+    for file_info in files:
+        file_id = str(file_info.get("id", "")).strip()
+        if not file_id:
+            continue
+        _READ_CONTEXT_BY_FILE_ID[file_id] = {
+            "site_title": site_title.strip(),
+            "site_address": (site_address or "").strip(),
+            "doc_type": str(file_info.get("doc_type", "")).strip(),
+        }
+
+
+def _extract_text_from_docx_bytes(docx_bytes: bytes) -> str:
+    """Extract plain text from a .docx file without falling back to byte decode."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(docx_bytes)) as archive:
+            document_xml = archive.read("word/document.xml")
+    except KeyError as exc:
+        raise ValueError("DOCX archive missing word/document.xml") from exc
+
+    root = ElementTree.fromstring(document_xml)
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    paragraphs: list[str] = []
+
+    for para in root.findall(".//w:p", namespace):
+        parts: list[str] = []
+        for node in para.iter():
+            tag = node.tag.rsplit("}", 1)[-1]
+            if tag == "t":
+                parts.append(node.text or "")
+            elif tag == "tab":
+                parts.append("\t")
+            elif tag in {"br", "cr"}:
+                parts.append("\n")
+        para_text = "".join(parts).strip()
+        if para_text:
+            paragraphs.append(para_text)
+
+    return "\n".join(paragraphs)
+
+
+def _validate_document_site_context(
+    file_name: str,
+    text_content: str,
+    *,
+    site_title: str,
+    site_address: str | None = None,
+    doc_type: str = "",
+) -> tuple[bool, list[str], bool]:
+    """Validate that document text appears to belong to the requested site."""
+    if not site_title.strip() or doc_type == "report_trace":
+        return True, [], False
+
+    name_score = score_site_match_strength(file_name, site_title, site_address)
+    text_score = score_site_match_strength(text_content[:10_000], site_title, site_address)
+    best_score = max(name_score, text_score)
+    if best_score >= MIN_SITE_MATCH_SCORE:
+        return True, [], True
+
+    doc_label = doc_type.replace("_", " ").title() if doc_type else "Document"
+    warning = (
+        f"{doc_label} '{file_name}' did not contain expected site identifiers for "
+        f"{site_title} and was excluded from this run."
+    )
+    return False, [warning], False
+
+
+def _list_ai_generated_site_reports(site_files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only AI-generated report artifacts from a recursive site-folder listing."""
+    reports: list[dict[str, Any]] = []
+    for file_info in site_files:
+        annotated = {**file_info, "doc_type": _classify_document_type(file_info.get("name", ""))}
+        if annotated["doc_type"] not in AI_GENERATED_DOC_TYPES:
+            continue
+        annotated["reference_origin"] = "ai_generated"
+        reports.append(annotated)
+    return reports
+
+
+def _pick_preferred_report(
+    existing: dict[str, Any] | None,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    """Prefer the newest modified report artifact when duplicates exist."""
+    if existing is None:
+        return candidate
+    existing_time = str(existing.get("modifiedTime", ""))
+    candidate_time = str(candidate.get("modifiedTime", ""))
+    if candidate_time and candidate_time > existing_time:
+        return candidate
+    return existing
 
 
 def _make_google_client() -> GoogleClient:
@@ -971,13 +1130,12 @@ async def get_site_record(site_name_or_id: str) -> dict[str, Any]:
 async def list_drive_documents(
     drive_folder_url: str, site_name: str = ""
 ) -> dict[str, Any]:
-    """List all files in the site's Google Drive folder (recursive) and shared folders.
+    """List matched shared source reports plus AI-generated site reports.
 
-    Searches the site folder and all subfolders (up to 2 levels deep), plus the
-    shared SIR, ISP, and Building Inspection folders when *site_name* is provided.
-    Returns file name, ID, MIME type, modified date, and doc_type classification
-    for each file found.  Use the returned file IDs and names with
-    read_drive_document to read content.
+    Searches the shared SIR, ISP, and Building Inspection folders when *site_name*
+    is provided. From the site folder, returns only AI-generated report artifacts
+    such as DD reports, E-Occupancy reports, School Approval reports, Opening Plans,
+    and report traces.
 
     Args:
         drive_folder_url: Google Drive folder URL (from the site's Wrike record).
@@ -1018,12 +1176,9 @@ async def list_drive_documents(
             gc = _make_google_client()
 
             all_site_files_raw = gc.list_files_recursive(folder_id, max_depth=2)
-            site_files = [
-                {**f, "doc_type": _classify_document_type(f.get("name", ""))}
-                for f in all_site_files_raw
-            ]
+            site_files = _list_ai_generated_site_reports(all_site_files_raw)
             logger.info(
-                "Found %d files in site folder (recursive, max_depth=2) %s",
+                "Found %d AI-generated reports in site folder (recursive, max_depth=2) %s",
                 len(site_files), folder_id,
             )
 
@@ -1041,13 +1196,18 @@ async def list_drive_documents(
                 )
                 for _, doc in shared_docs.items():
                     if doc is not None:
-                        shared_folder_files.append(doc)
+                        shared_folder_files.append({**doc, "reference_origin": "shared_source"})
                 if shared_folder_files:
                     logger.info(
-                        "Found %d files in shared folders for '%s'",
+                        "Found %d source reports in shared folders for '%s'",
                         len(shared_folder_files),
                         site_name,
                     )
+                _register_file_read_context(
+                    shared_folder_files + site_files,
+                    site_title=site_name.strip(),
+                    site_address=address,
+                )
 
             total_files = len(site_files) + len(shared_folder_files)
 
@@ -1059,8 +1219,8 @@ async def list_drive_documents(
                 "shared_folder_files": shared_folder_files,
                 "total_file_count": total_files,
                 "message": (
-                    f"Found {len(site_files)} files in site folder (recursive), "
-                    f"and {len(shared_folder_files)} files in shared folders "
+                    f"Found {len(site_files)} AI-generated reports in the site folder, "
+                    f"and {len(shared_folder_files)} source reports in shared folders "
                     f"({total_files} total)"
                 ),
             }
@@ -1083,6 +1243,7 @@ async def read_drive_document(file_id: str, file_name: str) -> dict[str, Any]:
     Supports:
     - Google Docs: exported as plain text via Drive API
     - PDFs: downloaded and text extracted using pypdf
+    - DOCX files: parsed directly from the WordprocessingML archive
     - Plain text files: downloaded directly
 
     Args:
@@ -1131,6 +1292,10 @@ async def read_drive_document(file_id: str, file_name: str) -> dict[str, Any]:
             logger.info("File %s has MIME type: %s", file_id, mime_type)
 
             text_content: str = ""
+            source_quality_warnings: list[str] = []
+            source_usable = True
+            unreadable = False
+            site_match_verified = False
 
             if mime_type in EXPORTABLE_MIME_TYPES:
                 text_content = gc.export_google_doc_as_text(file_id)
@@ -1146,6 +1311,30 @@ async def read_drive_document(file_id: str, file_name: str) -> dict[str, Any]:
                         "[PDF text extraction returned no text. "
                         "This may be an image-only PDF that requires OCR.]"
                     )
+
+            elif mime_type == DOCX_MIME or file_name.lower().endswith(".docx"):
+                docx_bytes = gc.download_file_bytes(file_id)
+                try:
+                    text_content = _extract_text_from_docx_bytes(docx_bytes)
+                except (ValueError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
+                    unreadable = True
+                    source_usable = False
+                    warning = (
+                        f"Document '{file_name}' could not be parsed as a DOCX file "
+                        f"and was excluded from this run: {exc}"
+                    )
+                    source_quality_warnings.append(warning)
+                    text_content = f"[Document unreadable -- {warning}]"
+                else:
+                    if not text_content.strip():
+                        unreadable = True
+                        source_usable = False
+                        warning = (
+                            f"Document '{file_name}' contained no readable DOCX text "
+                            "and was excluded from this run."
+                        )
+                        source_quality_warnings.append(warning)
+                        text_content = f"[Document unreadable -- {warning}]"
 
             elif mime_type.startswith("text/") or file_name.lower().endswith(
                 (".txt", ".md", ".csv")
@@ -1167,6 +1356,22 @@ async def read_drive_document(file_id: str, file_name: str) -> dict[str, Any]:
                     text_content = (
                         f"[Could not extract text from file with MIME type: {mime_type}]"
                     )
+
+            context = _READ_CONTEXT_BY_FILE_ID.get(file_id)
+            if context and text_content.strip() and source_usable:
+                source_usable, validation_warnings, site_match_verified = (
+                    _validate_document_site_context(
+                        file_name,
+                        text_content,
+                        site_title=context.get("site_title", ""),
+                        site_address=context.get("site_address") or None,
+                        doc_type=context.get("doc_type", ""),
+                    )
+                )
+                if validation_warnings:
+                    source_quality_warnings.extend(validation_warnings)
+                if not source_usable and validation_warnings:
+                    text_content = f"[Source excluded -- {validation_warnings[0]}]"
 
             logger.info(
                 "read_drive_document: extracted %d characters from %s", len(text_content), file_name
@@ -1190,6 +1395,11 @@ async def read_drive_document(file_id: str, file_name: str) -> dict[str, Any]:
                 "character_count": original_length,
                 "truncated": truncated,
                 "text": text_content,
+                "content": text_content,
+                "source_usable": source_usable,
+                "site_match_verified": site_match_verified,
+                "source_quality_warnings": source_quality_warnings,
+                "unreadable": unreadable,
                 "message": (
                     f"Successfully read {original_length} characters from '{file_name}'"
                     + (f" (truncated to {max_chars} chars)" if truncated else "")
@@ -1214,8 +1424,10 @@ def _infer_mime_from_name(file_name: str) -> str:
     name_lower = file_name.lower()
     if name_lower.endswith(".pdf"):
         return PDF_MIME
-    if name_lower.endswith((".doc", ".docx")):
-        return "application/msword"
+    if name_lower.endswith(".docx"):
+        return DOCX_MIME
+    if name_lower.endswith(".doc"):
+        return DOC_MIME
     if name_lower.endswith(".txt"):
         return "text/plain"
     return "application/octet-stream"
@@ -2200,6 +2412,7 @@ def _normalize_report_replacements(
     drive_folder_url: str,
 ) -> tuple[dict[str, str], list[str], list[str], dict[str, str]]:
     """Normalize report data and fill permissive V3 gap labels."""
+    flat_report_data = flatten_report_data_for_replacement(report_data)
     report_data = _inject_wrike_report_defaults(report_data, site_name)
     replacements, unmatched, unfilled, token_sources = normalize_report_data(
         report_data,
@@ -2216,6 +2429,14 @@ def _normalize_report_replacements(
     _fill_max_value_placeholders(replacements)
 
     replacements.setdefault("meta.drive_folder_url", drive_folder_url)
+    source_quality_notes = (
+        flat_report_data.get("source_quality_notes")
+        or flat_report_data.get("notes.source_quality")
+        or flat_report_data.get(SOURCE_QUALITY_NOTES_KEY)
+        or ""
+    ).strip()
+    if source_quality_notes:
+        replacements[SOURCE_QUALITY_NOTES_KEY] = source_quality_notes
     return replacements, unmatched, unfilled, token_sources
 
 
@@ -2787,10 +3008,9 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
             shared_docs = _find_site_docs_in_shared_folders(
                 gc, match_terms, site_title=site_title, site_address=address,
             )
-            all_site_files = [
-                {**file_info, "doc_type": _classify_document_type(file_info.get("name", ""))}
-                for file_info in gc.list_files_recursive(folder_id, max_depth=2)
-            ]
+            site_reports = _list_ai_generated_site_reports(
+                gc.list_files_recursive(folder_id, max_depth=2)
+            )
 
             files_by_type: dict[str, dict[str, Any] | None] = {
                 "sir": shared_docs.get("sir"),
@@ -2798,36 +3018,13 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
                 "building_inspection": shared_docs.get("building_inspection"),
                 "dd_report": None,
             }
-            for file_info in all_site_files:
-                doc_type = file_info.get("doc_type", "unknown")
-                if doc_type in files_by_type and files_by_type[doc_type] is None:
-                    files_by_type[doc_type] = file_info
-                elif doc_type in files_by_type and (existing := files_by_type[doc_type]) is not None:
-                    existing_mime = existing.get("mimeType", "")
-                    new_mime = file_info.get("mimeType", "")
-                    if existing_mime != PDF_MIME and new_mime == PDF_MIME:
-                        files_by_type[doc_type] = file_info
-
-            still_missing = [
-                doc_type for doc_type in ("sir", "isp", "building_inspection")
-                if files_by_type[doc_type] is None
-            ]
-            if still_missing:
-                unknown_files = [file_info for file_info in all_site_files if file_info.get("doc_type") == "unknown"]
-                for file_info in unknown_files:
-                    file_name = file_info.get("name", "")
-                    file_id = file_info.get("id")
-                    doc_type, confidence = classify_document(file_name, file_id=file_id, gc=gc, site_name=site_title)
-                    if doc_type in still_missing and files_by_type.get(doc_type) is None:
-                        file_info["doc_type"] = doc_type
-                        files_by_type[doc_type] = file_info
-                        still_missing.remove(doc_type)
-                        logger.info(
-                            "LLM classified site file '%s' as %s (conf=%.2f) for '%s'",
-                            file_name, doc_type, confidence, site_title,
-                        )
-                    if not still_missing:
-                        break
+            for file_info in site_reports:
+                if file_info.get("doc_type") != "dd_report":
+                    continue
+                files_by_type["dd_report"] = _pick_preferred_report(
+                    files_by_type["dd_report"],
+                    file_info,
+                )
 
             sir_found = files_by_type["sir"] is not None
             isp_found = files_by_type["isp"] is not None

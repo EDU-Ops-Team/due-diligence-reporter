@@ -15,6 +15,8 @@ from .report_schema import LINK_DISPLAY_LABELS, LINK_TOKENS
 
 logger = logging.getLogger(__name__)
 
+SOURCE_QUALITY_NOTES_KEY = "_internal.source_quality_notes"
+
 # ---------------------------------------------------------------------------
 # Style constants — reproduce the V3 template visual appearance
 # ---------------------------------------------------------------------------
@@ -75,6 +77,35 @@ _SOURCE_DOC_ROWS: list[tuple[str, str]] = [
     ("Opening Plan", "sources.opening_plan_link"),
     ("Report Trace", "sources.trace_link"),
 ]
+
+_AI_GENERATED_SOURCE_TOKENS: frozenset[str] = frozenset({
+    "sources.e_occupancy_link",
+    "sources.school_approval_link",
+    "sources.opening_plan_link",
+    "sources.trace_link",
+})
+
+_SOURCE_WARNING_PATTERNS: tuple[str, ...] = (
+    "text extraction",
+    "returned no text",
+    "requires ocr",
+    "could not extract text",
+    "could not be parsed",
+    "document unreadable",
+    "source excluded",
+    "site identifiers",
+    "excluded from this run",
+    "site mismatch",
+    "binary",
+)
+
+_SUMMARY_SOURCE_WARNING_GAPS: dict[str, str] = {
+    "exec.c_zoning": "[Not found -- SIR could not be validated/read]",
+    "exec.c_edreg": "[Not found -- School Approval source could not be validated/read]",
+    "exec.c_occupancy": "[Not found -- E-Occupancy source could not be validated/read]",
+    "exec.c_permit_timeline": "[Not found -- SIR could not be validated/read]",
+    "exec.c_construction_timeline": "[Not found -- source documents could not be validated/read]",
+}
 
 # ---------------------------------------------------------------------------
 # Gap labels for missing token values
@@ -305,7 +336,146 @@ def _split_bullets_and_footnotes(text: str) -> tuple[list[str], list[str]]:
     return bullets, footnotes
 
 
-def _insert_bulleted_field(builder: "_DocBuilder", value: str) -> None:
+def _canonicalize_note_text(text: str) -> str:
+    """Collapse note whitespace so duplicate citations normalize together."""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_bulleted_field(value: str) -> str:
+    """Deduplicate repeated footnotes and renumber citation markers."""
+    bullets, footnotes = _split_bullets_and_footnotes(value)
+    if not bullets:
+        return value.strip()
+    if not footnotes:
+        return "\n".join(f"- {bullet}" for bullet in bullets)
+
+    footnote_by_old_number: dict[int, str] = {}
+    ordered_note_texts: list[str] = []
+    seen_notes: set[str] = set()
+
+    for footnote in footnotes:
+        match = re.match(r"^\[(\d+)\]\s*(.+)$", footnote)
+        if not match:
+            canonical = _canonicalize_note_text(footnote)
+            if canonical and canonical not in seen_notes:
+                ordered_note_texts.append(canonical)
+                seen_notes.add(canonical)
+            continue
+        old_number = int(match.group(1))
+        note_text = _canonicalize_note_text(match.group(2))
+        footnote_by_old_number[old_number] = note_text
+
+    for bullet in bullets:
+        for old_number_text in re.findall(r"\[(\d+)\]", bullet):
+            old_number = int(old_number_text)
+            note_text = footnote_by_old_number.get(old_number)
+            if note_text and note_text not in seen_notes:
+                ordered_note_texts.append(note_text)
+                seen_notes.add(note_text)
+
+    for old_number in sorted(footnote_by_old_number):
+        note_text = footnote_by_old_number[old_number]
+        if note_text not in seen_notes:
+            ordered_note_texts.append(note_text)
+            seen_notes.add(note_text)
+
+    note_to_new_number = {
+        note_text: idx + 1 for idx, note_text in enumerate(ordered_note_texts)
+    }
+    old_to_new_number = {
+        old_number: note_to_new_number[note_text]
+        for old_number, note_text in footnote_by_old_number.items()
+        if note_text in note_to_new_number
+    }
+
+    def _replace_marker(match: re.Match[str]) -> str:
+        old_number = int(match.group(1))
+        new_number = old_to_new_number.get(old_number, old_number)
+        return f"[{new_number}]"
+
+    normalized_bullets = [
+        re.sub(r"\[(\d+)\]", _replace_marker, bullet)
+        for bullet in bullets
+    ]
+    normalized_footnotes = [
+        f"[{note_to_new_number[note_text]}] {note_text}"
+        for note_text in ordered_note_texts
+    ]
+
+    return "\n".join(
+        [*(f"- {bullet}" for bullet in normalized_bullets), "", *normalized_footnotes]
+    ).strip()
+
+
+def _is_source_quality_warning(text: str) -> bool:
+    """Return True when a line is a source-read or site-validation warning."""
+    lower = text.lower()
+    return any(pattern in lower for pattern in _SOURCE_WARNING_PATTERNS)
+
+
+def _normalize_summary_field(
+    token: str,
+    value: str,
+) -> tuple[str, list[str]]:
+    """Strip repeated warning text from executive-summary fields."""
+    warnings: list[str] = []
+    cleaned_lines: list[str] = []
+
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if not line or re.match(r"^\[\d+\]\s+", line):
+            continue
+        if _is_source_quality_warning(line):
+            warnings.append(line)
+            continue
+        cleaned_lines.append(line)
+
+    cleaned = " ".join(cleaned_lines).strip()
+    if not cleaned and warnings:
+        cleaned = _SUMMARY_SOURCE_WARNING_GAPS.get(
+            token,
+            "[Not found -- source could not be validated/read]",
+        )
+    return cleaned or value.strip(), warnings
+
+
+def _normalize_replacements_for_rendering(
+    replacements: dict[str, str],
+) -> dict[str, str]:
+    """Prepare narrative fields for clean Google Doc rendering."""
+    normalized = dict(replacements)
+    source_quality_lines: list[str] = []
+
+    for token in (
+        "exec.c_zoning",
+        "exec.c_edreg",
+        "exec.c_occupancy",
+        "exec.c_permit_timeline",
+        "exec.c_construction_timeline",
+    ):
+        value = normalized.get(token, "")
+        if not value.strip():
+            continue
+        cleaned, warnings = _normalize_summary_field(token, value)
+        normalized[token] = cleaned
+        source_quality_lines.extend(warnings)
+
+    for token in ("exec.acquisition_conditions", "exec.risk_notes"):
+        value = normalized.get(token, "")
+        if value.strip():
+            normalized[token] = _normalize_bulleted_field(value)
+
+    existing = normalized.get(SOURCE_QUALITY_NOTES_KEY, "").strip()
+    if existing or source_quality_lines:
+        merged = "\n".join(
+            [*(filter(None, [existing])), *(f"- {line}" for line in source_quality_lines)]
+        ).strip()
+        normalized[SOURCE_QUALITY_NOTES_KEY] = _normalize_bulleted_field(merged)
+
+    return normalized
+
+
+def _insert_bulleted_field(builder: _DocBuilder, value: str) -> None:
     """Insert a multi-line field with round-bullet formatting and footnotes.
 
     Bullet lines get Google Docs BULLET_DISC_CIRCLE_SQUARE formatting.
@@ -313,6 +483,7 @@ def _insert_bulleted_field(builder: "_DocBuilder", value: str) -> None:
     inserted as 8pt plain text below the bullets.
     Falls back to a plain paragraph if no bullet lines are detected.
     """
+    value = _normalize_bulleted_field(value)
     bullets, footnotes = _split_bullets_and_footnotes(value)
     if not bullets:
         builder.insert_paragraph(value)
@@ -435,6 +606,13 @@ def _resolve_link_value(
     return gap, None
 
 
+def _reference_type_label(token: str) -> str:
+    """Return the display label for a reference row type."""
+    if token in _AI_GENERATED_SOURCE_TOKENS:
+        return "AI-generated"
+    return "Source folder"
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -469,6 +647,8 @@ def build_dd_report_doc(
     Returns:
         A dict summarizing the build: hyperlinks_applied, etc.
     """
+    replacements = _normalize_replacements_for_rendering(replacements)
+
     hyperlink_trace: dict[str, Any] = {
         "applied": 0,
         "found_tokens": [],
@@ -925,7 +1105,20 @@ def build_dd_report_doc(
     b6 = _DocBuilder(start_index=end_idx)
 
     b6.insert_text("\n")
-    b6.insert_heading("Supporting Documents", level=1)
+    b6.insert_heading("Supporting Notes", level=1)
+
+    source_quality_val = _resolve_value(replacements, SOURCE_QUALITY_NOTES_KEY, "")
+    if source_quality_val.strip():
+        quality_label_start, quality_label_end = b6.insert_text("Source Quality Notes\n")
+        b6.style_text(
+            quality_label_start,
+            quality_label_end - 1,
+            bold=True,
+            font_size=11,
+            font_family="Arial",
+        )
+        _insert_bulleted_field(b6, source_quality_val)
+        b6.insert_text("\n")
 
     # Acquisition Conditions
     acq_label_start, acq_label_end = b6.insert_text("Acquisition Conditions\n")
@@ -945,11 +1138,11 @@ def build_dd_report_doc(
 
     b6.insert_text("\n")
 
-    # Supporting Documents heading
-    b6.insert_heading("Supporting Documents", level=2)
+    # Referenced Reports heading
+    b6.insert_heading("Referenced Reports", level=2)
 
     # Source documents table
-    b6.insert_table(len(_SOURCE_DOC_ROWS) + 1, 2)  # +1 for header
+    b6.insert_table(len(_SOURCE_DOC_ROWS) + 1, 3)  # +1 for header
 
     _batch_update(docs_service, doc_id, b6.requests)
 
@@ -962,23 +1155,24 @@ def build_dd_report_doc(
         logger.error("Could not find source documents table")
         return hyperlink_trace
 
-    source_table_data: list[tuple[str, str, str | None]] = [
-        ("Document", "Link", None),  # header
+    source_table_data: list[tuple[str, str, str, str | None]] = [
+        ("Type", "Document", "Link", None),  # header
     ]
     for label, token in _SOURCE_DOC_ROWS:
         display, url = _resolve_link_value(replacements, token)
-        source_table_data.append((label, display, url))
+        source_table_data.append((_reference_type_label(token), label, display, url))
 
     phase7_requests: list[dict[str, Any]] = []
     # Populate in reverse
     for row_idx in range(len(source_table_data) - 1, -1, -1):
         row = source_table_data[row_idx]
-        label_text = row[0]
-        value_text = row[1]
+        type_text = row[0]
+        label_text = row[1]
+        value_text = row[2]
 
         # Value column
         if value_text:
-            val_idx = _cell_index(source_table, row_idx, 1)
+            val_idx = _cell_index(source_table, row_idx, 2)
             phase7_requests.append({
                 "insertText": {
                     "location": {"index": val_idx},
@@ -986,8 +1180,8 @@ def build_dd_report_doc(
                 }
             })
             # Apply hyperlink if URL is present
-            if len(row) > 2 and row[2] is not None:
-                url = row[2]
+            if len(row) > 3 and row[3] is not None:
+                url = row[3]
                 phase7_requests.append({
                     "updateTextStyle": {
                         "range": {"startIndex": val_idx, "endIndex": val_idx + len(value_text)},
@@ -1004,9 +1198,19 @@ def build_dd_report_doc(
                     token_key = _SOURCE_DOC_ROWS[row_idx - 1][1]
                     hyperlink_trace["found_tokens"].append(token_key)
 
+        # Type column
+        if type_text:
+            type_idx = _cell_index(source_table, row_idx, 0)
+            phase7_requests.append({
+                "insertText": {
+                    "location": {"index": type_idx},
+                    "text": type_text,
+                }
+            })
+
         # Label column
         if label_text:
-            label_idx = _cell_index(source_table, row_idx, 0)
+            label_idx = _cell_index(source_table, row_idx, 1)
             phase7_requests.append({
                 "insertText": {
                     "location": {"index": label_idx},
@@ -1025,7 +1229,7 @@ def build_dd_report_doc(
     if source_table:
         style_requests = []
         # Header row
-        for col_idx in range(2):
+        for col_idx in range(3):
             style_requests.extend(
                 _build_cell_style_requests(source_table, 0, col_idx, bg_color=_DARK_BLUE)
             )
@@ -1042,12 +1246,37 @@ def build_dd_report_doc(
                     "fields": "bold,fontSize,weightedFontFamily,foregroundColor",
                 }
             })
-        # Data rows — bold label column
+        # Data rows — visually separate source-folder docs from AI-generated artifacts.
         for row_idx in range(1, len(_SOURCE_DOC_ROWS) + 1):
+            token = _SOURCE_DOC_ROWS[row_idx - 1][1]
+            if token in _AI_GENERATED_SOURCE_TOKENS:
+                for col_idx in range(3):
+                    style_requests.extend(
+                        _build_cell_style_requests(
+                            source_table,
+                            row_idx,
+                            col_idx,
+                            bg_color=_LIGHT_GRAY,
+                        )
+                    )
+
             cs, ce = _table_cell_range(source_table, row_idx, 0)
             style_requests.append({
                 "updateTextStyle": {
                     "range": {"startIndex": cs, "endIndex": ce},
+                    "textStyle": {
+                        "bold": True,
+                        "fontSize": {"magnitude": 9, "unit": _PT},
+                        "weightedFontFamily": {"fontFamily": "Arial"},
+                    },
+                    "fields": "bold,fontSize,weightedFontFamily",
+                }
+            })
+
+            ds, de = _table_cell_range(source_table, row_idx, 1)
+            style_requests.append({
+                "updateTextStyle": {
+                    "range": {"startIndex": ds, "endIndex": de},
                     "textStyle": {
                         "bold": True,
                         "fontSize": {"magnitude": 10, "unit": _PT},

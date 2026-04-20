@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, call
-
-import pytest
+from unittest.mock import MagicMock
 
 from due_diligence_reporter.google_doc_builder import (
     _COST_BREAKDOWN_ROWS,
-    _DocBuilder,
     _HEADER_ROWS,
     _LINK_GAP_LABELS,
     _SOURCE_DOC_ROWS,
+    SOURCE_QUALITY_NOTES_KEY,
     _cell_index,
     _doc_end_index,
+    _DocBuilder,
     _find_table,
+    _normalize_bulleted_field,
+    _normalize_replacements_for_rendering,
     _resolve_link_value,
     _resolve_value,
     _split_bullets_and_footnotes,
@@ -26,7 +27,6 @@ from due_diligence_reporter.report_schema import (
     LINK_TOKENS,
     TEMPLATE_TOKENS,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper: build a fake doc body for API read-back
@@ -412,7 +412,7 @@ def _make_mock_docs_service(
             elif t == 2:
                 rows, cols = len(_COST_BREAKDOWN_ROWS) + 1, 3
             else:
-                rows, cols = len(_SOURCE_DOC_ROWS) + 1, 2
+                rows, cols = len(_SOURCE_DOC_ROWS) + 1, 3
 
             table = _make_table_element(idx, rows, cols)
             content.append(table)
@@ -573,6 +573,48 @@ class TestBuildDdReportDocRequestStructure:
         assert insert_tables[0]["insertTable"]["rows"] == len(_HEADER_ROWS)
         assert insert_tables[0]["insertTable"]["columns"] == 2
 
+    def test_referenced_reports_table_uses_type_column(self) -> None:
+        """The references table distinguishes source-folder docs from AI-generated reports."""
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {"meta.site_name": "Test", "meta.report_date": "04/14/2026"}
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        insert_tables = []
+        for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list:
+            body = call_args.kwargs["body"]
+            insert_tables.extend(
+                request["insertTable"]
+                for request in body["requests"]
+                if "insertTable" in request
+            )
+
+        assert any(
+            table["rows"] == len(_SOURCE_DOC_ROWS) + 1 and table["columns"] == 3
+            for table in insert_tables
+        )
+
+    def test_source_quality_notes_render_before_acquisition_conditions(self) -> None:
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {
+            "meta.site_name": "Test",
+            "meta.report_date": "04/14/2026",
+            SOURCE_QUALITY_NOTES_KEY: "- Building Inspection from another site was excluded",
+        }
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        inserted_text = "\n".join(
+            request["insertText"]["text"]
+            for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list
+            for request in call_args.kwargs["body"]["requests"]
+            if "insertText" in request
+        )
+
+        assert inserted_text.index("Source Quality Notes\n") < inserted_text.index("Acquisition Conditions\n")
+
 
 class TestGapLabelsForLinks:
     """Test that link tokens with no value get appropriate gap labels."""
@@ -662,3 +704,36 @@ class TestSplitBulletsAndFootnotes:
         assert req["createParagraphBullets"]["bulletPreset"] == "BULLET_DISC_CIRCLE_SQUARE"
         assert req["createParagraphBullets"]["range"]["startIndex"] == 10
         assert req["createParagraphBullets"]["range"]["endIndex"] == 30
+
+
+class TestNarrativeNormalization:
+    def test_dedupes_identical_footnotes_and_renumbers_markers(self) -> None:
+        value = (
+            "- Landlord must repair roof [2]\n"
+            "- Request TI allowance for roof repairs [1]\n"
+            "\n"
+            "[1] Building Inspection p.7\n"
+            "[2] Building Inspection p.7"
+        )
+
+        normalized = _normalize_bulleted_field(value)
+        bullets, footnotes = _split_bullets_and_footnotes(normalized)
+
+        assert bullets == [
+            "Landlord must repair roof [1]",
+            "Request TI allowance for roof repairs [1]",
+        ]
+        assert footnotes == ["[1] Building Inspection p.7"]
+
+    def test_moves_source_warnings_out_of_exec_summary(self) -> None:
+        replacements = _normalize_replacements_for_rendering({
+            "exec.c_edreg": (
+                "[Document unreadable -- Document 'School Approval.docx' contained no "
+                "readable DOCX text and was excluded from this run.]"
+            ),
+        })
+
+        assert replacements["exec.c_edreg"] == (
+            "[Not found -- School Approval source could not be validated/read]"
+        )
+        assert "School Approval.docx" in replacements[SOURCE_QUALITY_NOTES_KEY]

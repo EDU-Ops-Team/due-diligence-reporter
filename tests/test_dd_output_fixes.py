@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import re
+import zipfile
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from due_diligence_reporter.google_client import GoogleClient
 from due_diligence_reporter.server import (
     MATTERBOT_BASE_URL,
+    _validate_document_site_context,
 )
 from due_diligence_reporter.utils import (
     escape_drive_query_literal,
@@ -18,6 +21,30 @@ from due_diligence_reporter.utils import (
     sanitize_http_url,
 )
 from due_diligence_reporter.wrike import classify_comment_to_section
+
+
+def _build_docx_bytes(text: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>""",
+        )
+        archive.writestr(
+            "word/document.xml",
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>{text}</w:t></w:r></w:p>
+  </w:body>
+</w:document>""",
+        )
+    return buffer.getvalue()
 
 # ---------------------------------------------------------------------------
 # Scope of Work stray numbers â€” consecutive newline collapse
@@ -113,6 +140,67 @@ class TestPdfMimePreference:
         best = pdf_matches[0] if pdf_matches else matches[0]
         assert best["id"] == "1"
 
+
+# ---------------------------------------------------------------------------
+# DOCX extraction and site validation
+# ---------------------------------------------------------------------------
+
+
+class TestReadDriveDocumentDocx:
+    def test_docx_returns_readable_text(self) -> None:
+        from due_diligence_reporter.server import read_drive_document
+
+        gc = MagicMock()
+        gc.drive_service.files.return_value.get.return_value.execute.return_value = {
+            "id": "docx-1",
+            "name": "School Approval.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+        gc.download_file_bytes.return_value = _build_docx_bytes("Alpha Miami Beach approval path")
+
+        with patch("due_diligence_reporter.server._make_google_client", return_value=gc):
+            result = asyncio.run(read_drive_document("docx-1", "School Approval.docx"))
+
+        assert result["status"] == "success"
+        assert result["source_usable"] is True
+        assert result["unreadable"] is False
+        assert "Alpha Miami Beach approval path" in result["text"]
+
+    def test_broken_docx_returns_structured_warning(self) -> None:
+        from due_diligence_reporter.server import read_drive_document
+
+        gc = MagicMock()
+        gc.drive_service.files.return_value.get.return_value.execute.return_value = {
+            "id": "docx-2",
+            "name": "Broken School Approval.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+        gc.download_file_bytes.return_value = b"not-a-zip-file"
+
+        with patch("due_diligence_reporter.server._make_google_client", return_value=gc):
+            result = asyncio.run(read_drive_document("docx-2", "Broken School Approval.docx"))
+
+        assert result["status"] == "success"
+        assert result["source_usable"] is False
+        assert result["unreadable"] is True
+        assert result["source_quality_warnings"]
+        assert "could not be parsed as a DOCX file" in result["text"]
+
+
+class TestDocumentSiteValidation:
+    def test_rejects_mismatched_building_inspection_content(self) -> None:
+        usable, warnings, verified = _validate_document_site_context(
+            "Building Inspection Report.pdf",
+            "Alpha Sunny Isles 17701 Collins Ave facility condition assessment",
+            site_title="Alpha School Miami Beach 300 71st St",
+            site_address="300 71st St, Miami Beach, FL 33141",
+            doc_type="building_inspection",
+        )
+
+        assert usable is False
+        assert verified is False
+        assert warnings
+        assert "excluded from this run" in warnings[0]
 
 # ---------------------------------------------------------------------------
 # Fix 5: Comment classification
@@ -306,6 +394,48 @@ class TestCheckReportCompleteness:
         assert result["raw_template_token_count"] == 2
         assert "exec.cost_demolition_fastest_open" in result["raw_template_tokens"]
         assert "raw template token" in result["summary"]
+
+
+class TestListDriveDocumentsFiltering:
+    def test_returns_only_ai_generated_site_reports(self) -> None:
+        from due_diligence_reporter.server import list_drive_documents
+
+        gc = MagicMock()
+        gc.list_files_recursive.return_value = [
+            {"id": "site-sir", "name": "Alpha Keller SIR.pdf"},
+            {"id": "opening-plan", "name": "Opening Plan - Alpha Keller"},
+            {"id": "eocc", "name": "E-Occupancy Assessment - Alpha Keller"},
+            {"id": "trace", "name": "Alpha Keller DD Report Trace - 2026-04-20.json"},
+            {"id": "lease", "name": "Lease Draft.pdf"},
+        ]
+
+        with patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ), patch(
+            "due_diligence_reporter.server.find_site_record",
+            return_value=None,
+        ), patch(
+            "due_diligence_reporter.server._find_site_docs_in_shared_folders",
+            return_value={
+                "sir": {"id": "shared-sir", "name": "Alpha Keller SIR.pdf", "doc_type": "sir"},
+                "isp": None,
+                "building_inspection": None,
+            },
+        ):
+            result = asyncio.run(list_drive_documents(
+                "https://drive.google.com/drive/folders/folder123",
+                "Alpha Keller",
+            ))
+
+        assert result["status"] == "success"
+        site_files = {file_info["name"]: file_info for file_info in result["site_folder_files"]}
+        assert "Alpha Keller SIR.pdf" not in site_files
+        assert "Lease Draft.pdf" not in site_files
+        assert site_files["Opening Plan - Alpha Keller"]["doc_type"] == "opening_plan_report"
+        assert site_files["E-Occupancy Assessment - Alpha Keller"]["doc_type"] == "e_occupancy_report"
+        assert site_files["Alpha Keller DD Report Trace - 2026-04-20.json"]["doc_type"] == "report_trace"
+        assert result["shared_folder_files"][0]["reference_origin"] == "shared_source"
 
 
 class TestReportNormalizationDefaults:

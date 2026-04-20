@@ -10,6 +10,7 @@ from due_diligence_reporter.report_pipeline import (
     TraceEvent,
     _extract_source_read_issues,
     _merge_cached_report_fields,
+    check_site_readiness_direct,
     match_site_in_shared_cache,
     process_site_pipeline,
     run_dd_report_agent,
@@ -78,6 +79,26 @@ class TestMatchSiteInSharedCache:
         # No ISP or BI for Boca Raton in the cache
         assert result["isp"] is None
         assert result["building_inspection"] is None
+
+    def test_prefers_strong_site_specific_match_over_weak_city_overlap(self):
+        cache = {
+            "sir": [],
+            "isp": [],
+            "building_inspection": [
+                {"name": "Alpha Sunny Isles Building Inspection Report.pdf", "id": "bi-wrong"},
+                {"name": "Alpha School Miami Beach 300 71st St Building Inspection Report.pdf", "id": "bi-right"},
+            ],
+        }
+
+        result = match_site_in_shared_cache(
+            ["Miami", "Beach", "71st"],
+            cache,
+            site_title="Alpha School Miami Beach 300 71st St",
+            site_address="300 71st St, Miami Beach, FL 33141",
+        )
+
+        assert result["building_inspection"] is not None
+        assert result["building_inspection"]["id"] == "bi-right"
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +310,29 @@ class TestProcessSitePipeline:
         assert result.status == "error"
         assert result.doc_id == "doc123"
         assert "export broke" in (result.error or "")
+
+
+class TestCheckSiteReadinessDirect:
+    def test_uses_shared_folders_for_source_docs_only(self):
+        gc = MagicMock()
+        gc.list_files_recursive.return_value = [
+            {"id": "site-sir", "name": "Alpha Keller SIR.pdf"},
+            {"id": "dd-1", "name": "Alpha Keller DD Report - 04/20/2026"},
+            {"id": "eocc-1", "name": "E-Occupancy Assessment - Alpha Keller"},
+        ]
+
+        result = check_site_readiness_direct(
+            gc,
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {"sir": [], "isp": [], "building_inspection": []},
+        )
+
+        assert result["sir_found"] is False
+        assert result["isp_found"] is False
+        assert result["inspection_found"] is False
+        assert result["report_exists"] is True
+        assert result["e_occupancy_report_found"] is True
 
 
 # ---------------------------------------------------------------------------

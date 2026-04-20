@@ -16,7 +16,7 @@ from typing import Any
 
 import anthropic
 
-from .classifier import classify_document, classify_document_type, match_file_to_site_llm
+from .classifier import AI_GENERATED_DOC_TYPES, classify_document_type, match_file_to_site_llm
 from .config import Settings, get_settings
 from .google_client import GoogleClient
 from .utils import (
@@ -24,6 +24,7 @@ from .utils import (
     extract_folder_id_from_url,
     post_google_chat_message,
     sanitize_http_url,
+    score_site_match_strength,
     send_email,
 )
 
@@ -47,7 +48,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "list_drive_documents",
-        "description": "List all files in the site's Google Drive folder, its 01_Due Diligence subfolder, and shared SIR/ISP/Building Inspection folders. Each file includes a doc_type field. Always pass site_name to find shared folder docs.",
+        "description": "List the matched SIR, ISP, and Building Inspection source reports from the shared folders plus AI-generated reports found in the site folder or its M1 subfolder. Each file includes a doc_type field. Always pass site_name to find shared folder docs.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -280,14 +281,32 @@ def match_site_in_shared_cache(
         "isp": None,
         "building_inspection": None,
     }
+    min_match_score = 20
 
     # Pass 1: substring match
     for doc_type, files in shared_cache.items():
-        for f in files:
-            fname = f.get("name", "").lower()
-            if any(needle in fname for needle in needles):
-                result[doc_type] = {**f, "doc_type": doc_type}
-                break
+        matches = [
+            f for f in files
+            if any(needle in f.get("name", "").lower() for needle in needles)
+        ]
+        if not matches:
+            continue
+        if not site_title:
+            result[doc_type] = {**matches[0], "doc_type": doc_type}
+            continue
+
+        scored: list[tuple[int, dict[str, Any]]] = []
+        for file_info in matches:
+            score = score_site_match_strength(
+                file_info.get("name", ""),
+                site_title,
+                site_address,
+            )
+            scored.append((score, file_info))
+
+        best_score, best_file = max(scored, key=lambda item: item[0])
+        if best_score >= min_match_score:
+            result[doc_type] = {**best_file, "doc_type": doc_type}
 
     # Pass 2: LLM fallback for missing doc types
     if site_title:
@@ -303,6 +322,19 @@ def match_site_in_shared_cache(
                 best_fn = max(llm_matches, key=llm_matches.get)  # type: ignore[arg-type]
                 for f in files:
                     if f.get("name") == best_fn:
+                        score = score_site_match_strength(
+                            f.get("name", ""),
+                            site_title,
+                            site_address,
+                        )
+                        if score < min_match_score:
+                            logger.warning(
+                                "Ignoring weak shared-cache LLM match for '%s': %s (score=%d)",
+                                site_title,
+                                best_fn,
+                                score,
+                            )
+                            break
                         result[doc_type] = {**f, "doc_type": doc_type}
                         logger.info(
                             "LLM cache-match: '%s' -> '%s' for %s (conf=%.2f)",
@@ -348,8 +380,12 @@ def check_site_readiness_direct(
         {**f, "doc_type": classify_document_type(f.get("name", ""))}
         for f in gc.list_files_recursive(folder_id, max_depth=2)
     ]
+    ai_generated_site_files = [
+        f for f in all_site_files if f.get("doc_type") in AI_GENERATED_DOC_TYPES
+    ]
 
-    # 3. Merge — shared folders take priority, site folder fills gaps
+    # 3. Merge — source docs come only from shared folders; site folder only
+    # contributes AI-generated report artifacts.
     files_by_type: dict[str, dict[str, Any] | None] = {
         "sir": shared_docs.get("sir"),
         "isp": shared_docs.get("isp"),
@@ -358,34 +394,10 @@ def check_site_readiness_direct(
         "e_occupancy_report": None,
         "school_approval_report": None,
     }
-    for f in all_site_files:
+    for f in ai_generated_site_files:
         dt = f.get("doc_type", "unknown")
         if dt in files_by_type and files_by_type[dt] is None:
             files_by_type[dt] = f
-
-    # 4. LLM classification for unknown site files if docs are still missing
-    still_missing = [
-        k for k in ("sir", "isp", "building_inspection", "e_occupancy_report", "school_approval_report")
-        if files_by_type[k] is None
-    ]
-    if still_missing:
-        unknown_files = [f for f in all_site_files if f.get("doc_type") == "unknown"]
-        for f in unknown_files:
-            fname = f.get("name", "")
-            fid = f.get("id")
-            doc_type, conf = classify_document(
-                fname, file_id=fid, gc=gc, site_name=site_title,
-            )
-            if doc_type in still_missing and files_by_type.get(doc_type) is None:
-                f["doc_type"] = doc_type
-                files_by_type[doc_type] = f
-                still_missing.remove(doc_type)
-                logger.info(
-                    "LLM classified '%s' as %s (conf=%.2f) for '%s'",
-                    fname, doc_type, conf, site_title,
-                )
-            if not still_missing:
-                break
 
     return {
         "sir_found": files_by_type["sir"] is not None,
@@ -394,7 +406,7 @@ def check_site_readiness_direct(
         "report_exists": files_by_type["dd_report"] is not None,
         "e_occupancy_report_found": files_by_type["e_occupancy_report"] is not None,
         "school_approval_report_found": files_by_type["school_approval_report"] is not None,
-        "all_files": all_site_files,
+        "all_files": ai_generated_site_files,
     }
 
 
@@ -663,10 +675,13 @@ def _summarize_tool_output(result: Any) -> dict[str, Any]:
         summary["document"] = result["document"]
     if "files" in result and isinstance(result["files"], list):
         summary["file_count"] = len(result["files"])
-    if "content" in result and isinstance(result["content"], str):
-        summary["content_length"] = len(result["content"])
-        preview = result["content"][:200].strip()
-        if preview.startswith("[") or len(result["content"]) <= 200:
+    content = result.get("content")
+    if not isinstance(content, str):
+        content = result.get("text")
+    if isinstance(content, str):
+        summary["content_length"] = len(content)
+        preview = content[:200].strip()
+        if preview.startswith("[") or len(content) <= 200:
             summary["content_preview"] = preview
     if "message" in result:
         msg = str(result["message"])
@@ -677,6 +692,10 @@ def _summarize_tool_output(result: Any) -> dict[str, Any]:
         summary["replacements_applied"] = result["replacements_applied"]
     if "unfilled_template_tokens" in result:
         summary["unfilled_template_tokens"] = result["unfilled_template_tokens"]
+    if "source_usable" in result:
+        summary["source_usable"] = result["source_usable"]
+    if "source_quality_warnings" in result:
+        summary["source_quality_warnings"] = result["source_quality_warnings"]
 
     return summary
 

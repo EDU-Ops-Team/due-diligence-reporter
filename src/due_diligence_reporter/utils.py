@@ -428,3 +428,55 @@ def build_site_match_terms(
         _add(w)
 
     return terms
+
+
+def _normalize_site_match_text(value: str) -> str:
+    """Normalize text for lightweight site-name/address matching."""
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def score_site_match_strength(
+    candidate_text: str,
+    site_title: str,
+    address: str | None = None,
+) -> int:
+    """Return a heuristic score for how strongly text matches a site.
+
+    Higher scores indicate stronger evidence that *candidate_text* belongs to
+    the requested site. The full site title is weighted heavily, city/address
+    tokens moderately, and distinctive terms like street numbers or longer
+    words lightly.
+    """
+    if not candidate_text or not site_title.strip():
+        return 0
+
+    haystack = _normalize_site_match_text(candidate_text)
+    if not haystack:
+        return 0
+
+    score = 0
+    title_norm = _normalize_site_match_text(site_title)
+    if title_norm and title_norm in haystack:
+        score += 100
+
+    city = extract_city_from_address(address)
+    city_norm = _normalize_site_match_text(city or "")
+    if city_norm and city_norm in haystack:
+        score += 30
+
+    for term in build_site_match_terms(site_title, address):
+        term_norm = _normalize_site_match_text(term)
+        if not term_norm or term_norm in {title_norm, city_norm}:
+            continue
+        if term_norm not in haystack:
+            continue
+        if any(ch.isdigit() for ch in term_norm):
+            score += 25
+        elif len(term_norm) >= 8:
+            score += 15
+        elif len(term_norm) >= 5:
+            score += 10
+        else:
+            score += 5
+
+    return score

@@ -4,14 +4,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from due_diligence_reporter.classifier import (
     classify_by_keywords,
     classify_document,
     classify_document_type,
 )
-
 
 # ---------------------------------------------------------------------------
 # Tier 1 — classify_by_keywords
@@ -95,6 +92,18 @@ class TestClassifyByKeywordsDDReport:
     def test_dd_report(self):
         assert classify_by_keywords("DD Report - Alpha Tampa.pdf") == (
             "dd_report",
+            0.95,
+        )
+
+    def test_opening_plan_report(self):
+        assert classify_by_keywords("Opening Plan - Alpha Tampa") == (
+            "opening_plan_report",
+            0.95,
+        )
+
+    def test_report_trace(self):
+        assert classify_by_keywords("Alpha Tampa DD Report Trace - 2026-04-20.json") == (
+            "report_trace",
             0.95,
         )
 
