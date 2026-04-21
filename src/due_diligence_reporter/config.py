@@ -134,6 +134,20 @@ class Settings(BaseSettings):
             "preferred_airline and strongly_preferred_airline are optional."
         ),
     )
+    p1_disabled_names: str = Field(
+        "Andrea",
+        description=(
+            "Comma-separated assignee names excluded from P1 assignment. "
+            "Used to block former team members even if they still appear in P1_TEAM_CONFIG."
+        ),
+    )
+    p1_disabled_emails: str = Field(
+        "",
+        description=(
+            "Comma-separated assignee email addresses excluded from P1 assignment. "
+            "Checked in addition to p1_disabled_names."
+        ),
+    )
 
     # Google Chat
     google_chat_webhook_url: str = Field(

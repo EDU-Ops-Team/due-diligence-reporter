@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
@@ -36,6 +36,31 @@ GROWTH_FLAGSHIP_TYPES = {"250", "1000", "growth", "flagship"}
 EXCLUDED_TYPES = {"jc fisher", "jc_fisher"}
 
 AUTO_ASSIGN_EMAILS = ["thomas.barrow@trilogy.com", "israe.zizaoui@trilogy.com"]
+
+
+def _parse_disabled_values(raw: str) -> set[str]:
+    """Return lowercase CSV values with surrounding whitespace removed."""
+    return {
+        value.strip().lower()
+        for value in raw.split(",")
+        if value.strip()
+    }
+
+
+def _is_disabled_member(
+    entry: dict[str, Any],
+    disabled_names: set[str],
+    disabled_emails: set[str],
+) -> bool:
+    """Return True when a team-config entry is explicitly excluded."""
+    email = str(entry.get("email", "")).strip().lower()
+    if email and email in disabled_emails:
+        return True
+
+    name = " ".join(str(entry.get("name", "")).strip().lower().split())
+    if not name:
+        return False
+    return any(disabled_name in name for disabled_name in disabled_names)
 
 # ---------------------------------------------------------------------------
 # US state centroids (lat, lon) for Rule 3 Haversine
@@ -105,6 +130,8 @@ def load_team_members(settings: Settings) -> list[TeamMember]:
     raw = (settings.p1_team_config or "").strip()
     if not raw:
         return []
+    disabled_names = _parse_disabled_values(getattr(settings, "p1_disabled_names", "Andrea"))
+    disabled_emails = _parse_disabled_values(getattr(settings, "p1_disabled_emails", ""))
     try:
         entries = json.loads(raw)
     except json.JSONDecodeError as e:
@@ -113,6 +140,13 @@ def load_team_members(settings: Settings) -> list[TeamMember]:
     members = []
     for entry in entries:
         try:
+            if _is_disabled_member(entry, disabled_names, disabled_emails):
+                logger.info(
+                    "Skipping disabled team member from assignment pool: %s <%s>",
+                    entry.get("name", ""),
+                    entry.get("email", ""),
+                )
+                continue
             members.append(
                 TeamMember(
                     name=entry["name"],
