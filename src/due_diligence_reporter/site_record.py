@@ -32,7 +32,6 @@ from typing import Any
 from .report_schema import (
     COST_TOKEN_BASES,
     SCENARIOS,
-    SUMMARY_TOKEN_BASES,
 )
 
 # ---------------------------------------------------------------------------

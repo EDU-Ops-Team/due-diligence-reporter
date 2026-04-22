@@ -6,12 +6,10 @@ import pytest
 
 from due_diligence_reporter.site_record import (
     CLASSIFICATIONS,
-    ScenarioRecord,
     SiteRecord,
     classify_site,
     site_slug,
 )
-
 
 # ---------------------------------------------------------------------------
 # Slug
