@@ -219,6 +219,34 @@ def extract_google_folder_from_record(record: dict[str, Any]) -> str | None:
     return None
 
 
+def extract_total_building_sf_from_record(record: dict[str, Any]) -> int | None:
+    """Extract total building square footage from Wrike custom fields."""
+    custom_fields = record.get("customFields", [])
+    if not isinstance(custom_fields, list):
+        return None
+
+    candidate_ids = (
+        WRIKE_CUSTOM_FIELDS["square_footage_buildings"],
+        WRIKE_CUSTOM_FIELDS["square_footage"],
+    )
+    for field_id in candidate_ids:
+        for field in custom_fields:
+            if not isinstance(field, dict):
+                continue
+            if field.get("id") != field_id:
+                continue
+            value = field.get("value", "")
+            if isinstance(value, (int, float)):
+                amount = int(value)
+                return amount if amount > 0 else None
+            if isinstance(value, str):
+                digits = re.sub(r"[^\d]", "", value)
+                if digits:
+                    amount = int(digits)
+                    return amount if amount > 0 else None
+    return None
+
+
 def get_contact_email(
     contact_id: str, *, cfg: WrikeConfig | None = None
 ) -> str | None:
@@ -796,6 +824,7 @@ def build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
     school_type = extract_school_type_from_record(record)
     stage = extract_stage_from_record(record)
     drive_folder_url = extract_google_folder_from_record(record)
+    total_building_sf = extract_total_building_sf_from_record(record)
     p1_profile = extract_p1_from_record(record)
 
     return {
@@ -805,6 +834,7 @@ def build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
         "school_type": school_type,
         "stage": stage,
         "drive_folder_url": drive_folder_url,
+        "total_building_sf": total_building_sf,
         "p1_assignee_name": p1_profile.get("name") if p1_profile else None,
         "p1_assignee_email": p1_profile.get("email") if p1_profile else None,
         "custom_fields": record.get("customFields", []),

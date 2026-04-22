@@ -73,6 +73,24 @@ def extract_folder_id_from_url(url: str) -> str | None:
     return None
 
 
+def extract_state_from_address(address: str | None) -> str | None:
+    """Extract a two-letter state or territory code from a US-style address."""
+    if not address:
+        return None
+    text = address.strip()
+    match = re.search(r",\s*([A-Za-z]{2})\s+\d{5}(?:-\d{4})?\s*$", text)
+    if match:
+        return match.group(1).upper()
+
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    if not parts:
+        return None
+    tokens = parts[-1].split()
+    if tokens and len(tokens[0]) == 2 and tokens[0].isalpha():
+        return tokens[0].upper()
+    return None
+
+
 def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     """
     Extract plain text from PDF bytes using pypdf.

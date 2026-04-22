@@ -15,40 +15,45 @@
 | :---- |
 | **{{exec.c_answer}}** Education Regulatory Approval: {{exec.c_edreg}} Occupancy path: {{exec.c_occupancy}} Zoning: {{exec.c_zoning}} |
 
+| Direct Answer |
+| :---- |
+| **2a. Viable Buildout:** {{exec.direct_viable_buildout}} |
+| **2b. Great Alpha School Site:** {{exec.alpha_fit}} |
+
 | Build Scenarios: Capacity, Capex, Open Date |
 | :---- |
 
-|  | **Recommended Path** | **Fastest Open** | **Max Capacity** | **Max Value** |
-| :---- | :---- | :---- | :---- | :---- |
-| **Capacity** | {{exec.recommended_path_capacity}} | {{exec.fastest_open_capacity}} | {{exec.max_capacity_capacity}} | {{exec.max_value_capacity}} |
-| **Open Date** | {{exec.recommended_path_open_date}} | {{exec.fastest_open_open_date}} | {{exec.max_capacity_open_date}} | {{exec.max_value_open_date}} |
-| **CAPEX** | {{exec.recommended_path_capex}} | {{exec.fastest_open_capex}} | {{exec.max_capacity_capex}} | {{exec.max_value_capex}} |
+|  | **Fastest Open** | **Max Capacity** |
+| :---- | :---- | :---- |
+| **Capacity** | {{exec.fastest_open_capacity}} | {{exec.max_capacity_capacity}} |
+| **Open Date** | {{exec.fastest_open_open_date}} | {{exec.max_capacity_open_date}} |
+| **CAPEX** | {{exec.fastest_open_capex}} | {{exec.max_capacity_capex}} |
 
 | Detailed Cost Breakdown |
 | :---- |
 
-|  | **Recommended Path** | **Fastest Open** | **Max Capacity** | **Max Value** |
-| :---- | :---- | :---- | :---- | :---- |
-| **Demolition** | {{exec.cost_demolition_recommended_path}} | {{exec.cost_demolition_fastest_open}} | {{exec.cost_demolition_max_capacity}} | {{exec.cost_demolition_max_value}} |
-| **Framing / Doors** | {{exec.cost_framing_doors_recommended_path}} | {{exec.cost_framing_doors_fastest_open}} | {{exec.cost_framing_doors_max_capacity}} | {{exec.cost_framing_doors_max_value}} |
-| **MEP / Fire / Life Safety** | {{exec.cost_mep_fire_life_safety_recommended_path}} | {{exec.cost_mep_fire_life_safety_fastest_open}} | {{exec.cost_mep_fire_life_safety_max_capacity}} | {{exec.cost_mep_fire_life_safety_max_value}} |
-| **Plumbing / Bathrooms** | {{exec.cost_plumbing_bathrooms_recommended_path}} | {{exec.cost_plumbing_bathrooms_fastest_open}} | {{exec.cost_plumbing_bathrooms_max_capacity}} | {{exec.cost_plumbing_bathrooms_max_value}} |
-| **Finish Work** | {{exec.cost_finish_work_recommended_path}} | {{exec.cost_finish_work_fastest_open}} | {{exec.cost_finish_work_max_capacity}} | {{exec.cost_finish_work_max_value}} |
-| **Furniture** | {{exec.cost_furniture_recommended_path}} | {{exec.cost_furniture_fastest_open}} | {{exec.cost_furniture_max_capacity}} | {{exec.cost_furniture_max_value}} |
-| **Tech / Security / Signage** | {{exec.cost_tech_security_signage_recommended_path}} | {{exec.cost_tech_security_signage_fastest_open}} | {{exec.cost_tech_security_signage_max_capacity}} | {{exec.cost_tech_security_signage_max_value}} |
-| **Other Hard Costs** | {{exec.cost_other_hard_costs_recommended_path}} | {{exec.cost_other_hard_costs_fastest_open}} | {{exec.cost_other_hard_costs_max_capacity}} | {{exec.cost_other_hard_costs_max_value}} |
-| **Soft Costs** | {{exec.cost_soft_costs_recommended_path}} | {{exec.cost_soft_costs_fastest_open}} | {{exec.cost_soft_costs_max_capacity}} | {{exec.cost_soft_costs_max_value}} |
-| **GC Fee** | {{exec.cost_gc_fee_recommended_path}} | {{exec.cost_gc_fee_fastest_open}} | {{exec.cost_gc_fee_max_capacity}} | {{exec.cost_gc_fee_max_value}} |
-| **Contingency** | {{exec.cost_contingency_recommended_path}} | {{exec.cost_contingency_fastest_open}} | {{exec.cost_contingency_max_capacity}} | {{exec.cost_contingency_max_value}} |
-| **Grand Total** | {{exec.cost_grand_total_recommended_path}} | {{exec.cost_grand_total_fastest_open}} | {{exec.cost_grand_total_max_capacity}} | {{exec.cost_grand_total_max_value}} |
+|  | **Fastest Open** | **Max Capacity** |
+| :---- | :---- | :---- |
+| **Demolition** | {{exec.cost_demolition_fastest_open}} | {{exec.cost_demolition_max_capacity}} |
+| **Framing / Doors** | {{exec.cost_framing_doors_fastest_open}} | {{exec.cost_framing_doors_max_capacity}} |
+| **MEP / Fire / Life Safety** | {{exec.cost_mep_fire_life_safety_fastest_open}} | {{exec.cost_mep_fire_life_safety_max_capacity}} |
+| **Plumbing / Bathrooms** | {{exec.cost_plumbing_bathrooms_fastest_open}} | {{exec.cost_plumbing_bathrooms_max_capacity}} |
+| **Finish Work** | {{exec.cost_finish_work_fastest_open}} | {{exec.cost_finish_work_max_capacity}} |
+| **Furniture** | {{exec.cost_furniture_fastest_open}} | {{exec.cost_furniture_max_capacity}} |
+| **Tech / Security / Signage** | {{exec.cost_tech_security_signage_fastest_open}} | {{exec.cost_tech_security_signage_max_capacity}} |
+| **Other Hard Costs** | {{exec.cost_other_hard_costs_fastest_open}} | {{exec.cost_other_hard_costs_max_capacity}} |
+| **Soft Costs** | {{exec.cost_soft_costs_fastest_open}} | {{exec.cost_soft_costs_max_capacity}} |
+| **GC Fee** | {{exec.cost_gc_fee_fastest_open}} | {{exec.cost_gc_fee_max_capacity}} |
+| **Contingency** | {{exec.cost_contingency_fastest_open}} | {{exec.cost_contingency_max_capacity}} |
+| **Grand Total** | {{exec.cost_grand_total_fastest_open}} | {{exec.cost_grand_total_max_capacity}} |
 
-| Notes for Acquisition Negotiations |
+| Lease Conditions |
 | :---- |
 | {{exec.acquisition_conditions}} |
 
-| Risks to Note |
+| Trade-Offs and Deficiencies |
 | :---- |
-| {{exec.risk_notes}} |
+| {{exec.tradeoffs_and_deficiencies}} |
 
 # **Source Documents**
 
@@ -56,7 +61,8 @@
 | :---- | :---- |
 | **Site Investigation Report (SIR)** | {{sources.sir_link}} |
 | **Building Inspection Report** | {{sources.inspection_link}} |
-| **ISP** | {{sources.isp_link}} |
+| **Block Plan** | {{sources.block_plan_link}} |
 | **Ease of Conversion Report** | {{sources.e_occupancy_link}} |
 | **School Approval Report** | {{sources.school_approval_link}} |
+| **Opening Plan** | {{sources.opening_plan_link}} |
 | **Trace Report** | {{sources.trace_link}} |

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from due_diligence_reporter.server import _build_breakdown_fields, _read_raycon_done_event
+from due_diligence_reporter.server import (
+    _build_breakdown_fields,
+    _build_raycon_request_payload,
+    _read_raycon_done_event,
+)
 
 
 class _FakeResponse:
@@ -58,4 +62,22 @@ def test_build_breakdown_fields_normalizes_categories() -> None:
     assert fields["exec.cost_gc_fee_max_capacity"] == "$15,000"
     assert fields["exec.cost_contingency_max_capacity"] == "$33,000"
     assert fields["exec.cost_grand_total_max_capacity"] == "$245,000"
+
+
+def test_build_raycon_request_payload_includes_source_documents() -> None:
+    payload = _build_raycon_request_payload(
+        site_name="Alpha Keller",
+        total_building_sf=12000,
+        region="default",
+        room_list=[{"type": "learningroom", "sqft": 650, "name": "Classroom 1"}],
+        address="123 Main St, Keller, TX 76248",
+        inspection_content="BUILDING INSPECTION FULL TEXT",
+        sir_content="SIR FULL TEXT",
+        block_plan_content="BLOCK PLAN FULL TEXT",
+    )
+
+    assert payload["space"]["source"] == "block_plan"
+    assert payload["drive_doc_summaries"]["inspection"] == "BUILDING INSPECTION FULL TEXT"
+    assert payload["drive_doc_summaries"]["sir"] == "SIR FULL TEXT"
+    assert payload["drive_doc_summaries"]["block_plan"] == "BLOCK PLAN FULL TEXT"
 

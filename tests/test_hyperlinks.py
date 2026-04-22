@@ -37,7 +37,7 @@ def _make_doc_body_split_runs(runs_per_para: list[list[tuple[int, str]]]) -> dic
     return {"content": elements}
 
 
-LINK_TOKENS = frozenset({"sources.sir_link", "sources.isp_link", "meta.drive_folder_url"})
+LINK_TOKENS = frozenset({"sources.sir_link", "sources.block_plan_link", "meta.drive_folder_url"})
 
 
 class TestBuildHyperlinkRequests:
@@ -105,18 +105,18 @@ class TestBuildHyperlinkRequests:
     def test_handles_multiple_links(self):
         """Multiple link tokens each produce their own request."""
         doc_body = _make_doc_body([
-            (10, "https://drive.google.com/sir before https://drive.google.com/isp"),
+            (10, "https://drive.google.com/sir before https://drive.google.com/block-plan"),
         ])
         replacements = {
             "sources.sir_link": "https://drive.google.com/sir",
-            "sources.isp_link": "https://drive.google.com/isp",
+            "sources.block_plan_link": "https://drive.google.com/block-plan",
         }
 
         result = build_hyperlink_requests(doc_body, replacements, LINK_TOKENS)
 
         assert len(result.requests) == 2
         urls = {r["updateTextStyle"]["textStyle"]["link"]["url"] for r in result.requests}
-        assert urls == {"https://drive.google.com/sir", "https://drive.google.com/isp"}
+        assert urls == {"https://drive.google.com/sir", "https://drive.google.com/block-plan"}
         assert len(result.found_tokens) == 2
 
     def test_url_not_found_in_doc_is_skipped(self):
@@ -172,7 +172,7 @@ class TestBuildHyperlinkRequests:
 
 DISPLAY_LABELS = {
     "sources.sir_link": "View SIR",
-    "sources.isp_link": "View ISP",
+    "sources.block_plan_link": "View Block Plan",
     "meta.drive_folder_url": "View Site Folder",
 }
 
@@ -226,7 +226,7 @@ class TestDisplayLabels:
                                 {"startIndex": 10, "textRun": {"content": "View SIR"}},
                             ]}}]},
                             {"content": [{"paragraph": {"elements": [
-                                {"startIndex": 30, "textRun": {"content": "View ISP"}},
+                                {"startIndex": 30, "textRun": {"content": "View Block Plan"}},
                             ]}}]},
                         ]
                     }]
@@ -235,7 +235,7 @@ class TestDisplayLabels:
         }
         replacements = {
             "sources.sir_link": "https://drive.google.com/sir",
-            "sources.isp_link": "https://drive.google.com/isp",
+            "sources.block_plan_link": "https://drive.google.com/block-plan",
         }
 
         result = build_hyperlink_requests(
@@ -244,7 +244,7 @@ class TestDisplayLabels:
 
         assert len(result.requests) == 2
         urls = {r["updateTextStyle"]["textStyle"]["link"]["url"] for r in result.requests}
-        assert urls == {"https://drive.google.com/sir", "https://drive.google.com/isp"}
+        assert urls == {"https://drive.google.com/sir", "https://drive.google.com/block-plan"}
 
 
 class TestFindTextIndexSplitRuns:

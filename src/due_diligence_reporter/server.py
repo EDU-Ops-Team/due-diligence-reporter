@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -21,6 +21,7 @@ from tenacity import retry
 from .assignment import assign_p1
 from .classifier import (
     AI_GENERATED_DOC_TYPES,
+    SITE_FOLDER_DOC_TYPES,
     match_file_to_site_llm,
 )
 from .classifier import (
@@ -474,6 +475,66 @@ _SCHOOL_APPROVAL_STEPS: dict[str, str] = {
     ),
 }
 
+_ALPHA_WORKED_STATE_REFERENCES: dict[str, str] = {
+    "TX": "Texas",
+    "CA": "California",
+    "FL": "Florida",
+    "NC": "North Carolina",
+    "VA": "Virginia via the DC-MD market (Chantilly, Bethesda)",
+    "MD": "Maryland via the Washington-Hagerstown market",
+    "NY": "New York",
+    "AZ": "Arizona",
+    "IL": "Illinois",
+    "GA": "Georgia",
+    "MA": "Massachusetts",
+    "OR": "Oregon",
+    "WA": "Washington",
+    "TN": "Tennessee",
+    "OK": "Oklahoma",
+    "RI": "Rhode Island via Providence",
+    "CO": "Colorado",
+    "MT": "Montana via Bozeman",
+    "UT": "Utah via Park City",
+    "CT": "Connecticut via Greenwich",
+    "PR": "Puerto Rico",
+}
+
+_ALPHA_OPERATING_STATES: frozenset[str] = frozenset({
+    "TX",
+    "CA",
+    "FL",
+    "VA",
+    "AZ",
+    "NC",
+    "GA",
+})
+
+
+def _school_approval_exec_status(state_upper: str, approval_type: str) -> str:
+    """Return the executive-summary education approval status label."""
+    if approval_type == "NONE":
+        return "Not required"
+    if state_upper in _ALPHA_OPERATING_STATES:
+        return "Required and have done"
+    return "Required have not done"
+
+
+def _school_approval_alpha_reference(state_upper: str) -> tuple[str, bool, bool]:
+    """Return the Alpha state-history note plus worked/operating flags."""
+    worked_note = _ALPHA_WORKED_STATE_REFERENCES.get(state_upper)
+    has_worked = worked_note is not None
+    is_operating = state_upper in _ALPHA_OPERATING_STATES
+
+    if is_operating and worked_note:
+        return (
+            f"Alpha currently operates in {state_upper} and has prior execution history in {worked_note}.",
+            True,
+            True,
+        )
+    if worked_note:
+        return f"Alpha has worked in {worked_note}.", True, False
+    return "No Alpha state history reference recorded in this tool.", False, False
+
 
 def _school_zone(score: int) -> str:
     if score >= 80:
@@ -528,7 +589,7 @@ _RAYCON_BREAKDOWN_ROWS: tuple[tuple[str, str], ...] = (
 
 
 def _build_raycon_rooms_payload(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build a RayCon-compatible rooms payload from ISP room data."""
+    """Build a RayCon-compatible rooms payload from structured room data."""
     payload: list[dict[str, Any]] = []
     for index, room in enumerate(rooms, start=1):
         payload.append({
@@ -543,7 +604,7 @@ def _build_raycon_rooms_payload(rooms: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def _auto_generate_rooms(total_sf: int, classroom_count: int) -> list[dict[str, Any]]:
-    """Generate a default room mix when no ISP room list is available."""
+    """Generate a default room mix when no structured room list is available."""
     classrooms = max(1, classroom_count) if classroom_count > 0 else max(1, total_sf // 900)
     restroom_count = max(2, classrooms // 5)
     hallway_sf = max(200, int(total_sf * 0.15))
@@ -566,6 +627,9 @@ def _build_raycon_request_payload(
     region: str,
     room_list: list[dict[str, Any]],
     address: str | None = None,
+    inspection_content: str | None = None,
+    sir_content: str | None = None,
+    block_plan_content: str | None = None,
     inspection_summary: str | None = None,
     sir_summary: str | None = None,
 ) -> dict[str, Any]:
@@ -593,17 +657,19 @@ def _build_raycon_request_payload(
                 "roomCount": len(room_list),
                 "totalSqft": total_building_sf,
             },
-            "source": "isp",
+            "source": "block_plan" if block_plan_content else "dd_reporter",
         },
         "region": region,
         "temperature": 0,
         "max_tool_rounds": 8,
     }
     drive_doc_summaries: dict[str, str] = {}
-    if inspection_summary:
-        drive_doc_summaries["inspection"] = inspection_summary
-    if sir_summary:
-        drive_doc_summaries["sir"] = sir_summary
+    if inspection_content or inspection_summary:
+        drive_doc_summaries["inspection"] = str(inspection_content or inspection_summary or "")[:20_000]
+    if sir_content or sir_summary:
+        drive_doc_summaries["sir"] = str(sir_content or sir_summary or "")[:20_000]
+    if block_plan_content:
+        drive_doc_summaries["block_plan"] = str(block_plan_content)[:20_000]
     if drive_doc_summaries:
         payload["drive_doc_summaries"] = drive_doc_summaries
     return payload
@@ -673,6 +739,7 @@ def _extract_raycon_scenario(
     for card in cards:
         label = str(card.get("label", "")).lower()
         if card_label_hint in label:
+            timeline = card.get("timeline", {})
             return {
                 "categories": card.get("costBreakdown", []),
                 "grandTotal": card.get("totals", {}).get("grandTotal", 0),
@@ -680,8 +747,31 @@ def _extract_raycon_scenario(
                 "gcFee": card.get("totals", {}).get("gcFee", 0),
                 "contingency": card.get("totals", {}).get("contingency", 0),
                 "furniture": card.get("totals", {}).get("furniture", 0),
+                "timelineWeeks": timeline.get("weeks") if isinstance(timeline, dict) else None,
+                "timelineNote": timeline.get("note", "") if isinstance(timeline, dict) else "",
             }
     return {}
+
+
+def _extract_raycon_timeline_weeks(scenario_data: dict[str, Any]) -> int | None:
+    """Return an integer timeline week estimate from a RayCon scenario."""
+    for key in ("timelineWeeks", "timeline_weeks"):
+        value = scenario_data.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    timeline = scenario_data.get("timeline")
+    if isinstance(timeline, dict):
+        weeks = timeline.get("weeks")
+        if isinstance(weeks, (int, float)) and weeks > 0:
+            return int(weeks)
+    return None
+
+
+def _weeks_to_open_date(weeks: int | None) -> str:
+    """Convert a RayCon construction timeline into an MM/DD/YY target open date."""
+    if weeks is None or weeks <= 0:
+        return ""
+    return (datetime.now() + timedelta(weeks=weeks)).strftime("%m/%d/%y")
 
 
 def _match_breakdown_bucket(category_name: str) -> str:
@@ -957,13 +1047,15 @@ def _validate_document_site_context(
 
 
 def _list_ai_generated_site_reports(site_files: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return only AI-generated report artifacts from a recursive site-folder listing."""
+    """Return report-relevant artifacts from a recursive site-folder listing."""
     reports: list[dict[str, Any]] = []
     for file_info in site_files:
         annotated = {**file_info, "doc_type": _classify_document_type(file_info.get("name", ""))}
-        if annotated["doc_type"] not in AI_GENERATED_DOC_TYPES:
+        if annotated["doc_type"] not in SITE_FOLDER_DOC_TYPES:
             continue
-        annotated["reference_origin"] = "ai_generated"
+        annotated["reference_origin"] = (
+            "ai_generated" if annotated["doc_type"] in AI_GENERATED_DOC_TYPES else "site_source"
+        )
         reports.append(annotated)
     return reports
 
@@ -1130,12 +1222,13 @@ async def get_site_record(site_name_or_id: str) -> dict[str, Any]:
 async def list_drive_documents(
     drive_folder_url: str, site_name: str = ""
 ) -> dict[str, Any]:
-    """List matched shared source reports plus AI-generated site reports.
+    """List matched shared source reports plus site-folder artifacts.
 
     Searches the shared SIR, ISP, and Building Inspection folders when *site_name*
-    is provided. From the site folder, returns only AI-generated report artifacts
-    such as DD reports, E-Occupancy reports, School Approval reports, Opening Plans,
-    and report traces.
+    is provided. From the site folder, returns report-relevant artifacts such as
+    Block Plans, DD reports, E-Occupancy reports, School Approval reports,
+    Capacity Brainlift reports, RayCon Scenario reports, Opening Plans, and
+    report traces.
 
     Args:
         drive_folder_url: Google Drive folder URL (from the site's Wrike record).
@@ -1178,7 +1271,7 @@ async def list_drive_documents(
             all_site_files_raw = gc.list_files_recursive(folder_id, max_depth=2)
             site_files = _list_ai_generated_site_reports(all_site_files_raw)
             logger.info(
-                "Found %d AI-generated reports in site folder (recursive, max_depth=2) %s",
+                "Found %d site-folder report artifacts in folder (recursive, max_depth=2) %s",
                 len(site_files), folder_id,
             )
 
@@ -1688,24 +1781,30 @@ async def apply_school_approval_skill(
     steps = _SCHOOL_APPROVAL_STEPS.get(
         approval_type, _SCHOOL_APPROVAL_STEPS["CERTIFICATE_OR_APPROVAL_REQUIRED"]
     )
+    exec_status = _school_approval_exec_status(state_upper, approval_type)
+    alpha_reference, has_worked_in_state, is_operating_in_state = _school_approval_alpha_reference(
+        state_upper
+    )
 
     if zone == "GREEN":
         summary = (
             f"{state_upper} has minimal private school requirements "
             f"({approval_type.replace('_', ' ').title()}). "
-            f"Timeline: {timeline_days} days."
+            f"Timeline: {timeline_days} days. "
+            f"Executive status: {exec_status}. {alpha_reference}"
         )
     elif zone == "YELLOW":
         gating_note = " This is a gating requirement before opening." if gating else ""
         summary = (
             f"{state_upper} requires {approval_type.replace('_', ' ').title()} "
-            f"for private schools. Timeline: {timeline_days} days.{gating_note}"
+            f"for private schools. Timeline: {timeline_days} days.{gating_note} "
+            f"Executive status: {exec_status}. {alpha_reference}"
         )
     else:
         summary = (
             f"{state_upper} has complex private school oversight requirements. "
             f"Gating approval required; timeline: {timeline_days}+ days. "
-            "Engage legal counsel early."
+            f"Engage legal counsel early. Executive status: {exec_status}. {alpha_reference}"
         )
 
     result: dict[str, Any] = {
@@ -1717,6 +1816,10 @@ async def apply_school_approval_skill(
         "gating": gating,
         "timeline_days": timeline_days,
         "confidence": confidence,
+        "exec_c_edreg_status": exec_status,
+        "alpha_state_reference": alpha_reference,
+        "alpha_has_worked_in_state": has_worked_in_state,
+        "alpha_is_operating_in_state": is_operating_in_state,
         "steps_to_allow_operation": steps,
         "state_school_registration_summary": summary,
         "report_data_fields": {
@@ -1724,15 +1827,16 @@ async def apply_school_approval_skill(
             "q1.school_approval_type": approval_type,
             "q1.school_approval_gating": str(gating).lower(),
             "q1.school_approval_timeline_days": str(timeline_days),
+            "q1.school_approval_exec_status": exec_status,
+            "q1.school_approval_alpha_reference": alpha_reference,
             "q1.steps_to_allow_operation": steps,
         },
         "message": (
             f"School approval for {state_upper}: {zone} (score {score}/100), "
-            f"{approval_type}, {timeline_days}-day timeline."
+            f"{approval_type}, {timeline_days}-day timeline, exec status {exec_status}."
         ),
     }
 
-    # Auto-publish to Drive if site context provided
     if site_name and drive_folder_url:
         try:
             pub = await save_skill_report(
@@ -1752,11 +1856,42 @@ async def apply_school_approval_skill(
     return result
 
 
+def _get_or_create_m1_folder(
+    gc: GoogleClient,
+    folder_id: str,
+) -> dict[str, Any]:
+    """Return the M1 subfolder, creating a plain `M1` folder when absent."""
+    subfolders = gc.list_subfolders(folder_id)
+    for subfolder in subfolders:
+        if subfolder.get("name", "").lower().startswith("m1"):
+            return subfolder
+    return gc.create_folder(folder_id, "M1")
+
+
 # ---------------------------------------------------------------------------
 # Opening Plan v2 skill
 # ---------------------------------------------------------------------------
 
 _OPENING_PLAN_SKILL_DIR = Path(__file__).parent.parent.parent / "docs" / "skills" / "opening-plan-v2"
+_CAPACITY_BRAINLIFT_SKILL_DIR = Path(__file__).parent.parent.parent / "docs" / "skills" / "capacity-brainlift"
+
+
+def _resolve_ops_skills_dir() -> Path | None:
+    """Return the shared ops-skills directory when configured or discoverable."""
+    settings = get_settings()
+    configured = settings.ops_skills_repo_path.strip()
+    candidates: list[Path] = []
+    if configured:
+        configured_path = Path(configured)
+        candidates.append(
+            configured_path if configured_path.name == "skills" else configured_path / "skills"
+        )
+    sibling_repo = Path(__file__).resolve().parents[3] / "alpha-analysis-downstream-processing" / "skills"
+    candidates.append(sibling_repo)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _load_opening_plan_skill_files() -> dict[str, str]:
@@ -1768,6 +1903,263 @@ def _load_opening_plan_skill_files() -> dict[str, str]:
         "executive_mindset": _OPENING_PLAN_SKILL_DIR / "references" / "executive-mindset.md",
     }
     return {key: path.read_text(encoding="utf-8") for key, path in files.items()}
+
+
+def _load_capacity_brainlift_skill_files() -> dict[str, str]:
+    """Load Capacity Brainlift skill files, preferring the shared ops-skills repo."""
+    ops_skills_dir = _resolve_ops_skills_dir()
+    shared_skill_dir = ops_skills_dir / "capacity-brainlift" if ops_skills_dir else None
+    skill_dir = shared_skill_dir if shared_skill_dir and shared_skill_dir.exists() else _CAPACITY_BRAINLIFT_SKILL_DIR
+    files = {
+        "skill": skill_dir / "SKILL.md",
+        "report_template": skill_dir / "references" / "report-template.md",
+        "brainlift": skill_dir / "references" / "capacity-brainlift.md",
+    }
+    return {key: path.read_text(encoding="utf-8") for key, path in files.items()}
+
+
+def _extract_json_object(raw_text: str) -> dict[str, Any]:
+    """Parse a JSON object from an LLM response with optional fences/preamble."""
+    text = raw_text.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) >= 3:
+            text = parts[1]
+            if text.lower().startswith("json"):
+                text = text[4:]
+            text = text.strip()
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            raise
+        value = json.loads(match.group(0))
+    if not isinstance(value, dict):
+        raise ValueError("Expected JSON object from skill response")
+    return value
+
+
+def _normalize_capacity_brainlift_rooms(raw_rooms: Any) -> list[dict[str, Any]]:
+    """Normalize Capacity Brainlift room rows to RayCon-compatible room payloads."""
+    if not isinstance(raw_rooms, list):
+        return []
+    rooms: list[dict[str, Any]] = []
+    for item in raw_rooms:
+        if not isinstance(item, dict):
+            continue
+        room_type = str(item.get("type", "")).strip().lower()
+        sqft_raw = item.get("sqft", 0)
+        try:
+            sqft = int(float(sqft_raw))
+        except (TypeError, ValueError):
+            continue
+        if not room_type or sqft <= 0:
+            continue
+        room: dict[str, Any] = {"type": room_type, "sqft": sqft}
+        name = str(item.get("name", "")).strip()
+        if name:
+            room["name"] = name
+        rooms.append(room)
+    return rooms
+
+
+def _normalize_capacity_students(value: Any) -> str:
+    """Normalize a capacity value for report_data fields."""
+    if value is None:
+        return "[Not found -- Capacity Brainlift did not extract student capacity]"
+    if isinstance(value, (int, float)):
+        amount = int(value)
+        return str(amount) if amount > 0 else "[Not found -- Capacity Brainlift did not extract student capacity]"
+    text = str(value).strip()
+    if not text:
+        return "[Not found -- Capacity Brainlift did not extract student capacity]"
+    digits = re.sub(r"[^\d]", "", text)
+    return digits or text
+
+
+def _build_capacity_brainlift_prompt(
+    *,
+    skill_files: dict[str, str],
+    site_name: str,
+    site_address: str,
+    total_building_sf: int,
+    block_plan_content: str,
+) -> str:
+    """Assemble the Capacity Brainlift prompt."""
+    return "\n".join([
+        "You are executing the Capacity Brainlift skill for Alpha School DD reporting.",
+        "Use only the Block Plan content and the skill documents below.",
+        "Return only valid JSON with no markdown fences or commentary.",
+        "",
+        "=" * 60,
+        "SKILL DEFINITION:",
+        "=" * 60,
+        skill_files["skill"],
+        "",
+        "=" * 60,
+        "REPORT TEMPLATE:",
+        "=" * 60,
+        skill_files["report_template"],
+        "",
+        "=" * 60,
+        "BRAINLIFT REFERENCE:",
+        "=" * 60,
+        skill_files["brainlift"],
+        "",
+        "=" * 60,
+        "SITE CONTEXT:",
+        "=" * 60,
+        f"Site Name: {site_name}",
+        f"Address: {site_address}",
+        f"Total Building SF: {total_building_sf}",
+        "",
+        "=" * 60,
+        "BLOCK PLAN CONTENT:",
+        "=" * 60,
+        block_plan_content,
+        "",
+        "=" * 60,
+        "OUTPUT SHAPE:",
+        "=" * 60,
+        json.dumps({
+            "block_plan_summary": "short plain-English summary",
+            "fastest_open": {
+                "capacity_students": 36,
+                "classroom_count": 4,
+            },
+            "max_capacity": {
+                "capacity_students": 54,
+                "classroom_count": 6,
+            },
+            "raycon_rooms": [
+                {"name": "Classroom 1", "type": "learningroom", "sqft": 650},
+            ],
+            "assumptions": [
+                "Short list of documented assumptions from the Block Plan",
+            ],
+        }, indent=2),
+    ])
+
+
+@mcp.tool()
+async def apply_capacity_brainlift_skill(
+    site_name: str,
+    site_address: str,
+    block_plan_content: str,
+    total_building_sf: int,
+    drive_folder_url: str = "",
+    block_plan_url: str = "",
+) -> dict[str, Any]:
+    """Generate structured Fastest Open and Max Capacity inputs from a Block Plan."""
+    logger.info("Tool called: apply_capacity_brainlift_skill - site=%s", site_name)
+
+    if not site_name or not site_address or not block_plan_content or total_building_sf <= 0:
+        return {
+            "status": "error",
+            "error": "Missing required parameters",
+            "message": (
+                "site_name, site_address, block_plan_content, and a positive "
+                "total_building_sf are required"
+            ),
+        }
+
+    def _work() -> dict[str, Any]:
+        import anthropic
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return {
+                "status": "error",
+                "error": "ANTHROPIC_API_KEY not set",
+                "message": "Set ANTHROPIC_API_KEY environment variable to use this tool",
+            }
+
+        try:
+            skill_files = _load_capacity_brainlift_skill_files()
+        except FileNotFoundError as e:
+            return {
+                "status": "error",
+                "error": "Skill files not found",
+                "message": str(e),
+            }
+
+        prompt = _build_capacity_brainlift_prompt(
+            skill_files=skill_files,
+            site_name=site_name,
+            site_address=site_address,
+            total_building_sf=total_building_sf,
+            block_plan_content=block_plan_content[:50_000],
+        )
+
+        settings = get_settings()
+        client = anthropic.Anthropic(api_key=api_key)
+        try:
+            response = client.messages.create(
+                model=settings.anthropic_report_model,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw_text = response.content[0].text if response.content else ""
+            parsed = _extract_json_object(raw_text)
+        except Exception as e:
+            logger.error("Capacity Brainlift call failed: %s", e)
+            return {
+                "status": "error",
+                "error": "Capacity Brainlift failed",
+                "message": str(e),
+            }
+
+        fastest_open = parsed.get("fastest_open", {})
+        max_capacity = parsed.get("max_capacity", {})
+        raycon_rooms = _normalize_capacity_brainlift_rooms(parsed.get("raycon_rooms"))
+        fastest_capacity = _normalize_capacity_students(
+            fastest_open.get("capacity_students") if isinstance(fastest_open, dict) else None
+        )
+        max_capacity_students = _normalize_capacity_students(
+            max_capacity.get("capacity_students") if isinstance(max_capacity, dict) else None
+        )
+        assumptions = parsed.get("assumptions", [])
+
+        result: dict[str, Any] = {
+            "status": "success",
+            "site_name": site_name,
+            "site_address": site_address,
+            "total_building_sf": total_building_sf,
+            "block_plan_url": block_plan_url,
+            "block_plan_summary": str(parsed.get("block_plan_summary", "")).strip(),
+            "fastest_open": fastest_open if isinstance(fastest_open, dict) else {},
+            "max_capacity": max_capacity if isinstance(max_capacity, dict) else {},
+            "raycon_rooms": raycon_rooms,
+            "assumptions": assumptions if isinstance(assumptions, list) else [],
+            "report_data_fields": {
+                "exec.fastest_open_capacity": fastest_capacity,
+                "exec.max_capacity_capacity": max_capacity_students,
+            },
+            "message": (
+                f"Capacity Brainlift extracted Fastest Open capacity {fastest_capacity} and "
+                f"Max Capacity {max_capacity_students} for {site_name}."
+            ),
+        }
+
+        if drive_folder_url:
+            try:
+                pub = asyncio.run(save_skill_report(
+                    skill_name="Capacity Brainlift",
+                    site_name=site_name,
+                    drive_folder_url=drive_folder_url,
+                    skill_data=result,
+                ))
+                if pub.get("status") == "success":
+                    result["doc_url"] = pub["doc_url"]
+                    result["doc_id"] = pub["doc_id"]
+            except Exception as e:
+                logger.warning("Failed to auto-publish Capacity Brainlift assessment: %s", e)
+                result["publish_status"] = "failed"
+
+        return result
+
+    return await asyncio.to_thread(_work)
 
 
 def _build_opening_plan_prompt(
@@ -1946,16 +2338,8 @@ async def apply_opening_plan_skill(
                 try:
                     gc = _make_google_client()
                     doc_name = f"Opening Plan - {site_name}"
-                    target_folder_id = folder_id
-                    try:
-                        subfolders = gc.list_subfolders(folder_id)
-                        for subfolder in subfolders:
-                            if subfolder.get("name", "").lower().startswith("m1"):
-                                target_folder_id = subfolder["id"]
-                                logger.info("Found M1 subfolder for opening plan: %s", subfolder["name"])
-                                break
-                    except Exception as e:
-                        logger.warning("Failed to list subfolders: %s -- saving to site root", e)
+                    target_folder = _get_or_create_m1_folder(gc, folder_id)
+                    target_folder_id = target_folder["id"]
 
                     doc = gc.create_document(
                         name=doc_name,
@@ -2121,7 +2505,7 @@ def _analyze_permit_flags(
 
 
 def _format_permit_report_fields(risk_flags: list[dict[str, Any]]) -> dict[str, str]:
-    """Format acquisition_condition and risk_note flags as bullet text for report fields.
+    """Format acquisition-condition and trade-off flags as bullet text for report fields.
 
     Info-severity flags are excluded — they are evidence only, not report content.
     """
@@ -2134,7 +2518,7 @@ def _format_permit_report_fields(risk_flags: list[dict[str, Any]]) -> dict[str, 
             risks.append(f"- {flag['description']} (Shovels.ai permit data)")
     return {
         "exec.acquisition_conditions": "\n".join(conditions),
-        "exec.risk_notes": "\n".join(risks),
+        "exec.tradeoffs_and_deficiencies": "\n".join(risks),
     }
 
 
@@ -2195,7 +2579,7 @@ async def get_permit_history(
                 "risk_flags": [],
                 "report_data_fields": {
                     "exec.acquisition_conditions": "",
-                    "exec.risk_notes": "",
+                    "exec.tradeoffs_and_deficiencies": "",
                 },
                 "message": (
                     "[Not found — Shovels.ai did not match this address; permit history unavailable]"
@@ -2262,7 +2646,7 @@ async def get_permit_history(
             "report_data_fields": report_data_fields,
             "message": (
                 f"Shovels.ai: {metrics.get('permit_count', 0)} permit(s) found at {normalized_address}. "
-                f"{condition_count} acquisition condition(s), {risk_count} risk note(s)."
+                f"{condition_count} lease condition item(s), {risk_count} trade-off item(s)."
             ),
         }
 
@@ -2301,6 +2685,9 @@ async def get_cost_estimate(
     classroom_count: int = 0,
     site_name: str = "",
     address: str = "",
+    inspection_content: str = "",
+    sir_content: str = "",
+    block_plan_content: str = "",
     inspection_summary: str = "",
     sir_summary: str = "",
 ) -> dict[str, Any]:
@@ -2324,7 +2711,7 @@ async def get_cost_estimate(
     resolved_region = _resolve_region(region)
     room_list = rooms if rooms else _auto_generate_rooms(total_building_sf, classroom_count)
     rooms_note = (
-        "ISP room list"
+        "provided room list"
         if rooms
         else f"auto-generated ({len(room_list)} rooms from {classroom_count or 'inferred'} classrooms)"
     )
@@ -2338,6 +2725,9 @@ async def get_cost_estimate(
                 region=resolved_region,
                 room_list=room_list,
                 address=address or None,
+                inspection_content=inspection_content or None,
+                sir_content=sir_content or None,
+                block_plan_content=block_plan_content or None,
                 inspection_summary=inspection_summary or None,
                 sir_summary=sir_summary or None,
             )
@@ -2361,20 +2751,26 @@ async def get_cost_estimate(
         report_fields: dict[str, str] = {}
         if mvp_data:
             report_fields["exec.fastest_open_capex"] = _format_currency(mvp_data.get("grandTotal"))
+            report_fields["exec.fastest_open_open_date"] = _weeks_to_open_date(
+                _extract_raycon_timeline_weeks(mvp_data)
+            )
             report_fields.update(_build_breakdown_fields("fastest_open", mvp_data))
         else:
             logger.warning("RayCon did not return Fastest Open scenario; blanking Fastest Open cost fields")
             report_fields["exec.fastest_open_capex"] = ""
+            report_fields["exec.fastest_open_open_date"] = ""
             report_fields.update(_blank_breakdown_fields("fastest_open"))
         if max_capacity_data:
             report_fields["exec.max_capacity_capex"] = _format_currency(max_capacity_data.get("grandTotal"))
+            report_fields["exec.max_capacity_open_date"] = _weeks_to_open_date(
+                _extract_raycon_timeline_weeks(max_capacity_data)
+            )
             report_fields.update(_build_breakdown_fields("max_capacity", max_capacity_data))
         else:
             logger.warning("RayCon did not return Max Capacity scenario; blanking Max Capacity cost fields")
             report_fields["exec.max_capacity_capex"] = ""
+            report_fields["exec.max_capacity_open_date"] = ""
             report_fields.update(_blank_breakdown_fields("max_capacity"))
-        report_fields.update(_blank_breakdown_fields("recommended_path"))
-        report_fields.update(_blank_breakdown_fields("max_value"))
 
         scenario_parts = []
         if mvp_data:
@@ -2391,6 +2787,12 @@ async def get_cost_estimate(
             "cost_summary": {
                 "fastest_open": _format_currency(mvp_data.get("grandTotal")) if mvp_data else None,
                 "max_capacity": _format_currency(max_capacity_data.get("grandTotal")) if max_capacity_data else None,
+            },
+            "timeline_summary": {
+                "fastest_open_weeks": _extract_raycon_timeline_weeks(mvp_data) if mvp_data else None,
+                "max_capacity_weeks": _extract_raycon_timeline_weeks(max_capacity_data) if max_capacity_data else None,
+                "fastest_open_open_date": report_fields.get("exec.fastest_open_open_date"),
+                "max_capacity_open_date": report_fields.get("exec.max_capacity_open_date"),
             },
             "raycon_estimate_cards": raycon_data.get("estimate_cards", {}),
             "raycon_structured": raycon_data.get("structured", {}),
@@ -2423,10 +2825,8 @@ def _normalize_report_replacements(
         normalized_answer = normalize_can_we_answer(replacements["exec.c_answer"])
         if normalized_answer is not None:
             replacements["exec.c_answer"] = normalized_answer
-    _fill_recommended_path_placeholders(replacements)
     _fill_fastest_open_placeholders(replacements)
     _fill_max_capacity_placeholders(replacements)
-    _fill_max_value_placeholders(replacements)
 
     replacements.setdefault("meta.drive_folder_url", drive_folder_url)
     source_quality_notes = (
@@ -2512,14 +2912,6 @@ def _fill_scenario_placeholders(
             replacements[token] = label
 
 
-def _fill_recommended_path_placeholders(replacements: dict[str, str]) -> None:
-    _fill_scenario_placeholders(
-        replacements,
-        scenario="recommended_path",
-        label="[Not found - Recommended Path scenario not provided]",
-    )
-
-
 def _fill_fastest_open_placeholders(replacements: dict[str, str]) -> None:
     _fill_scenario_placeholders(
         replacements,
@@ -2533,14 +2925,6 @@ def _fill_max_capacity_placeholders(replacements: dict[str, str]) -> None:
         replacements,
         scenario="max_capacity",
         label="[Not found - Max Capacity scenario not extracted]",
-    )
-
-
-def _fill_max_value_placeholders(replacements: dict[str, str]) -> None:
-    _fill_scenario_placeholders(
-        replacements,
-        scenario="max_value",
-        label="[Not found - Max Value scenario not yet defined]",
     )
 
 
@@ -3034,12 +3418,10 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
             missing_docs: list[str] = []
             if not sir_found:
                 missing_docs.append("sir")
-            if not isp_found:
-                missing_docs.append("isp")
             if not inspection_found:
                 missing_docs.append("building_inspection")
 
-            ready_for_report = sir_found and isp_found and inspection_found and not report_exists
+            ready_for_report = sir_found and inspection_found and not report_exists
             p1_profile = extract_p1_from_record(record)
             p1_email = p1_profile.get("email") if p1_profile else None
             p1_name = p1_profile.get("name") if p1_profile else None
@@ -3060,7 +3442,6 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
                 "message": "\n".join([
                     f"Site '{site_title}' document readiness:",
                     f"  SIR: {'found - ' + (files_by_type.get('sir') or {}).get('name', '') if sir_found else 'not found'}",
-                    f"  ISP: {'found - ' + (files_by_type.get('isp') or {}).get('name', '') if isp_found else 'not found'}",
                     f"  Building Inspection: {'found - ' + (files_by_type.get('building_inspection') or {}).get('name', '') if inspection_found else 'not found'}",
                     f"  DD Report: {'exists - ' + (files_by_type.get('dd_report') or {}).get('name', '') if report_exists else 'not yet created'}",
                     "",
@@ -3442,18 +3823,16 @@ async def save_skill_report(
         doc_name = f"{skill_name} Assessment - {site_name}"
         content = _format_skill_document(skill_name, site_name, today_str, skill_data)
 
-        target_folder_id = folder_id
         try:
-            subfolders = gc.list_subfolders(folder_id)
-            for subfolder in subfolders:
-                if subfolder.get("name", "").lower().startswith("m1"):
-                    target_folder_id = subfolder["id"]
-                    logger.info("Found M1 subfolder: %s", subfolder["name"])
-                    break
-            else:
-                logger.warning("M1 subfolder not found for '%s', saving to site root", site_name)
+            target_folder = _get_or_create_m1_folder(gc, folder_id)
+            target_folder_id = target_folder["id"]
         except Exception as e:
-            logger.warning("Failed to list subfolders for '%s': %s - saving to site root", site_name, e)
+            logger.error("Failed to resolve M1 subfolder for '%s': %s", site_name, e)
+            return {
+                "status": "error",
+                "error": "Failed to resolve M1 folder",
+                "message": str(e),
+            }
 
         try:
             doc = gc.create_document(
@@ -3541,6 +3920,8 @@ def _format_skill_document(
             f"  Gating Requirement: {'Yes' if data.get('gating') else 'No'}",
             f"  Timeline: {data.get('timeline_days', 'N/A')} days",
             f"  Confidence Level: {data.get('confidence', 'N/A')}",
+            f"  Executive Status: {data.get('exec_c_edreg_status', 'N/A')}",
+            f"  Alpha State Reference: {data.get('alpha_state_reference', 'N/A')}",
             "",
             "Steps to Allow Operation",
             f"  {data.get('steps_to_allow_operation', 'N/A')}",
@@ -3558,6 +3939,8 @@ def _format_skill_document(
                 "q1.school_approval_type": "Approval Type",
                 "q1.school_approval_gating": "Gating Requirement",
                 "q1.school_approval_timeline_days": "Approval Timeline (days)",
+                "q1.school_approval_exec_status": "Executive Status",
+                "q1.school_approval_alpha_reference": "Alpha State Reference",
                 "q1.steps_to_allow_operation": "Steps to Allow Operation",
             }
             for k, v in sorted(rdf.items()):
