@@ -88,6 +88,30 @@ class TestClassifyByKeywordsSchoolApproval:
         )
 
 
+class TestClassifyByKeywordsBlockPlan:
+    def test_block_plan(self):
+        assert classify_by_keywords("Alpha Keller Block Plan.pdf") == (
+            "block_plan",
+            0.95,
+        )
+
+
+class TestClassifyByKeywordsCapacityBrainlift:
+    def test_capacity_brainlift(self):
+        assert classify_by_keywords("Capacity Brainlift - Alpha Keller") == (
+            "capacity_brainlift_report",
+            0.95,
+        )
+
+
+class TestClassifyByKeywordsRayconScenario:
+    def test_raycon_scenario(self):
+        assert classify_by_keywords("RayCon Scenario - Alpha Keller") == (
+            "raycon_scenario_report",
+            0.95,
+        )
+
+
 class TestClassifyByKeywordsDDReport:
     def test_dd_report(self):
         assert classify_by_keywords("DD Report - Alpha Tampa.pdf") == (

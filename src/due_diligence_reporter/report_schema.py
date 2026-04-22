@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Callable
 
 from .utils import flatten_report_data_for_replacement
 
@@ -13,6 +13,24 @@ logger = logging.getLogger(__name__)
 ALLOWED_CAN_WE_ANSWERS: frozenset[str] = frozenset({
     "Yes",
     "Yes see notes",
+    "No",
+})
+
+ALLOWED_ZONING_STATUSES: frozenset[str] = frozenset({
+    "Permitted",
+    "Use Permit Required (admin)",
+    "Use Permit Required (public)",
+    "Prohibited",
+})
+
+ALLOWED_VIABLE_BUILDOUTS: frozenset[str] = frozenset({
+    "Fastest Open",
+    "Max Capacity",
+    "None",
+})
+
+ALLOWED_ALPHA_FIT_VALUES: frozenset[str] = frozenset({
+    "Yes",
     "No",
 })
 
@@ -34,16 +52,14 @@ LEGACY_CAN_WE_ANSWER_ALIASES: dict[str, str] = {
 MISSING_P1_ASSIGNEE_LABEL = "[Not found - P1 Assignee not set in Wrike]"
 
 SCENARIOS: tuple[str, ...] = (
-    "recommended_path",
     "fastest_open",
     "max_capacity",
-    "max_value",
 )
 
 SUMMARY_TOKEN_BASES: tuple[tuple[str, str], ...] = (
-    ("capacity", "ISP"),
-    ("capex", "Agent"),
-    ("open_date", "Agent"),
+    ("capacity", "Capacity Brainlift"),
+    ("capex", "RayCon"),
+    ("open_date", "RayCon"),
 )
 
 COST_TOKEN_BASES: tuple[str, ...] = (
@@ -77,6 +93,8 @@ def _build_template_tokens() -> list[str]:
         "exec.c_zoning",
         "exec.c_permit_timeline",
         "exec.c_construction_timeline",
+        "exec.direct_viable_buildout",
+        "exec.alpha_fit",
     ]
 
     for scenario in SCENARIOS:
@@ -89,10 +107,10 @@ def _build_template_tokens() -> list[str]:
 
     tokens.extend([
         "exec.acquisition_conditions",
-        "exec.risk_notes",
+        "exec.tradeoffs_and_deficiencies",
         "sources.sir_link",
         "sources.inspection_link",
-        "sources.isp_link",
+        "sources.block_plan_link",
         "sources.e_occupancy_link",
         "sources.school_approval_link",
         "sources.opening_plan_link",
@@ -118,18 +136,15 @@ TOKEN_SOURCES: dict[str, str] = {
     "exec.c_edreg": "School Approval",
     "exec.c_permit_timeline": "Agent",
     "exec.c_construction_timeline": "Agent",
+    "exec.direct_viable_buildout": "Agent",
+    "exec.alpha_fit": "Agent",
     "exec.acquisition_conditions": "Agent",
-    "exec.risk_notes": "Agent",
+    "exec.tradeoffs_and_deficiencies": "Agent",
     "sources.opening_plan_link": "Agent",
 }
 
 for scenario in SCENARIOS:
-    for metric, default_source in SUMMARY_TOKEN_BASES:
-        source = default_source
-        if scenario in {"fastest_open", "max_capacity"} and metric == "capex":
-            source = "RayCon"
-        if scenario == "recommended_path" and metric == "capacity":
-            source = "Agent"
+    for metric, source in SUMMARY_TOKEN_BASES:
         TOKEN_SOURCES[f"exec.{scenario}_{metric}"] = source
 
 for base in COST_TOKEN_BASES:
@@ -143,7 +158,7 @@ for base in COST_TOKEN_BASES:
 LINK_TOKENS: frozenset[str] = frozenset({
     "sources.sir_link",
     "sources.inspection_link",
-    "sources.isp_link",
+    "sources.block_plan_link",
     "sources.e_occupancy_link",
     "sources.school_approval_link",
     "sources.opening_plan_link",
@@ -155,7 +170,7 @@ LINK_TOKENS: frozenset[str] = frozenset({
 LINK_DISPLAY_LABELS: dict[str, str] = {
     "sources.sir_link": "View SIR",
     "sources.inspection_link": "View Inspection",
-    "sources.isp_link": "View ISP",
+    "sources.block_plan_link": "View Block Plan",
     "sources.e_occupancy_link": "View E-Occupancy",
     "sources.school_approval_link": "View School Approval",
     "sources.opening_plan_link": "View Opening Plan",
@@ -177,13 +192,16 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "site.p1_assignee_name": "meta.prepared_by",
     "p1_assignee_name": "meta.prepared_by",
     "exec_summary.acquisition_conditions": "exec.acquisition_conditions",
-    "exec_summary.risk_notes": "exec.risk_notes",
+    "exec_summary.direct_viable_buildout": "exec.direct_viable_buildout",
+    "exec_summary.alpha_fit": "exec.alpha_fit",
+    "exec_summary.tradeoffs_and_deficiencies": "exec.tradeoffs_and_deficiencies",
     "exec.c_permitting": "exec.c_edreg",
     "appendix.sir_link": "sources.sir_link",
     "appendix.inspection_link": "sources.inspection_link",
     "appendix.building_inspection_link": "sources.inspection_link",
-    "appendix.floorplan_viability_link": "sources.isp_link",
-    "appendix.isp_link": "sources.isp_link",
+    "appendix.block_plan_link": "sources.block_plan_link",
+    "appendix.floorplan_viability_link": "sources.block_plan_link",
+    "appendix.isp_link": "sources.block_plan_link",
 }
 
 LEGACY_V2_ALIASES: dict[str, str] = {
@@ -193,9 +211,6 @@ LEGACY_V2_ALIASES: dict[str, str] = {
     "exec.e_max_capacity_capacity": "exec.max_capacity_capacity",
     "exec.e_max_capacity_cost": "exec.max_capacity_capex",
     "exec.f_max_capacity_ready": "exec.max_capacity_open_date",
-    "exec.e_max_value_capacity": "exec.max_value_capacity",
-    "exec.e_max_value_cost": "exec.max_value_capex",
-    "exec.f_max_value_ready": "exec.max_value_open_date",
     "exec.f_ready_mm_yy": "exec.fastest_open_open_date",
     "e_ideal_capacity": "exec.max_capacity_capacity",
     "e_ideal_cost": "exec.max_capacity_capex",
@@ -231,7 +246,7 @@ def _resolve_prepared_by(flat: dict[str, Any]) -> tuple[str | None, str | None]:
 
 
 def _clean_exec_section_value(value: Any, *, section: str) -> str | None:
-    """Normalize acquisition/risk section text and remove mixed headings."""
+    """Normalize lease/tradeoff text and remove mixed headings."""
     if not isinstance(value, str):
         return None
 
@@ -241,25 +256,97 @@ def _clean_exec_section_value(value: Any, *, section: str) -> str | None:
 
     lower = text.lower()
     if section == "acquisition_conditions":
-        if lower.startswith("conditions:"):
-            text = text[len("conditions:"):].strip()
-        split_markers = ("risks to note:", "risk to note:")
+        for prefix in ("conditions:", "lease conditions:"):
+            if lower.startswith(prefix):
+                text = text[len(prefix):].strip()
+                lower = text.lower()
+                break
+        split_markers = (
+            "trade-offs and deficiencies:",
+            "tradeoffs and deficiencies:",
+            "risks to note:",
+            "risk to note:",
+        )
         for marker in split_markers:
             idx = text.lower().find(marker)
             if idx != -1:
                 text = text[:idx].strip()
                 break
-    elif section == "risk_notes":
-        split_markers = ("risks to note:", "risk to note:")
+    elif section == "tradeoffs_and_deficiencies":
+        split_markers = (
+            "trade-offs and deficiencies:",
+            "tradeoffs and deficiencies:",
+            "risks to note:",
+            "risk to note:",
+        )
         for marker in split_markers:
             idx = lower.find(marker)
             if idx != -1:
                 text = text[idx + len(marker):].strip()
                 break
-        if text.lower().startswith("conditions:"):
+        if text.lower().startswith(("conditions:", "lease conditions:")):
             return None
 
     return text or None
+
+
+def _normalize_optional_field(
+    flat: dict[str, Any],
+    token_sources: dict[str, str],
+    token: str,
+    normalizer: Callable[[str], str | None],
+) -> None:
+    value = flat.get(token)
+    if not isinstance(value, str):
+        return
+
+    normalized = normalizer(value)
+    if normalized is None:
+        logger.warning("Dropping invalid %s value: %r", token, value)
+        flat.pop(token, None)
+        token_sources.pop(token, None)
+        return
+
+    flat[token] = normalized
+
+
+def normalize_zoning_status(value: str) -> str | None:
+    """Normalize zoning output to one of the four allowed status labels."""
+    cleaned = value.strip().rstrip(".,;:?!").lower()
+    if cleaned in {"permitted", "permitted by right"}:
+        return "Permitted"
+    if "prohibit" in cleaned:
+        return "Prohibited"
+    if "admin" in cleaned:
+        return "Use Permit Required (admin)"
+    if "public" in cleaned:
+        return "Use Permit Required (public)"
+    return None
+
+
+def normalize_viable_buildout(value: str) -> str | None:
+    """Normalize the direct buildout answer to the allowed labels."""
+    cleaned = value.strip().rstrip(".,;:?!").lower()
+    mapping = {
+        "fastest open": "Fastest Open",
+        "fastest": "Fastest Open",
+        "max capacity": "Max Capacity",
+        "maximum capacity": "Max Capacity",
+        "none": "None",
+        "no": "None",
+        "neither": "None",
+    }
+    return mapping.get(cleaned)
+
+
+def normalize_alpha_fit(value: str) -> str | None:
+    """Normalize the Alpha-fit answer to Yes/No."""
+    cleaned = value.strip().rstrip(".,;:?!").lower()
+    if cleaned == "yes":
+        return "Yes"
+    if cleaned == "no":
+        return "No"
+    return None
 
 
 def normalize_report_data(
@@ -273,7 +360,7 @@ def normalize_report_data(
 
     for key in flat:
         if key in TEMPLATE_TOKEN_SET:
-            token_sources[key] = "agent"
+            token_sources[key] = TOKEN_SOURCES.get(key, "agent")
 
     if "meta.site_name" not in flat:
         flat["meta.site_name"] = site_name.strip()
@@ -296,20 +383,20 @@ def normalize_report_data(
         flat["meta.prepared_by"] = MISSING_P1_ASSIGNEE_LABEL
         token_sources["meta.prepared_by"] = "missing_p1_assignee"
 
-    for section in ("acquisition_conditions", "risk_notes"):
+    for section in ("acquisition_conditions", "tradeoffs_and_deficiencies"):
         cleaned = _clean_exec_section_value(flat.get(f"exec.{section}"), section=section)
         if cleaned is not None:
             flat[f"exec.{section}"] = cleaned
 
-    can_we_answer = flat.get("exec.c_answer")
-    if isinstance(can_we_answer, str):
-        normalized_answer = normalize_can_we_answer(can_we_answer)
-        if normalized_answer is None:
-            logger.warning("Dropping invalid exec.c_answer value: %r", can_we_answer)
-            flat.pop("exec.c_answer", None)
-            token_sources.pop("exec.c_answer", None)
-        else:
-            flat["exec.c_answer"] = normalized_answer
+    _normalize_optional_field(flat, token_sources, "exec.c_zoning", normalize_zoning_status)
+    _normalize_optional_field(
+        flat,
+        token_sources,
+        "exec.direct_viable_buildout",
+        normalize_viable_buildout,
+    )
+    _normalize_optional_field(flat, token_sources, "exec.alpha_fit", normalize_alpha_fit)
+    _normalize_optional_field(flat, token_sources, "exec.c_answer", normalize_can_we_answer)
 
     # Deterministic override: compute Yes/No from fastest_open_open_date vs school year deadlines.
     # If the date is parseable it always overrides the agent's answer.

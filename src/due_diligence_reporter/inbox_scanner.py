@@ -9,6 +9,7 @@ or ISP). No site matching required — doc_type alone routes the file.
 from __future__ import annotations
 
 import base64
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -18,8 +19,16 @@ from typing import Any
 from .classifier import classify_document
 from .config import Settings
 from .google_client import GoogleClient
-from .utils import extract_city_from_address
-from .wrike import _match_site_with_llm, extract_address_from_record
+from .utils import (
+    build_site_match_terms,
+    escape_html_text,
+    extract_city_from_address,
+    extract_folder_id_from_url,
+    extract_state_from_address,
+    extract_text_from_pdf_bytes,
+    send_email,
+)
+from .wrike import _match_site_with_llm, build_site_summary, extract_address_from_record
 
 # Regex to extract the bare email from a From header like "Display Name <user@domain.com>"
 _EMAIL_RE = re.compile(r"<([^>]+)>")
@@ -30,7 +39,7 @@ logger = logging.getLogger("[inbox_scanner]")
 AUTO_FILE_CONFIDENCE = 0.7
 
 # Doc types we handle (others are skipped silently)
-SUPPORTED_DOC_TYPES = {"sir", "building_inspection", "isp"}
+SUPPORTED_DOC_TYPES = {"sir", "building_inspection", "isp", "block_plan"}
 
 # Map doc_type to the Settings field name for the target folder ID
 DOC_TYPE_FOLDER_MAP = {
@@ -44,6 +53,7 @@ DOC_TYPE_FILENAME_TEMPLATES = {
     "sir": "{date} - {site_title} SIR.pdf",
     "building_inspection": "{date} - {site_title} Building Inspection Report.pdf",
     "isp": "{date} - {site_title} ISP.pdf",
+    "block_plan": "{date} - {site_title} Block Plan.pdf",
 }
 
 
@@ -55,6 +65,7 @@ class EmailMetadata:
     subject: str
     sender: str
     body_snippet: str
+    label_ids: list[str]
     attachments: list[dict[str, Any]]  # [{filename, attachment_id?, body_data?, mime_type}]
 
 
@@ -67,6 +78,202 @@ class ProcessedAttachment:
     site_title: str
     drive_file_id: str
     drive_file_name: str
+
+
+def _resolve_m1_folder(gc: GoogleClient, drive_folder_url: str) -> tuple[str | None, str | None]:
+    """Return the site's M1 folder ID, creating a plain `M1` folder when absent."""
+    folder_id = extract_folder_id_from_url(drive_folder_url)
+    if not folder_id:
+        return None, None
+    subfolders = gc.list_subfolders(folder_id)
+    for subfolder in subfolders:
+        if subfolder.get("name", "").lower().startswith("m1"):
+            return subfolder.get("id"), subfolder.get("webViewLink")
+    created = gc.create_folder(folder_id, "M1")
+    return created.get("id"), created.get("webViewLink")
+
+
+def _list_m1_documents_by_type(
+    gc: GoogleClient,
+    folder_id: str,
+) -> dict[str, dict[str, Any]]:
+    """Return recognized report files in an M1 folder keyed by doc_type."""
+    files_by_type: dict[str, dict[str, Any]] = {}
+    for file_info in gc.list_files_in_folder(folder_id):
+        name = str(file_info.get("name", "")).strip()
+        if not name:
+            continue
+        doc_type, _confidence = classify_document(name)
+        if doc_type in {"block_plan", "capacity_brainlift_report", "raycon_scenario_report"}:
+            files_by_type[doc_type] = file_info
+    return files_by_type
+
+
+def _send_block_plan_failure_notification(
+    settings: Settings,
+    *,
+    site_title: str,
+    site_owner_email: str,
+    filename: str,
+    error_message: str,
+) -> None:
+    """Notify the site owner that Block Plan downstream processing failed."""
+    if not settings.email_sender.strip() or not settings.email_app_password.strip():
+        logger.warning(
+            "Skipping site-owner failure email for %s: email credentials not configured",
+            site_title,
+        )
+        return
+    subject = f"Block Plan processing failed for {site_title}"
+    body = (
+        "<p>Block Plan downstream processing failed and needs attention.</p>"
+        f"<p><strong>Site:</strong> {escape_html_text(site_title)}<br>"
+        f"<strong>Attachment:</strong> {escape_html_text(filename)}<br>"
+        f"<strong>Error:</strong> {escape_html_text(error_message)}</p>"
+        "<p>The inbox scanner will retry automatically on the next run until the derived reports are created.</p>"
+    )
+    send_email(
+        settings.email_sender,
+        settings.email_app_password,
+        [site_owner_email],
+        subject,
+        body,
+        settings.global_email_cc,
+    )
+
+
+def _read_required_shared_doc(
+    *,
+    doc_type: str,
+    shared_docs: dict[str, dict[str, Any] | None],
+    read_drive_document: Any,
+) -> str:
+    """Read a required shared source document for Block Plan downstream processing."""
+    doc = shared_docs.get(doc_type)
+    if not isinstance(doc, dict) or not doc.get("id") or not doc.get("name"):
+        raise RuntimeError(f"Required {doc_type.replace('_', ' ')} document was not found")
+    result = asyncio.run(read_drive_document(
+        file_id=str(doc["id"]),
+        file_name=str(doc["name"]),
+    ))
+    if result.get("status") != "success":
+        raise RuntimeError(
+            f"Failed to read {doc_type.replace('_', ' ')} document: {result.get('message', 'unknown error')}"
+        )
+    content = str(result.get("content", "")).strip()
+    if not content:
+        raise RuntimeError(f"Required {doc_type.replace('_', ' ')} document had no readable text")
+    return content
+
+
+def _run_block_plan_downstream(
+    gc: GoogleClient,
+    *,
+    site_summary: dict[str, Any],
+    block_plan_content: str,
+    block_plan_url: str,
+) -> list[dict[str, str]]:
+    """Run downstream Capacity Brainlift and RayCon processing for a Block Plan."""
+    from .server import (
+        _find_site_docs_in_shared_folders,
+        _register_file_read_context,
+        apply_capacity_brainlift_skill,
+        get_cost_estimate,
+        read_drive_document,
+        save_skill_report,
+    )
+
+    site_name = str(site_summary.get("title", "")).strip()
+    site_address = str(site_summary.get("address", "")).strip()
+    drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
+    total_building_sf = site_summary.get("total_building_sf")
+    if not isinstance(total_building_sf, int) or total_building_sf <= 0:
+        raise RuntimeError("Wrike record is missing total_building_sf for Block Plan processing")
+
+    match_terms = build_site_match_terms(site_name, site_address)
+    shared_docs = _find_site_docs_in_shared_folders(
+        gc,
+        match_terms,
+        site_title=site_name,
+        site_address=site_address,
+    )
+    read_context_docs = []
+    for doc_type in ("sir", "building_inspection"):
+        doc = shared_docs.get(doc_type)
+        if isinstance(doc, dict):
+            read_context_docs.append({**doc, "doc_type": doc_type})
+    _register_file_read_context(
+        read_context_docs,
+        site_title=site_name,
+        site_address=site_address,
+    )
+    sir_content = _read_required_shared_doc(
+        doc_type="sir",
+        shared_docs=shared_docs,
+        read_drive_document=read_drive_document,
+    )
+    inspection_content = _read_required_shared_doc(
+        doc_type="building_inspection",
+        shared_docs=shared_docs,
+        read_drive_document=read_drive_document,
+    )
+
+    capacity_result = asyncio.run(apply_capacity_brainlift_skill(
+        site_name=site_name,
+        site_address=site_address,
+        block_plan_content=block_plan_content,
+        total_building_sf=total_building_sf,
+        drive_folder_url=drive_folder_url,
+        block_plan_url=block_plan_url,
+    ))
+    if capacity_result.get("status") != "success":
+        raise RuntimeError(str(capacity_result.get("message", "Capacity Brainlift failed")))
+
+    raycon_rooms = capacity_result.get("raycon_rooms", [])
+    classroom_counts = []
+    for scenario_key in ("fastest_open", "max_capacity"):
+        scenario = capacity_result.get(scenario_key, {})
+        if isinstance(scenario, dict):
+            count = scenario.get("classroom_count")
+            if isinstance(count, (int, float)) and count > 0:
+                classroom_counts.append(int(count))
+    classroom_count = max(classroom_counts) if classroom_counts else 0
+
+    raycon_result = asyncio.run(get_cost_estimate(
+        total_building_sf=total_building_sf,
+        region=extract_state_from_address(site_address) or "",
+        rooms=raycon_rooms if isinstance(raycon_rooms, list) and raycon_rooms else None,
+        classroom_count=classroom_count,
+        site_name=site_name,
+        address=site_address,
+        inspection_content=inspection_content,
+        sir_content=sir_content,
+        block_plan_content=block_plan_content,
+        inspection_summary=f"Block Plan: {capacity_result.get('block_plan_summary', '')}".strip(),
+        sir_summary=f"Block Plan source: {block_plan_url}".strip(),
+    ))
+    if raycon_result.get("status") != "success":
+        raise RuntimeError(str(raycon_result.get("message", "RayCon failed")))
+
+    report_fields = dict(capacity_result.get("report_data_fields", {}))
+    report_fields.update(raycon_result.get("report_data_fields", {}))
+    raycon_skill_payload = {
+        **raycon_result,
+        "report_data_fields": report_fields,
+    }
+    published = asyncio.run(save_skill_report(
+        skill_name="RayCon Scenario",
+        site_name=site_name,
+        drive_folder_url=drive_folder_url,
+        skill_data=raycon_skill_payload,
+    ))
+    if published.get("status") != "success":
+        raise RuntimeError(str(published.get("message", "Failed to save RayCon Scenario report")))
+
+    return [
+        {"doc_type": "capacity_brainlift_report", "doc_url": str(capacity_result.get("doc_url", ""))},
+        {"doc_type": "raycon_scenario_report", "doc_url": str(published.get("doc_url", ""))},
+    ]
 
 
 def _parse_sender_email(from_header: str) -> str:
@@ -206,15 +413,15 @@ def process_email(
         len(metadata.attachments),
     )
 
-    # ── Sender filter: skip emails from internal domains/addresses ──────
+    existing_label_ids = metadata.label_ids if isinstance(metadata.label_ids, list) else []
+
     if _is_internal_sender(metadata.sender, settings):
         logger.info(
-            "Skipping internal sender '%s' (subject: '%s') — "
+            "Skipping internal sender '%s' (subject: '%s') - "
             "would create false readiness if filed",
             metadata.sender,
             metadata.subject,
         )
-        # Still mark as processed so we don't re-scan it every run
         if not dry_run:
             _mark_email_processed(gc, message_id, label_id)
         return {"internal_skipped": True, "marked": not dry_run}
@@ -225,6 +432,8 @@ def process_email(
     errors: list[dict[str, Any]] = []
     all_succeeded = True
     review_needed = False
+    keep_unprocessed = False
+    failure_notification_sent = review_label_id in existing_label_ids
     site_records = site_records or []
 
     if not metadata.attachments:
@@ -241,14 +450,8 @@ def process_email(
 
     for att in metadata.attachments:
         filename = att["filename"]
-
-        # Classify by filename using the three-tier classifier
         doc_type, confidence = classify_document(filename)
-        matched_record = _match_attachment_to_site(
-            filename,
-            metadata,
-            site_records,
-        )
+        matched_record = _match_attachment_to_site(filename, metadata, site_records)
         site_title = matched_record.get("title") if matched_record else None
         matched_site_id = matched_record.get("id") if matched_record else None
 
@@ -260,17 +463,16 @@ def process_email(
             site_title or "unmatched",
         )
 
-        # Skip unsupported doc types
         if doc_type not in SUPPORTED_DOC_TYPES:
-            logger.info("Skipping '%s' — unsupported doc_type: %s", filename, doc_type)
+            logger.info("Skipping '%s' - unsupported doc_type: %s", filename, doc_type)
             skipped += 1
             continue
 
-        # Flag low-confidence matches for manual review
         if confidence < AUTO_FILE_CONFIDENCE:
             logger.warning(
-                "Low confidence (%.2f) for '%s' — flagging for manual review",
-                confidence, filename,
+                "Low confidence (%.2f) for '%s' - flagging for manual review",
+                confidence,
+                filename,
             )
             low_confidence.append({
                 "filename": filename,
@@ -283,24 +485,71 @@ def process_email(
             review_needed = True
             continue
 
-        # Route to target folder by doc_type
-        folder_attr = DOC_TYPE_FOLDER_MAP.get(doc_type)
-        if not folder_attr:
-            skipped += 1
-            continue
-        target_folder_id = getattr(settings, folder_attr, "")
-        if not target_folder_id:
-            logger.error("No folder ID configured for %s", doc_type)
-            errors.append({
-                "message_id": message_id,
+        if doc_type == "block_plan" and matched_record is None:
+            logger.warning("Block Plan '%s' could not be matched to a site", filename)
+            low_confidence.append({
                 "filename": filename,
                 "doc_type": doc_type,
-                "error": f"No folder ID configured for {doc_type}",
+                "confidence": confidence,
+                "email_subject": metadata.subject,
+                "site_title": site_title,
             })
-            all_succeeded = False
+            skipped += 1
+            review_needed = True
             continue
 
-        # Use date-prefixed original filename
+        site_summary = build_site_summary(matched_record) if matched_record else {}
+        if doc_type == "block_plan":
+            drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
+            if not drive_folder_url:
+                errors.append({
+                    "message_id": message_id,
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "error": "Matched site has no Google Drive folder URL",
+                })
+                all_succeeded = False
+                review_needed = True
+                continue
+            try:
+                target_folder_id, _target_folder_url = _resolve_m1_folder(gc, drive_folder_url)
+            except Exception as e:
+                errors.append({
+                    "message_id": message_id,
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "error": f"Failed to resolve M1 folder: {e}",
+                })
+                all_succeeded = False
+                review_needed = True
+                continue
+            if not target_folder_id:
+                errors.append({
+                    "message_id": message_id,
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "error": "Could not resolve M1 folder ID",
+                })
+                all_succeeded = False
+                review_needed = True
+                continue
+        else:
+            folder_attr = DOC_TYPE_FOLDER_MAP.get(doc_type)
+            if not folder_attr:
+                skipped += 1
+                continue
+            target_folder_id = getattr(settings, folder_attr, "")
+            if not target_folder_id:
+                logger.error("No folder ID configured for %s", doc_type)
+                errors.append({
+                    "message_id": message_id,
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "error": f"No folder ID configured for {doc_type}",
+                })
+                all_succeeded = False
+                continue
+
         drive_filename = (
             _generate_drive_filename(site_title, doc_type)
             if site_title
@@ -319,30 +568,78 @@ def process_email(
             })
             continue
 
-        # Check for duplicates
+        drive_file: dict[str, Any] | None = None
+        rerun_existing_block_plan = False
         if gc.file_exists_in_folder(target_folder_id, drive_filename):
-            logger.info("File '%s' already exists in folder — skipping upload", drive_filename)
-            skipped += 1
-            continue
+            if doc_type != "block_plan":
+                logger.info("File '%s' already exists in folder - skipping upload", drive_filename)
+                skipped += 1
+                continue
+            existing_docs = _list_m1_documents_by_type(gc, target_folder_id)
+            if (
+                "capacity_brainlift_report" in existing_docs
+                and "raycon_scenario_report" in existing_docs
+            ):
+                logger.info("Block Plan '%s' and derived docs already exist - skipping", drive_filename)
+                skipped += 1
+                continue
+            drive_file = existing_docs.get("block_plan")
+            rerun_existing_block_plan = True
+            logger.info(
+                "Block Plan '%s' already exists but derived docs are missing - rerunning downstream",
+                drive_filename,
+            )
+            if drive_file is None:
+                errors.append({
+                    "message_id": message_id,
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "error": "Existing Block Plan PDF could not be found in M1",
+                })
+                all_succeeded = False
+                review_needed = True
+                keep_unprocessed = True
+                continue
 
-        # Download attachment and upload to Drive
         try:
             file_bytes = _get_attachment_bytes(gc, message_id, att)
-            drive_file = gc.upload_file_to_folder(
-                folder_id=target_folder_id,
-                file_name=drive_filename,
-                file_bytes=file_bytes,
-            )
-            uploaded.append({
-                "original_filename": filename,
-                "drive_filename": drive_filename,
-                "doc_type": doc_type,
-                "site_title": site_title,
-                "matched_site_id": matched_site_id,
-                "drive_file_id": drive_file.get("id"),
-                "drive_link": drive_file.get("webViewLink"),
-            })
-            logger.info("Uploaded '%s' -> '%s'", filename, drive_filename)
+            if not rerun_existing_block_plan:
+                drive_file = gc.upload_file_to_folder(
+                    folder_id=target_folder_id,
+                    file_name=drive_filename,
+                    file_bytes=file_bytes,
+                )
+                uploaded.append({
+                    "original_filename": filename,
+                    "drive_filename": drive_filename,
+                    "doc_type": doc_type,
+                    "site_title": site_title,
+                    "matched_site_id": matched_site_id,
+                    "drive_file_id": drive_file.get("id"),
+                    "drive_link": drive_file.get("webViewLink"),
+                })
+                logger.info("Uploaded '%s' -> '%s'", filename, drive_filename)
+            elif drive_file is not None:
+                uploaded.append({
+                    "original_filename": filename,
+                    "drive_filename": drive_filename,
+                    "doc_type": doc_type,
+                    "site_title": site_title,
+                    "matched_site_id": matched_site_id,
+                    "drive_file_id": drive_file.get("id"),
+                    "drive_link": drive_file.get("webViewLink"),
+                    "retry_existing_upload": True,
+                })
+
+            if doc_type == "block_plan" and drive_file is not None:
+                block_plan_content = extract_text_from_pdf_bytes(file_bytes)
+                derived_docs = _run_block_plan_downstream(
+                    gc,
+                    site_summary=site_summary,
+                    block_plan_content=block_plan_content,
+                    block_plan_url=str(drive_file.get("webViewLink", "")),
+                )
+                uploaded[-1]["derived_documents"] = derived_docs
         except Exception as e:
             logger.error("Upload failed for '%s': %s", filename, e)
             errors.append({
@@ -353,13 +650,43 @@ def process_email(
             })
             all_succeeded = False
             review_needed = True
+            if doc_type == "block_plan" and drive_file is not None:
+                keep_unprocessed = True
+                site_owner_email = str(site_summary.get("p1_assignee_email", "")).strip()
+                if site_owner_email and not failure_notification_sent:
+                    try:
+                        _send_block_plan_failure_notification(
+                            settings,
+                            site_title=site_title or "Unknown site",
+                            site_owner_email=site_owner_email,
+                            filename=filename,
+                            error_message=str(e),
+                        )
+                        failure_notification_sent = True
+                    except Exception as notify_error:
+                        logger.warning(
+                            "Failed to send Block Plan failure notification for %s: %s",
+                            site_title or filename,
+                            notify_error,
+                        )
 
     marked = False
     if review_needed and not dry_run:
-        _mark_email_for_review(gc, message_id, label_id, review_label_id)
+        _mark_email_for_review(
+            gc,
+            message_id,
+            label_id,
+            review_label_id,
+            include_processed_label=not keep_unprocessed,
+        )
         marked = True
     elif all_succeeded and not dry_run and not low_confidence:
-        _mark_email_processed(gc, message_id, label_id)
+        _mark_email_processed(
+            gc,
+            message_id,
+            label_id,
+            remove_labels=["UNREAD", review_label_id],
+        )
         marked = True
 
     return {
@@ -470,6 +797,7 @@ def _extract_email_metadata(gc: GoogleClient, message_id: str) -> EmailMetadata:
         subject=subject,
         sender=sender,
         body_snippet=snippet,
+        label_ids=list(message.get("labelIds", [])),
         attachments=attachments,
     )
 
@@ -507,12 +835,18 @@ def _generate_drive_filename(site_title: str, doc_type: str) -> str:
     return template.format(date=date_str, site_title=site_title)
 
 
-def _mark_email_processed(gc: GoogleClient, message_id: str, label_id: str) -> None:
+def _mark_email_processed(
+    gc: GoogleClient,
+    message_id: str,
+    label_id: str,
+    *,
+    remove_labels: list[str] | None = None,
+) -> None:
     """Add the DD-Processed label and remove UNREAD."""
     gc.gmail_modify_labels(
         message_id,
         add_labels=[label_id],
-        remove_labels=["UNREAD"],
+        remove_labels=remove_labels or ["UNREAD"],
     )
     logger.info("Marked email %s as processed", message_id)
 
@@ -522,11 +856,16 @@ def _mark_email_for_review(
     message_id: str,
     processed_label_id: str,
     review_label_id: str,
+    *,
+    include_processed_label: bool = True,
 ) -> None:
     """Mark an email as needing manual review while suppressing reprocessing."""
+    add_labels = [review_label_id]
+    if include_processed_label:
+        add_labels.insert(0, processed_label_id)
     gc.gmail_modify_labels(
         message_id,
-        add_labels=[processed_label_id, review_label_id],
+        add_labels=add_labels,
         remove_labels=[],
     )
     logger.info("Marked email %s for manual review", message_id)

@@ -283,7 +283,7 @@ class TestCellIndex:
 
 
 class TestTokenCoverage:
-    """Verify the builder handles all 40 template tokens from the V3 spec."""
+    """Verify the builder handles all current template tokens from the V3 spec."""
 
     # Collect all tokens referenced by the builder module
     _BUILDER_TOKENS: set[str] = set()
@@ -298,6 +298,7 @@ class TestTokenCoverage:
         cls._BUILDER_TOKENS.update([
             "exec.c_answer", "exec.c_zoning", "exec.c_edreg", "exec.c_occupancy",
             "exec.c_permit_timeline", "exec.c_construction_timeline",
+            "exec.direct_viable_buildout", "exec.alpha_fit",
         ])
 
         # Scenario summary tokens
@@ -312,7 +313,7 @@ class TestTokenCoverage:
 
         # Narrative tokens
         cls._BUILDER_TOKENS.update([
-            "exec.acquisition_conditions", "exec.risk_notes",
+            "exec.acquisition_conditions", "exec.tradeoffs_and_deficiencies",
         ])
 
         # Source link tokens
@@ -320,9 +321,7 @@ class TestTokenCoverage:
             cls._BUILDER_TOKENS.add(token)
 
     def test_all_v3_template_tokens_covered(self) -> None:
-        """Every V3 token (40 tokens from the corrected template) is handled."""
-        # The V3 corrected template only has fastest_open and max_capacity
-        # scenarios — not recommended_path or max_value.
+        """Every V3 token in the live two-scenario contract is handled."""
         v3_tokens = set()
 
         # meta tokens
@@ -336,6 +335,7 @@ class TestTokenCoverage:
         v3_tokens.update([
             "exec.c_answer", "exec.c_edreg", "exec.c_occupancy", "exec.c_zoning",
             "exec.c_permit_timeline", "exec.c_construction_timeline",
+            "exec.direct_viable_buildout", "exec.alpha_fit",
         ])
 
         # exec scenario summary (2 scenarios × 3 metrics = 6)
@@ -355,18 +355,19 @@ class TestTokenCoverage:
                 v3_tokens.add(f"exec.{key}_{scenario}")
 
         # exec narrative
-        v3_tokens.update(["exec.acquisition_conditions", "exec.risk_notes"])
+        v3_tokens.update(["exec.acquisition_conditions", "exec.tradeoffs_and_deficiencies"])
 
         # sources
         v3_tokens.update([
-            "sources.sir_link", "sources.inspection_link", "sources.isp_link",
+            "sources.sir_link", "sources.inspection_link",
+            "sources.block_plan_link",
             "sources.e_occupancy_link", "sources.school_approval_link",
             "sources.opening_plan_link",
             "sources.trace_link",
         ])
 
-        # 7 meta + 6 can-we-open + 6 scenario summary + 24 cost + 2 narrative + 7 sources = 52
-        assert len(v3_tokens) == 52, f"Expected 52 V3 tokens, got {len(v3_tokens)}"
+        # 7 meta + 8 exec summary/direct + 6 scenario summary + 24 cost + 2 narrative + 7 sources = 54
+        assert len(v3_tokens) == 54, f"Expected 54 V3 tokens, got {len(v3_tokens)}"
 
         # All V3 tokens should be covered by the builder
         missing = v3_tokens - self._BUILDER_TOKENS
@@ -434,7 +435,7 @@ class TestBuildDdReportDoc:
     """Integration-level tests for build_dd_report_doc with mocked API."""
 
     def _full_replacements(self) -> dict[str, str]:
-        """Build a complete set of replacements for all 40 V3 tokens."""
+        """Build a complete set of replacements for all live V3 tokens."""
         repl: dict[str, str] = {
             "meta.site_name": "Alpha Boca Raton 2200",
             "meta.marketing_name": "Boca Academy",
@@ -446,9 +447,11 @@ class TestBuildDdReportDoc:
             "exec.c_answer": "Yes",
             "exec.c_edreg": "FL: Registration required. Timeline: 30 days.",
             "exec.c_occupancy": "78/100 YELLOW - Office general, 6-9 months",
-            "exec.c_zoning": "Permitted by right",
+            "exec.c_zoning": "Permitted",
             "exec.c_permit_timeline": "10 weeks — admin CUP, no public hearing (SIR p.3)",
             "exec.c_construction_timeline": "8 weeks — minimal TI, 4-classroom layout",
+            "exec.direct_viable_buildout": "Fastest Open",
+            "exec.alpha_fit": "No",
             "exec.fastest_open_capacity": "69 students",
             "exec.fastest_open_capex": "$487,000",
             "exec.fastest_open_open_date": "07/15/26",
@@ -456,10 +459,10 @@ class TestBuildDdReportDoc:
             "exec.max_capacity_capex": "$812,000",
             "exec.max_capacity_open_date": "11/26",
             "exec.acquisition_conditions": "- Landlord must provide 6-month TI window\n- ADA ramp required",
-            "exec.risk_notes": "- No sprinkler system\n- Fire alarm > 15 years old",
+            "exec.tradeoffs_and_deficiencies": "- No dedicated outdoor playspace\n- Fire alarm > 15 years old",
             "sources.sir_link": "https://drive.google.com/file/d/sir123",
             "sources.inspection_link": "https://drive.google.com/file/d/insp123",
-            "sources.isp_link": "https://drive.google.com/file/d/isp123",
+            "sources.block_plan_link": "https://drive.google.com/file/d/block123",
             "sources.e_occupancy_link": "https://drive.google.com/file/d/eocc123",
             "sources.school_approval_link": "https://drive.google.com/file/d/sa123",
             "sources.opening_plan_link": "https://drive.google.com/file/d/op123",
@@ -510,9 +513,9 @@ class TestBuildDdReportDoc:
 
         result = build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Alpha Boca")
 
-        # We have 5 source URLs + 1 drive folder URL = up to 6 hyperlinks
+        # We have 6 source URLs + 1 drive folder URL = up to 7 hyperlinks
         # (trace_link is empty, so not hyperlinked)
-        assert result["applied"] >= 5
+        assert result["applied"] >= 6
         assert "sources.sir_link" in result["found_tokens"]
 
     def test_missing_values_get_gap_labels(self) -> None:
@@ -613,7 +616,30 @@ class TestBuildDdReportDocRequestStructure:
             if "insertText" in request
         )
 
-        assert inserted_text.index("Source Quality Notes\n") < inserted_text.index("Acquisition Conditions\n")
+        assert inserted_text.index("Source Quality Notes\n") < inserted_text.index("Lease Conditions\n")
+
+    def test_direct_answer_renders_before_buildout_analysis(self) -> None:
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {
+            "meta.site_name": "Test",
+            "meta.report_date": "04/14/2026",
+            "exec.direct_viable_buildout": "Fastest Open",
+            "exec.alpha_fit": "No",
+        }
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        inserted_text = "\n".join(
+            request["insertText"]["text"]
+            for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list
+            for request in call_args.kwargs["body"]["requests"]
+            if "insertText" in request
+        )
+
+        assert inserted_text.index("Direct Answer\n") < inserted_text.index("Buildout Analysis\n")
+        assert "2a. Viable Buildout: " in inserted_text
+        assert "2b. Great Alpha School Site: " in inserted_text
 
 
 class TestGapLabelsForLinks:

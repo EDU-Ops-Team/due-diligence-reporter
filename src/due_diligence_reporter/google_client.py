@@ -237,6 +237,33 @@ class GoogleClient:
                 return folder
         return None
 
+    def create_folder(
+        self,
+        parent_id: str,
+        folder_name: str,
+    ) -> dict[str, Any]:
+        """Create a direct child folder inside a Drive folder."""
+        logger.info("Creating folder '%s' inside %s", folder_name, parent_id)
+        body = {
+            "name": folder_name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_id],
+        }
+        try:
+            result = _google_api_execute(
+                self.drive_service.files()
+                .create(
+                    body=body,
+                    fields="id,name,webViewLink",
+                    supportsAllDrives=True,
+                )
+            )
+            logger.info("Created folder '%s' (id: %s)", folder_name, result.get("id"))
+            return result  # type: ignore[no-any-return]
+        except HttpError as error:
+            logger.error("Failed to create folder '%s': %s", folder_name, error)
+            raise RuntimeError(f"Failed to create folder: {error}") from error
+
     def export_google_doc_as_text(self, file_id: str) -> str:
         """
         Export a Google Docs file as plain text.
