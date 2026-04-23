@@ -189,7 +189,7 @@ def main(single_site_filter: str | None = None) -> int:
         oauth_port=settings.oauth_port,
         scopes=settings.google_scopes,
     )
-    wrike_cfg = load_wrike_config(settings)
+    wrike_cfg = load_wrike_config()
     records = _get_all_site_records(cfg=wrike_cfg)
     active_status_ids = _get_active_status_ids(access_token=wrike_cfg.access_token)
     active = filter_active_site_records(records, active_status_ids)
