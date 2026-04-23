@@ -55,9 +55,10 @@ logger = logging.getLogger("backfill_wrike_created_at")
 
 DEFAULT_REPO = os.environ.get("DASHBOARD_REPO", "EDU-Ops-Team/dd-dashboard")
 DEFAULT_BRANCH = os.environ.get("DASHBOARD_REPO_BRANCH", "main")
-DEFAULT_PATH = os.environ.get(
-    "DASHBOARD_REPO_PATH", "client/public/sites.json"
-)
+# Hard-coded because .env may set DASHBOARD_REPO_PATH to the aggregator's
+# target ("public/sites.json") which is a different layout than this repo.
+# The dashboard we're patching keeps sites.json at client/public/.
+DEFAULT_PATH = "client/public/sites.json"
 
 
 def _clone_and_read(
