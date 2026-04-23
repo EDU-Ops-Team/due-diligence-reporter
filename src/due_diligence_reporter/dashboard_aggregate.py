@@ -49,7 +49,7 @@ class CandidatePayload:
     payload: dict[str, Any]     # parsed JSON body
 
     def record_slug(self) -> str:
-        """Slug as stored inside the payload itself — the canonical key.
+        """Slug as stored inside the payload itself — the dashboard merge key.
 
         Falls back to the filename-derived slug if the payload is
         missing a slug field for any reason.

@@ -546,8 +546,11 @@ def run_dd_report_agent(
                     # Stash the final, fully-merged report_data for the
                     # dashboard publisher.
                     rd = tool_input.get("report_data")
+                    normalized = result.get("normalized_report_data")
                     if isinstance(rd, dict):
                         trace.final_report_data = dict(rd)
+                    if isinstance(normalized, dict):
+                        trace.final_report_data.update(normalized)
             elif isinstance(result, dict):
                 report_fields = result.get("report_data_fields")
                 if isinstance(report_fields, dict):
@@ -1138,7 +1141,7 @@ def process_site_pipeline(
 def _publish_to_dashboard_best_effort(
     *,
     site_title: str,
-    trace: "ReportTrace | None",
+    trace: ReportTrace | None,
     drive_folder_url: str,
     dd_report_url: str,
     site_address: str | None,

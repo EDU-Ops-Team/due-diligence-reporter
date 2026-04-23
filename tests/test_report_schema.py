@@ -44,7 +44,7 @@ def test_no_alias_is_also_a_template_token() -> None:
 
 
 def test_token_count_v3() -> None:
-    assert len(TEMPLATE_TOKENS) == 54, f"Expected 54 tokens, got {len(TEMPLATE_TOKENS)}"
+    assert len(TEMPLATE_TOKENS) == 56, f"Expected 56 tokens, got {len(TEMPLATE_TOKENS)}"
     assert all("delta_" not in t for t in TEMPLATE_TOKENS)
 
 
@@ -75,6 +75,10 @@ class TestNormalization:
                 "e_occupancy_link": "https://example.com/eocc",
             },
             "meta": {"site_name": "Alpha Test"},
+            "rebl": {
+                "site_id": "alpha-test-site",
+                "url": "https://rebl3.vercel.app/site/alpha-test-site",
+            },
         }
         replacements, unmatched, _unfilled, sources = normalize_report_data(
             report_data,
@@ -89,12 +93,15 @@ class TestNormalization:
         assert replacements["exec.tradeoffs_and_deficiencies"] == "No nearby park access [1]"
         assert replacements["sources.sir_link"] == "https://example.com/sir"
         assert replacements["sources.block_plan_link"] == "https://example.com/block-plan"
+        assert replacements["meta.rebl_site_id"] == "alpha-test-site"
+        assert replacements["sources.rebl_link"] == "https://rebl3.vercel.app/site/alpha-test-site"
         assert replacements["meta.site_name"] == "Alpha Test"
-        assert unmatched == []
+        assert unmatched == ["rebl.site_id", "rebl.url"]
         assert sources["exec.fastest_open_capacity"] == "Capacity Brainlift"
         assert sources["exec.max_capacity_capacity"] == "Capacity Brainlift"
         assert sources["exec.fastest_open_capex"] == "RayCon"
         assert sources["exec.fastest_open_open_date"] == "RayCon"
+        assert sources["meta.rebl_site_id"] == "alias:rebl.site_id"
 
     def test_legacy_v2_aliases_map_to_v3(self) -> None:
         report_data = {
@@ -141,6 +148,7 @@ class TestNormalization:
         assert "meta.report_date" not in unfilled
         assert "exec.direct_viable_buildout" in unfilled
         assert "exec.alpha_fit" in unfilled
+        assert "meta.rebl_site_id" in unfilled
         assert "exec.fastest_open_capacity" in unfilled
         assert "exec.max_capacity_capacity" in unfilled
         assert "exec.tradeoffs_and_deficiencies" in unfilled
@@ -260,6 +268,11 @@ class TestLinkTokenSets:
     def test_block_plan_link_present_in_v3_schema(self) -> None:
         assert "sources.block_plan_link" in TEMPLATE_TOKEN_SET
         assert "sources.block_plan_link" in LINK_TOKENS
+
+    def test_rebl_tokens_present_in_v3_schema(self) -> None:
+        assert "meta.rebl_site_id" in TEMPLATE_TOKEN_SET
+        assert "sources.rebl_link" in TEMPLATE_TOKEN_SET
+        assert "sources.rebl_link" in LINK_TOKENS
 
     def test_isp_link_removed_from_v3_schema(self) -> None:
         assert "sources.isp_link" not in TEMPLATE_TOKEN_SET

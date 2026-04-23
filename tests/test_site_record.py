@@ -7,6 +7,7 @@ from datetime import datetime
 
 import pytest
 
+from due_diligence_reporter.rebl import ReblResolution
 from due_diligence_reporter.site_record import (
     CLASSIFICATIONS,
     SiteRecord,
@@ -105,6 +106,7 @@ def _full_replacements() -> dict[str, str]:
         "meta.school_type": "K-8",
         "meta.report_date": "04/22/26",
         "meta.prepared_by": "Greg Foote",
+        "meta.rebl_site_id": "palm-beach-gardens-fl",
         "meta.drive_folder_url": "https://drive.google.com/drive/folders/ABC",
         "exec.c_answer": "Yes see notes",
         "exec.c_edreg": "Approved - FL nonpublic registration",
@@ -125,6 +127,7 @@ def _full_replacements() -> dict[str, str]:
         "sources.sir_link": "https://drive.google.com/sir",
         "sources.inspection_link": "https://drive.google.com/inspection",
         "sources.block_plan_link": "https://drive.google.com/block-plan",
+        "sources.rebl_link": "https://rebl3.vercel.app/site/palm-beach-gardens-fl",
         "sources.e_occupancy_link": "https://drive.google.com/eo",
         "sources.school_approval_link": "https://drive.google.com/sa",
         "sources.opening_plan_link": "https://drive.google.com/op",
@@ -189,8 +192,30 @@ class TestFromReplacements:
         )
         assert record.sources.sir == "https://drive.google.com/sir"
         assert record.sources.block_plan == "https://drive.google.com/block-plan"
+        assert record.sources.rebl == "https://rebl3.vercel.app/site/palm-beach-gardens-fl"
         assert record.sources.dd_report == "https://docs.google.com/document/d/XYZ"
         assert record.sources.drive_folder == "https://drive.google.com/drive/folders/ABC"
+
+    def test_rebl_resolution_is_preserved(self) -> None:
+        resolution = ReblResolution(
+            address_submitted="4520 PGA Blvd, Palm Beach Gardens, FL 33418",
+            resolution_status="resolved",
+            site_id="palm-beach-gardens-fl",
+            url="https://rebl3.vercel.app/site/palm-beach-gardens-fl",
+            matched_by="slug",
+            scored=True,
+        )
+        record = SiteRecord.from_replacements(
+            _full_replacements(),
+            site_name="Palm Beach Gardens",
+            report_date="04/22/26",
+            drive_folder_url="https://drive.google.com/drive/folders/ABC",
+            dd_report_url="https://docs.google.com/document/d/XYZ",
+            rebl_resolution=resolution,
+        )
+        assert record.rebl.site_id == "palm-beach-gardens-fl"
+        assert record.rebl.url == "https://rebl3.vercel.app/site/palm-beach-gardens-fl"
+        assert record.rebl.matched_by == "slug"
 
     def test_to_dict_is_json_serializable(self) -> None:
         record = SiteRecord.from_replacements(
@@ -203,6 +228,7 @@ class TestFromReplacements:
         reloaded = json.loads(json.dumps(record.to_dict()))
         assert reloaded["slug"] == "palm-beach-gardens"
         assert reloaded["classification"]["label"] == "yes_if"
+        assert reloaded["rebl"]["site_id"] == "palm-beach-gardens-fl"
         assert reloaded["scenarios"]["fastest_open"]["capacity"] == "180"
         assert reloaded["sources"]["block_plan"] == "https://drive.google.com/block-plan"
 

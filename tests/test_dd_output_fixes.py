@@ -454,7 +454,7 @@ class TestReportNormalizationDefaults:
             "p1_assignee_email": "jane@example.com",
         }
 
-        replacements, _, _, _ = _normalize_report_replacements(
+        replacements, _, _, _, _ = _normalize_report_replacements(
             report_data={"meta": {"prepared_by": "DD Report Agent"}},
             site_name="Alpha Atlanta 345",
             report_date="04/02/2026",
@@ -475,7 +475,7 @@ class TestReportNormalizationDefaults:
         mock_find_site_record.return_value = {"id": "wrike-1"}
         mock_build_site_summary.return_value = {}
 
-        replacements, _, _, _ = _normalize_report_replacements(
+        replacements, _, _, _, _ = _normalize_report_replacements(
             report_data={
                 "exec": {
                     "c_answer": "Conditional",
@@ -505,12 +505,43 @@ class TestReportNormalizationDefaults:
 
         mock_find_site_record.return_value = None
 
-        enriched = _inject_wrike_report_defaults(
+        enriched, rebl_resolution = _inject_wrike_report_defaults(
             {"meta": {"prepared_by": "DD Report Agent"}},
             "Alpha Atlanta 345",
         )
 
         assert enriched["p1_assignee_name"] == MISSING_P1_ASSIGNEE_LABEL
+        assert rebl_resolution.resolution_status == "error"
+
+    @patch("due_diligence_reporter.server.resolve_address")
+    @patch("due_diligence_reporter.server.build_site_summary")
+    @patch("due_diligence_reporter.server.find_site_record")
+    def test_inject_wrike_defaults_adds_rebl_fields(
+        self,
+        mock_find_site_record: MagicMock,
+        mock_build_site_summary: MagicMock,
+        mock_resolve_address: MagicMock,
+    ) -> None:
+        from due_diligence_reporter.rebl import ReblResolution
+        from due_diligence_reporter.server import _inject_wrike_report_defaults
+
+        mock_find_site_record.return_value = {"id": "wrike-1"}
+        mock_build_site_summary.return_value = {
+            "address": "123 Main St, Austin, TX 78701",
+            "p1_assignee_name": "Jane Owner",
+        }
+        mock_resolve_address.return_value = ReblResolution(
+            address_submitted="123 Main St, Austin, TX 78701",
+            resolution_status="resolved",
+            site_id="123-main-st-austin-tx",
+            url="https://rebl3.vercel.app/site/123-main-st-austin-tx",
+        )
+
+        enriched, rebl_resolution = _inject_wrike_report_defaults({}, "Alpha Austin")
+
+        assert enriched["meta"]["rebl_site_id"] == "123-main-st-austin-tx"
+        assert enriched["sources"]["rebl_link"] == "https://rebl3.vercel.app/site/123-main-st-austin-tx"
+        assert rebl_resolution.site_id == "123-main-st-austin-tx"
 
     @patch("due_diligence_reporter.server.requests.get")
     def test_optional_params_passed_correctly(self, mock_get: MagicMock) -> None:
