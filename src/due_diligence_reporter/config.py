@@ -68,6 +68,28 @@ class Settings(BaseSettings):
         description="Drive folder ID for shared Building Inspection documents",
     )
 
+    # DD Dashboard aggregation + deploy
+    dashboard_output_path: str = Field(
+        "dist/sites.json",
+        description="Local filesystem path (relative to repo root) where the aggregated sites.json is written.",
+    )
+    dashboard_drive_folder_id: str = Field(
+        "",
+        description="Optional Drive folder ID. When set, the aggregated sites.json is also uploaded there.",
+    )
+    dashboard_repo: str = Field(
+        "",
+        description="Optional GitHub repo (owner/name) to push sites.json to. When set, the aggregator runs gh to commit and push.",
+    )
+    dashboard_repo_path: str = Field(
+        "public/sites.json",
+        description="Path inside DASHBOARD_REPO where sites.json should live.",
+    )
+    dashboard_repo_branch: str = Field(
+        "main",
+        description="Branch to push sites.json to.",
+    )
+
     # RayCon cost API
     pricing_api_url: str = Field(
         "https://raycon-api-738625530258.us-central1.run.app",

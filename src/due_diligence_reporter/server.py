@@ -28,6 +28,7 @@ from .classifier import (
     classify_document_type as _classify_document_type,
 )
 from .config import get_settings
+from .dashboard_publish import publish_site_record
 from .google_client import GoogleClient
 from .google_doc_builder import SOURCE_QUALITY_NOTES_KEY, build_dd_report_doc
 from .report_schema import (
@@ -41,6 +42,7 @@ from .report_schema import (
     normalize_report_data,
 )
 from .retry import retry_config
+from .site_record import SiteRecord
 from .utils import (
     build_hyperlink_requests,
     escape_html_text,
@@ -3325,7 +3327,39 @@ async def create_dd_report(
             except Exception as e:
                 logger.warning("Failed to upload report trace (report still valid): %s", e)
 
-            return {
+            # ── Publish to DD Dashboard ──────────────────────────────
+            # Build a SiteRecord from the V3 replacements we already
+            # have in memory and upsert it as JSON into the site
+            # folder. The pipeline aggregator picks these up and
+            # rebuilds the dashboard's sites.json. A publish failure
+            # must never block the DD report itself, so this is
+            # wrapped and logged.
+            dashboard_payload: dict[str, Any] | None = None
+            try:
+                site_record = SiteRecord.from_replacements(
+                    replacements,
+                    site_name=site_name.strip(),
+                    report_date=today_str,
+                    drive_folder_url=drive_folder_url,
+                    dd_report_url=doc_url or "",
+                )
+                dashboard_payload = publish_site_record(
+                    gc=gc,
+                    folder_id=folder_id,
+                    record=site_record,
+                )
+                logger.info(
+                    "Dashboard publish: slug=%s classification=%s confidence=%.2f",
+                    site_record.slug,
+                    site_record.classification.label,
+                    site_record.classification.confidence,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to publish dashboard payload (report still valid): %s", e,
+                )
+
+            response: dict[str, Any] = {
                 "status": "success",
                 "document": {"id": doc_id, "name": doc_name, "url": doc_url},
                 "replacements_applied": len(replacements),
@@ -3334,6 +3368,14 @@ async def create_dd_report(
                 "hyperlinks_applied": hyperlink_trace["applied"],
                 "message": f"DD report created: {doc_url}",
             }
+            if dashboard_payload is not None:
+                response["dashboard_payload"] = {
+                    "file_id": dashboard_payload.get("file_id", ""),
+                    "file_name": dashboard_payload.get("file_name", ""),
+                    "web_view_link": dashboard_payload.get("web_view_link", ""),
+                    "replaced_count": dashboard_payload.get("replaced_count", 0),
+                }
+            return response
         except Exception as e:
             logger.error("Failed to create DD report: %s", e)
             return {
