@@ -49,6 +49,7 @@ from due_diligence_reporter.wrike import (  # noqa: E402
     _get_all_site_records,
     extract_address_from_record,
     extract_google_folder_from_record,
+    extract_p1_from_record,
     extract_school_type_from_record,
     filter_active_site_records,
     load_wrike_config,
@@ -132,6 +133,7 @@ def backfill_one(
     drive_folder_url: str,
     address: str | None,
     school_type: str | None,
+    site_owner: str | None = None,
 ) -> bool:
     folder_id = extract_folder_id_from_url(drive_folder_url)
     if not folder_id:
@@ -174,6 +176,7 @@ def backfill_one(
         drive_folder_url=drive_folder_url,
         dd_report_url=doc_url,
         report_date=rd,
+        site_owner=site_owner,
     )
 
 
@@ -198,9 +201,11 @@ def main(single_site_filter: str | None = None) -> int:
         total += 1
         address = extract_address_from_record(rec)
         school_type = extract_school_type_from_record(rec)
+        p1_profile = extract_p1_from_record(rec) or {}
+        site_owner = p1_profile.get("name")
 
         try:
-            ok = backfill_one(gc, title, drive_url, address, school_type)
+            ok = backfill_one(gc, title, drive_url, address, school_type, site_owner=site_owner)
         except Exception as e:
             logger.exception("%s: unexpected error during backfill: %s", title, e)
             ok = False

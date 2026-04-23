@@ -74,6 +74,7 @@ def build_site_meta(
     drive_folder_url: str | None = None,
     dd_report_url: str | None = None,
     report_date: date | None = None,
+    site_owner: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the `site_meta` payload from pipeline inputs.
 
@@ -101,6 +102,7 @@ def build_site_meta(
         "state": state,
         "school_type": school_label,
         "prepared_by": "DD Pipeline (auto)",
+        "site_owner": (site_owner or "").strip(),
         "report_date": rd,
         "published_at": datetime.now(timezone.utc).isoformat(),
         "drive_folder_url": drive_folder_url or "",
@@ -117,6 +119,7 @@ def publish_to_dashboard(
     drive_folder_url: str | None = None,
     dd_report_url: str | None = None,
     report_date: date | None = None,
+    site_owner: str | None = None,
     base_url: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT_SEC,
 ) -> bool:
@@ -146,6 +149,7 @@ def publish_to_dashboard(
         drive_folder_url=drive_folder_url,
         dd_report_url=dd_report_url,
         report_date=report_date,
+        site_owner=site_owner,
     )
     slug = meta["slug"]
 

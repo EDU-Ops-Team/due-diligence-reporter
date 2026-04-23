@@ -43,6 +43,7 @@ from due_diligence_reporter.wrike import (  # noqa: E402
     extract_address_from_record,
     extract_google_folder_from_record,
     extract_p1_email_from_record,
+    extract_p1_from_record,
     filter_active_site_records,
     load_wrike_config,
 )
@@ -124,6 +125,8 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
     address = extract_address_from_record(record)
     match_terms = _build_site_match_terms(site_title, address)
     p1_email = extract_p1_email_from_record(record)
+    p1_profile = extract_p1_from_record(record) or {}
+    p1_name = p1_profile.get("name")
 
     logger.info("Generating V3 report for: %s", site_title)
 
@@ -150,7 +153,7 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
     result = process_site_pipeline(
         gc, site_title, drive_folder_url, match_terms,
         shared_cache, system_prompt, settings,
-        p1_email=p1_email, site_address=address,
+        p1_email=p1_email, site_address=address, p1_name=p1_name,
     )
 
     # Post to Google Chat if configured

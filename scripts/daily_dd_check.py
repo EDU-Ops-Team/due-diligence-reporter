@@ -48,6 +48,7 @@ from due_diligence_reporter.wrike import (  # noqa: E402
     extract_address_from_record,
     extract_google_folder_from_record,
     extract_p1_email_from_record,
+    extract_p1_from_record,
     filter_active_site_records,
     load_wrike_config,
 )
@@ -118,13 +119,15 @@ def main(site_filter: str | None = None) -> None:
         address = extract_address_from_record(record)
         match_terms = _build_site_match_terms(site_title, address)
         p1_email = extract_p1_email_from_record(record)
+        p1_profile = extract_p1_from_record(record) or {}
+        p1_name = p1_profile.get("name")
         logger.info("Checking site: %s (match terms: %s, p1: %s)", site_title, match_terms, p1_email)
 
         try:
             result = process_site_pipeline(
                 gc, site_title, drive_folder_url, match_terms,
                 shared_cache, system_prompt, settings,
-                p1_email=p1_email, site_address=address,
+                p1_email=p1_email, site_address=address, p1_name=p1_name,
             )
         except Exception as e:
             logger.exception("Unexpected pipeline failure for '%s'", site_title)

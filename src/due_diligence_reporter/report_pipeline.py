@@ -1049,6 +1049,7 @@ def process_site_pipeline(
     settings: Settings,
     p1_email: str | None = None,
     site_address: str | None = None,
+    p1_name: str | None = None,
 ) -> PipelineResult:
     """Full single-site pipeline: readiness -> report generation -> completeness -> email.
 
@@ -1120,6 +1121,7 @@ def process_site_pipeline(
         drive_folder_url=drive_folder_url,
         dd_report_url=doc_url,
         site_address=site_address,
+        p1_name=p1_name,
     )
 
     return PipelineResult(
@@ -1140,6 +1142,7 @@ def _publish_to_dashboard_best_effort(
     drive_folder_url: str,
     dd_report_url: str,
     site_address: str | None,
+    p1_name: str | None = None,
 ) -> None:
     """Fire-and-forget dashboard publish. Never raises."""
     if trace is None or not getattr(trace, "final_report_data", None):
@@ -1155,6 +1158,7 @@ def _publish_to_dashboard_best_effort(
             address=site_address,
             drive_folder_url=drive_folder_url,
             dd_report_url=dd_report_url,
+            site_owner=p1_name,
         )
     except Exception as e:
         # publish_to_dashboard already swallows requests errors; this is a
