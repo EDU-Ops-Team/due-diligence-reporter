@@ -1,4 +1,4 @@
-"""Unit tests for dashboard_publish — upsert semantics and payload shape."""
+"""Unit tests for dashboard_publish."""
 
 from __future__ import annotations
 
@@ -21,8 +21,9 @@ def record() -> SiteRecord:
             "meta.site_name": "Palm Beach Gardens",
             "meta.city_state_zip": "Palm Beach Gardens, FL 33410",
             "exec.c_answer": "Yes",
-            "exec.recommended_path_capacity": "180",
+            "exec.fastest_open_capacity": "180",
             "sources.sir_link": "https://drive.google.com/sir",
+            "sources.block_plan_link": "https://drive.google.com/block-plan",
         },
         site_name="Palm Beach Gardens",
         report_date="04/22/26",
@@ -32,14 +33,14 @@ def record() -> SiteRecord:
 
 
 class TestBuildDashboardFilename:
-    def test_suffix(self):
+    def test_suffix(self) -> None:
         assert build_dashboard_filename("palm-beach-gardens") == "palm-beach-gardens.dashboard.json"
 
 
 class TestPublishSiteRecord:
-    def test_happy_path_new_upload(self, record):
+    def test_happy_path_new_upload(self, record: SiteRecord) -> None:
         gc = MagicMock()
-        gc.list_files_in_folder.return_value = []  # no prior payload
+        gc.list_files_in_folder.return_value = []
         gc.upload_file_to_folder.return_value = {
             "id": "file-123",
             "name": "palm-beach-gardens.dashboard.json",
@@ -48,7 +49,6 @@ class TestPublishSiteRecord:
 
         result = publish_site_record(gc, folder_id="folder-ABC", record=record)
 
-        # Listed the folder, didn't trash anything, uploaded new file.
         gc.list_files_in_folder.assert_called_once_with("folder-ABC")
         gc.drive_service.files().update.assert_not_called()
         gc.upload_file_to_folder.assert_called_once()
@@ -58,17 +58,17 @@ class TestPublishSiteRecord:
         assert call.kwargs["file_name"] == "palm-beach-gardens.dashboard.json"
         assert call.kwargs["mime_type"] == "application/json"
 
-        # Payload is valid JSON carrying the record's core fields.
         payload = json.loads(call.kwargs["file_bytes"].decode("utf-8"))
         assert payload["slug"] == "palm-beach-gardens"
         assert payload["classification"]["label"] == "yes"
         assert payload["sources"]["sir"] == "https://drive.google.com/sir"
+        assert payload["sources"]["block_plan"] == "https://drive.google.com/block-plan"
 
         assert result["file_id"] == "file-123"
         assert result["file_name"] == "palm-beach-gardens.dashboard.json"
         assert result["replaced_count"] == 0
 
-    def test_upsert_trashes_existing(self, record):
+    def test_upsert_trashes_existing_after_upload(self, record: SiteRecord) -> None:
         gc = MagicMock()
         gc.list_files_in_folder.return_value = [
             {"id": "old-1", "name": "palm-beach-gardens.dashboard.json"},
@@ -82,23 +82,16 @@ class TestPublishSiteRecord:
 
         result = publish_site_record(gc, folder_id="folder-ABC", record=record)
 
-        # Trashed the one matching file, not the DD report.
-        update_call = gc.drive_service.files().update
-        assert update_call.called
-        trashed_ids = [c.kwargs.get("fileId") for c in update_call.call_args_list]
-        # update is called both for creating and for trashing, so inspect
-        # only calls where body sets trashed=True.
+        gc.upload_file_to_folder.assert_called_once()
         trashed_ids = [
-            c.kwargs["fileId"]
-            for c in update_call.call_args_list
-            if c.kwargs.get("body") == {"trashed": True}
+            call.kwargs["fileId"]
+            for call in gc.drive_service.files().update.call_args_list
+            if call.kwargs.get("body") == {"trashed": True}
         ]
         assert trashed_ids == ["old-1"]
-
-        gc.upload_file_to_folder.assert_called_once()
         assert result["replaced_count"] == 1
 
-    def test_list_failure_does_not_block_upload(self, record):
+    def test_list_failure_does_not_block_upload(self, record: SiteRecord) -> None:
         gc = MagicMock()
         gc.list_files_in_folder.side_effect = RuntimeError("Drive is grumpy")
         gc.upload_file_to_folder.return_value = {
@@ -107,12 +100,12 @@ class TestPublishSiteRecord:
             "webViewLink": "https://drive.google.com/file/d/file-new/view",
         }
 
-        # Should not raise; upload should still happen.
         result = publish_site_record(gc, folder_id="folder-ABC", record=record)
         gc.upload_file_to_folder.assert_called_once()
+        gc.drive_service.files().update.assert_not_called()
         assert result["replaced_count"] == 0
 
-    def test_trash_failure_does_not_block_upload(self, record):
+    def test_trash_failure_does_not_block_upload(self, record: SiteRecord) -> None:
         gc = MagicMock()
         gc.list_files_in_folder.return_value = [
             {"id": "old-1", "name": "palm-beach-gardens.dashboard.json"},
@@ -126,19 +119,21 @@ class TestPublishSiteRecord:
 
         result = publish_site_record(gc, folder_id="folder-ABC", record=record)
         gc.upload_file_to_folder.assert_called_once()
-        # Trash failed, so replaced_count stays at 0.
         assert result["replaced_count"] == 0
 
-    def test_upload_failure_propagates(self, record):
+    def test_upload_failure_preserves_existing_payload(self, record: SiteRecord) -> None:
         gc = MagicMock()
-        gc.list_files_in_folder.return_value = []
+        gc.list_files_in_folder.return_value = [
+            {"id": "old-1", "name": "palm-beach-gardens.dashboard.json"},
+        ]
         gc.upload_file_to_folder.side_effect = RuntimeError("upload died")
 
         with pytest.raises(RuntimeError, match="upload died"):
             publish_site_record(gc, folder_id="folder-ABC", record=record)
 
-    def test_payload_is_deterministic_json(self, record):
-        """Two publishes of the same record should produce identical bytes."""
+        gc.drive_service.files().update.assert_not_called()
+
+    def test_payload_is_deterministic_json(self, record: SiteRecord) -> None:
         gc1 = MagicMock()
         gc1.list_files_in_folder.return_value = []
         gc1.upload_file_to_folder.return_value = {"id": "a", "webViewLink": ""}
@@ -149,9 +144,6 @@ class TestPublishSiteRecord:
         publish_site_record(gc1, folder_id="f", record=record)
         publish_site_record(gc2, folder_id="f", record=record)
 
-        # SiteRecord.published_at is a timestamp, so bytes differ across
-        # SiteRecord *instances* — but the same instance must be stable.
-        b1 = gc1.upload_file_to_folder.call_args.kwargs["file_bytes"]
-        b2 = gc2.upload_file_to_folder.call_args.kwargs["file_bytes"]
-        # Publishing the same record twice → identical bytes
-        assert b1 == b2
+        bytes1 = gc1.upload_file_to_folder.call_args.kwargs["file_bytes"]
+        bytes2 = gc2.upload_file_to_folder.call_args.kwargs["file_bytes"]
+        assert bytes1 == bytes2
