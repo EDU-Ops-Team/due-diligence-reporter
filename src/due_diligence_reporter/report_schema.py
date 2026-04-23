@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date, datetime
-from typing import Any, Callable
+from typing import Any
 
 from .utils import flatten_report_data_for_replacement
 
@@ -86,6 +87,7 @@ def _build_template_tokens() -> list[str]:
         "meta.marketing_name",
         "meta.report_date",
         "meta.prepared_by",
+        "meta.rebl_site_id",
         "meta.drive_folder_url",
         "exec.c_answer",
         "exec.c_edreg",
@@ -111,6 +113,7 @@ def _build_template_tokens() -> list[str]:
         "sources.sir_link",
         "sources.inspection_link",
         "sources.block_plan_link",
+        "sources.rebl_link",
         "sources.e_occupancy_link",
         "sources.school_approval_link",
         "sources.opening_plan_link",
@@ -130,6 +133,7 @@ TOKEN_SOURCES: dict[str, str] = {
     "meta.marketing_name": "Wrike",
     "meta.report_date": "System",
     "meta.prepared_by": "System",
+    "meta.rebl_site_id": "REBL",
     "exec.c_answer": "Agent",
     "exec.c_zoning": "SIR",
     "exec.c_occupancy": "E-Occupancy",
@@ -140,6 +144,7 @@ TOKEN_SOURCES: dict[str, str] = {
     "exec.alpha_fit": "Agent",
     "exec.acquisition_conditions": "Agent",
     "exec.tradeoffs_and_deficiencies": "Agent",
+    "sources.rebl_link": "REBL",
     "sources.opening_plan_link": "Agent",
 }
 
@@ -159,6 +164,7 @@ LINK_TOKENS: frozenset[str] = frozenset({
     "sources.sir_link",
     "sources.inspection_link",
     "sources.block_plan_link",
+    "sources.rebl_link",
     "sources.e_occupancy_link",
     "sources.school_approval_link",
     "sources.opening_plan_link",
@@ -171,6 +177,7 @@ LINK_DISPLAY_LABELS: dict[str, str] = {
     "sources.sir_link": "View SIR",
     "sources.inspection_link": "View Inspection",
     "sources.block_plan_link": "View Block Plan",
+    "sources.rebl_link": "View REBL Site",
     "sources.e_occupancy_link": "View E-Occupancy",
     "sources.school_approval_link": "View School Approval",
     "sources.opening_plan_link": "View Opening Plan",
@@ -190,6 +197,8 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "site.marketing_name": "meta.marketing_name",
     "site.prepared_by": "meta.prepared_by",
     "site.p1_assignee_name": "meta.prepared_by",
+    "rebl.site_id": "meta.rebl_site_id",
+    "rebl.url": "sources.rebl_link",
     "p1_assignee_name": "meta.prepared_by",
     "exec_summary.acquisition_conditions": "exec.acquisition_conditions",
     "exec_summary.direct_viable_buildout": "exec.direct_viable_buildout",
@@ -200,6 +209,7 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "appendix.inspection_link": "sources.inspection_link",
     "appendix.building_inspection_link": "sources.inspection_link",
     "appendix.block_plan_link": "sources.block_plan_link",
+    "appendix.rebl_link": "sources.rebl_link",
     "appendix.floorplan_viability_link": "sources.block_plan_link",
     "appendix.isp_link": "sources.block_plan_link",
 }

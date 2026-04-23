@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from .rebl import ReblResolution
 from .report_schema import COST_TOKEN_BASES, SCENARIOS
 
 CLASSIFICATIONS = ("yes", "yes_if", "no", "review")
@@ -153,6 +154,7 @@ class SourceLinks:
     sir: str = ""
     inspection: str = ""
     block_plan: str = ""
+    rebl: str = ""
     e_occupancy: str = ""
     school_approval: str = ""
     opening_plan: str = ""
@@ -182,6 +184,7 @@ class SiteRecord:
     direct_viable_buildout: str = ""
     alpha_fit: str = ""
     classification: ClassificationRecord = field(default_factory=ClassificationRecord)
+    rebl: ReblResolution = field(default_factory=ReblResolution)
     scenarios: dict[str, ScenarioRecord] = field(default_factory=dict)
     sources: SourceLinks = field(default_factory=SourceLinks)
     acquisition_conditions: str = ""
@@ -198,6 +201,7 @@ class SiteRecord:
         dd_report_url: str,
         slug_suffix: str | None = None,
         classification_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+        rebl_resolution: ReblResolution | None = None,
     ) -> SiteRecord:
         """Build a SiteRecord from normalized DD replacements."""
 
@@ -233,12 +237,18 @@ class SiteRecord:
             sir=g("sources.sir_link"),
             inspection=g("sources.inspection_link"),
             block_plan=g("sources.block_plan_link"),
+            rebl=g("sources.rebl_link"),
             e_occupancy=g("sources.e_occupancy_link"),
             school_approval=g("sources.school_approval_link"),
             opening_plan=g("sources.opening_plan_link"),
             trace=g("sources.trace_link"),
             drive_folder=drive_folder_url.strip(),
             dd_report=dd_report_url.strip(),
+        )
+        fallback_rebl = ReblResolution(
+            resolution_status="resolved" if g("meta.rebl_site_id") or g("sources.rebl_link") else "not_requested",
+            site_id=g("meta.rebl_site_id"),
+            url=g("sources.rebl_link"),
         )
 
         return cls(
@@ -259,6 +269,7 @@ class SiteRecord:
             direct_viable_buildout=g("exec.direct_viable_buildout"),
             alpha_fit=g("exec.alpha_fit"),
             classification=classification,
+            rebl=rebl_resolution or fallback_rebl,
             scenarios=scenarios,
             sources=sources,
             acquisition_conditions=acquisition_conditions,

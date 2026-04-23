@@ -105,6 +105,10 @@ class Settings(BaseSettings):
         "https://api.shovels.ai/v2",
         description="Base URL for the Shovels.ai API",
     )
+    rebl_base_url: str = Field(
+        "https://rebl3.vercel.app",
+        description="Base URL for resolving canonical REBL site IDs from addresses.",
+    )
 
     # LLM model IDs
     openai_filename_model: str = Field(

@@ -31,6 +31,7 @@ from .config import get_settings
 from .dashboard_publish import publish_site_record
 from .google_client import GoogleClient
 from .google_doc_builder import SOURCE_QUALITY_NOTES_KEY, build_dd_report_doc
+from .rebl import ReblResolution, resolve_address
 from .report_schema import (
     ALLOWED_CAN_WE_ANSWERS,
     LINK_DISPLAY_LABELS,
@@ -93,6 +94,7 @@ DOC_MIME = "application/msword"
 MIN_SITE_MATCH_SCORE = 20
 
 _READ_CONTEXT_BY_FILE_ID: dict[str, dict[str, str]] = {}
+_REBL_RESOLUTION_CACHE: dict[str, ReblResolution] = {}
 
 CAN_WE_SECTION_DELIMITER = "Education Regulatory Approval:"
 V3_CAN_WE_HEADING = "Can this school be open in time for the current school year (8/12 or 9/8)?"
@@ -524,7 +526,6 @@ def _school_approval_exec_status(state_upper: str, approval_type: str) -> str:
 def _school_approval_alpha_reference(state_upper: str) -> tuple[str, bool, bool]:
     """Return the Alpha state-history note plus worked/operating flags."""
     worked_note = _ALPHA_WORKED_STATE_REFERENCES.get(state_upper)
-    has_worked = worked_note is not None
     is_operating = state_upper in _ALPHA_OPERATING_STATES
 
     if is_operating and worked_note:
@@ -2814,10 +2815,10 @@ def _normalize_report_replacements(
     site_name: str,
     report_date: str,
     drive_folder_url: str,
-) -> tuple[dict[str, str], list[str], list[str], dict[str, str]]:
+) -> tuple[dict[str, str], list[str], list[str], dict[str, str], ReblResolution]:
     """Normalize report data and fill permissive V3 gap labels."""
     flat_report_data = flatten_report_data_for_replacement(report_data)
-    report_data = _inject_wrike_report_defaults(report_data, site_name)
+    report_data, rebl_resolution = _inject_wrike_report_defaults(report_data, site_name)
     replacements, unmatched, unfilled, token_sources = normalize_report_data(
         report_data,
         site_name=site_name,
@@ -2839,13 +2840,75 @@ def _normalize_report_replacements(
     ).strip()
     if source_quality_notes:
         replacements[SOURCE_QUALITY_NOTES_KEY] = source_quality_notes
-    return replacements, unmatched, unfilled, token_sources
+    return replacements, unmatched, unfilled, token_sources, rebl_resolution
+
+
+def _ensure_report_section(
+    report_data: dict[str, Any],
+    section: str,
+) -> dict[str, Any]:
+    block = report_data.get(section)
+    if not isinstance(block, dict):
+        block = {}
+        report_data[section] = block
+    return block
+
+
+def _resolve_rebl_identity(address: str) -> ReblResolution:
+    cleaned = address.strip()
+    if not cleaned:
+        return ReblResolution.missing_address()
+
+    cached = _REBL_RESOLUTION_CACHE.get(cleaned)
+    if cached is not None:
+        return cached
+
+    settings = get_settings()
+    try:
+        resolved = resolve_address(cleaned, base_url=settings.rebl_base_url)
+    except Exception as e:
+        resolved = ReblResolution.error_result(cleaned, str(e))
+        logger.warning("REBL resolve failed for '%s': %s", cleaned, e)
+
+    _REBL_RESOLUTION_CACHE[cleaned] = resolved
+    return resolved
+
+
+def _apply_rebl_defaults(
+    report_data: dict[str, Any],
+    rebl_resolution: ReblResolution,
+) -> None:
+    if not rebl_resolution.site_id and not rebl_resolution.url:
+        return
+
+    meta = _ensure_report_section(report_data, "meta")
+    sources = _ensure_report_section(report_data, "sources")
+    if rebl_resolution.site_id:
+        meta["rebl_site_id"] = rebl_resolution.site_id
+    if rebl_resolution.url:
+        sources["rebl_link"] = rebl_resolution.url
+
+
+def _apply_wrike_prepared_by_defaults(
+    report_data: dict[str, Any],
+    summary: dict[str, Any],
+) -> None:
+    p1_name = summary.get("p1_assignee_name")
+    p1_email = summary.get("p1_assignee_email")
+
+    if isinstance(p1_name, str) and p1_name.strip():
+        report_data["p1_assignee_name"] = p1_name.strip()
+        site_block = _ensure_report_section(report_data, "site")
+        site_block["p1_assignee_name"] = p1_name.strip()
+
+    if isinstance(p1_email, str) and p1_email.strip():
+        report_data["p1_assignee_email"] = p1_email.strip()
 
 
 def _inject_wrike_report_defaults(
     report_data: dict[str, Any],
     site_name: str,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], ReblResolution]:
     """Inject authoritative Wrike defaults that should not depend on agent output."""
     enriched: dict[str, Any] = json.loads(json.dumps(report_data))
     try:
@@ -2856,26 +2919,13 @@ def _inject_wrike_report_defaults(
 
     if not record:
         enriched["p1_assignee_name"] = MISSING_P1_ASSIGNEE_LABEL
-        return enriched
+        return enriched, ReblResolution.error_result("", "Wrike site record not found.")
 
     summary = build_site_summary(record)
-    p1_name = summary.get("p1_assignee_name")
-    p1_email = summary.get("p1_assignee_email")
-
-    if isinstance(p1_name, str) and p1_name.strip():
-        enriched["p1_assignee_name"] = p1_name.strip()
-        site_block = enriched.get("site")
-        if not isinstance(site_block, dict):
-            site_block = {}
-            enriched["site"] = site_block
-        site_block["p1_assignee_name"] = p1_name.strip()
-    # When Wrike P1 is absent, leave p1_assignee_name unset so _resolve_prepared_by
-    # falls through to agent-provided meta.prepared_by (e.g. from LocationOS getSite)
-
-    if isinstance(p1_email, str) and p1_email.strip():
-        enriched["p1_assignee_email"] = p1_email.strip()
-
-    return enriched
+    _apply_wrike_prepared_by_defaults(enriched, summary)
+    rebl_resolution = _resolve_rebl_identity(str(summary.get("address") or ""))
+    _apply_rebl_defaults(enriched, rebl_resolution)
+    return enriched, rebl_resolution
 
 
 def _find_existing_report_doc(
@@ -3034,6 +3084,7 @@ def _build_report_trace_data(
     unmatched: list[str],
     hyperlink_trace: dict[str, Any],
     token_evidence: dict[str, str] | None,
+    rebl_resolution: ReblResolution,
 ) -> dict[str, Any]:
     """Build the report trace payload persisted beside the DD report."""
     evidence = token_evidence or {}
@@ -3062,6 +3113,7 @@ def _build_report_trace_data(
         "unmatched_keys": unmatched,
         "unfilled_tokens": unfilled,
         "hyperlinks": hyperlink_trace,
+        "rebl": rebl_resolution.to_dict(),
         **({"supplemental_evidence": supplemental_evidence} if supplemental_evidence else {}),
     }
 
@@ -3263,7 +3315,7 @@ async def create_dd_report(
                 raise RuntimeError("Invalid document ID returned from create operation")
 
             logger.info("Created blank document: %s (id=%s)", doc_name, doc_id)
-            replacements, unmatched, unfilled, _token_sources = _normalize_report_replacements(
+            replacements, unmatched, unfilled, _token_sources, rebl_resolution = _normalize_report_replacements(
                 report_data=report_data,
                 site_name=site_name.strip(),
                 report_date=today_str,
@@ -3314,6 +3366,7 @@ async def create_dd_report(
                 unmatched=unmatched,
                 hyperlink_trace=hyperlink_trace,
                 token_evidence=token_evidence,
+                rebl_resolution=rebl_resolution,
             )
             try:
                 _upload_report_trace(
@@ -3342,6 +3395,7 @@ async def create_dd_report(
                     report_date=today_str,
                     drive_folder_url=drive_folder_url,
                     dd_report_url=doc_url or "",
+                    rebl_resolution=rebl_resolution,
                 )
                 dashboard_payload = publish_site_record(
                     gc=gc,
@@ -3366,6 +3420,7 @@ async def create_dd_report(
                 "unmatched_agent_keys": len(unmatched),
                 "unfilled_template_tokens": len(unfilled),
                 "hyperlinks_applied": hyperlink_trace["applied"],
+                "normalized_report_data": replacements,
                 "message": f"DD report created: {doc_url}",
             }
             if dashboard_payload is not None:

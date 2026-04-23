@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any
 
 import requests
@@ -73,6 +73,8 @@ def build_site_meta(
     school_type: str | None = None,
     drive_folder_url: str | None = None,
     dd_report_url: str | None = None,
+    rebl_site_id: str | None = None,
+    rebl_url: str | None = None,
     report_date: date | None = None,
 ) -> dict[str, Any]:
     """Assemble the `site_meta` payload from pipeline inputs.
@@ -102,9 +104,13 @@ def build_site_meta(
         "school_type": school_label,
         "prepared_by": "DD Pipeline (auto)",
         "report_date": rd,
-        "published_at": datetime.now(timezone.utc).isoformat(),
+        "published_at": datetime.now(UTC).isoformat(),
         "drive_folder_url": drive_folder_url or "",
         "dd_report_url": dd_report_url or "",
+        "rebl": {
+            "site_id": rebl_site_id or "",
+            "url": rebl_url or "",
+        },
     }
 
 
@@ -116,6 +122,8 @@ def publish_to_dashboard(
     school_type: str | None = None,
     drive_folder_url: str | None = None,
     dd_report_url: str | None = None,
+    rebl_site_id: str | None = None,
+    rebl_url: str | None = None,
     report_date: date | None = None,
     base_url: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT_SEC,
@@ -145,6 +153,8 @@ def publish_to_dashboard(
         school_type=school_type,
         drive_folder_url=drive_folder_url,
         dd_report_url=dd_report_url,
+        rebl_site_id=rebl_site_id or str(report_data.get("meta.rebl_site_id") or ""),
+        rebl_url=rebl_url or str(report_data.get("sources.rebl_link") or ""),
         report_date=report_date,
     )
     slug = meta["slug"]

@@ -20,10 +20,12 @@ def record() -> SiteRecord:
         {
             "meta.site_name": "Palm Beach Gardens",
             "meta.city_state_zip": "Palm Beach Gardens, FL 33410",
+            "meta.rebl_site_id": "palm-beach-gardens-fl",
             "exec.c_answer": "Yes",
             "exec.fastest_open_capacity": "180",
             "sources.sir_link": "https://drive.google.com/sir",
             "sources.block_plan_link": "https://drive.google.com/block-plan",
+            "sources.rebl_link": "https://rebl3.vercel.app/site/palm-beach-gardens-fl",
         },
         site_name="Palm Beach Gardens",
         report_date="04/22/26",
@@ -60,6 +62,7 @@ class TestPublishSiteRecord:
 
         payload = json.loads(call.kwargs["file_bytes"].decode("utf-8"))
         assert payload["slug"] == "palm-beach-gardens"
+        assert payload["rebl"]["site_id"] == "palm-beach-gardens-fl"
         assert payload["classification"]["label"] == "yes"
         assert payload["sources"]["sir"] == "https://drive.google.com/sir"
         assert payload["sources"]["block_plan"] == "https://drive.google.com/block-plan"

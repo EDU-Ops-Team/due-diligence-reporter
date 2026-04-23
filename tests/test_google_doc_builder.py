@@ -327,7 +327,7 @@ class TestTokenCoverage:
         # meta tokens
         v3_tokens.update([
             "meta.site_name", "meta.marketing_name", "meta.city_state_zip",
-            "meta.school_type", "meta.report_date", "meta.prepared_by",
+            "meta.school_type", "meta.report_date", "meta.prepared_by", "meta.rebl_site_id",
             "meta.drive_folder_url",
         ])
 
@@ -360,14 +360,14 @@ class TestTokenCoverage:
         # sources
         v3_tokens.update([
             "sources.sir_link", "sources.inspection_link",
-            "sources.block_plan_link",
+            "sources.block_plan_link", "sources.rebl_link",
             "sources.e_occupancy_link", "sources.school_approval_link",
             "sources.opening_plan_link",
             "sources.trace_link",
         ])
 
-        # 7 meta + 8 exec summary/direct + 6 scenario summary + 24 cost + 2 narrative + 7 sources = 54
-        assert len(v3_tokens) == 54, f"Expected 54 V3 tokens, got {len(v3_tokens)}"
+        # 8 meta + 8 exec summary/direct + 6 scenario summary + 24 cost + 2 narrative + 8 sources = 56
+        assert len(v3_tokens) == 56, f"Expected 56 V3 tokens, got {len(v3_tokens)}"
 
         # All V3 tokens should be covered by the builder
         missing = v3_tokens - self._BUILDER_TOKENS
@@ -443,6 +443,7 @@ class TestBuildDdReportDoc:
             "meta.school_type": "micro",
             "meta.report_date": "04/14/2026",
             "meta.prepared_by": "Jane Smith",
+            "meta.rebl_site_id": "alpha-boca-raton-2200",
             "meta.drive_folder_url": "https://drive.google.com/drive/folders/abc123",
             "exec.c_answer": "Yes",
             "exec.c_edreg": "FL: Registration required. Timeline: 30 days.",
@@ -463,6 +464,7 @@ class TestBuildDdReportDoc:
             "sources.sir_link": "https://drive.google.com/file/d/sir123",
             "sources.inspection_link": "https://drive.google.com/file/d/insp123",
             "sources.block_plan_link": "https://drive.google.com/file/d/block123",
+            "sources.rebl_link": "https://rebl3.vercel.app/site/alpha-boca-raton-2200",
             "sources.e_occupancy_link": "https://drive.google.com/file/d/eocc123",
             "sources.school_approval_link": "https://drive.google.com/file/d/sa123",
             "sources.opening_plan_link": "https://drive.google.com/file/d/op123",

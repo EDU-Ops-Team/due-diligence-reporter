@@ -42,6 +42,7 @@ _HEADER_ROWS: list[tuple[str, str]] = [
     ("School Type", "meta.school_type"),
     ("Report Date", "meta.report_date"),
     ("Prepared By", "meta.prepared_by"),
+    ("REBL Site ID", "meta.rebl_site_id"),
     ("Drive Folder", "meta.drive_folder_url"),
 ]
 
@@ -72,6 +73,7 @@ _SOURCE_DOC_ROWS: list[tuple[str, str]] = [
     ("Site Investigation Report (SIR)", "sources.sir_link"),
     ("Building Inspection", "sources.inspection_link"),
     ("Block Plan", "sources.block_plan_link"),
+    ("REBL Site", "sources.rebl_link"),
     ("E-Occupancy Assessment", "sources.e_occupancy_link"),
     ("School Approval Assessment", "sources.school_approval_link"),
     ("Opening Plan", "sources.opening_plan_link"),
@@ -115,11 +117,16 @@ _LINK_GAP_LABELS: dict[str, str] = {
     "sources.sir_link": "[Not found - SIR]",
     "sources.inspection_link": "[Not found - Building Inspection]",
     "sources.block_plan_link": "[Not found - Block Plan]",
+    "sources.rebl_link": "[Not found - REBL Site]",
     "sources.e_occupancy_link": "[Not found - E-Occupancy Assessment]",
     "sources.school_approval_link": "[Not found - School Approval Assessment]",
     "sources.opening_plan_link": "[Not found - Opening Plan]",
     "sources.trace_link": "",
     "meta.drive_folder_url": "",
+}
+
+_HEADER_GAP_LABELS: dict[str, str] = {
+    "meta.rebl_site_id": "[Not found - REBL site not resolved]",
 }
 
 # ---------------------------------------------------------------------------
@@ -717,7 +724,7 @@ def build_dd_report_doc(
                     hyperlink_trace["applied"] += 1
                     hyperlink_trace["found_tokens"].append(token)
         else:
-            value = _resolve_value(replacements, token)
+            value = _resolve_value(replacements, token, _HEADER_GAP_LABELS.get(token, ""))
             if value:
                 phase2_requests.append({
                     "insertText": {
