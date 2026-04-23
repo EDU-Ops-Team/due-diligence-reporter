@@ -63,6 +63,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("backfill_dashboard")
 
+# Matches both filename conventions used by the pipeline:
+#   - "<Site> Report Trace - YYYY-MM-DD.json"    (older server.py path)
+#   - "<Site> DD Report Trace - YYYY-MM-DD.json" (newer report_pipeline.py path)
 _TRACE_NAME_RE = re.compile(r"Report Trace.*\.json$", re.IGNORECASE)
 _TRACE_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
@@ -143,7 +146,7 @@ def backfill_one(
 
     trace_file = _latest_trace_file(gc, folder_id)
     if not trace_file:
-        logger.info("%s: no Report Trace found, skipping", site_title)
+        logger.info("%s: no Report Trace file found, skipping", site_title)
         return False
 
     try:
