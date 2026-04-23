@@ -63,7 +63,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("backfill_dashboard")
 
-_TRACE_NAME_RE = re.compile(r"DD Report Trace.*\.json$", re.IGNORECASE)
+_TRACE_NAME_RE = re.compile(r"Report Trace.*\.json$", re.IGNORECASE)
 _TRACE_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
@@ -143,7 +143,7 @@ def backfill_one(
 
     trace_file = _latest_trace_file(gc, folder_id)
     if not trace_file:
-        logger.info("%s: no DD Report Trace found, skipping", site_title)
+        logger.info("%s: no Report Trace found, skipping", site_title)
         return False
 
     try:
