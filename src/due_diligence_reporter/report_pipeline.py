@@ -18,6 +18,7 @@ import anthropic
 
 from .classifier import AI_GENERATED_DOC_TYPES, classify_document_type, match_file_to_site_llm
 from .config import Settings, get_settings
+from .dashboard_publisher import publish_to_dashboard
 from .google_client import GoogleClient
 from .utils import (
     escape_html_text,
@@ -542,6 +543,11 @@ def run_dd_report_agent(
                     trace.doc_id = doc_id
                     trace.tokens_filled = result.get("replacements_applied", 0)
                     trace.tokens_unfilled = result.get("unfilled_template_tokens", 0)
+                    # Stash the final, fully-merged report_data for the
+                    # dashboard publisher.
+                    rd = tool_input.get("report_data")
+                    if isinstance(rd, dict):
+                        trace.final_report_data = dict(rd)
             elif isinstance(result, dict):
                 report_fields = result.get("report_data_fields")
                 if isinstance(report_fields, dict):
@@ -640,6 +646,11 @@ class ReportTrace:
     doc_id: str | None = None
     tokens_filled: int = 0
     tokens_unfilled: int = 0
+    # Full report_data passed to create_dd_report (flat token dict). Kept on
+    # the trace so downstream consumers (dashboard publisher) can re-use it
+    # without re-parsing the doc. Not serialized into the trace JSON to keep
+    # the provenance file small.
+    final_report_data: dict[str, Any] = field(default_factory=dict)
 
     def add_event(self, event: TraceEvent) -> None:
         self.events.append(event)
@@ -1103,6 +1114,14 @@ def process_site_pipeline(
 
     _email_pipeline_report(settings, site_title, doc_url, p1_email)
 
+    _publish_to_dashboard_best_effort(
+        site_title=site_title,
+        trace=agent_result.get("trace"),
+        drive_folder_url=drive_folder_url,
+        dd_report_url=doc_url,
+        site_address=site_address,
+    )
+
     return PipelineResult(
         site_title=site_title,
         status="report_created",
@@ -1112,6 +1131,35 @@ def process_site_pipeline(
         trace_url=trace_url,
         trace=agent_result.get("trace"),
     )
+
+
+def _publish_to_dashboard_best_effort(
+    *,
+    site_title: str,
+    trace: "ReportTrace | None",
+    drive_folder_url: str,
+    dd_report_url: str,
+    site_address: str | None,
+) -> None:
+    """Fire-and-forget dashboard publish. Never raises."""
+    if trace is None or not getattr(trace, "final_report_data", None):
+        logger.info(
+            "Skipping dashboard publish for %s \u2014 no final_report_data on trace",
+            site_title,
+        )
+        return
+    try:
+        publish_to_dashboard(
+            site_title,
+            trace.final_report_data,
+            address=site_address,
+            drive_folder_url=drive_folder_url,
+            dd_report_url=dd_report_url,
+        )
+    except Exception as e:
+        # publish_to_dashboard already swallows requests errors; this is a
+        # belt-and-suspenders guard against anything truly unexpected.
+        logger.warning("Dashboard publish raised for %s: %s", site_title, e)
 
 
 # Google Chat notification per pipeline result
