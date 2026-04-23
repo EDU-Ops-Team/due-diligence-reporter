@@ -46,6 +46,7 @@ from due_diligence_reporter.dashboard_publisher import publish_to_dashboard  # n
 from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.utils import extract_folder_id_from_url  # noqa: E402
 from due_diligence_reporter.wrike import (  # noqa: E402
+    _get_active_status_ids,
     _get_all_site_records,
     extract_address_from_record,
     extract_google_folder_from_record,
@@ -182,10 +183,16 @@ def backfill_one(
 
 def main(single_site_filter: str | None = None) -> int:
     settings = get_settings()
-    gc = GoogleClient.from_settings(settings)
+    gc = GoogleClient.from_oauth_config(
+        client_config_path=str(settings.get_client_config_path()),
+        token_file_path=str(settings.get_token_file_path()),
+        oauth_port=settings.oauth_port,
+        scopes=settings.google_scopes,
+    )
     wrike_cfg = load_wrike_config(settings)
-    records = _get_all_site_records(wrike_cfg)
-    active = filter_active_site_records(records, wrike_cfg)
+    records = _get_all_site_records(cfg=wrike_cfg)
+    active_status_ids = _get_active_status_ids(access_token=wrike_cfg.access_token)
+    active = filter_active_site_records(records, active_status_ids)
 
     total, published, skipped = 0, 0, 0
     for rec in active:
