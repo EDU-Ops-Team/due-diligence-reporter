@@ -175,6 +175,10 @@ class SiteRecord:
     prepared_by: str = ""
     report_date: str = ""
     published_at: str = ""
+    # Wrike folder createdDate (ISO 8601). Canonical "date created" for
+    # a site — when the record first entered Wrike. Preferred over
+    # report_date/published_at for Portfolio timeline ordering.
+    wrike_created_at: str = ""
     can_we_open: str = ""
     c_edreg: str = ""
     c_occupancy: str = ""
@@ -202,6 +206,7 @@ class SiteRecord:
         slug_suffix: str | None = None,
         classification_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
         rebl_resolution: ReblResolution | None = None,
+        wrike_created_at: str = "",
     ) -> SiteRecord:
         """Build a SiteRecord from normalized DD replacements."""
 
@@ -260,6 +265,7 @@ class SiteRecord:
             prepared_by=g("meta.prepared_by"),
             report_date=report_date,
             published_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            wrike_created_at=wrike_created_at.strip() if isinstance(wrike_created_at, str) else "",
             can_we_open=g("exec.c_answer"),
             c_edreg=g("exec.c_edreg"),
             c_occupancy=g("exec.c_occupancy"),

@@ -840,4 +840,9 @@ def build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
         "custom_fields": record.get("customFields", []),
         "permalink": record.get("permalink"),
         "description": record.get("description", ""),
+        # Wrike's own folder/task creation timestamp (ISO 8601 UTC).
+        # This is the canonical "date created" for the site — when the
+        # record was first added to Wrike — distinct from report_date
+        # (when a DD report ran) or published_at (dashboard upsert time).
+        "created_date": record.get("createdDate", ""),
     }

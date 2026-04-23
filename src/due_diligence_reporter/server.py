@@ -2832,6 +2832,11 @@ def _normalize_report_replacements(
     _fill_max_capacity_placeholders(replacements)
 
     replacements.setdefault("meta.drive_folder_url", drive_folder_url)
+    # Carry the Wrike folder createdDate through normalization so the
+    # dashboard SiteRecord can consume it without another Wrike fetch.
+    _wrike_created = report_data.get("wrike_created_at")
+    if isinstance(_wrike_created, str) and _wrike_created.strip():
+        replacements["meta.wrike_created_at"] = _wrike_created.strip()
     source_quality_notes = (
         flat_report_data.get("source_quality_notes")
         or flat_report_data.get("notes.source_quality")
@@ -2923,6 +2928,12 @@ def _inject_wrike_report_defaults(
 
     summary = build_site_summary(record)
     _apply_wrike_prepared_by_defaults(enriched, summary)
+    # Stash Wrike folder createdDate so downstream SiteRecord.from_replacements
+    # can pick it up. Distinct from report_date (when DD ran) and
+    # published_at (dashboard upsert time).
+    created_date = summary.get("created_date")
+    if isinstance(created_date, str) and created_date.strip():
+        enriched["wrike_created_at"] = created_date.strip()
     rebl_resolution = _resolve_rebl_identity(str(summary.get("address") or ""))
     _apply_rebl_defaults(enriched, rebl_resolution)
     return enriched, rebl_resolution
@@ -3396,6 +3407,7 @@ async def create_dd_report(
                     drive_folder_url=drive_folder_url,
                     dd_report_url=doc_url or "",
                     rebl_resolution=rebl_resolution,
+                    wrike_created_at=replacements.get("meta.wrike_created_at", ""),
                 )
                 dashboard_payload = publish_site_record(
                     gc=gc,
