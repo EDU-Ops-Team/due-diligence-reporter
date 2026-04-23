@@ -71,7 +71,7 @@ _COST_BREAKDOWN_ROWS: list[tuple[str, str]] = [
 _SOURCE_DOC_ROWS: list[tuple[str, str]] = [
     ("Site Investigation Report (SIR)", "sources.sir_link"),
     ("Building Inspection", "sources.inspection_link"),
-    ("Program Fit Analysis (ISP)", "sources.isp_link"),
+    ("Block Plan", "sources.block_plan_link"),
     ("E-Occupancy Assessment", "sources.e_occupancy_link"),
     ("School Approval Assessment", "sources.school_approval_link"),
     ("Opening Plan", "sources.opening_plan_link"),
@@ -114,7 +114,7 @@ _SUMMARY_SOURCE_WARNING_GAPS: dict[str, str] = {
 _LINK_GAP_LABELS: dict[str, str] = {
     "sources.sir_link": "[Not found - SIR]",
     "sources.inspection_link": "[Not found - Building Inspection]",
-    "sources.isp_link": "[Not found - ISP]",
+    "sources.block_plan_link": "[Not found - Block Plan]",
     "sources.e_occupancy_link": "[Not found - E-Occupancy Assessment]",
     "sources.school_approval_link": "[Not found - School Approval Assessment]",
     "sources.opening_plan_link": "[Not found - Opening Plan]",
@@ -460,7 +460,7 @@ def _normalize_replacements_for_rendering(
         normalized[token] = cleaned
         source_quality_lines.extend(warnings)
 
-    for token in ("exec.acquisition_conditions", "exec.risk_notes"):
+    for token in ("exec.acquisition_conditions", "exec.tradeoffs_and_deficiencies"):
         value = normalized.get(token, "")
         if value.strip():
             normalized[token] = _normalize_bulleted_field(value)
@@ -839,12 +839,20 @@ def build_dd_report_doc(
     b3.insert_heading("Executive Summary", level=1)
 
     # "Can We Open?" card
-    c_answer = _resolve_value(replacements, "exec.c_answer", "[Pending]")
-    c_zoning = _resolve_value(replacements, "exec.c_zoning", "[Pending]")
-    c_edreg = _resolve_value(replacements, "exec.c_edreg", "[Pending]")
-    c_occupancy = _resolve_value(replacements, "exec.c_occupancy", "[Pending]")
-    c_permit_timeline = _resolve_value(replacements, "exec.c_permit_timeline", "[Pending]")
-    c_construction_timeline = _resolve_value(replacements, "exec.c_construction_timeline", "[Pending]")
+    c_answer = _resolve_value(replacements, "exec.c_answer", "[Not found -- opening timeline not stated]")
+    c_zoning = _resolve_value(replacements, "exec.c_zoning", "[Not found -- zoning status not stated]")
+    c_edreg = _resolve_value(replacements, "exec.c_edreg", "[Not found -- school approval path not stated]")
+    c_occupancy = _resolve_value(replacements, "exec.c_occupancy", "[Not found -- occupancy path not stated]")
+    c_permit_timeline = _resolve_value(
+        replacements,
+        "exec.c_permit_timeline",
+        "[Not found -- permit timeline not stated]",
+    )
+    c_construction_timeline = _resolve_value(
+        replacements,
+        "exec.c_construction_timeline",
+        "[Not found -- construction timeline not stated]",
+    )
 
     can_we_q = "Can this school be open in time for the current school year (8/12 or 9/8)?\n"
     q_start, q_end = b3.insert_text(can_we_q)
@@ -864,6 +872,31 @@ def build_dd_report_doc(
     )
     cl_start, cl_end = b3.insert_text(checklist_text)
     b3.style_text(cl_start, cl_end - 1, font_size=10, font_family="Arial")
+
+    # Direct Answer heading
+    b3.insert_text("\n")
+    b3.insert_heading("Direct Answer", level=2)
+
+    viable_buildout = _resolve_value(
+        replacements,
+        "exec.direct_viable_buildout",
+        "[Not found -- viable buildout not stated]",
+    )
+    alpha_fit = _resolve_value(
+        replacements,
+        "exec.alpha_fit",
+        "[Not found -- Alpha fit not stated]",
+    )
+
+    viable_label_start, viable_label_end = b3.insert_text("2a. Viable Buildout: ")
+    b3.style_text(viable_label_start, viable_label_end, bold=True, font_size=10, font_family="Arial")
+    viable_value_start, viable_value_end = b3.insert_text(viable_buildout + "\n")
+    b3.style_text(viable_value_start, viable_value_end - 1, font_size=10, font_family="Arial")
+
+    alpha_label_start, alpha_label_end = b3.insert_text("2b. Great Alpha School Site: ")
+    b3.style_text(alpha_label_start, alpha_label_end, bold=True, font_size=10, font_family="Arial")
+    alpha_value_start, alpha_value_end = b3.insert_text(alpha_fit + "\n")
+    b3.style_text(alpha_value_start, alpha_value_end - 1, font_size=10, font_family="Arial")
 
     # Buildout Analysis heading
     b3.insert_text("\n")
@@ -1120,20 +1153,24 @@ def build_dd_report_doc(
         _insert_bulleted_field(b6, source_quality_val)
         b6.insert_text("\n")
 
-    # Acquisition Conditions
-    acq_label_start, acq_label_end = b6.insert_text("Acquisition Conditions\n")
+    # Lease Conditions
+    acq_label_start, acq_label_end = b6.insert_text("Lease Conditions\n")
     b6.style_text(acq_label_start, acq_label_end - 1, bold=True, font_size=11, font_family="Arial")
 
-    acq_val = _resolve_value(replacements, "exec.acquisition_conditions", "[No acquisition conditions provided]")
+    acq_val = _resolve_value(replacements, "exec.acquisition_conditions", "[No lease conditions provided]")
     _insert_bulleted_field(b6, acq_val)
 
     b6.insert_text("\n")
 
-    # Risks to Note
-    risk_label_start, risk_label_end = b6.insert_text("Risks to Note\n")
+    # Trade-Offs and Deficiencies
+    risk_label_start, risk_label_end = b6.insert_text("Trade-Offs and Deficiencies\n")
     b6.style_text(risk_label_start, risk_label_end - 1, bold=True, font_size=11, font_family="Arial")
 
-    risk_val = _resolve_value(replacements, "exec.risk_notes", "[No risks noted]")
+    risk_val = _resolve_value(
+        replacements,
+        "exec.tradeoffs_and_deficiencies",
+        "[No trade-offs or deficiencies noted]",
+    )
     _insert_bulleted_field(b6, risk_val)
 
     b6.insert_text("\n")

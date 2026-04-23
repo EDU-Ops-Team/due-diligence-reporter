@@ -48,7 +48,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "list_drive_documents",
-        "description": "List the matched SIR, ISP, and Building Inspection source reports from the shared folders plus AI-generated reports found in the site folder or its M1 subfolder. Each file includes a doc_type field. Always pass site_name to find shared folder docs.",
+        "description": "List matched shared DD source reports plus site-folder artifacts found in the site folder or its M1 subfolder. Results may include Block Plan PDFs and derived reports such as Capacity Brainlift, RayCon Scenario, Opening Plan, and DD reports. Each file includes a doc_type field. Always pass site_name to match shared-folder docs.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -106,8 +106,24 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "apply_capacity_brainlift_skill",
+        "description": "Extract Fastest Open and Max Capacity scenario capacities from a Block Plan. Pass site_name, site_address, block_plan_content, and total_building_sf. Pass drive_folder_url to auto-publish the Capacity Brainlift report to the site's M1 subfolder.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "site_name": {"type": "string"},
+                "site_address": {"type": "string"},
+                "block_plan_content": {"type": "string"},
+                "total_building_sf": {"type": "integer"},
+                "drive_folder_url": {"type": "string", "default": "", "description": "Site Drive folder URL â€” pass to auto-publish"},
+                "block_plan_url": {"type": "string", "default": "", "description": "Drive URL for the source Block Plan PDF"},
+            },
+            "required": ["site_name", "site_address", "block_plan_content", "total_building_sf"],
+        },
+    },
+    {
         "name": "get_cost_estimate",
-        "description": "Estimate renovation costs using the Building Optimizer API. Returns report_data_fields with DD report tokens — copy these directly into report_data as flat keys.",
+        "description": "Estimate renovation costs using the Building Optimizer API. For Block Plan flows, pass the full SIR, Building Inspection, and Block Plan text when available so RayCon can use the complete source context. Returns report_data_fields with DD report tokens — copy these directly into report_data as flat keys.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -124,6 +140,13 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     },
                 },
                 "classroom_count": {"type": "integer", "default": 0},
+                "site_name": {"type": "string", "default": ""},
+                "address": {"type": "string", "default": ""},
+                "inspection_content": {"type": "string", "default": ""},
+                "sir_content": {"type": "string", "default": ""},
+                "block_plan_content": {"type": "string", "default": ""},
+                "inspection_summary": {"type": "string", "default": ""},
+                "sir_summary": {"type": "string", "default": ""},
             },
             "required": ["total_building_sf"],
         },
@@ -170,7 +193,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "skill_name": {"type": "string", "description": "Skill name: 'E-Occupancy' or 'School Approval'"},
+                "skill_name": {"type": "string", "description": "Skill name, e.g. 'E-Occupancy', 'School Approval', 'Capacity Brainlift', or 'RayCon Scenario'"},
                 "site_name": {"type": "string", "description": "Site name for the document title"},
                 "drive_folder_url": {"type": "string", "description": "Google Drive folder URL for the site"},
                 "skill_data": {"type": "object", "description": "Full result dict from the skill tool (pass the entire response)"},
@@ -210,6 +233,7 @@ async def route_tool_call(tool_name: str, tool_input: dict[str, Any]) -> Any:
         "read_drive_document": srv.read_drive_document,
         "apply_e_occupancy_skill": srv.apply_e_occupancy_skill,
         "apply_school_approval_skill": srv.apply_school_approval_skill,
+        "apply_capacity_brainlift_skill": srv.apply_capacity_brainlift_skill,
         "get_cost_estimate": srv.get_cost_estimate,
         "create_dd_report": srv.create_dd_report,
         "check_report_completeness": srv.check_report_completeness,
@@ -727,8 +751,6 @@ def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
     missing: list[str] = []
     if not readiness.get("sir_found", False):
         missing.append("SIR")
-    if not readiness.get("isp_found", False):
-        missing.append("ISP")
     if not readiness.get("inspection_found", False):
         missing.append("Building Inspection")
     return missing
@@ -1114,13 +1136,11 @@ def post_pipeline_result(
 
     if result.status == "waiting_on_docs":
         sir = "SIR" not in result.missing_docs
-        isp = "ISP" not in result.missing_docs
         insp = "Building Inspection" not in result.missing_docs
         lines = [
             f"DD Check -- {result.site_title}",
             "Status: WAITING ON DOCUMENTS",
             f"  {'[OK]' if sir else '[  ]'} SIR {'found' if sir else 'not found'}",
-            f"  {'[OK]' if isp else '[  ]'} ISP {'found' if isp else 'not found'}",
             f"  {'[OK]' if insp else '[  ]'} Building Inspection {'found' if insp else 'not found'}",
         ]
         if drive_folder_url:

@@ -135,7 +135,6 @@ class TestProcessSitePipeline:
         )
 
         assert result.status == "waiting_on_docs"
-        assert "ISP" in result.missing_docs
         assert "Building Inspection" in result.missing_docs
         assert "SIR" not in result.missing_docs
 
@@ -144,7 +143,7 @@ class TestProcessSitePipeline:
         """Returns report_exists when report already present."""
         mock_readiness.return_value = {
             "sir_found": True,
-            "isp_found": True,
+            "isp_found": False,
             "inspection_found": True,
             "report_exists": True,
         }
@@ -164,7 +163,7 @@ class TestProcessSitePipeline:
         """Triggers agent and returns report_created when all docs present."""
         mock_readiness.return_value = {
             "sir_found": True,
-            "isp_found": True,
+            "isp_found": False,
             "inspection_found": True,
             "report_exists": False,
         }
@@ -197,7 +196,7 @@ class TestProcessSitePipeline:
         """Returns generation_failed when agent fails."""
         mock_readiness.return_value = {
             "sir_found": True,
-            "isp_found": True,
+            "isp_found": False,
             "inspection_found": True,
             "report_exists": False,
         }
@@ -255,7 +254,7 @@ class TestProcessSitePipeline:
         """Raised agent exceptions degrade to generation_failed."""
         mock_readiness.return_value = {
             "sir_found": True,
-            "isp_found": True,
+            "isp_found": False,
             "inspection_found": True,
             "report_exists": False,
         }
@@ -282,7 +281,7 @@ class TestProcessSitePipeline:
         """Treats completeness payload errors as pipeline errors."""
         mock_readiness.return_value = {
             "sir_found": True,
-            "isp_found": True,
+            "isp_found": False,
             "inspection_found": True,
             "report_exists": False,
         }

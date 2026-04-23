@@ -205,7 +205,7 @@ def test_format_permit_report_fields_conditions_only():
     ]
     fields = _format_permit_report_fields(flags)
     assert fields["exec.acquisition_conditions"] != ""
-    assert fields["exec.risk_notes"] == ""
+    assert fields["exec.tradeoffs_and_deficiencies"] == ""
 
 
 def test_format_permit_report_fields_risks_only():
@@ -214,7 +214,7 @@ def test_format_permit_report_fields_risks_only():
     ]
     fields = _format_permit_report_fields(flags)
     assert fields["exec.acquisition_conditions"] == ""
-    assert fields["exec.risk_notes"] != ""
+    assert fields["exec.tradeoffs_and_deficiencies"] != ""
 
 
 def test_format_permit_report_fields_info_flags_excluded():
@@ -224,12 +224,12 @@ def test_format_permit_report_fields_info_flags_excluded():
     ]
     fields = _format_permit_report_fields(flags)
     assert fields["exec.acquisition_conditions"] == ""
-    assert fields["exec.risk_notes"] == ""
+    assert fields["exec.tradeoffs_and_deficiencies"] == ""
 
 
 def test_format_permit_report_fields_empty_flags():
     fields = _format_permit_report_fields([])
-    assert fields == {"exec.acquisition_conditions": "", "exec.risk_notes": ""}
+    assert fields == {"exec.acquisition_conditions": "", "exec.tradeoffs_and_deficiencies": ""}
 
 
 # ---------------------------------------------------------------------------

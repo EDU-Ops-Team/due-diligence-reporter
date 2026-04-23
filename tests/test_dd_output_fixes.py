@@ -465,7 +465,7 @@ class TestReportNormalizationDefaults:
 
     @patch("due_diligence_reporter.server.build_site_summary")
     @patch("due_diligence_reporter.server.find_site_record")
-    def test_normalize_report_replacements_fills_max_value_wip_labels(
+    def test_normalize_report_replacements_fills_two_scenario_gap_labels(
         self,
         mock_find_site_record: MagicMock,
         mock_build_site_summary: MagicMock,
@@ -491,8 +491,9 @@ class TestReportNormalizationDefaults:
 
         # Date 10/27 (Oct 2027) is past both school year deadlines — deterministic "No"
         assert replacements["exec.c_answer"] == "No"
-        assert replacements["exec.max_value_capacity"] == "[Not found - Max Value scenario not yet defined]"
-        assert replacements["exec.max_value_capex"] == "[Not found - Max Value scenario not yet defined]"
+        assert replacements["exec.max_capacity_capacity"] == "[Not found - Max Capacity scenario not extracted]"
+        assert replacements["exec.max_capacity_capex"] == "[Not found - Max Capacity scenario not extracted]"
+        assert "exec.max_value_capacity" not in replacements
 
     @patch("due_diligence_reporter.server.find_site_record")
     def test_inject_wrike_defaults_sets_missing_p1_label_when_lookup_misses(
@@ -822,7 +823,7 @@ class TestAsyncOffloading:
         assert result["report_data_fields"]["exec.cost_tech_security_signage_fastest_open"] == "$4,100"
         assert result["report_data_fields"]["exec.cost_soft_costs_max_capacity"] == "$22,000"
         assert result["report_data_fields"]["exec.cost_grand_total_max_capacity"] == "$245,000"
-        assert result["report_data_fields"]["exec.cost_grand_total_max_value"] == ""
+        assert "exec.cost_grand_total_max_value" not in result["report_data_fields"]
         mock_to_thread.assert_awaited_once()
 
     def test_save_skill_report_uses_to_thread(self) -> None:

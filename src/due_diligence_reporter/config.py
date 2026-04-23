@@ -123,6 +123,13 @@ class Settings(BaseSettings):
         "claude-sonnet-4-6",
         description="Anthropic model used for DD report generation",
     )
+    ops_skills_repo_path: str = Field(
+        "",
+        description=(
+            "Optional path to the ops skills repo root or its skills/ directory. "
+            "Used to load shared skill context such as capacity-brainlift."
+        ),
+    )
 
     # Email (Gmail SMTP with App Password)
     email_sender: str = Field("", description="Gmail address for sending DD report emails")
