@@ -1,0 +1,32 @@
+---
+title: Due Diligence Report Process - Operations View
+---
+flowchart TD
+    A["Monitor inbox for new site documents"]
+    B["File documents to the correct site folder"]
+    C{"Do we have all 3 required documents?<br/>SIR, Building Inspection, and Block Plan"}
+    D["Wait for remaining documents"]
+    E["Start the due diligence report process"]
+    F["Review available information from the site documents"]
+    G{"Is all required report data available?"}
+    H["Publish completed report"]
+    I["Publish report with clear placeholders<br/>showing what information is still missing"]
+    J["Share report with the operations team"]
+    K["When missing information arrives,<br/>update the report"]
+
+    A --> B --> C
+    C -- No --> D
+    C -- Yes --> E --> F --> G
+    G -- Yes --> H --> J
+    G -- No --> I --> J
+    D --> A
+    K --> E
+    I -. Follow-up update .-> K
+
+    classDef process fill:#e8f1fb,stroke:#1d5fa7,color:#0a2946;
+    classDef decision fill:#f3f0e8,stroke:#6b655d,color:#2d2a26;
+    classDef output fill:#e8f4e0,stroke:#467a1f,color:#173408;
+
+    class A,B,D,E,F,K process;
+    class C,G decision;
+    class H,I,J output;
