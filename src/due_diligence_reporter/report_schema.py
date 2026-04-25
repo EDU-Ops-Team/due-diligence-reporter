@@ -83,6 +83,64 @@ DD_RECOMMENDATION_FROM_C_ANSWER: dict[str, str] = {
     "No": "no_go",
 }
 
+# --- Phase 3: dd_site_score + band ---
+#
+# The DD site score is a 0–100 numeric derived from the
+# `apply_e_occupancy_skill` MCP tool, which lands the value on the
+# `q2.e_occupancy_score` token. The publisher promotes this to a top-level
+# `dd_site_score` field on the dashboard payload (Phase 3, Rhodes data
+# dictionary, 4/24 review).
+#
+# Band thresholds mirror the E-Occupancy Rating Bands defined in the
+# `ease-of-conversion` user skill
+# (references/site-eval-brainlift.md, lines 66–71):
+#   GREEN  80–100  Strong candidate — proceed to detailed assessment
+#   YELLOW 60– 79  Viable with known challenges — proceed with caution
+#   ORANGE 40– 59  Significant barriers — requires explicit business
+#                  justification to continue
+#   RED     0– 39  Fatal flaws likely — recommend passing
+#
+# The dashboard chip renders the band; the score itself is shown as a
+# numeric badge alongside it. Score is the source of truth — band is
+# always derived to keep the two in sync.
+ALLOWED_SITE_SCORE_BANDS: frozenset[str] = frozenset({
+    "green",
+    "yellow",
+    "orange",
+    "red",
+})
+
+SITE_SCORE_BAND_THRESHOLDS: tuple[tuple[int, str], ...] = (
+    (80, "green"),
+    (60, "yellow"),
+    (40, "orange"),
+    (0, "red"),
+)
+
+
+def site_score_band(score: int | float | None) -> str | None:
+    """Map a 0–100 numeric site score to its E-Occupancy band.
+
+    Returns one of "green" / "yellow" / "orange" / "red" for in-range
+    inputs, or None when the score is missing, NaN, or outside [0, 100].
+    The publisher uses this to derive `dd_site_score_band` from
+    `dd_site_score` whenever the caller does not supply an explicit band.
+    """
+    if score is None:
+        return None
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return None
+    if s != s:  # NaN check
+        return None
+    if s < 0 or s > 100:
+        return None
+    for threshold, label in SITE_SCORE_BAND_THRESHOLDS:
+        if s >= threshold:
+            return label
+    return None  # unreachable: 0 threshold catches everything in [0, 100]
+
 MISSING_P1_ASSIGNEE_LABEL = "[Not found - P1 Assignee not set in Wrike]"
 
 SCENARIOS: tuple[str, ...] = (

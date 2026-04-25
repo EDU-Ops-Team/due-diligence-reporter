@@ -30,8 +30,10 @@ from typing import Any
 import requests
 
 from .report_schema import (
+    ALLOWED_SITE_SCORE_BANDS,
     DD_RECOMMENDATION_FROM_C_ANSWER,
     LEGACY_CAN_WE_ANSWER_ALIASES,
+    site_score_band,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,6 +158,14 @@ def build_site_meta(
     timeline_confidence: str | None = None,  # Wrike W81 (high/medium/low/unknown)
     dd_status: str | None = None,  # in_progress | complete | follow_up
     dd_recommendation: str | None = None,  # "go" | "no_go" (derived from c_answer)
+    # --- Phase 3 DD analytical fields (Rhodes data dictionary, 4/24) ---
+    # dd_site_score is a 0–100 numeric derived from the E-Occupancy
+    # rubric (`ease-of-conversion` skill, Phase 7). The publisher derives
+    # it from `q2.e_occupancy_score` when not supplied. dd_site_score_band
+    # is always derived from the score (green/yellow/orange/red) unless
+    # explicitly overridden — keeping the two in sync.
+    dd_site_score: int | None = None,
+    dd_site_score_band: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the `site_meta` payload from pipeline inputs.
 
@@ -224,6 +234,35 @@ def build_site_meta(
     if dd_recommendation and dd_recommendation.strip():
         payload["dd_recommendation"] = dd_recommendation.strip().lower()
 
+    # Phase 3: dd_site_score + band. Score is the source of truth; band is
+    # derived from score unless caller supplies a *valid* explicit band,
+    # in which case caller-wins (handy for backfill scripts setting band
+    # only). Score is omitted when None or out of range. An invalid
+    # caller-supplied band is silently dropped and the derived band is
+    # used instead, keeping the payload self-consistent.
+    explicit_band: str | None = None
+    if dd_site_score_band and dd_site_score_band.strip():
+        candidate_band = dd_site_score_band.strip().lower()
+        if candidate_band in ALLOWED_SITE_SCORE_BANDS:
+            explicit_band = candidate_band
+
+    if isinstance(dd_site_score, (int, float)):
+        score_int = int(round(float(dd_site_score)))
+        if 0 <= score_int <= 100:
+            payload["dd_site_score"] = score_int
+            if explicit_band:
+                payload["dd_site_score_band"] = explicit_band
+            else:
+                # site_score_band() accepts the raw float so we don't lose
+                # precision at band boundaries (e.g. 79.6 → yellow,
+                # 80.0 → green) — even though we stored the rounded int.
+                derived_band = site_score_band(dd_site_score)
+                if derived_band:
+                    payload["dd_site_score_band"] = derived_band
+    elif explicit_band:
+        # Backfill case: human-classified band with no numeric score.
+        payload["dd_site_score_band"] = explicit_band
+
     return payload
 
 
@@ -251,6 +290,9 @@ def publish_to_dashboard(
     timeline_confidence: str | None = None,
     dd_status: str | None = None,
     dd_recommendation: str | None = None,
+    # Phase 3 DD analytical pass-through. See build_site_meta() for semantics.
+    dd_site_score: int | None = None,
+    dd_site_score_band: str | None = None,
     base_url: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT_SEC,
 ) -> bool:
@@ -310,6 +352,32 @@ def publish_to_dashboard(
             if canonical:
                 effective_dd_recommendation = DD_RECOMMENDATION_FROM_C_ANSWER.get(canonical)
 
+    # Derive dd_site_score from the report's q2.e_occupancy_score token
+    # when the caller did not supply an explicit value. The E-Occupancy
+    # tool (`apply_e_occupancy_skill`) emits this token as part of its
+    # standard output; we promote it to a top-level publisher field so
+    # the dashboard can render a sortable score column without parsing
+    # report_data on every read. Caller-wins precedence; non-numeric or
+    # out-of-range values are silently dropped (publisher omits the field
+    # and the dashboard's sticky-preserve transform keeps the prior value).
+    effective_dd_site_score: int | None = None
+    if isinstance(dd_site_score, (int, float)):
+        try:
+            candidate = int(round(float(dd_site_score)))
+        except (TypeError, ValueError):
+            candidate = None
+        if candidate is not None and 0 <= candidate <= 100:
+            effective_dd_site_score = candidate
+    if effective_dd_site_score is None:
+        raw_score = report_data.get("q2.e_occupancy_score")
+        if raw_score is not None and str(raw_score).strip():
+            try:
+                candidate = int(round(float(str(raw_score).strip())))
+            except (TypeError, ValueError):
+                candidate = None
+            if candidate is not None and 0 <= candidate <= 100:
+                effective_dd_site_score = candidate
+
     meta = build_site_meta(
         site_title,
         address=address,
@@ -330,6 +398,8 @@ def publish_to_dashboard(
         timeline_confidence=timeline_confidence,
         dd_status=effective_dd_status,
         dd_recommendation=effective_dd_recommendation,
+        dd_site_score=effective_dd_site_score,
+        dd_site_score_band=dd_site_score_band,
     )
     slug = meta["slug"]
 

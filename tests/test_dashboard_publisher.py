@@ -332,3 +332,135 @@ class TestDdRecommendationDerivation:
             dd_recommendation="go",
         )
         assert meta["dd_recommendation"] == "go"
+
+
+class TestDdSiteScoreDerivation:
+    """publish_to_dashboard derives dd_site_score from q2.e_occupancy_score.
+
+    The E-Occupancy tool (`apply_e_occupancy_skill`) emits a 0–100 score
+    on the `q2.e_occupancy_score` token as part of its standard output.
+    The publisher promotes this to a top-level `dd_site_score` field on
+    the dashboard payload, plus a derived `dd_site_score_band`
+    (green/yellow/orange/red).
+    """
+
+    def _capture_meta(self, report_data: dict, **publish_kwargs) -> dict:
+        """Run publish_to_dashboard with mocks; return the posted site_meta."""
+        captured: dict = {}
+
+        def fake_post(url, json, headers, timeout):
+            captured.update(json)
+            response = MagicMock()
+            response.status_code = 200
+            return response
+
+        env = {
+            "DASHBOARD_PUBLISH_SECRET": "test-secret",
+            "DASHBOARD_PUBLISH_ENABLED": "1",
+        }
+        with patch.dict("os.environ", env, clear=False), \
+                patch("due_diligence_reporter.dashboard_publisher.requests.post", side_effect=fake_post):
+            publish_to_dashboard("Austin", report_data, **publish_kwargs)
+        return captured.get("site_meta", {})
+
+    @pytest.mark.parametrize(
+        ("raw_score", "expected_score", "expected_band"),
+        [
+            # GREEN 80–100
+            ("100", 100, "green"),
+            ("85", 85, "green"),
+            ("80", 80, "green"),
+            # YELLOW 60–79
+            ("79", 79, "yellow"),
+            ("70", 70, "yellow"),
+            ("60", 60, "yellow"),
+            # ORANGE 40–59
+            ("55", 55, "orange"),
+            ("40", 40, "orange"),
+            # RED 0–39
+            ("39", 39, "red"),
+            ("15", 15, "red"),
+            ("0", 0, "red"),
+        ],
+    )
+    def test_derives_score_and_band_from_q2_token(
+        self, raw_score: str, expected_score: int, expected_band: str
+    ) -> None:
+        meta = self._capture_meta({"q2.e_occupancy_score": raw_score})
+        assert meta["dd_site_score"] == expected_score
+        assert meta["dd_site_score_band"] == expected_band
+
+    def test_int_token_value_is_accepted(self) -> None:
+        # The MCP tool returns str(score), but defensive: an int should also work.
+        meta = self._capture_meta({"q2.e_occupancy_score": 75})
+        assert meta["dd_site_score"] == 75
+        assert meta["dd_site_score_band"] == "yellow"
+
+    def test_float_token_rounds_to_int(self) -> None:
+        meta = self._capture_meta({"q2.e_occupancy_score": "79.6"})
+        # 79.6 rounds to 80 — promotes the band to green.
+        assert meta["dd_site_score"] == 80
+        assert meta["dd_site_score_band"] == "green"
+
+    def test_missing_token_omits_fields(self) -> None:
+        meta = self._capture_meta({})
+        assert "dd_site_score" not in meta
+        assert "dd_site_score_band" not in meta
+
+    def test_blank_token_omits_fields(self) -> None:
+        meta = self._capture_meta({"q2.e_occupancy_score": "   "})
+        assert "dd_site_score" not in meta
+        assert "dd_site_score_band" not in meta
+
+    def test_non_numeric_token_omits_fields(self) -> None:
+        meta = self._capture_meta({"q2.e_occupancy_score": "high"})
+        assert "dd_site_score" not in meta
+        assert "dd_site_score_band" not in meta
+
+    def test_negative_score_omits_fields(self) -> None:
+        meta = self._capture_meta({"q2.e_occupancy_score": "-5"})
+        assert "dd_site_score" not in meta
+        assert "dd_site_score_band" not in meta
+
+    def test_score_above_100_omits_fields(self) -> None:
+        meta = self._capture_meta({"q2.e_occupancy_score": "150"})
+        assert "dd_site_score" not in meta
+        assert "dd_site_score_band" not in meta
+
+    def test_explicit_score_kwarg_overrides_token(self) -> None:
+        # Caller wins: report says 30 but caller passes 90.
+        meta = self._capture_meta(
+            {"q2.e_occupancy_score": "30"},
+            dd_site_score=90,
+        )
+        assert meta["dd_site_score"] == 90
+        assert meta["dd_site_score_band"] == "green"
+
+    def test_explicit_band_kwarg_overrides_derived_band(self) -> None:
+        # Caller-supplied band wins over the derived one.
+        meta = self._capture_meta(
+            {"q2.e_occupancy_score": "85"},
+            dd_site_score_band="yellow",
+        )
+        assert meta["dd_site_score"] == 85
+        assert meta["dd_site_score_band"] == "yellow"
+
+    def test_explicit_invalid_band_kwarg_falls_back_to_derived(self) -> None:
+        # Caller passes an invalid band — publisher silently drops it and
+        # keeps the derived band so the payload stays self-consistent.
+        meta = self._capture_meta(
+            {"q2.e_occupancy_score": "85"},
+            dd_site_score_band="purple",
+        )
+        assert meta["dd_site_score"] == 85
+        assert meta["dd_site_score_band"] == "green"
+
+    def test_band_only_no_score_passes_through(self) -> None:
+        # Backfill scenario: no score available, but the human reviewer
+        # already classified the band manually.
+        meta = self._capture_meta(
+            {},
+            dd_site_score_band="orange",
+        )
+        assert "dd_site_score" not in meta
+        assert meta["dd_site_score_band"] == "orange"

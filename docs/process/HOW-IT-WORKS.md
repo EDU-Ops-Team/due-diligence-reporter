@@ -37,6 +37,7 @@ Four dimensions, each a fixed pick-menu:
 | Dimension | Source | Options |
 |-----------|--------|---------|
 | `exec.c_answer` | Agent synthesis | Yes / No (binary) — the literal answer to "Can this be a school by [date]?". The publisher derives the dashboard's Go / No Go recommendation chip (`dd_recommendation`) from this automatically. |
+| `q2.e_occupancy_score` | E-Occupancy tool | Integer 0–100 emitted by `apply_e_occupancy_skill`. The publisher derives the dashboard's `dd_site_score` (numeric column) and `dd_site_score_band` (`green` / `yellow` / `orange` / `red` chip) from this automatically. |
 | `exec.c_zoning` | SIR | Permitted by right / Use Permit Required (Admin) / Use Permit Required (Public) / Prohibited |
 | `exec.c_occupancy` | E-Occupancy skill | Has E-Occupancy / Change of use required, meets E-Occupancy / Change of use required, needs work |
 | `exec.c_edreg` | School Approval skill | Not required / Required and have done / Required have not done |
@@ -530,6 +531,11 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 ## GitHub Secrets (18 total)
 
 **Publish workflow (9):** `MCP_HIVE_API_KEY`, `MCP_HIVE_ID`, `WRIKE_ACCESS_TOKEN`, `OPENAI_API_KEY`, `DD_TEMPLATE_GOOGLE_DOC_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_REFRESH_TOKEN`
+
+**Cron + Inbox workflows (9 additional):** `ANTHROPIC_API_KEY`, `GOOGLE_CHAT_WEBHOOK_URL`, `DD_REPORT_EMAIL_RECIPIENTS`, `EMAIL_SENDER`, `EMAIL_APP_PASSWORD`, `SIR_FOLDER_ID`, `ISP_FOLDER_ID`, `BUILDING_INSPECTION_FOLDER_ID`, `PRICING_API_KEY`
+
+
+ENT_SECRET`, `OAUTH_REFRESH_TOKEN`
 
 **Cron + Inbox workflows (9 additional):** `ANTHROPIC_API_KEY`, `GOOGLE_CHAT_WEBHOOK_URL`, `DD_REPORT_EMAIL_RECIPIENTS`, `EMAIL_SENDER`, `EMAIL_APP_PASSWORD`, `SIR_FOLDER_ID`, `ISP_FOLDER_ID`, `BUILDING_INSPECTION_FOLDER_ID`, `PRICING_API_KEY`
 
