@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from datetime import date
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from due_diligence_reporter.dashboard_publisher import (
     _derive_dd_dates,
     build_site_meta,
+    publish_to_dashboard,
 )
 
 
@@ -175,11 +179,12 @@ class TestPhase2DDProvenance:
 
       - school_feasibility (Wrike W74) — free string
       - timeline_confidence (Wrike W81) — free string
-      - dd_status — "in_progress" / "complete"
+      - dd_status — "in_progress" / "complete" / "follow_up"
+      - dd_recommendation — "go" / "no_go" (derived from c_answer)
 
-    Note: dd_recommendation (go/no_go/follow_up) is intentionally NOT a
-    field here. It's derived in the dashboard UI from the latest decision
-    button click. See dd-dashboard client/src/lib/reviews.ts.
+    The decision-driven override (approve / reject / info_req) is layered
+    on top of dd_recommendation in the dashboard UI by
+    `effectiveDdStatusForSite`.
     """
 
     def test_phase2_omitted_when_unset(self) -> None:
@@ -223,8 +228,7 @@ class TestPhase2DDProvenance:
         for key in ("school_feasibility", "timeline_confidence", "dd_status"):
             assert key not in meta
 
-    def test_dd_recommendation_never_in_payload(self) -> None:
-        """Guardrail: dd_recommendation is derived UI-side, not stored."""
+    def test_dd_recommendation_omitted_when_unset(self) -> None:
         meta = build_site_meta(
             "Austin",
             address="123 Main St, Austin, TX",
@@ -233,3 +237,98 @@ class TestPhase2DDProvenance:
             dd_status="complete",
         )
         assert "dd_recommendation" not in meta
+
+    def test_dd_recommendation_included_when_set(self) -> None:
+        meta = build_site_meta(
+            "Austin",
+            address="123 Main St, Austin, TX",
+            dd_recommendation="go",
+        )
+        assert meta["dd_recommendation"] == "go"
+
+    def test_dd_recommendation_lowercased_and_stripped(self) -> None:
+        meta = build_site_meta(
+            "Austin",
+            address="123 Main St, Austin, TX",
+            dd_recommendation="  No_Go  ",
+        )
+        assert meta["dd_recommendation"] == "no_go"
+
+    def test_dd_recommendation_blank_omitted(self) -> None:
+        meta = build_site_meta(
+            "Austin",
+            address="123 Main St, Austin, TX",
+            dd_recommendation="   ",
+        )
+        assert "dd_recommendation" not in meta
+
+
+class TestDdRecommendationDerivation:
+    """publish_to_dashboard derives dd_recommendation from report_data["exec.c_answer"].
+
+    The report card stays plain-English Yes / No; the dashboard chip reads
+    Go / No Go on the publisher field. The derivation maps Yes → "go",
+    No → "no_go". Legacy values ("Go", "No Go", "Yes see notes",
+    "Conditional") are aliased through LEGACY_CAN_WE_ANSWER_ALIASES so
+    pre-rename payloads still derive correctly.
+    """
+
+    def _capture_meta(self, report_data: dict, **publish_kwargs) -> dict:
+        """Run publish_to_dashboard with mocks; return the posted site_meta."""
+        captured: dict = {}
+
+        def fake_post(url, json, headers, timeout):
+            captured.update(json)
+            response = MagicMock()
+            response.status_code = 200
+            return response
+
+        env = {
+            "DASHBOARD_PUBLISH_SECRET": "test-secret",
+            "DASHBOARD_PUBLISH_ENABLED": "1",
+        }
+        with patch.dict("os.environ", env, clear=False), \
+                patch("due_diligence_reporter.dashboard_publisher.requests.post", side_effect=fake_post):
+            publish_to_dashboard("Austin", report_data, **publish_kwargs)
+        return captured.get("site_meta", {})
+
+    @pytest.mark.parametrize(
+        ("c_answer", "expected"),
+        [
+            # Canonical Yes / No
+            ("Yes", "go"),
+            ("No", "no_go"),
+            ("yes", "go"),
+            ("NO", "no_go"),
+            # Legacy Go / No Go (from the brief publisher-vocab-on-c_answer
+            # experiment) — must derive correctly
+            ("Go", "go"),
+            ("No Go", "no_go"),
+            # Legacy three-state — collapses to go (was a yes-with-caveats)
+            ("Yes see notes", "go"),
+            ("Conditional", "go"),
+        ],
+    )
+    def test_derives_from_c_answer(self, c_answer: str, expected: str) -> None:
+        meta = self._capture_meta({"exec.c_answer": c_answer})
+        assert meta["dd_recommendation"] == expected
+
+    def test_missing_c_answer_omits_field(self) -> None:
+        meta = self._capture_meta({})
+        assert "dd_recommendation" not in meta
+
+    def test_blank_c_answer_omits_field(self) -> None:
+        meta = self._capture_meta({"exec.c_answer": "   "})
+        assert "dd_recommendation" not in meta
+
+    def test_unrecognized_c_answer_omits_field(self) -> None:
+        meta = self._capture_meta({"exec.c_answer": "Maybe"})
+        assert "dd_recommendation" not in meta
+
+    def test_explicit_kwarg_overrides_derivation(self) -> None:
+        # Caller passes Go but report says No — caller wins.
+        meta = self._capture_meta(
+            {"exec.c_answer": "No"},
+            dd_recommendation="go",
+        )
+        assert meta["dd_recommendation"] == "go"

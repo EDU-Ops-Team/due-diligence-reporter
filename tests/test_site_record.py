@@ -35,23 +35,15 @@ class TestSiteSlug:
 
 
 class TestClassifySite:
-    """classify_site accepts canonical Go / No Go and legacy Yes / No.
+    """classify_site accepts canonical Yes / No and legacy Go / No Go.
 
     Internal classification labels (yes / yes_if / no / review) are unchanged —
-    they're a routing-level concept separate from the user-facing Go / No Go.
+    they're a routing-level concept separate from the report's user-facing
+    Yes / No on `exec.c_answer` and the publisher's Go / No Go on
+    `dd_recommendation`.
     """
 
-    def test_clear_go(self) -> None:
-        label, confidence, _signals = classify_site({
-            "exec.c_answer": "Go",
-            "exec.acquisition_conditions": "Standard lease protections.",
-            "exec.tradeoffs_and_deficiencies": "",
-        })
-        assert label == "yes"
-        assert confidence >= 0.85
-
-    def test_legacy_yes_still_classifies_as_yes(self) -> None:
-        # Pre-rename data with raw "Yes" must still classify correctly
+    def test_clear_yes(self) -> None:
         label, confidence, _signals = classify_site({
             "exec.c_answer": "Yes",
             "exec.acquisition_conditions": "Standard lease protections.",
@@ -60,17 +52,28 @@ class TestClassifySite:
         assert label == "yes"
         assert confidence >= 0.85
 
-    def test_clear_no_go(self) -> None:
+    def test_legacy_go_still_classifies_as_yes(self) -> None:
+        # Data emitted during the brief Go-on-c_answer experiment must still
+        # classify correctly through the legacy fallthrough.
         label, confidence, _signals = classify_site({
-            "exec.c_answer": "No Go",
+            "exec.c_answer": "Go",
+            "exec.acquisition_conditions": "Standard lease protections.",
+            "exec.tradeoffs_and_deficiencies": "",
+        })
+        assert label == "yes"
+        assert confidence >= 0.85
+
+    def test_clear_no(self) -> None:
+        label, confidence, _signals = classify_site({
+            "exec.c_answer": "No",
             "exec.tradeoffs_and_deficiencies": "Site does not meet occupancy requirements.",
         })
         assert label == "no"
         assert confidence >= 0.85
 
-    def test_legacy_no_still_classifies_as_no(self) -> None:
+    def test_legacy_no_go_still_classifies_as_no(self) -> None:
         label, confidence, _signals = classify_site({
-            "exec.c_answer": "No",
+            "exec.c_answer": "No Go",
             "exec.tradeoffs_and_deficiencies": "Site does not meet occupancy requirements.",
         })
         assert label == "no"
@@ -86,9 +89,9 @@ class TestClassifySite:
         assert confidence >= 0.80
         assert any("yes_if_phrase:tradeoff" == signal for signal in signals)
 
-    def test_go_with_no_phrase_goes_to_review(self) -> None:
+    def test_yes_with_no_phrase_goes_to_review(self) -> None:
         label, confidence, signals = classify_site({
-            "exec.c_answer": "Go",
+            "exec.c_answer": "Yes",
             "exec.tradeoffs_and_deficiencies": "Fatal: zoning does not allow schools.",
         })
         assert label == "review"
@@ -113,7 +116,7 @@ class TestClassifySite:
 
     def test_case_insensitive(self) -> None:
         label, _confidence, _signals = classify_site({
-            "exec.c_answer": "go",
+            "exec.c_answer": "yes",
             "exec.tradeoffs_and_deficiencies": "NEEDS TO GO RIGHT: permit on time.",
         })
         assert label == "yes_if"
@@ -134,7 +137,7 @@ def _full_replacements() -> dict[str, str]:
         "meta.rebl_site_id": "palm-beach-gardens-fl",
         "meta.drive_folder_url": "https://drive.google.com/drive/folders/ABC",
         # Legacy three-state value — still accepted by classify_site for
-        # backfilled data; under the new binary system new reports emit "Go".
+        # backfilled data; under the new binary system new reports emit "Yes".
         "exec.c_answer": "Yes see notes",
         "exec.c_edreg": "Approved - FL nonpublic registration",
         "exec.c_occupancy": "E via minor TI",

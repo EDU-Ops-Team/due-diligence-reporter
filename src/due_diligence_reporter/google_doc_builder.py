@@ -865,12 +865,14 @@ def build_dd_report_doc(
     q_start, q_end = b3.insert_text(can_we_q)
     b3.style_text(q_start, q_end - 1, bold=True, font_size=11, font_family="Arial")
 
-    # Conjunction varies by answer polarity: "Go, if:" reads as forward-looking
-    # (here are the conditions that get us there); "No Go, because:" reads as
+    # Conjunction varies by answer polarity: "Yes, if:" reads as forward-looking
+    # (here are the conditions that get us there); "No, because:" reads as
     # backward-looking (here's what's blocking us). Match against canonical
-    # "Go" first, fall back to legacy "yes" for any not-yet-migrated reports.
+    # "Yes" first; legacy "go" / "yes see notes" / "conditional" also map
+    # to the affirmative branch for any not-yet-migrated reports.
     answer_lower = c_answer.strip().lower()
-    conjunction = "if" if answer_lower in {"go", "yes"} else "because"
+    affirmative = {"yes", "go", "yes see notes", "yes, see notes", "conditional"}
+    conjunction = "if" if answer_lower in affirmative else "because"
     answer_text = f"{c_answer}, {conjunction}:\n"
     a_start, a_end = b3.insert_text(answer_text)
     b3.style_text(a_start, a_end - 1, bold=True, font_size=12, font_family="Arial")

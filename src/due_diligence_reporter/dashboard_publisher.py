@@ -29,6 +29,11 @@ from typing import Any
 
 import requests
 
+from .report_schema import (
+    DD_RECOMMENDATION_FROM_C_ANSWER,
+    LEGACY_CAN_WE_ANSWER_ALIASES,
+)
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://dd-dashboard-three.vercel.app"
@@ -142,12 +147,15 @@ def build_site_meta(
     # All optional. Free-form strings on the wire so we can ship without
     # locking enum values; the data dictionary expects high/medium/low/
     # unknown for the two ratings and "in_progress"/"complete" for status.
-    # Note: dd_recommendation (go/no_go/follow_up) is intentionally NOT a
-    # field here. It's derived in the dashboard UI from the latest decision-
-    # button click in reviews.json (approve→go, reject→no_go, info_req→follow_up).
+    # Note: dd_recommendation here carries Go / No Go vocabulary derived from
+    # the report's exec.c_answer (Yes → "go", No → "no_go"). It represents
+    # "what the DD report concluded" and is distinct from the dashboard-side
+    # decision override (approve/reject/info_req via the decision button),
+    # which is layered on top in the UI by `effectiveDdStatusForSite`.
     school_feasibility: str | None = None,  # Wrike W74 (high/medium/low/unknown)
     timeline_confidence: str | None = None,  # Wrike W81 (high/medium/low/unknown)
-    dd_status: str | None = None,  # in_progress | complete
+    dd_status: str | None = None,  # in_progress | complete | follow_up
+    dd_recommendation: str | None = None,  # "go" | "no_go" (derived from c_answer)
 ) -> dict[str, Any]:
     """Assemble the `site_meta` payload from pipeline inputs.
 
@@ -213,6 +221,8 @@ def build_site_meta(
         payload["timeline_confidence"] = timeline_confidence.strip()
     if dd_status and dd_status.strip():
         payload["dd_status"] = dd_status.strip()
+    if dd_recommendation and dd_recommendation.strip():
+        payload["dd_recommendation"] = dd_recommendation.strip().lower()
 
     return payload
 
@@ -240,6 +250,7 @@ def publish_to_dashboard(
     school_feasibility: str | None = None,
     timeline_confidence: str | None = None,
     dd_status: str | None = None,
+    dd_recommendation: str | None = None,
     base_url: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT_SEC,
 ) -> bool:
@@ -279,6 +290,26 @@ def publish_to_dashboard(
     # "in_progress" or another label explicitly to override.
     effective_dd_status = (dd_status or "").strip() or "complete"
 
+    # Derive dd_recommendation (Go / No Go) from the report's c_answer
+    # (Yes / No) when the caller did not supply an explicit value. The
+    # report card stays plain-English; the dashboard chip uses the
+    # Go/No Go vocabulary. We normalize via the legacy alias map so that
+    # historical payloads (Go, Yes see notes, Conditional, etc.) still
+    # derive correctly. If the c_answer is missing or unrecognized,
+    # dd_recommendation is left unset and the dashboard falls back to
+    # its own logic.
+    effective_dd_recommendation = (dd_recommendation or "").strip().lower() or None
+    if not effective_dd_recommendation:
+        raw_c_answer = str(report_data.get("exec.c_answer") or "").strip()
+        if raw_c_answer:
+            canonical = LEGACY_CAN_WE_ANSWER_ALIASES.get(
+                raw_c_answer.rstrip(".,;:?!").lower()
+            )
+            if canonical is None and raw_c_answer in {"Yes", "No"}:
+                canonical = raw_c_answer
+            if canonical:
+                effective_dd_recommendation = DD_RECOMMENDATION_FROM_C_ANSWER.get(canonical)
+
     meta = build_site_meta(
         site_title,
         address=address,
@@ -298,6 +329,7 @@ def publish_to_dashboard(
         school_feasibility=school_feasibility,
         timeline_confidence=timeline_confidence,
         dd_status=effective_dd_status,
+        dd_recommendation=effective_dd_recommendation,
     )
     slug = meta["slug"]
 
