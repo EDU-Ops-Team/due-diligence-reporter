@@ -11,10 +11,13 @@ from .utils import flatten_report_data_for_replacement
 
 logger = logging.getLogger(__name__)
 
+# The Executive Summary "Can We Open?" card answer. Binary by design —
+# matches the dashboard recommendation chip (Go / No Go). Legacy reports
+# may still contain "Yes" / "No" / "Yes see notes" — see
+# LEGACY_CAN_WE_ANSWER_ALIASES below for backward-compat aliasing.
 ALLOWED_CAN_WE_ANSWERS: frozenset[str] = frozenset({
-    "Yes",
-    "Yes see notes",
-    "No",
+    "Go",
+    "No Go",
 })
 
 ALLOWED_ZONING_STATUSES: frozenset[str] = frozenset({
@@ -36,18 +39,30 @@ ALLOWED_ALPHA_FIT_VALUES: frozenset[str] = frozenset({
 })
 
 # School-year start dates for deterministic c_answer computation.
-# fastest_open_open_date <= SCHOOL_YEAR_DEADLINE → "Yes"; otherwise → "No".
+# fastest_open_open_date <= SCHOOL_YEAR_DEADLINE → "Go"; otherwise → "No Go".
 SCHOOL_YEAR_START_DATES: tuple[date, ...] = (
     date(2026, 8, 12),  # 08/12/26
     date(2026, 9, 8),   # 09/08/26
 )
 SCHOOL_YEAR_DEADLINE: date = max(SCHOOL_YEAR_START_DATES)  # 09/08/26
 
+# Legacy alias map for the Can-We-Open answer. Maps any historical or
+# case-variant value to the canonical "Go" / "No Go". Includes Yes/No
+# from the pre-rename era and "Yes see notes" / "conditional" which
+# both collapse into "Go" under the new binary system.
 LEGACY_CAN_WE_ANSWER_ALIASES: dict[str, str] = {
-    "yes": "Yes",
-    "yes see notes": "Yes see notes",
-    "no": "No",
-    "conditional": "Yes see notes",
+    # New canonical values (case/whitespace tolerance)
+    "go": "Go",
+    "no go": "No Go",
+    "no-go": "No Go",
+    "nogo": "No Go",
+    # Pre-rename Yes/No vocabulary
+    "yes": "Go",
+    "no": "No Go",
+    # Pre-rename three-state vocabulary — collapse to Go (was a yes-with-caveats)
+    "yes see notes": "Go",
+    "yes, see notes": "Go",
+    "conditional": "Go",
 }
 
 MISSING_P1_ASSIGNEE_LABEL = "[Not found - P1 Assignee not set in Wrike]"
@@ -408,14 +423,14 @@ def normalize_report_data(
     _normalize_optional_field(flat, token_sources, "exec.alpha_fit", normalize_alpha_fit)
     _normalize_optional_field(flat, token_sources, "exec.c_answer", normalize_can_we_answer)
 
-    # Deterministic override: compute Yes/No from fastest_open_open_date vs school year deadlines.
+    # Deterministic override: compute Go/No Go from fastest_open_open_date vs school year deadlines.
     # If the date is parseable it always overrides the agent's answer.
     # If unparseable, the agent's normalized answer (or absence) stands.
     fastest_date_str = flat.get("exec.fastest_open_open_date")
     if isinstance(fastest_date_str, str):
         parsed_date = parse_open_date(fastest_date_str)
         if parsed_date is not None:
-            computed = "Yes" if parsed_date <= SCHOOL_YEAR_DEADLINE else "No"
+            computed = "Go" if parsed_date <= SCHOOL_YEAR_DEADLINE else "No Go"
             flat["exec.c_answer"] = computed
             token_sources["exec.c_answer"] = "computed:date_comparison"
         else:

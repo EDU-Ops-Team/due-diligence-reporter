@@ -569,7 +569,7 @@ Each dimension uses a **fixed option menu**. Pick exactly one option per field b
 
 | Token | Source | Options (pick one) |
 |---|---|---|
-| `exec.c_answer` | Agent (synthesize from all sources) | `Yes` / `Yes see notes` / `No` — **no other values are valid**; do not use `Conditional` |
+| `exec.c_answer` | Agent (synthesize from all sources) | `Go` / `No Go` — **binary; no other values are valid**. Use `Go` when the school can open by the school-year deadline, `No Go` when it cannot. Do not use `Yes`, `No`, `Yes see notes`, or `Conditional` — the system will alias old values forward, but new reports must emit canonical Go / No Go. |
 | `exec.c_zoning` | SIR (zoning designation + permitted uses) | `Permitted by right` / `Use Permit Required (Admin approval)` / `Use Permit Required (Public approval)` / `Prohibited` |
 | `exec.c_occupancy` | E-Occupancy skill (uses Building Inspection data) | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
 | `exec.c_edreg` | School Approval skill | `Not required` / `Required and have done` / `Required have not done` |

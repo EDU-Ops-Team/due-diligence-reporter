@@ -355,9 +355,12 @@ class TestCheckReportCompleteness:
         from due_diligence_reporter.server import check_report_completeness
 
         gc = MagicMock()
+        # Canonical answer is now "Go" / "No Go" (binary). The legacy "Yes
+        # see notes" three-state value is no longer raw-canonical — agents
+        # should emit Go directly.
         gc.export_google_doc_as_text.return_value = (
             "Can this school be open in time for the current school year?\n"
-            "Yes see notes Education Regulatory Approval: Not required "
+            "Go Education Regulatory Approval: Not required "
             "Occupancy path: Has E-Occupancy Zoning: Permitted by right\n"
         )
 
@@ -377,7 +380,7 @@ class TestCheckReportCompleteness:
         gc = MagicMock()
         gc.export_google_doc_as_text.return_value = (
             "Can this school be open in time for the current school year?\n"
-            "Yes see notes Education Regulatory Approval: Required have not done "
+            "No Go Education Regulatory Approval: Required have not done "
             "Occupancy path: Change of use required, needs work Zoning: Use Permit Required (Public approval)\n"
             "Build Scenarios\n"
             "exec.cost_demolition_fastest_open exec.max_capacity_capex\n"
@@ -489,8 +492,8 @@ class TestReportNormalizationDefaults:
             drive_folder_url="https://drive.google.com/drive/folders/folder123",
         )
 
-        # Date 10/27 (Oct 2027) is past both school year deadlines — deterministic "No"
-        assert replacements["exec.c_answer"] == "No"
+        # Date 10/27 (Oct 2027) is past both school year deadlines — deterministic "No Go"
+        assert replacements["exec.c_answer"] == "No Go"
         assert replacements["exec.max_capacity_capacity"] == "[Not found - Max Capacity scenario not extracted]"
         assert replacements["exec.max_capacity_capex"] == "[Not found - Max Capacity scenario not extracted]"
         assert "exec.max_value_capacity" not in replacements

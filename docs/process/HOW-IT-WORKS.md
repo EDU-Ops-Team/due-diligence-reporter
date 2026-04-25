@@ -36,7 +36,7 @@ Four dimensions, each a fixed pick-menu:
 
 | Dimension | Source | Options |
 |-----------|--------|---------|
-| `exec.c_answer` | Agent synthesis | Yes / Yes see notes / No |
+| `exec.c_answer` | Agent synthesis | Go / No Go (binary) |
 | `exec.c_zoning` | SIR | Permitted by right / Use Permit Required (Admin) / Use Permit Required (Public) / Prohibited |
 | `exec.c_occupancy` | E-Occupancy skill | Has E-Occupancy / Change of use required, meets E-Occupancy / Change of use required, needs work |
 | `exec.c_edreg` | School Approval skill | Not required / Required and have done / Required have not done |
