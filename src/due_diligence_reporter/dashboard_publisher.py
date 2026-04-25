@@ -77,6 +77,18 @@ def build_site_meta(
     rebl_url: str | None = None,
     report_date: date | None = None,
     site_owner: str | None = None,
+    # --- Phase 1 DD provenance fields (Rhodes data dictionary, 4/24) ---
+    # All optional. Pipeline auto-runs leave them blank for now; explicit
+    # callers (backfill scripts, future MCP integrations, manual reruns)
+    # can populate them. Dashboard-side `transformPipelineToSite` uses a
+    # sticky-preserve pattern so blanks here never overwrite a stored
+    # value.
+    dd_author: str | None = None,
+    dd_owner: str | None = None,
+    dd_version: str | None = None,
+    dd_report_length: int | None = None,
+    dd_commissioned_date: str | None = None,  # YYYY-MM-DD
+    dd_due_date: str | None = None,  # YYYY-MM-DD
 ) -> dict[str, Any]:
     """Assemble the `site_meta` payload from pipeline inputs.
 
@@ -95,7 +107,7 @@ def build_site_meta(
     }
     school_label = type_label_map.get(school_type or "", "K-8")
 
-    return {
+    payload: dict[str, Any] = {
         "slug": slug,
         "site_name": site_title,
         "marketing_name": f"Alpha School \u2014 {site_title}",
@@ -115,6 +127,26 @@ def build_site_meta(
         },
     }
 
+    # Only include DD provenance keys when callers actually pass a value.
+    # The dashboard's sticky-preserve logic treats omitted keys and blank
+    # strings the same way, but omitting them keeps the wire payload tidy
+    # and makes the diff in committed sites.json minimal during Phase 1
+    # rollout (when most sites won't have these fields yet).
+    if dd_author:
+        payload["dd_author"] = dd_author.strip()
+    if dd_owner:
+        payload["dd_owner"] = dd_owner.strip()
+    if dd_version:
+        payload["dd_version"] = dd_version.strip()
+    if isinstance(dd_report_length, int) and dd_report_length >= 0:
+        payload["dd_report_length"] = dd_report_length
+    if dd_commissioned_date:
+        payload["dd_commissioned_date"] = dd_commissioned_date.strip()
+    if dd_due_date:
+        payload["dd_due_date"] = dd_due_date.strip()
+
+    return payload
+
 
 def publish_to_dashboard(
     site_title: str,
@@ -128,6 +160,13 @@ def publish_to_dashboard(
     rebl_url: str | None = None,
     report_date: date | None = None,
     site_owner: str | None = None,
+    # Phase 1 DD provenance pass-through. See build_site_meta() for semantics.
+    dd_author: str | None = None,
+    dd_owner: str | None = None,
+    dd_version: str | None = None,
+    dd_report_length: int | None = None,
+    dd_commissioned_date: str | None = None,
+    dd_due_date: str | None = None,
     base_url: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT_SEC,
 ) -> bool:
@@ -150,6 +189,18 @@ def publish_to_dashboard(
 
     url_base = (base_url or os.environ.get("DASHBOARD_PUBLISH_URL") or _DEFAULT_BASE_URL).rstrip("/")
 
+    # If the caller didn't pass dd_commissioned_date but the pipeline trace
+    # carries the Wrike folder createdDate (the canonical "site record was
+    # created" timestamp), use that. It's the closest free signal we have
+    # to "when DD was kicked off" until we add a dedicated field upstream.
+    inferred_commissioned = dd_commissioned_date
+    if not inferred_commissioned:
+        wrike_created = str(report_data.get("wrike_created_at") or "").strip()
+        if wrike_created:
+            # wrike_created_at is ISO 8601 with time. Trim to YYYY-MM-DD to
+            # match the dd_commissioned_date schema.
+            inferred_commissioned = wrike_created[:10]
+
     meta = build_site_meta(
         site_title,
         address=address,
@@ -160,6 +211,12 @@ def publish_to_dashboard(
         rebl_url=rebl_url or str(report_data.get("sources.rebl_link") or ""),
         report_date=report_date,
         site_owner=site_owner,
+        dd_author=dd_author,
+        dd_owner=dd_owner,
+        dd_version=dd_version,
+        dd_report_length=dd_report_length,
+        dd_commissioned_date=inferred_commissioned,
+        dd_due_date=dd_due_date,
     )
     slug = meta["slug"]
 
