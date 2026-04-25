@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import requests
@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://dd-dashboard-three.vercel.app"
 _DEFAULT_TIMEOUT_SEC = 15
+
+# DD turn-time SLA: 14 days from Wrike record creation to report due.
+# Drives the default dd_due_date when no explicit value is passed.
+_DD_DUE_DATE_OFFSET_DAYS = 14
 
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
 
@@ -66,6 +70,51 @@ def _parse_city_state_zip(address: str | None) -> tuple[str, str]:
     return tail, state
 
 
+def _derive_dd_dates(
+    *,
+    explicit_commissioned: str | None,
+    explicit_due: str | None,
+    today: date | None = None,
+) -> tuple[str | None, str | None]:
+    """Derive (dd_commissioned_date, dd_due_date) for a publish call.
+
+    Rules (per Greg, 4/25):
+      - dd_commissioned_date == the date the DD report is first created.
+        On every publish call we send today's date as a candidate. The
+        dashboard's sticky-preserve transform locks the first non-empty
+        value, so subsequent reruns cannot bump it forward.
+      - dd_due_date == commissioned_date + 14 days (DD turn-time SLA).
+      - An explicit caller-provided value always wins (back-dated
+        manual rerun, custom due date).
+
+    Returns (commissioned, due) as YYYY-MM-DD strings.
+
+    Note on the sticky-preserve guarantee: even though we send today's
+    date on every call, the dashboard side only writes it the first
+    time. See `transformPipelineToSite` in dd-dashboard's
+    api/_lib/transform.ts — dd_commissioned_date / dd_due_date
+    fall through the `preserve()` helper.
+    """
+    today = today or date.today()
+
+    # Caller-provided commissioned date short-circuits the today-default.
+    commissioned = (explicit_commissioned or "").strip() or None
+    if commissioned is None:
+        commissioned = today.isoformat()
+
+    # Caller-provided due date short-circuits the +14d default.
+    due = (explicit_due or "").strip() or None
+    if due is None:
+        try:
+            base = date.fromisoformat(commissioned)
+            due = (base + timedelta(days=_DD_DUE_DATE_OFFSET_DAYS)).isoformat()
+        except ValueError:
+            # Malformed commissioned date — don't fabricate a due date.
+            due = None
+
+    return commissioned, due
+
+
 def build_site_meta(
     site_title: str,
     *,
@@ -77,6 +126,18 @@ def build_site_meta(
     rebl_url: str | None = None,
     report_date: date | None = None,
     site_owner: str | None = None,
+    # --- Phase 1 DD provenance fields (Rhodes data dictionary, 4/24) ---
+    # All optional. Pipeline auto-runs leave them blank for now; explicit
+    # callers (backfill scripts, future MCP integrations, manual reruns)
+    # can populate them. Dashboard-side `transformPipelineToSite` uses a
+    # sticky-preserve pattern so blanks here never overwrite a stored
+    # value.
+    dd_author: str | None = None,
+    dd_owner: str | None = None,
+    dd_version: str | None = None,
+    dd_report_length: int | None = None,
+    dd_commissioned_date: str | None = None,  # YYYY-MM-DD
+    dd_due_date: str | None = None,  # YYYY-MM-DD
 ) -> dict[str, Any]:
     """Assemble the `site_meta` payload from pipeline inputs.
 
@@ -95,7 +156,7 @@ def build_site_meta(
     }
     school_label = type_label_map.get(school_type or "", "K-8")
 
-    return {
+    payload: dict[str, Any] = {
         "slug": slug,
         "site_name": site_title,
         "marketing_name": f"Alpha School \u2014 {site_title}",
@@ -115,6 +176,26 @@ def build_site_meta(
         },
     }
 
+    # Only include DD provenance keys when callers actually pass a value.
+    # The dashboard's sticky-preserve logic treats omitted keys and blank
+    # strings the same way, but omitting them keeps the wire payload tidy
+    # and makes the diff in committed sites.json minimal during Phase 1
+    # rollout (when most sites won't have these fields yet).
+    if dd_author:
+        payload["dd_author"] = dd_author.strip()
+    if dd_owner:
+        payload["dd_owner"] = dd_owner.strip()
+    if dd_version:
+        payload["dd_version"] = dd_version.strip()
+    if isinstance(dd_report_length, int) and dd_report_length >= 0:
+        payload["dd_report_length"] = dd_report_length
+    if dd_commissioned_date:
+        payload["dd_commissioned_date"] = dd_commissioned_date.strip()
+    if dd_due_date:
+        payload["dd_due_date"] = dd_due_date.strip()
+
+    return payload
+
 
 def publish_to_dashboard(
     site_title: str,
@@ -128,6 +209,13 @@ def publish_to_dashboard(
     rebl_url: str | None = None,
     report_date: date | None = None,
     site_owner: str | None = None,
+    # Phase 1 DD provenance pass-through. See build_site_meta() for semantics.
+    dd_author: str | None = None,
+    dd_owner: str | None = None,
+    dd_version: str | None = None,
+    dd_report_length: int | None = None,
+    dd_commissioned_date: str | None = None,
+    dd_due_date: str | None = None,
     base_url: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT_SEC,
 ) -> bool:
@@ -150,6 +238,15 @@ def publish_to_dashboard(
 
     url_base = (base_url or os.environ.get("DASHBOARD_PUBLISH_URL") or _DEFAULT_BASE_URL).rstrip("/")
 
+    # dd_commissioned_date == the date the DD report is first created.
+    # We send today's date on every publish; the dashboard's sticky-
+    # preserve transform locks the first non-empty value so reruns
+    # cannot bump it forward. dd_due_date == commissioned + 14 days.
+    inferred_commissioned, inferred_due = _derive_dd_dates(
+        explicit_commissioned=dd_commissioned_date,
+        explicit_due=dd_due_date,
+    )
+
     meta = build_site_meta(
         site_title,
         address=address,
@@ -160,6 +257,12 @@ def publish_to_dashboard(
         rebl_url=rebl_url or str(report_data.get("sources.rebl_link") or ""),
         report_date=report_date,
         site_owner=site_owner,
+        dd_author=dd_author,
+        dd_owner=dd_owner,
+        dd_version=dd_version,
+        dd_report_length=dd_report_length,
+        dd_commissioned_date=inferred_commissioned,
+        dd_due_date=inferred_due,
     )
     slug = meta["slug"]
 
