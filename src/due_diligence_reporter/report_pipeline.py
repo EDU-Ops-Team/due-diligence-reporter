@@ -1159,7 +1159,14 @@ def _publish_to_dashboard_best_effort(
     school_feasibility: str | None = None,
     timeline_confidence: str | None = None,
 ) -> None:
-    """Fire-and-forget dashboard publish. Never raises."""
+    """Fire-and-forget dashboard publish. Never raises.
+
+    Phase 3 fields (dd_site_score + dd_site_score_band) are derived
+    automatically by ``publish_to_dashboard`` from the report's
+    ``q2.e_occupancy_score`` token and don't need to be threaded through
+    here — the e-occupancy tool emits that token as part of its standard
+    output whenever it runs in the pipeline.
+    """
     if trace is None or not getattr(trace, "final_report_data", None):
         logger.info(
             "Skipping dashboard publish for %s \u2014 no final_report_data on trace",

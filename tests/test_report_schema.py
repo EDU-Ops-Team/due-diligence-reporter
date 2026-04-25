@@ -9,15 +9,18 @@ import pytest
 from due_diligence_reporter.report_schema import (
     AGENT_KEY_ALIASES,
     ALLOWED_CAN_WE_ANSWERS,
+    ALLOWED_SITE_SCORE_BANDS,
     ALLOWED_VIABLE_BUILDOUTS,
     ALLOWED_ZONING_STATUSES,
     LINK_TOKENS,
     MISSING_P1_ASSIGNEE_LABEL,
     SCHOOL_YEAR_DEADLINE,
+    SITE_SCORE_BAND_THRESHOLDS,
     TEMPLATE_TOKEN_SET,
     TEMPLATE_TOKENS,
     normalize_report_data,
     parse_open_date,
+    site_score_band,
 )
 
 
@@ -384,3 +387,69 @@ class TestPipelineToolDefinitions:
 
         tool_names = [tool["name"] for tool in TOOL_DEFINITIONS]
         assert "apply_capacity_brainlift_skill" in tool_names
+
+
+class TestSiteScoreBand:
+    """site_score_band() maps 0–100 numeric scores to E-Occupancy bands.
+
+    Bands and thresholds mirror the rubric in the ease-of-conversion user
+    skill (references/site-eval-brainlift.md, lines 66–71):
+      GREEN  80–100
+      YELLOW 60– 79
+      ORANGE 40– 59
+      RED     0– 39
+    """
+
+    def test_thresholds_constant_matches_allowed_bands(self) -> None:
+        threshold_labels = {label for _, label in SITE_SCORE_BAND_THRESHOLDS}
+        assert threshold_labels == set(ALLOWED_SITE_SCORE_BANDS)
+
+    def test_thresholds_are_descending(self) -> None:
+        # site_score_band relies on top-down threshold scanning.
+        thresholds = [t for t, _ in SITE_SCORE_BAND_THRESHOLDS]
+        assert thresholds == sorted(thresholds, reverse=True)
+
+    @pytest.mark.parametrize(
+        ("score", "expected"),
+        [
+            # GREEN range 80–100
+            (100, "green"),
+            (95, "green"),
+            (80, "green"),  # lower boundary
+            # YELLOW range 60–79
+            (79, "yellow"),  # upper boundary
+            (70, "yellow"),
+            (60, "yellow"),  # lower boundary
+            # ORANGE range 40–59
+            (59, "orange"),  # upper boundary
+            (50, "orange"),
+            (40, "orange"),  # lower boundary
+            # RED range 0–39
+            (39, "red"),  # upper boundary
+            (20, "red"),
+            (0, "red"),  # lower boundary
+        ],
+    )
+    def test_in_range_scores_map_to_band(
+        self, score: int, expected: str
+    ) -> None:
+        assert site_score_band(score) == expected
+
+    def test_float_score_at_boundary(self) -> None:
+        # Boundary precision must hold for floats too.
+        assert site_score_band(79.999) == "yellow"
+        assert site_score_band(80.0) == "green"
+
+    @pytest.mark.parametrize("score", [-1, -0.1, 100.1, 101, 200])
+    def test_out_of_range_returns_none(self, score: float) -> None:
+        assert site_score_band(score) is None
+
+    def test_none_returns_none(self) -> None:
+        assert site_score_band(None) is None
+
+    @pytest.mark.parametrize("value", ["abc", "", "50pct", object()])
+    def test_non_numeric_returns_none(self, value: object) -> None:
+        assert site_score_band(value) is None  # type: ignore[arg-type]
+
+    def test_nan_returns_none(self) -> None:
+        assert site_score_band(float("nan")) is None

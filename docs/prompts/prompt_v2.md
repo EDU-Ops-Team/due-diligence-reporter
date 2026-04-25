@@ -570,6 +570,11 @@ Each dimension uses a **fixed option menu**. Pick exactly one option per field b
 | Token | Source | Options (pick one) |
 |---|---|---|
 | `exec.c_answer` | Agent (synthesize from all sources) | `Yes` / `No` — **binary; no other values are valid**. This is the literal answer to "Can this be a school by [date]?". Use `Yes` when the school can open by the school-year deadline, `No` when it cannot. Do not use `Go`, `No Go`, `Yes see notes`, or `Conditional` — the system will alias old values forward, but new reports must emit canonical Yes / No. The publisher derives the dashboard's Go / No Go recommendation chip (`dd_recommendation`) from this value automatically (Yes → `go`, No → `no_go`). |
+
+**Publisher-side derivations.** Two top-level dashboard fields are auto-derived from tokens above and don't need to be emitted explicitly:
+
+- **`dd_recommendation`** (`go` / `no_go`) — from `exec.c_answer` (Yes → `go`, No → `no_go`)
+- **`dd_site_score`** (0–100 integer) and **`dd_site_score_band`** (`green` / `yellow` / `orange` / `red`) — from `q2.e_occupancy_score` emitted by the E-Occupancy tool. Bands: GREEN 80–100, YELLOW 60–79, ORANGE 40–59, RED 0–39. Score is always the source of truth; band is derived. Just call `apply_e_occupancy_skill` and the score flows through automatically.
 | `exec.c_zoning` | SIR (zoning designation + permitted uses) | `Permitted by right` / `Use Permit Required (Admin approval)` / `Use Permit Required (Public approval)` / `Prohibited` |
 | `exec.c_occupancy` | E-Occupancy skill (uses Building Inspection data) | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
 | `exec.c_edreg` | School Approval skill | `Not required` / `Required and have done` / `Required have not done` |
