@@ -35,6 +35,7 @@ from .report_schema import (
     LEGACY_CAN_WE_ANSWER_ALIASES,
     site_score_band,
 )
+from .risk_flags import derive_risk_flags, normalize_caller_flags
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,15 @@ def build_site_meta(
     # explicitly overridden — keeping the two in sync.
     dd_site_score: int | None = None,
     dd_site_score_band: str | None = None,
+    # --- Phase 4 DD analytical fields (Rhodes data dictionary, 4/25) ---
+    # dd_risk_flags is a canonical, deduped list surfacing risk signals
+    # from the four upstream archetypes (permit_history, e_occupancy IBC
+    # gates, school_approval, SIR Risk Watch). When the caller does not
+    # pass an explicit list, ``publish_to_dashboard`` derives it from the
+    # report's token bag via ``derive_risk_flags``. Each entry has the
+    # shape ``{category, severity, source, summary}`` — see
+    # ``risk_flags.py`` for the canonical enums and severity rules.
+    dd_risk_flags: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the `site_meta` payload from pipeline inputs.
 
@@ -263,6 +273,18 @@ def build_site_meta(
         # Backfill case: human-classified band with no numeric score.
         payload["dd_site_score_band"] = explicit_band
 
+    # Phase 4: dd_risk_flags. Caller-wins is enforced upstream in
+    # ``publish_to_dashboard`` (it passes a normalized list here, or
+    # derives one from report_data). Validate again as belt-and-
+    # suspenders so direct ``build_site_meta`` callers get the same
+    # invalid-entry-drop semantics. Empty list is omitted from the
+    # payload to keep the dashboard's sticky-preserve transform from
+    # treating "no flags this run" as "clear all flags".
+    if dd_risk_flags:
+        normalized = normalize_caller_flags(dd_risk_flags)
+        if normalized:
+            payload["dd_risk_flags"] = normalized
+
     return payload
 
 
@@ -293,6 +315,8 @@ def publish_to_dashboard(
     # Phase 3 DD analytical pass-through. See build_site_meta() for semantics.
     dd_site_score: int | None = None,
     dd_site_score_band: str | None = None,
+    # Phase 4 DD analytical pass-through. See build_site_meta() for semantics.
+    dd_risk_flags: list[dict[str, Any]] | None = None,
     base_url: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT_SEC,
 ) -> bool:
@@ -378,6 +402,19 @@ def publish_to_dashboard(
             if candidate is not None and 0 <= candidate <= 100:
                 effective_dd_site_score = candidate
 
+    # Derive dd_risk_flags from the report's token bag when the caller
+    # did not supply an explicit list. Caller-wins precedence with the
+    # same invalid-entry-drop semantics as Phase 3 (band): explicit
+    # input is normalized via ``normalize_caller_flags``; if that yields
+    # nothing usable, fall back to the derivation path so we don't ship
+    # an empty-but-meant-to-be-something list. See ``risk_flags.py``
+    # for the canonical enums and severity rules.
+    effective_dd_risk_flags: list[dict[str, Any]] = []
+    if dd_risk_flags:
+        effective_dd_risk_flags = normalize_caller_flags(dd_risk_flags)
+    if not effective_dd_risk_flags:
+        effective_dd_risk_flags = derive_risk_flags(report_data)
+
     meta = build_site_meta(
         site_title,
         address=address,
@@ -400,6 +437,7 @@ def publish_to_dashboard(
         dd_recommendation=effective_dd_recommendation,
         dd_site_score=effective_dd_site_score,
         dd_site_score_band=dd_site_score_band,
+        dd_risk_flags=effective_dd_risk_flags,
     )
     slug = meta["slug"]
 

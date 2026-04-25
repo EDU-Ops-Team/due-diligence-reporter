@@ -464,3 +464,126 @@ class TestDdSiteScoreDerivation:
         )
         assert "dd_site_score" not in meta
         assert meta["dd_site_score_band"] == "orange"
+
+
+class TestDdRiskFlagsDerivation:
+    """publish_to_dashboard derives dd_risk_flags from report_data.
+
+    Mirrors the Phase 3 dd_site_score pattern: when the caller does not
+    supply dd_risk_flags explicitly, the publisher canonicalizes the
+    report's flag-like tokens (permit_history, e_occupancy, school_approval,
+    sir.risk_watch) into a single deduped list. Caller-wins precedence:
+    explicit kwargs override derivation.
+    """
+
+    def _capture_meta(self, report_data: dict, **publish_kwargs) -> dict:
+        captured: dict = {}
+
+        def fake_post(url, json, headers, timeout):
+            captured.update(json)
+            response = MagicMock()
+            response.status_code = 200
+            return response
+
+        env = {
+            "DASHBOARD_PUBLISH_SECRET": "test-secret",
+            "DASHBOARD_PUBLISH_ENABLED": "1",
+        }
+        with patch.dict("os.environ", env, clear=False), \
+                patch("due_diligence_reporter.dashboard_publisher.requests.post", side_effect=fake_post):
+            publish_to_dashboard("Austin", report_data, **publish_kwargs)
+        return captured.get("site_meta", {})
+
+    def test_derives_from_permit_history_token(self) -> None:
+        meta = self._capture_meta({
+            "permit_history.risk_flags": [
+                {
+                    "flag_type": "OPEN_PERMIT",
+                    "severity": "acquisition_condition",
+                    "description": "2 open permits",
+                    "evidence": "x",
+                }
+            ]
+        })
+        flags = meta["dd_risk_flags"]
+        assert len(flags) == 1
+        assert flags[0]["category"] == "ahj_history"
+        assert flags[0]["source"] == "permit_history"
+        assert flags[0]["severity"] == "high"
+
+    def test_derives_from_e_occupancy_zone(self) -> None:
+        meta = self._capture_meta({"q2.e_occupancy_zone": "Red"})
+        flags = meta["dd_risk_flags"]
+        assert len(flags) == 1
+        assert flags[0]["category"] == "occupancy"
+        assert flags[0]["source"] == "e_occupancy"
+
+    def test_derives_from_multiple_sources_combined(self) -> None:
+        meta = self._capture_meta({
+            "permit_history.risk_flags": [{
+                "flag_type": "DEFERRED_MAINTENANCE",
+                "severity": "risk_note",
+                "description": "No activity",
+                "evidence": "x",
+            }],
+            "q2.e_occupancy_zone": "Red",
+            "q1.school_approval_zone": "Yellow",
+            "q1.school_approval_type": "CERTIFICATE_OR_APPROVAL_REQUIRED",
+            "q1.school_approval_timeline_days": "90",
+            "sir.risk_watch": ["FEMA flood zone AE intersects parcel"],
+        })
+        flags = meta["dd_risk_flags"]
+        sources = {f["source"] for f in flags}
+        assert sources == {
+            "permit_history", "e_occupancy", "school_approval", "sir_risk_watch",
+        }
+
+    def test_caller_wins_overrides_derivation(self) -> None:
+        # Even with derivable upstream tokens, an explicit caller list
+        # wins (caller-wins precedence — same as Phase 3 dd_site_score).
+        meta = self._capture_meta(
+            {"q2.e_occupancy_zone": "Red"},  # would derive an occupancy:high flag
+            dd_risk_flags=[{
+                "category": "zoning",
+                "severity": "medium",
+                "source": "sir_risk_watch",
+                "summary": "Manual override entry",
+            }],
+        )
+        flags = meta["dd_risk_flags"]
+        assert len(flags) == 1
+        assert flags[0]["category"] == "zoning"
+        assert flags[0]["source"] == "sir_risk_watch"
+
+    def test_caller_invalid_falls_back_to_derivation(self) -> None:
+        # Same pattern as Phase 3 invalid band: caller-supplied entries
+        # that all fail validation are dropped, derivation takes over.
+        meta = self._capture_meta(
+            {"q2.e_occupancy_zone": "Red"},
+            dd_risk_flags=[{
+                "category": "made_up",
+                "severity": "high",
+                "source": "rumor",
+                "summary": "Invalid",
+            }],
+        )
+        flags = meta["dd_risk_flags"]
+        assert len(flags) == 1
+        assert flags[0]["category"] == "occupancy"
+
+    def test_empty_when_no_signals(self) -> None:
+        # No upstream signals → no key on payload (sticky-preserve safe).
+        meta = self._capture_meta({"exec.c_answer": "Yes"})
+        assert "dd_risk_flags" not in meta
+
+    def test_explicit_empty_list_falls_back_to_derivation(self) -> None:
+        # Truthy-empty caller list → publisher treats as "not supplied"
+        # and runs derivation. (Avoids accidental clear-all from a
+        # caller passing [] before they actually populate the field.)
+        meta = self._capture_meta(
+            {"q2.e_occupancy_zone": "Red"},
+            dd_risk_flags=[],
+        )
+        flags = meta["dd_risk_flags"]
+        assert len(flags) == 1
+        assert flags[0]["category"] == "occupancy"

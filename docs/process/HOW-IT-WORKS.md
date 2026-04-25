@@ -38,6 +38,7 @@ Four dimensions, each a fixed pick-menu:
 |-----------|--------|---------|
 | `exec.c_answer` | Agent synthesis | Yes / No (binary) — the literal answer to "Can this be a school by [date]?". The publisher derives the dashboard's Go / No Go recommendation chip (`dd_recommendation`) from this automatically. |
 | `q2.e_occupancy_score` | E-Occupancy tool | Integer 0–100 emitted by `apply_e_occupancy_skill`. The publisher derives the dashboard's `dd_site_score` (numeric column) and `dd_site_score_band` (`green` / `yellow` / `orange` / `red` chip) from this automatically. |
+| `dd_risk_flags[]` (Phase 4) | Multiple | Canonical, deduped list of `{category, severity, source, summary}` derived from four upstream signals: `permit_history.risk_flags`, `q2.ibc_flags` / `q2.e_occupancy_ibc_summary`, `q1.school_approval_zone`, and `sir.risk_watch`. Categories: `zoning`, `occupancy`, `ahj_history`, `parking`, `traffic`, `environmental`, `flood_zone`, `historic_district`, `accessibility`, `ed_reg`. Severity per source rule (see `risk_flags.py`). |
 | `exec.c_zoning` | SIR | Permitted by right / Use Permit Required (Admin) / Use Permit Required (Public) / Prohibited |
 | `exec.c_occupancy` | E-Occupancy skill | Has E-Occupancy / Change of use required, meets E-Occupancy / Change of use required, needs work |
 | `exec.c_edreg` | School Approval skill | Not required / Required and have done / Required have not done |
@@ -325,6 +326,7 @@ Three skill tools analyze the source data and produce structured outputs. The fi
 4. Runs IBC compliance gates: sprinkler requirement, travel distance, exit count, construction type
 5. Returns score (0â€“100), zone (GREEN/YELLOW/RED), tier, confidence, `ibc_gates`, `ibc_flags`, and `q2.e_occupancy_ibc_summary`
 6. Publishes assessment â†’ `sources.e_occupancy_link`
+7. Phase 4: `ibc_flags` and `q2.e_occupancy_zone` flow through to the dashboard's `dd_risk_flags[]` automatically (categories: `occupancy`, `accessibility`, `parking`; severity from gate-fail keywords)
 
 **School Approval Skill** â€” `apply_school_approval_skill(state, site_name, drive_folder_url)`
 1. Looks up state in built-in approval table (all 50 states + DC)

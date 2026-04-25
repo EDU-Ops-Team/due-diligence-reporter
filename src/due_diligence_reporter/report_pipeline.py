@@ -1166,6 +1166,13 @@ def _publish_to_dashboard_best_effort(
     ``q2.e_occupancy_score`` token and don't need to be threaded through
     here — the e-occupancy tool emits that token as part of its standard
     output whenever it runs in the pipeline.
+
+    Phase 4 ``dd_risk_flags`` are likewise derived automatically by
+    ``publish_to_dashboard`` from the report's flag-like tokens
+    (``permit_history.risk_flags``, ``q2.ibc_flags`` /
+    ``q2.e_occupancy_ibc_summary``, ``q1.school_approval_*``,
+    ``sir.risk_watch``). See ``risk_flags.py`` for the canonical enums
+    and severity rules.
     """
     if trace is None or not getattr(trace, "final_report_data", None):
         logger.info(
