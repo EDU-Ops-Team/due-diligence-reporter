@@ -141,6 +141,52 @@ def site_score_band(score: int | float | None) -> str | None:
             return label
     return None  # unreachable: 0 threshold catches everything in [0, 100]
 
+# --- Phase 4: dd_risk_flags[] canonical enum ---
+#
+# A single, canonical, deduplicated list of risk flags surfaced from the
+# multiple flag-like signals in the DD report (permit_history, e_occupancy
+# IBC gates, school_approval archetype, SIR Risk Watch). The publisher
+# emits this on the dashboard payload so the dashboard can render flag
+# chips/groupings without re-parsing per-source raw data.
+#
+# Categories cover the topical buckets we surface across all archetypes.
+# `septic` deliberately rolls up under `environmental` (per Phase 4 design
+# review on issue #20) — septic-specific findings are emitted as
+# environmental flags whose summary text indicates septic.
+ALLOWED_RISK_FLAG_CATEGORIES: frozenset[str] = frozenset({
+    "zoning",
+    "occupancy",
+    "ahj_history",
+    "parking",
+    "traffic",
+    "environmental",
+    "flood_zone",
+    "historic_district",
+    "accessibility",
+    "ed_reg",
+})
+
+ALLOWED_RISK_FLAG_SEVERITIES: frozenset[str] = frozenset({
+    "high",
+    "medium",
+    "low",
+})
+
+ALLOWED_RISK_FLAG_SOURCES: frozenset[str] = frozenset({
+    "permit_history",
+    "e_occupancy",
+    "school_approval",
+    "sir_risk_watch",
+})
+
+# Severity ordering for sort/dedup: higher severity wins when the same
+# (category, source) pair appears multiple times.
+RISK_FLAG_SEVERITY_RANK: dict[str, int] = {
+    "high": 3,
+    "medium": 2,
+    "low": 1,
+}
+
 MISSING_P1_ASSIGNEE_LABEL = "[Not found - P1 Assignee not set in Wrike]"
 
 SCENARIOS: tuple[str, ...] = (

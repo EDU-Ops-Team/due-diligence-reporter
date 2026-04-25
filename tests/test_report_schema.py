@@ -453,3 +453,46 @@ class TestSiteScoreBand:
 
     def test_nan_returns_none(self) -> None:
         assert site_score_band(float("nan")) is None
+
+
+class TestPhase4RiskFlagConstants:
+    """Phase 4 (Rhodes data dictionary, 4/25): canonical enums for dd_risk_flags."""
+
+    def test_categories_match_design_doc(self) -> None:
+        from due_diligence_reporter.report_schema import ALLOWED_RISK_FLAG_CATEGORIES
+
+        # 10 canonical categories per #20 design lock — septic folds into
+        # environmental, ed_reg keeps its short name.
+        assert ALLOWED_RISK_FLAG_CATEGORIES == frozenset({
+            "zoning",
+            "occupancy",
+            "ahj_history",
+            "parking",
+            "traffic",
+            "environmental",
+            "flood_zone",
+            "historic_district",
+            "accessibility",
+            "ed_reg",
+        })
+
+    def test_severities_three_levels(self) -> None:
+        from due_diligence_reporter.report_schema import ALLOWED_RISK_FLAG_SEVERITIES
+
+        assert ALLOWED_RISK_FLAG_SEVERITIES == frozenset({"high", "medium", "low"})
+
+    def test_sources_match_four_archetypes(self) -> None:
+        from due_diligence_reporter.report_schema import ALLOWED_RISK_FLAG_SOURCES
+
+        assert ALLOWED_RISK_FLAG_SOURCES == frozenset({
+            "permit_history",
+            "e_occupancy",
+            "school_approval",
+            "sir_risk_watch",
+        })
+
+    def test_severity_rank_orders_high_above_low(self) -> None:
+        from due_diligence_reporter.report_schema import RISK_FLAG_SEVERITY_RANK
+
+        assert RISK_FLAG_SEVERITY_RANK["high"] > RISK_FLAG_SEVERITY_RANK["medium"]
+        assert RISK_FLAG_SEVERITY_RANK["medium"] > RISK_FLAG_SEVERITY_RANK["low"]
