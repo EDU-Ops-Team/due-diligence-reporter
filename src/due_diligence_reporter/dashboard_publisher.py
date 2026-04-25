@@ -138,6 +138,16 @@ def build_site_meta(
     dd_report_length: int | None = None,
     dd_commissioned_date: str | None = None,  # YYYY-MM-DD
     dd_due_date: str | None = None,  # YYYY-MM-DD
+    # --- Phase 2 DD provenance fields (Rhodes data dictionary, 4/24) ---
+    # All optional. Free-form strings on the wire so we can ship without
+    # locking enum values; the data dictionary expects high/medium/low/
+    # unknown for the two ratings and "in_progress"/"complete" for status.
+    # Note: dd_recommendation (go/no_go/follow_up) is intentionally NOT a
+    # field here. It's derived in the dashboard UI from the latest decision-
+    # button click in reviews.json (approve→go, reject→no_go, info_req→follow_up).
+    school_feasibility: str | None = None,  # Wrike W74 (high/medium/low/unknown)
+    timeline_confidence: str | None = None,  # Wrike W81 (high/medium/low/unknown)
+    dd_status: str | None = None,  # in_progress | complete
 ) -> dict[str, Any]:
     """Assemble the `site_meta` payload from pipeline inputs.
 
@@ -194,6 +204,16 @@ def build_site_meta(
     if dd_due_date:
         payload["dd_due_date"] = dd_due_date.strip()
 
+    # Phase 2: same omit-when-unset semantics as Phase 1. Strip first so
+    # whitespace-only inputs ("   ") are treated as unset and don't slip
+    # blank values onto the dashboard's stored record.
+    if school_feasibility and school_feasibility.strip():
+        payload["school_feasibility"] = school_feasibility.strip()
+    if timeline_confidence and timeline_confidence.strip():
+        payload["timeline_confidence"] = timeline_confidence.strip()
+    if dd_status and dd_status.strip():
+        payload["dd_status"] = dd_status.strip()
+
     return payload
 
 
@@ -216,6 +236,10 @@ def publish_to_dashboard(
     dd_report_length: int | None = None,
     dd_commissioned_date: str | None = None,
     dd_due_date: str | None = None,
+    # Phase 2 DD provenance pass-through. See build_site_meta() for semantics.
+    school_feasibility: str | None = None,
+    timeline_confidence: str | None = None,
+    dd_status: str | None = None,
     base_url: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT_SEC,
 ) -> bool:
@@ -247,6 +271,14 @@ def publish_to_dashboard(
         explicit_due=dd_due_date,
     )
 
+    # Auto-stamp dd_status="complete" when this publisher is reached without
+    # an explicit value. Rationale: publish_to_dashboard() is only called
+    # from `_publish_to_dashboard_best_effort` after a successful pipeline
+    # run, so by definition a successful POST means the report is complete.
+    # Callers (backfill scripts, partial republish flows) can still pass
+    # "in_progress" or another label explicitly to override.
+    effective_dd_status = (dd_status or "").strip() or "complete"
+
     meta = build_site_meta(
         site_title,
         address=address,
@@ -263,6 +295,9 @@ def publish_to_dashboard(
         dd_report_length=dd_report_length,
         dd_commissioned_date=inferred_commissioned,
         dd_due_date=inferred_due,
+        school_feasibility=school_feasibility,
+        timeline_confidence=timeline_confidence,
+        dd_status=effective_dd_status,
     )
     slug = meta["slug"]
 

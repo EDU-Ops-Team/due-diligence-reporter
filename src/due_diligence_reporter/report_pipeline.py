@@ -1053,6 +1053,12 @@ def process_site_pipeline(
     p1_email: str | None = None,
     site_address: str | None = None,
     p1_name: str | None = None,
+    # --- Phase 2 DD provenance (Wrike W74 / W81) ---
+    # Optional. Callers (scripts/daily_dd_check.py et al.) read these from
+    # the Wrike record up front and forward them to the dashboard publish
+    # step. None means "don't override the dashboard's stored value".
+    school_feasibility: str | None = None,
+    timeline_confidence: str | None = None,
 ) -> PipelineResult:
     """Full single-site pipeline: readiness -> report generation -> completeness -> email.
 
@@ -1125,6 +1131,8 @@ def process_site_pipeline(
         dd_report_url=doc_url,
         site_address=site_address,
         p1_name=p1_name,
+        school_feasibility=school_feasibility,
+        timeline_confidence=timeline_confidence,
     )
 
     return PipelineResult(
@@ -1146,6 +1154,10 @@ def _publish_to_dashboard_best_effort(
     dd_report_url: str,
     site_address: str | None,
     p1_name: str | None = None,
+    # Phase 2 DD provenance pass-through. Publisher auto-stamps
+    # dd_status="complete" so it's not threaded through here.
+    school_feasibility: str | None = None,
+    timeline_confidence: str | None = None,
 ) -> None:
     """Fire-and-forget dashboard publish. Never raises."""
     if trace is None or not getattr(trace, "final_report_data", None):
@@ -1162,6 +1174,8 @@ def _publish_to_dashboard_best_effort(
             drive_folder_url=drive_folder_url,
             dd_report_url=dd_report_url,
             site_owner=p1_name,
+            school_feasibility=school_feasibility,
+            timeline_confidence=timeline_confidence,
         )
     except Exception as e:
         # publish_to_dashboard already swallows requests errors; this is a

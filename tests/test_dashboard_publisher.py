@@ -168,3 +168,68 @@ class TestDeriveDDDates:
         )
         assert commissioned == "garbage"
         assert due == "2026-05-01"
+
+
+class TestPhase2DDProvenance:
+    """Phase 2 DD provenance fields on build_site_meta:
+
+      - school_feasibility (Wrike W74) — free string
+      - timeline_confidence (Wrike W81) — free string
+      - dd_status — "in_progress" / "complete"
+
+    Note: dd_recommendation (go/no_go/follow_up) is intentionally NOT a
+    field here. It's derived in the dashboard UI from the latest decision
+    button click. See dd-dashboard client/src/lib/reviews.ts.
+    """
+
+    def test_phase2_omitted_when_unset(self) -> None:
+        meta = build_site_meta("Austin", address="123 Main St, Austin, TX")
+        for key in ("school_feasibility", "timeline_confidence", "dd_status"):
+            assert key not in meta, f"{key} should be omitted when not provided"
+
+    def test_phase2_included_when_set(self) -> None:
+        meta = build_site_meta(
+            "Austin",
+            address="123 Main St, Austin, TX",
+            school_feasibility="high",
+            timeline_confidence="medium",
+            dd_status="complete",
+        )
+        assert meta["school_feasibility"] == "high"
+        assert meta["timeline_confidence"] == "medium"
+        assert meta["dd_status"] == "complete"
+
+    def test_phase2_strings_are_stripped(self) -> None:
+        meta = build_site_meta(
+            "Austin",
+            address="123 Main St, Austin, TX",
+            school_feasibility="  high  ",
+            timeline_confidence="\tlow\n",
+            dd_status=" complete ",
+        )
+        assert meta["school_feasibility"] == "high"
+        assert meta["timeline_confidence"] == "low"
+        assert meta["dd_status"] == "complete"
+
+    def test_phase2_blank_strings_omitted(self) -> None:
+        """Blank/whitespace-only values should be treated as unset."""
+        meta = build_site_meta(
+            "Austin",
+            address="123 Main St, Austin, TX",
+            school_feasibility="",
+            timeline_confidence="   ",
+            dd_status=None,
+        )
+        for key in ("school_feasibility", "timeline_confidence", "dd_status"):
+            assert key not in meta
+
+    def test_dd_recommendation_never_in_payload(self) -> None:
+        """Guardrail: dd_recommendation is derived UI-side, not stored."""
+        meta = build_site_meta(
+            "Austin",
+            address="123 Main St, Austin, TX",
+            school_feasibility="high",
+            timeline_confidence="high",
+            dd_status="complete",
+        )
+        assert "dd_recommendation" not in meta

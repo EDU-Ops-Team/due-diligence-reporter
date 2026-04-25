@@ -41,6 +41,8 @@ from due_diligence_reporter.wrike import (  # noqa: E402
     _get_active_status_ids,
     _get_all_site_records,
     extract_address_from_record,
+    extract_school_feasibility_from_record,
+    extract_timeline_confidence_from_record,
     extract_google_folder_from_record,
     extract_p1_email_from_record,
     extract_p1_from_record,
@@ -127,6 +129,9 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
     p1_email = extract_p1_email_from_record(record)
     p1_profile = extract_p1_from_record(record) or {}
     p1_name = p1_profile.get("name")
+    # Phase 2: Wrike W74 / W81 ratings (high/medium/low/unknown).
+    school_feasibility = extract_school_feasibility_from_record(record)
+    timeline_confidence = extract_timeline_confidence_from_record(record)
 
     logger.info("Generating V3 report for: %s", site_title)
 
@@ -154,6 +159,8 @@ def main(site_filter: str, *, no_email: bool = False, skip_readiness: bool = Fal
         gc, site_title, drive_folder_url, match_terms,
         shared_cache, system_prompt, settings,
         p1_email=p1_email, site_address=address, p1_name=p1_name,
+        school_feasibility=school_feasibility,
+        timeline_confidence=timeline_confidence,
     )
 
     # Post to Google Chat if configured
