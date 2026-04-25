@@ -569,7 +569,7 @@ Each dimension uses a **fixed option menu**. Pick exactly one option per field b
 
 | Token | Source | Options (pick one) |
 |---|---|---|
-| `exec.c_answer` | Agent (synthesize from all sources) | `Yes` / `Yes see notes` / `No` — **no other values are valid**; do not use `Conditional` |
+| `exec.c_answer` | Agent (synthesize from all sources) | `Yes` / `No` — **binary; no other values are valid**. This is the literal answer to "Can this be a school by [date]?". Use `Yes` when the school can open by the school-year deadline, `No` when it cannot. Do not use `Go`, `No Go`, `Yes see notes`, or `Conditional` — the system will alias old values forward, but new reports must emit canonical Yes / No. The publisher derives the dashboard's Go / No Go recommendation chip (`dd_recommendation`) from this value automatically (Yes → `go`, No → `no_go`). |
 | `exec.c_zoning` | SIR (zoning designation + permitted uses) | `Permitted by right` / `Use Permit Required (Admin approval)` / `Use Permit Required (Public approval)` / `Prohibited` |
 | `exec.c_occupancy` | E-Occupancy skill (uses Building Inspection data) | `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` |
 | `exec.c_edreg` | School Approval skill | `Not required` / `Required and have done` / `Required have not done` |

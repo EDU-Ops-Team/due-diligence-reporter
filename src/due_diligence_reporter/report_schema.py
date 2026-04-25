@@ -11,9 +11,19 @@ from .utils import flatten_report_data_for_replacement
 
 logger = logging.getLogger(__name__)
 
+# The Executive Summary "Can We Open?" card answer. Binary plain-English
+# Yes / No — the literal answer to "Can this be a school by [date]?".
+#
+# Note: this is a separate concern from the publisher field
+# `dd_recommendation`, which carries the Go / No Go vocabulary used by the
+# dashboard. The publisher derives `dd_recommendation` from this value
+# (Yes → "go", No → "no_go"); see DD_RECOMMENDATION_FROM_C_ANSWER below.
+#
+# Legacy reports may still contain "Go" / "No Go" / "Yes see notes" /
+# "Conditional" on this field — see LEGACY_CAN_WE_ANSWER_ALIASES for
+# backward-compat aliasing.
 ALLOWED_CAN_WE_ANSWERS: frozenset[str] = frozenset({
     "Yes",
-    "Yes see notes",
     "No",
 })
 
@@ -43,11 +53,34 @@ SCHOOL_YEAR_START_DATES: tuple[date, ...] = (
 )
 SCHOOL_YEAR_DEADLINE: date = max(SCHOOL_YEAR_START_DATES)  # 09/08/26
 
+# Legacy alias map for the Can-We-Open answer. Maps any historical or
+# case-variant value to the canonical "Yes" / "No". Includes Go/No Go
+# from the brief Go/No-Go-on-c_answer experiment, and "Yes see notes" /
+# "Conditional" from the original three-state vocabulary which both
+# collapse into "Yes" under the binary system.
 LEGACY_CAN_WE_ANSWER_ALIASES: dict[str, str] = {
+    # Canonical values (case/whitespace tolerance)
     "yes": "Yes",
-    "yes see notes": "Yes see notes",
     "no": "No",
-    "conditional": "Yes see notes",
+    # Go / No Go vocabulary used by the publisher and dashboard — collapse
+    # back to the report's Yes/No on this field.
+    "go": "Yes",
+    "no go": "No",
+    "no-go": "No",
+    "nogo": "No",
+    # Pre-rename three-state vocabulary — collapse to Yes (was a yes-with-caveats)
+    "yes see notes": "Yes",
+    "yes, see notes": "Yes",
+    "conditional": "Yes",
+}
+
+# Publisher-side derivation: the dashboard `dd_recommendation` field carries
+# Go / No Go vocabulary. Derive from the (already-normalized) c_answer.
+# Returns None when c_answer is missing or unrecognized — publisher then
+# omits dd_recommendation, and the dashboard falls back to its own logic.
+DD_RECOMMENDATION_FROM_C_ANSWER: dict[str, str] = {
+    "Yes": "go",
+    "No": "no_go",
 }
 
 MISSING_P1_ASSIGNEE_LABEL = "[Not found - P1 Assignee not set in Wrike]"

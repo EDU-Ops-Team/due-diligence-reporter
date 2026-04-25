@@ -35,9 +35,28 @@ class TestSiteSlug:
 
 
 class TestClassifySite:
+    """classify_site accepts canonical Yes / No and legacy Go / No Go.
+
+    Internal classification labels (yes / yes_if / no / review) are unchanged —
+    they're a routing-level concept separate from the report's user-facing
+    Yes / No on `exec.c_answer` and the publisher's Go / No Go on
+    `dd_recommendation`.
+    """
+
     def test_clear_yes(self) -> None:
         label, confidence, _signals = classify_site({
             "exec.c_answer": "Yes",
+            "exec.acquisition_conditions": "Standard lease protections.",
+            "exec.tradeoffs_and_deficiencies": "",
+        })
+        assert label == "yes"
+        assert confidence >= 0.85
+
+    def test_legacy_go_still_classifies_as_yes(self) -> None:
+        # Data emitted during the brief Go-on-c_answer experiment must still
+        # classify correctly through the legacy fallthrough.
+        label, confidence, _signals = classify_site({
+            "exec.c_answer": "Go",
             "exec.acquisition_conditions": "Standard lease protections.",
             "exec.tradeoffs_and_deficiencies": "",
         })
@@ -52,7 +71,16 @@ class TestClassifySite:
         assert label == "no"
         assert confidence >= 0.85
 
+    def test_legacy_no_go_still_classifies_as_no(self) -> None:
+        label, confidence, _signals = classify_site({
+            "exec.c_answer": "No Go",
+            "exec.tradeoffs_and_deficiencies": "Site does not meet occupancy requirements.",
+        })
+        assert label == "no"
+        assert confidence >= 0.85
+
     def test_yes_see_notes_is_yes_if(self) -> None:
+        # Legacy three-state — still produces yes_if for routing purposes
         label, confidence, signals = classify_site({
             "exec.c_answer": "Yes see notes",
             "exec.tradeoffs_and_deficiencies": "Tradeoff: smaller outdoor space than spec.",
@@ -108,6 +136,8 @@ def _full_replacements() -> dict[str, str]:
         "meta.prepared_by": "Greg Foote",
         "meta.rebl_site_id": "palm-beach-gardens-fl",
         "meta.drive_folder_url": "https://drive.google.com/drive/folders/ABC",
+        # Legacy three-state value — still accepted by classify_site for
+        # backfilled data; under the new binary system new reports emit "Yes".
         "exec.c_answer": "Yes see notes",
         "exec.c_edreg": "Approved - FL nonpublic registration",
         "exec.c_occupancy": "E via minor TI",

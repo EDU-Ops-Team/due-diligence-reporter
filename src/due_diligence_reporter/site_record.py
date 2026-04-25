@@ -71,22 +71,33 @@ def classify_site(
     yes_if_hits = [phrase for phrase in _YES_IF_PHRASES if phrase in exec_text]
     no_hits = [phrase for phrase in _NO_PHRASES if phrase in exec_text]
 
-    if c_answer == "no":
-        signals.append("c_answer=No")
+    # NOTE: c_answer canonical values are "Yes" / "No" (the report's plain-
+    # English answer). The publisher derives Go / No Go separately into
+    # `dd_recommendation` for the dashboard. Legacy values "go" / "no go" /
+    # "yes see notes" / "conditional" are accepted here so older normalized
+    # data continues to classify correctly. Internal classification keys
+    # (yes / yes_if / no / review) are unchanged — they're a separate
+    # routing concept that downstream code depends on.
+    if c_answer in {"no go", "no-go", "nogo", "no"}:
+        signals.append(f"c_answer={c_answer}")
         if no_hits:
             signals.extend(f"no_phrase:{phrase}" for phrase in no_hits)
             return _finalize_classification("no", 0.95, signals, threshold)
         return _finalize_classification("no", 0.85, signals, threshold)
 
-    if c_answer in {"yes see notes", "yes, see notes"}:
+    # Legacy three-state "Yes see notes" / "Conditional" still produces a
+    # yes_if classification (the binary system collapses these into Yes on
+    # the user-facing side, but the routing-level signal is still meaningful
+    # for backfilled data).
+    if c_answer in {"yes see notes", "yes, see notes", "conditional"}:
         signals.append("c_answer=Yes see notes")
         if yes_if_hits:
             signals.extend(f"yes_if_phrase:{phrase}" for phrase in yes_if_hits)
             return _finalize_classification("yes_if", 0.95, signals, threshold)
         return _finalize_classification("yes_if", 0.80, signals, threshold)
 
-    if c_answer == "yes":
-        signals.append("c_answer=Yes")
+    if c_answer in {"go", "yes"}:
+        signals.append(f"c_answer={c_answer}")
         if yes_if_hits:
             signals.extend(f"yes_if_phrase:{phrase}" for phrase in yes_if_hits)
             return _finalize_classification("yes_if", 0.75, signals, threshold)

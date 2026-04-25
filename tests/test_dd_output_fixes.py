@@ -355,9 +355,12 @@ class TestCheckReportCompleteness:
         from due_diligence_reporter.server import check_report_completeness
 
         gc = MagicMock()
+        # Canonical answer is the binary plain-English "Yes" / "No" — the
+        # literal answer to "Can this be a school by [date]?". The publisher
+        # derives Go / No Go separately into `dd_recommendation`.
         gc.export_google_doc_as_text.return_value = (
             "Can this school be open in time for the current school year?\n"
-            "Yes see notes Education Regulatory Approval: Not required "
+            "Yes Education Regulatory Approval: Not required "
             "Occupancy path: Has E-Occupancy Zoning: Permitted by right\n"
         )
 
@@ -377,7 +380,7 @@ class TestCheckReportCompleteness:
         gc = MagicMock()
         gc.export_google_doc_as_text.return_value = (
             "Can this school be open in time for the current school year?\n"
-            "Yes see notes Education Regulatory Approval: Required have not done "
+            "No Education Regulatory Approval: Required have not done "
             "Occupancy path: Change of use required, needs work Zoning: Use Permit Required (Public approval)\n"
             "Build Scenarios\n"
             "exec.cost_demolition_fastest_open exec.max_capacity_capex\n"

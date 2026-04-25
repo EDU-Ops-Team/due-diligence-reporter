@@ -167,11 +167,24 @@ class TestNormalization:
     @pytest.mark.parametrize(
         ("raw_value", "expected"),
         [
+            # Canonical Yes / No (case/whitespace tolerant)
             ("Yes", "Yes"),
             ("YES", "Yes"),
+            ("yes", "Yes"),
             ("No", "No"),
-            ("CONDITIONAL", "Yes see notes"),
-            ("Yes see notes", "Yes see notes"),
+            ("NO", "No"),
+            ("no", "No"),
+            # Legacy Go / No Go (from the brief publisher-vocab-on-c_answer
+            # experiment) — alias back to the report's Yes / No
+            ("Go", "Yes"),
+            ("GO", "Yes"),
+            ("No Go", "No"),
+            ("NO GO", "No"),
+            ("no-go", "No"),
+            ("NoGo", "No"),
+            # Legacy three-state "Yes see notes" / "Conditional" collapse to Yes
+            ("CONDITIONAL", "Yes"),
+            ("Yes see notes", "Yes"),
         ],
     )
     def test_can_we_answer_normalizes_to_allowed_values(self, raw_value: str, expected: str) -> None:
@@ -297,6 +310,13 @@ class TestParseOpenDate:
 
 
 class TestDeterministicCAnswer:
+    """Verify the date-comparison override emits canonical Yes / No.
+
+    The deterministic computation in normalize_report_data compares
+    fastest_open_open_date against SCHOOL_YEAR_DEADLINE and overrides
+    the agent's answer with "Yes" (date <= deadline) or "No" (after).
+    """
+
     def _run(self, fastest_open_date: str, agent_answer: str = "No") -> dict:
         replacements, _, _, sources = normalize_report_data(
             {"exec": {"c_answer": agent_answer, "fastest_open_open_date": fastest_open_date}},
@@ -329,7 +349,7 @@ class TestDeterministicCAnswer:
         assert result["replacements"]["exec.c_answer"] == "Yes"
 
     def test_overrides_agent_answer(self) -> None:
-        # Agent says "Yes" but date is after deadline
+        # Agent says "Yes" but date is after deadline — deterministic wins
         result = self._run("10/15/26", agent_answer="Yes")
         assert result["replacements"]["exec.c_answer"] == "No"
 
@@ -337,6 +357,16 @@ class TestDeterministicCAnswer:
         result = self._run("Fall 2027", agent_answer="Yes")
         assert result["replacements"]["exec.c_answer"] == "Yes"
         assert result["sources"]["exec.c_answer"] == "Agent"
+
+    def test_legacy_go_agent_answer_aliased_when_date_unparseable(self) -> None:
+        # Old agent that still emits "Go" (from the brief publisher-vocab
+        # experiment) — normalizer aliases back to canonical Yes
+        result = self._run("Fall 2027", agent_answer="Go")
+        assert result["replacements"]["exec.c_answer"] == "Yes"
+
+    def test_legacy_no_go_agent_answer_aliased_when_date_unparseable(self) -> None:
+        result = self._run("Fall 2027", agent_answer="No Go")
+        assert result["replacements"]["exec.c_answer"] == "No"
 
     def test_school_year_deadline_constant(self) -> None:
         assert SCHOOL_YEAR_DEADLINE == date(2026, 9, 8)

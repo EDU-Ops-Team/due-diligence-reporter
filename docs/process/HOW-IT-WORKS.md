@@ -36,7 +36,7 @@ Four dimensions, each a fixed pick-menu:
 
 | Dimension | Source | Options |
 |-----------|--------|---------|
-| `exec.c_answer` | Agent synthesis | Yes / Yes see notes / No |
+| `exec.c_answer` | Agent synthesis | Yes / No (binary) — the literal answer to "Can this be a school by [date]?". The publisher derives the dashboard's Go / No Go recommendation chip (`dd_recommendation`) from this automatically. |
 | `exec.c_zoning` | SIR | Permitted by right / Use Permit Required (Admin) / Use Permit Required (Public) / Prohibited |
 | `exec.c_occupancy` | E-Occupancy skill | Has E-Occupancy / Change of use required, meets E-Occupancy / Change of use required, needs work |
 | `exec.c_edreg` | School Approval skill | Not required / Required and have done / Required have not done |

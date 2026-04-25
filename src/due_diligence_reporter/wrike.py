@@ -55,10 +55,29 @@ WRIKE_CUSTOM_FIELDS: dict[str, str] = {
     "loi_signed_date": "IEAGN6I6JUAIOUVH",
     "vendor_team": "IEAGN6I6JUAKDCYE",
     "google_folder": "IEAGN6I6JUAIKGJH",
+    # --- Phase 2 DD provenance fields (Rhodes data dictionary, 4/24) ---
+    # IDs left blank here intentionally — they are resolved by display name
+    # at runtime via _resolve_custom_field_id() below. Once we confirm the
+    # canonical IDs from Wrike, paste them here and the resolver will
+    # short-circuit to the cached value.
+    "school_feasibility": "",  # W74 "School Feasibility" (high/medium/low/unknown)
+    "timeline_confidence": "",  # W81 "Timeline Confidence" (high/medium/low/unknown)
 }
 
-# Reverse mapping: ID -> name
-WRIKE_CUSTOM_FIELD_NAMES: dict[str, str] = {v: k for k, v in WRIKE_CUSTOM_FIELDS.items()}
+# Display-name lookup used by _resolve_custom_field_id(). When a slot in
+# WRIKE_CUSTOM_FIELDS has a blank ID, the resolver hits Wrike's
+# /customfields endpoint, finds the field by display name, and caches the
+# result for the lifetime of the process.
+WRIKE_CUSTOM_FIELD_DISPLAY_NAMES: dict[str, str] = {
+    "school_feasibility": "School Feasibility",
+    "timeline_confidence": "Timeline Confidence",
+}
+
+# Reverse mapping: ID -> name. Skip entries with blank IDs (Phase 2 fields
+# that resolve at runtime) so they don't all collide on the empty key.
+WRIKE_CUSTOM_FIELD_NAMES: dict[str, str] = {
+    v: k for k, v in WRIKE_CUSTOM_FIELDS.items() if v
+}
 
 
 @dataclass(frozen=True)
@@ -217,6 +236,150 @@ def extract_google_folder_from_record(record: dict[str, Any]) -> str | None:
                 return value.strip()
 
     return None
+
+
+# --- Phase 2 DD provenance fields (W74 / W81) ---
+#
+# These two custom fields don't have their canonical IDs hardcoded in
+# WRIKE_CUSTOM_FIELDS yet. Instead, _resolve_custom_field_id() looks them
+# up by display name on first call and caches the result. Once we confirm
+# the IDs they can be pasted into WRIKE_CUSTOM_FIELDS and the resolver
+# will short-circuit.
+#
+# Process-wide cache. Keyed by slot name (e.g. "school_feasibility") and
+# stores the resolved Wrike custom field ID. None means "resolution
+# attempted and failed" — don't retry on every record.
+_CUSTOM_FIELD_ID_CACHE: dict[str, str | None] = {}
+
+
+def _resolve_custom_field_id(
+    slot: str,
+    *,
+    access_token: str | None = None,
+) -> str | None:
+    """Return the Wrike custom field ID for the given slot.
+
+    Lookup order:
+      1. Hardcoded ID in WRIKE_CUSTOM_FIELDS (if non-empty).
+      2. Process-wide cache (populated below on first miss).
+      3. Wrike GET /customfields, matched by display name from
+         WRIKE_CUSTOM_FIELD_DISPLAY_NAMES.
+
+    Returns None when the slot has no display-name mapping or the API
+    call fails. Network errors are swallowed — the caller treats a None
+    as "this field is unknown; skip the read".
+    """
+    hardcoded = WRIKE_CUSTOM_FIELDS.get(slot, "")
+    if hardcoded:
+        return hardcoded
+
+    if slot in _CUSTOM_FIELD_ID_CACHE:
+        return _CUSTOM_FIELD_ID_CACHE[slot]
+
+    display_name = WRIKE_CUSTOM_FIELD_DISPLAY_NAMES.get(slot)
+    if not display_name:
+        _CUSTOM_FIELD_ID_CACHE[slot] = None
+        return None
+
+    if access_token is None:
+        try:
+            access_token = load_wrike_config().access_token
+        except WrikeError:
+            _CUSTOM_FIELD_ID_CACHE[slot] = None
+            return None
+
+    try:
+        resp = _wrike_get(
+            f"{WRIKE_API_BASE_URL}/customfields",
+            headers=_wrike_headers(access_token),
+        )
+        data = resp.json().get("data", [])
+    except (WrikeError, requests.RequestException, ValueError) as exc:
+        logger.warning(
+            "Failed to resolve Wrike custom field id for %s: %s", slot, exc
+        )
+        _CUSTOM_FIELD_ID_CACHE[slot] = None
+        return None
+
+    target = display_name.casefold()
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title", "")).casefold()
+        if title == target:
+            field_id = str(entry.get("id", "")) or None
+            _CUSTOM_FIELD_ID_CACHE[slot] = field_id
+            return field_id
+
+    logger.info(
+        "Wrike custom field %r not found by display name %r", slot, display_name
+    )
+    _CUSTOM_FIELD_ID_CACHE[slot] = None
+    return None
+
+
+def _extract_string_custom_field(
+    record: dict[str, Any],
+    slot: str,
+    *,
+    access_token: str | None = None,
+) -> str | None:
+    """Generic string-valued custom-field reader keyed by slot name.
+
+    Used for Phase 2 fields where the IDs aren't hardcoded yet. Returns
+    a stripped string or None if the field is absent / blank / non-string.
+    """
+    field_id = _resolve_custom_field_id(slot, access_token=access_token)
+    if not field_id:
+        return None
+
+    custom_fields = record.get("customFields", [])
+    if not isinstance(custom_fields, list):
+        return None
+
+    for field in custom_fields:
+        if not isinstance(field, dict):
+            continue
+        if field.get("id") != field_id:
+            continue
+        value = field.get("value")
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+    return None
+
+
+def extract_school_feasibility_from_record(
+    record: dict[str, Any],
+    *,
+    access_token: str | None = None,
+) -> str | None:
+    """Read W74 "School Feasibility" from a Wrike Site Record.
+
+    Expected values: high / medium / low / unknown (data dictionary 4/24).
+    Returns the raw lowercased string, or None when absent.
+    """
+    raw = _extract_string_custom_field(
+        record, "school_feasibility", access_token=access_token
+    )
+    return raw.lower() if raw else None
+
+
+def extract_timeline_confidence_from_record(
+    record: dict[str, Any],
+    *,
+    access_token: str | None = None,
+) -> str | None:
+    """Read W81 "Timeline Confidence" from a Wrike Site Record.
+
+    Expected values: high / medium / low / unknown (data dictionary 4/24).
+    Returns the raw lowercased string, or None when absent.
+    """
+    raw = _extract_string_custom_field(
+        record, "timeline_confidence", access_token=access_token
+    )
+    return raw.lower() if raw else None
 
 
 def extract_total_building_sf_from_record(record: dict[str, Any]) -> int | None:
