@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import requests
@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://dd-dashboard-three.vercel.app"
 _DEFAULT_TIMEOUT_SEC = 15
+
+# DD turn-time SLA: 14 days from Wrike record creation to report due.
+# Drives the default dd_due_date when no explicit value is passed.
+_DD_DUE_DATE_OFFSET_DAYS = 14
 
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
 
@@ -64,6 +68,51 @@ def _parse_city_state_zip(address: str | None) -> tuple[str, str]:
     if m:
         state = m.group(1)
     return tail, state
+
+
+def _derive_dd_dates(
+    *,
+    explicit_commissioned: str | None,
+    explicit_due: str | None,
+    today: date | None = None,
+) -> tuple[str | None, str | None]:
+    """Derive (dd_commissioned_date, dd_due_date) for a publish call.
+
+    Rules (per Greg, 4/25):
+      - dd_commissioned_date == the date the DD report is first created.
+        On every publish call we send today's date as a candidate. The
+        dashboard's sticky-preserve transform locks the first non-empty
+        value, so subsequent reruns cannot bump it forward.
+      - dd_due_date == commissioned_date + 14 days (DD turn-time SLA).
+      - An explicit caller-provided value always wins (back-dated
+        manual rerun, custom due date).
+
+    Returns (commissioned, due) as YYYY-MM-DD strings.
+
+    Note on the sticky-preserve guarantee: even though we send today's
+    date on every call, the dashboard side only writes it the first
+    time. See `transformPipelineToSite` in dd-dashboard's
+    api/_lib/transform.ts — dd_commissioned_date / dd_due_date
+    fall through the `preserve()` helper.
+    """
+    today = today or date.today()
+
+    # Caller-provided commissioned date short-circuits the today-default.
+    commissioned = (explicit_commissioned or "").strip() or None
+    if commissioned is None:
+        commissioned = today.isoformat()
+
+    # Caller-provided due date short-circuits the +14d default.
+    due = (explicit_due or "").strip() or None
+    if due is None:
+        try:
+            base = date.fromisoformat(commissioned)
+            due = (base + timedelta(days=_DD_DUE_DATE_OFFSET_DAYS)).isoformat()
+        except ValueError:
+            # Malformed commissioned date — don't fabricate a due date.
+            due = None
+
+    return commissioned, due
 
 
 def build_site_meta(
@@ -189,17 +238,14 @@ def publish_to_dashboard(
 
     url_base = (base_url or os.environ.get("DASHBOARD_PUBLISH_URL") or _DEFAULT_BASE_URL).rstrip("/")
 
-    # If the caller didn't pass dd_commissioned_date but the pipeline trace
-    # carries the Wrike folder createdDate (the canonical "site record was
-    # created" timestamp), use that. It's the closest free signal we have
-    # to "when DD was kicked off" until we add a dedicated field upstream.
-    inferred_commissioned = dd_commissioned_date
-    if not inferred_commissioned:
-        wrike_created = str(report_data.get("wrike_created_at") or "").strip()
-        if wrike_created:
-            # wrike_created_at is ISO 8601 with time. Trim to YYYY-MM-DD to
-            # match the dd_commissioned_date schema.
-            inferred_commissioned = wrike_created[:10]
+    # dd_commissioned_date == the date the DD report is first created.
+    # We send today's date on every publish; the dashboard's sticky-
+    # preserve transform locks the first non-empty value so reruns
+    # cannot bump it forward. dd_due_date == commissioned + 14 days.
+    inferred_commissioned, inferred_due = _derive_dd_dates(
+        explicit_commissioned=dd_commissioned_date,
+        explicit_due=dd_due_date,
+    )
 
     meta = build_site_meta(
         site_title,
@@ -216,7 +262,7 @@ def publish_to_dashboard(
         dd_version=dd_version,
         dd_report_length=dd_report_length,
         dd_commissioned_date=inferred_commissioned,
-        dd_due_date=dd_due_date,
+        dd_due_date=inferred_due,
     )
     slug = meta["slug"]
 

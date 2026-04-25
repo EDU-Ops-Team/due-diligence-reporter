@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import date
 
-from due_diligence_reporter.dashboard_publisher import build_site_meta
+from due_diligence_reporter.dashboard_publisher import (
+    _derive_dd_dates,
+    build_site_meta,
+)
 
 
 class TestBuildSiteMeta:
@@ -85,3 +88,83 @@ class TestBuildSiteMeta:
             dd_report_length=0,
         )
         assert meta["dd_report_length"] == 0
+
+
+class TestDeriveDDDates:
+    """_derive_dd_dates() default behavior:
+
+      - dd_commissioned_date defaults to today
+      - dd_due_date defaults to commissioned + 14 days
+      - Caller values short-circuit both defaults independently
+
+    Stickiness across reruns is enforced by the dashboard transform's
+    `preserve()` helper, not here — we always send today's date and let
+    the dashboard lock the first non-empty value. See
+    dd-dashboard/api/_lib/transform.ts.
+    """
+
+    def test_defaults_to_today_plus_14(self) -> None:
+        today = date(2026, 4, 25)
+        commissioned, due = _derive_dd_dates(
+            explicit_commissioned=None,
+            explicit_due=None,
+            today=today,
+        )
+        assert commissioned == "2026-04-25"
+        assert due == "2026-05-09"
+
+    def test_explicit_commissioned_recomputes_due(self) -> None:
+        """When caller back-dates commissioned, due re-derives from it."""
+        commissioned, due = _derive_dd_dates(
+            explicit_commissioned="2026-04-10",
+            explicit_due=None,
+            today=date(2026, 4, 25),
+        )
+        assert commissioned == "2026-04-10"
+        assert due == "2026-04-24"
+
+    def test_explicit_due_overrides_default(self) -> None:
+        commissioned, due = _derive_dd_dates(
+            explicit_commissioned=None,
+            explicit_due="2026-06-01",
+            today=date(2026, 4, 25),
+        )
+        assert commissioned == "2026-04-25"  # today fallback
+        assert due == "2026-06-01"  # explicit wins
+
+    def test_both_explicit_passed_through(self) -> None:
+        commissioned, due = _derive_dd_dates(
+            explicit_commissioned="2026-03-15",
+            explicit_due="2026-04-15",
+            today=date(2026, 4, 25),
+        )
+        assert commissioned == "2026-03-15"
+        assert due == "2026-04-15"
+
+    def test_blank_strings_treated_as_unset(self) -> None:
+        commissioned, due = _derive_dd_dates(
+            explicit_commissioned="   ",
+            explicit_due="",
+            today=date(2026, 4, 25),
+        )
+        assert commissioned == "2026-04-25"
+        assert due == "2026-05-09"
+
+    def test_malformed_explicit_commissioned_yields_no_due(self) -> None:
+        """If a caller passes garbage we don't fabricate a +14d due."""
+        commissioned, due = _derive_dd_dates(
+            explicit_commissioned="not-a-date",
+            explicit_due=None,
+            today=date(2026, 4, 25),
+        )
+        assert commissioned == "not-a-date"  # passed through verbatim
+        assert due is None
+
+    def test_malformed_does_not_break_when_due_explicit(self) -> None:
+        commissioned, due = _derive_dd_dates(
+            explicit_commissioned="garbage",
+            explicit_due="2026-05-01",
+            today=date(2026, 4, 25),
+        )
+        assert commissioned == "garbage"
+        assert due == "2026-05-01"
