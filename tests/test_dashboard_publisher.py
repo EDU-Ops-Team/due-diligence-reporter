@@ -587,3 +587,141 @@ class TestDdRiskFlagsDerivation:
         flags = meta["dd_risk_flags"]
         assert len(flags) == 1
         assert flags[0]["category"] == "occupancy"
+
+
+class TestDashboardPublishOwnerCutover:
+    """Phase A5 cutover flag: DASHBOARD_PUBLISH_OWNER gates the POST.
+
+    The reporter must keep publishing by default and yield to the pipeline
+    only when an operator explicitly flips ownership. The flag is read on
+    every call — not cached — so the flip is live, no redeploy required.
+    """
+
+    @staticmethod
+    def _run(env: dict[str, str]) -> tuple[bool, MagicMock]:
+        """Run publish_to_dashboard under ``env`` and return (returned, post_mock)."""
+        post_mock = MagicMock()
+        post_mock.return_value.status_code = 200
+        with patch.dict("os.environ", env, clear=False), patch(
+            "due_diligence_reporter.dashboard_publisher.requests.post",
+            new=post_mock,
+        ):
+            returned = publish_to_dashboard(
+                "Austin",
+                {"exec.c_answer": "Yes"},
+                address="123 Main St, Austin, TX 78701",
+            )
+        return returned, post_mock
+
+    def test_owner_pipeline_short_circuits_without_post(self) -> None:
+        """owner=pipeline → returns False, no HTTP call, no secret needed."""
+        returned, post_mock = self._run({
+            "DASHBOARD_PUBLISH_OWNER": "pipeline",
+            # Secret + enabled set so we know the cutover gate is what's
+            # short-circuiting, not one of the legacy gates.
+            "DASHBOARD_PUBLISH_SECRET": "test-secret",
+            "DASHBOARD_PUBLISH_ENABLED": "1",
+        })
+        assert returned is False
+        post_mock.assert_not_called()
+
+    def test_owner_pipeline_is_case_insensitive(self) -> None:
+        """Operators frequently mis-case env values; tolerate it."""
+        for value in ("PIPELINE", "Pipeline", "  pipeline  "):
+            returned, post_mock = self._run({
+                "DASHBOARD_PUBLISH_OWNER": value,
+                "DASHBOARD_PUBLISH_SECRET": "test-secret",
+                "DASHBOARD_PUBLISH_ENABLED": "1",
+            })
+            assert returned is False, f"value={value!r} should short-circuit"
+            post_mock.assert_not_called()
+
+    def test_owner_reporter_publishes_normally(self) -> None:
+        """owner=reporter (the default) preserves legacy behavior."""
+        returned, post_mock = self._run({
+            "DASHBOARD_PUBLISH_OWNER": "reporter",
+            "DASHBOARD_PUBLISH_SECRET": "test-secret",
+            "DASHBOARD_PUBLISH_ENABLED": "1",
+        })
+        assert returned is True
+        post_mock.assert_called_once()
+
+    def test_owner_unset_publishes_normally(self) -> None:
+        """Default (env unset) must behave exactly like ``reporter``.
+
+        Critical for the rollout: deploying the cutover code without
+        setting the env must not change current production behavior.
+        """
+        # Use clear=True to ensure the env var is unset for this test even
+        # if it leaks from the host environment.
+        post_mock = MagicMock()
+        post_mock.return_value.status_code = 200
+        with patch.dict(
+            "os.environ",
+            {
+                "DASHBOARD_PUBLISH_SECRET": "test-secret",
+                "DASHBOARD_PUBLISH_ENABLED": "1",
+            },
+            clear=True,
+        ), patch(
+            "due_diligence_reporter.dashboard_publisher.requests.post",
+            new=post_mock,
+        ):
+            returned = publish_to_dashboard(
+                "Austin",
+                {"exec.c_answer": "Yes"},
+                address="123 Main St, Austin, TX 78701",
+            )
+        assert returned is True
+        post_mock.assert_called_once()
+
+    def test_unknown_owner_value_publishes_normally(self) -> None:
+        """Unrecognized values are treated as ``reporter`` (fail-safe to legacy).
+
+        We never want a typo on the env var to silently kill publishing.
+        Only the literal string ``pipeline`` (case-insensitive) yields.
+        """
+        returned, post_mock = self._run({
+            "DASHBOARD_PUBLISH_OWNER": "pipline",  # typo
+            "DASHBOARD_PUBLISH_SECRET": "test-secret",
+            "DASHBOARD_PUBLISH_ENABLED": "1",
+        })
+        assert returned is True
+        post_mock.assert_called_once()
+
+    def test_owner_pipeline_takes_precedence_over_enabled(self) -> None:
+        """owner=pipeline short-circuits before the ENABLED check, so the
+        end state is identical regardless of which flag is set first."""
+        returned, post_mock = self._run({
+            "DASHBOARD_PUBLISH_OWNER": "pipeline",
+            "DASHBOARD_PUBLISH_ENABLED": "0",
+            "DASHBOARD_PUBLISH_SECRET": "test-secret",
+        })
+        assert returned is False
+        post_mock.assert_not_called()
+
+    def test_owner_pipeline_takes_precedence_over_missing_secret(self) -> None:
+        """owner=pipeline must short-circuit even with no secret configured.
+
+        Operators flipping to pipeline ownership often delete the secret
+        from the reporter's env at the same time — we should not raise
+        or warn about that.
+        """
+        # Use clear=True so a host-level DASHBOARD_PUBLISH_SECRET can't
+        # leak in and turn this into a missing-secret-path test.
+        post_mock = MagicMock()
+        with patch.dict(
+            "os.environ",
+            {"DASHBOARD_PUBLISH_OWNER": "pipeline"},
+            clear=True,
+        ), patch(
+            "due_diligence_reporter.dashboard_publisher.requests.post",
+            new=post_mock,
+        ):
+            returned = publish_to_dashboard(
+                "Austin",
+                {"exec.c_answer": "Yes"},
+                address="123 Main St, Austin, TX 78701",
+            )
+        assert returned is False
+        post_mock.assert_not_called()
