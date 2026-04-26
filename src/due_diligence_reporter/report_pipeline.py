@@ -593,7 +593,7 @@ class PipelineResult:
     """Structured result from a single-site pipeline run."""
 
     site_title: str
-    status: str  # waiting_on_docs | report_exists | report_created | report_incomplete | generation_failed | error
+    status: str  # waiting_on_docs | report_exists | report_created | report_incomplete | generation_failed | error | yielded_to_pipeline
     missing_docs: list[str] = field(default_factory=list)
     doc_id: str | None = None
     doc_url: str | None = None
@@ -894,6 +894,26 @@ def _run_pipeline_agent(
     settings: Settings,
 ) -> tuple[dict[str, Any] | None, PipelineResult | None]:
     """Run report generation and map failures into a PipelineResult."""
+    # Phase B-PR3 cutover: when DD_REPORT_OWNER=pipeline, the
+    # alpha-dd-pipeline WU-13 is the sole DD-report producer. Short-circuit
+    # before any agent work so reruns and backfills both honor the flag
+    # uniformly. We yield a distinct status ("yielded_to_pipeline") so the
+    # caller can skip the dashboard publish + email/trace side effects that
+    # the Anthropic agent would normally feed. Default "reporter" preserves
+    # legacy behavior until soak passes; "pipeline" is the only value that
+    # disables the agent run. Mirrors DASHBOARD_PUBLISH_OWNER (Phase A5).
+    owner = os.environ.get("DD_REPORT_OWNER", "reporter").strip().lower()
+    if owner == "pipeline":
+        logger.info(
+            "DD_REPORT_OWNER=pipeline; reporter is yielding DD-report "
+            "generation to alpha-dd-pipeline WU-13 for %s",
+            site_title,
+        )
+        return None, PipelineResult(
+            site_title=site_title,
+            status="yielded_to_pipeline",
+        )
+
     logger.info("'%s' - all docs present, generating report...", site_title)
     try:
         agent_result = run_dd_report_agent(
