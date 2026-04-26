@@ -17,6 +17,16 @@ Environment:
                               https://dd-dashboard-three.vercel.app)
     DASHBOARD_PUBLISH_SECRET  Bearer token (must match Vercel env var)
     DASHBOARD_PUBLISH_ENABLED Set to "0" to disable publishing entirely.
+    DASHBOARD_PUBLISH_OWNER   Cutover flag for the DDR → DD Pipeline
+                              migration (Phase A5). Values:
+                                "reporter" — (default) reporter publishes
+                                  as it always has.
+                                "pipeline" — the alpha-dd-pipeline WU-15
+                                  is the sole publisher; the reporter
+                                  short-circuits its POST to avoid double
+                                  writes during cutover.
+                              The flag is read on every call so an operator
+                              can flip ownership live without redeploying.
 """
 
 from __future__ import annotations
@@ -322,9 +332,24 @@ def publish_to_dashboard(
 ) -> bool:
     """Publish one site's report_data to the dashboard.
 
-    Returns True on HTTP 200, False otherwise (including disabled or
-    missing-secret cases).
+    Returns True on HTTP 200, False otherwise (including disabled,
+    missing-secret, or pipeline-owns-this-hop cutover cases).
     """
+    # Phase A5 cutover: when DASHBOARD_PUBLISH_OWNER=pipeline, the
+    # alpha-dd-pipeline WU-15 is the sole publisher. Short-circuit before
+    # any other work so reruns and backfills both honor the flag uniformly,
+    # and so the reporter's call sites don't need to know who's currently
+    # in charge. Default "reporter" preserves legacy behavior until soak
+    # passes; "pipeline" is the only value that disables the POST.
+    owner = os.environ.get("DASHBOARD_PUBLISH_OWNER", "reporter").strip().lower()
+    if owner == "pipeline":
+        logger.info(
+            "DASHBOARD_PUBLISH_OWNER=pipeline; reporter is yielding dashboard "
+            "publish to alpha-dd-pipeline WU-15 for %s",
+            site_title,
+        )
+        return False
+
     if os.environ.get("DASHBOARD_PUBLISH_ENABLED", "1") == "0":
         logger.info("Dashboard publish disabled via env; skipping %s", site_title)
         return False
