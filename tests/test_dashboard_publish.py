@@ -22,7 +22,7 @@ def record() -> SiteRecord:
             "meta.city_state_zip": "Palm Beach Gardens, FL 33410",
             "meta.rebl_site_id": "palm-beach-gardens-fl",
             "exec.c_answer": "Yes",
-            "exec.fastest_open_capacity": "180",
+            "exec.furniture_only_capacity": "180",
             "sources.sir_link": "https://drive.google.com/sir",
             "sources.block_plan_link": "https://drive.google.com/block-plan",
             "sources.rebl_link": "https://rebl3.vercel.app/site/palm-beach-gardens-fl",

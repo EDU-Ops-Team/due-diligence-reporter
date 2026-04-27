@@ -108,7 +108,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_capacity_brainlift_skill",
-        "description": "Extract Fastest Open and Max Capacity scenario capacities from a Block Plan. Pass site_name, site_address, block_plan_content, and total_building_sf. Pass drive_folder_url to auto-publish the Capacity Brainlift report to the site's M1 subfolder.",
+        "description": "Extract Furniture Only and Max Capacity scenario capacities from a Block Plan. Pass site_name, site_address, block_plan_content, and total_building_sf. Pass drive_folder_url to auto-publish the Capacity Brainlift report to the site's M1 subfolder.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -154,7 +154,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "create_dd_report",
-        "description": "Create a completed DD report Google Doc. The report_data dict must use exact V3 template token keys (e.g. 'exec.c_zoning', 'exec.fastest_open_capex', 'sources.sir_link'). Copy report_data_fields from skill tools directly into report_data. Pass token_evidence for source traceability.",
+        "description": "Create a completed DD report Google Doc. The report_data dict must use exact V3 template token keys (e.g. 'exec.c_zoning', 'exec.furniture_only_capex', 'sources.sir_link'). Copy report_data_fields from skill tools directly into report_data. Pass token_evidence for source traceability.",
         "input_schema": {
             "type": "object",
             "properties": {

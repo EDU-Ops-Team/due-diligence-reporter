@@ -57,19 +57,19 @@ class TestNormalization:
             "exec": {
                 "c_answer": "Yes",
                 "c_zoning": "Permitted by right",
-                "direct_viable_buildout": "Fastest Open",
+                "direct_viable_buildout": "Furniture Only",
                 "alpha_fit": "YES",
-                "fastest_open_capacity": "36",
-                "fastest_open_capex": "$185,000",
-                "fastest_open_open_date": "08/01/26",
+                "furniture_only_capacity": "36",
+                "furniture_only_capex": "$185,000",
+                "furniture_only_open_date": "08/01/26",
                 "max_capacity_capacity": "54",
                 "max_capacity_capex": "$290,000",
                 "max_capacity_open_date": "04/27",
                 "acquisition_conditions": "Lease conditions: Condition lease on traffic study completion [1]",
                 "tradeoffs_and_deficiencies": "Trade-offs and Deficiencies: No nearby park access [1]",
-                "cost_demolition_fastest_open": "$0",
+                "cost_demolition_furniture_only": "$0",
                 "cost_demolition_max_capacity": "$5,200",
-                "cost_grand_total_fastest_open": "$86,000",
+                "cost_grand_total_furniture_only": "$86,000",
                 "cost_grand_total_max_capacity": "$245,000",
             },
             "sources": {
@@ -88,10 +88,10 @@ class TestNormalization:
             site_name="Alpha Test",
             report_date="03/19/2026",
         )
-        assert replacements["exec.fastest_open_capacity"] == "36"
+        assert replacements["exec.furniture_only_capacity"] == "36"
         assert replacements["exec.max_capacity_capex"] == "$290,000"
         assert replacements["exec.c_zoning"] == "Permitted"
-        assert replacements["exec.direct_viable_buildout"] == "Fastest Open"
+        assert replacements["exec.direct_viable_buildout"] == "Furniture Only"
         assert replacements["exec.alpha_fit"] == "Yes"
         assert replacements["exec.tradeoffs_and_deficiencies"] == "No nearby park access [1]"
         assert replacements["sources.sir_link"] == "https://example.com/sir"
@@ -100,10 +100,10 @@ class TestNormalization:
         assert replacements["sources.rebl_link"] == "https://rebl3.vercel.app/site/alpha-test-site"
         assert replacements["meta.site_name"] == "Alpha Test"
         assert unmatched == ["rebl.site_id", "rebl.url"]
-        assert sources["exec.fastest_open_capacity"] == "Capacity Brainlift"
+        assert sources["exec.furniture_only_capacity"] == "Capacity Brainlift"
         assert sources["exec.max_capacity_capacity"] == "Capacity Brainlift"
-        assert sources["exec.fastest_open_capex"] == "RayCon"
-        assert sources["exec.fastest_open_open_date"] == "RayCon"
+        assert sources["exec.furniture_only_capex"] == "RayCon"
+        assert sources["exec.furniture_only_open_date"] == "RayCon"
         assert sources["meta.rebl_site_id"] == "alias:rebl.site_id"
 
     def test_legacy_v2_aliases_map_to_v3(self) -> None:
@@ -124,14 +124,14 @@ class TestNormalization:
             site_name="Test",
             report_date="01/01/2026",
         )
-        assert replacements["exec.fastest_open_capacity"] == "36"
-        assert replacements["exec.fastest_open_capex"] == "$185,000"
-        assert replacements["exec.fastest_open_open_date"] == "01/27"
+        assert replacements["exec.furniture_only_capacity"] == "36"
+        assert replacements["exec.furniture_only_capex"] == "$185,000"
+        assert replacements["exec.furniture_only_open_date"] == "01/27"
         assert replacements["exec.max_capacity_capacity"] == "54"
         assert replacements["exec.max_capacity_capex"] == "$290,000"
         assert replacements["exec.max_capacity_open_date"] == "04/27"
-        assert replacements["exec.cost_demolition_fastest_open"] == "$0"
-        assert sources["exec.fastest_open_capacity"] == "alias:exec.e_mvp_capacity"
+        assert replacements["exec.cost_demolition_furniture_only"] == "$0"
+        assert sources["exec.furniture_only_capacity"] == "alias:exec.e_mvp_capacity"
 
     def test_unmatched_keys_reported(self) -> None:
         _, unmatched, _, _ = normalize_report_data(
@@ -152,10 +152,10 @@ class TestNormalization:
         assert "exec.direct_viable_buildout" in unfilled
         assert "exec.alpha_fit" in unfilled
         assert "meta.rebl_site_id" in unfilled
-        assert "exec.fastest_open_capacity" in unfilled
+        assert "exec.furniture_only_capacity" in unfilled
         assert "exec.max_capacity_capacity" in unfilled
         assert "exec.tradeoffs_and_deficiencies" in unfilled
-        assert "exec.cost_grand_total_fastest_open" in unfilled
+        assert "exec.cost_grand_total_furniture_only" in unfilled
 
     def test_meta_defaults(self) -> None:
         replacements, _, _, _ = normalize_report_data(
@@ -241,8 +241,8 @@ class TestNormalization:
     @pytest.mark.parametrize(
         ("raw_value", "expected"),
         [
-            ("Fastest Open", "Fastest Open"),
-            ("fastest", "Fastest Open"),
+            ("Furniture Only", "Furniture Only"),
+            ("fastest", "Furniture Only"),
             ("Max Capacity", "Max Capacity"),
             ("None", "None"),
         ],
@@ -316,13 +316,13 @@ class TestDeterministicCAnswer:
     """Verify the date-comparison override emits canonical Yes / No.
 
     The deterministic computation in normalize_report_data compares
-    fastest_open_open_date against SCHOOL_YEAR_DEADLINE and overrides
+    furniture_only_open_date against SCHOOL_YEAR_DEADLINE and overrides
     the agent's answer with "Yes" (date <= deadline) or "No" (after).
     """
 
-    def _run(self, fastest_open_date: str, agent_answer: str = "No") -> dict:
+    def _run(self, furniture_only_date: str, agent_answer: str = "No") -> dict:
         replacements, _, _, sources = normalize_report_data(
-            {"exec": {"c_answer": agent_answer, "fastest_open_open_date": fastest_open_date}},
+            {"exec": {"c_answer": agent_answer, "furniture_only_open_date": furniture_only_date}},
             site_name="Test",
             report_date="01/01/2026",
         )

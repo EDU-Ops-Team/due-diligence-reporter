@@ -366,17 +366,17 @@ class TestAgentToolMerging:
         merged = _merge_cached_report_fields(
             {
                 "report_data": {
-                    "exec.fastest_open_capex": "$100,000",
+                    "exec.furniture_only_capex": "$100,000",
                 },
             },
             {
-                "exec.fastest_open_capex": "$86,000",
-                "exec.cost_demolition_fastest_open": "$0",
+                "exec.furniture_only_capex": "$86,000",
+                "exec.cost_demolition_furniture_only": "$0",
             },
         )
 
-        assert merged["report_data"]["exec.fastest_open_capex"] == "$100,000"
-        assert merged["report_data"]["exec.cost_demolition_fastest_open"] == "$0"
+        assert merged["report_data"]["exec.furniture_only_capex"] == "$100,000"
+        assert merged["report_data"]["exec.cost_demolition_furniture_only"] == "$0"
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
@@ -402,7 +402,7 @@ class TestAgentToolMerging:
                 {
                     "site_name": "Alpha Keller",
                     "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
-                    "report_data": {"exec.fastest_open_capacity": "25"},
+                    "report_data": {"exec.furniture_only_capacity": "25"},
                 },
             ),
             FakeToolUse(
@@ -444,7 +444,7 @@ class TestAgentToolMerging:
         assert mock_route_tool_call_sync.call_count == 2
         create_call = mock_route_tool_call_sync.call_args_list[1]
         create_input = create_call.args[1]
-        assert create_input["report_data"]["exec.fastest_open_capacity"] == "25"
+        assert create_input["report_data"]["exec.furniture_only_capacity"] == "25"
         assert create_input["report_data"]["exec.max_capacity_capex"] == "$245,000"
         assert create_input["report_data"]["exec.cost_demolition_max_capacity"] == "$5,200"
 
