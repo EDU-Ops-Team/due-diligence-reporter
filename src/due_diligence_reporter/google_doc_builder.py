@@ -932,15 +932,15 @@ def build_dd_report_doc(
         return hyperlink_trace
 
     scenario_data = [
-        ("", "Fastest Open", "Max Capacity"),
+        ("", "Furniture Only", "Max Capacity"),
         ("Student Capacity",
-         _resolve_value(replacements, "exec.fastest_open_capacity", "[Not found]"),
+         _resolve_value(replacements, "exec.furniture_only_capacity", "[Not found]"),
          _resolve_value(replacements, "exec.max_capacity_capacity", "[Not found]")),
         ("Target Open Date",
-         _resolve_value(replacements, "exec.fastest_open_open_date", "[Not found]"),
+         _resolve_value(replacements, "exec.furniture_only_open_date", "[Not found]"),
          _resolve_value(replacements, "exec.max_capacity_open_date", "[Not found]")),
         ("Estimated CAPEX",
-         _resolve_value(replacements, "exec.fastest_open_capex", "[Not found]"),
+         _resolve_value(replacements, "exec.furniture_only_capex", "[Not found]"),
          _resolve_value(replacements, "exec.max_capacity_capex", "[Not found]")),
     ]
 
@@ -1038,12 +1038,12 @@ def build_dd_report_doc(
         logger.error("Could not find cost breakdown table")
         return hyperlink_trace
 
-    cost_header = ("Line Item", "Fastest Open", "Max Capacity")
+    cost_header = ("Line Item", "Furniture Only", "Max Capacity")
     cost_rows_data: list[tuple[str, str, str]] = []
     for row_key, display_label in _COST_BREAKDOWN_ROWS:
         fo_val = _resolve_value(
             replacements,
-            f"exec.cost_{row_key}_fastest_open",
+            f"exec.cost_{row_key}_furniture_only",
             "[Not found]",
         )
         mc_val = _resolve_value(

@@ -302,13 +302,13 @@ class TestTokenCoverage:
         ])
 
         # Scenario summary tokens
-        for scenario in ("fastest_open", "max_capacity"):
+        for scenario in ("furniture_only", "max_capacity"):
             for metric in ("capacity", "open_date", "capex"):
                 cls._BUILDER_TOKENS.add(f"exec.{scenario}_{metric}")
 
         # Cost breakdown tokens
         for row_key, _ in _COST_BREAKDOWN_ROWS:
-            for scenario in ("fastest_open", "max_capacity"):
+            for scenario in ("furniture_only", "max_capacity"):
                 cls._BUILDER_TOKENS.add(f"exec.cost_{row_key}_{scenario}")
 
         # Narrative tokens
@@ -339,7 +339,7 @@ class TestTokenCoverage:
         ])
 
         # exec scenario summary (2 scenarios × 3 metrics = 6)
-        for scenario in ("fastest_open", "max_capacity"):
+        for scenario in ("furniture_only", "max_capacity"):
             for metric in ("capacity", "capex", "open_date"):
                 v3_tokens.add(f"exec.{scenario}_{metric}")
 
@@ -351,7 +351,7 @@ class TestTokenCoverage:
             "cost_gc_fee", "cost_contingency", "cost_grand_total",
         ]
         for key in cost_keys:
-            for scenario in ("fastest_open", "max_capacity"):
+            for scenario in ("furniture_only", "max_capacity"):
                 v3_tokens.add(f"exec.{key}_{scenario}")
 
         # exec narrative
@@ -451,11 +451,11 @@ class TestBuildDdReportDoc:
             "exec.c_zoning": "Permitted",
             "exec.c_permit_timeline": "10 weeks — admin CUP, no public hearing (SIR p.3)",
             "exec.c_construction_timeline": "8 weeks — minimal TI, 4-classroom layout",
-            "exec.direct_viable_buildout": "Fastest Open",
+            "exec.direct_viable_buildout": "Furniture Only",
             "exec.alpha_fit": "No",
-            "exec.fastest_open_capacity": "69 students",
-            "exec.fastest_open_capex": "$487,000",
-            "exec.fastest_open_open_date": "07/15/26",
+            "exec.furniture_only_capacity": "69 students",
+            "exec.furniture_only_capex": "$487,000",
+            "exec.furniture_only_open_date": "07/15/26",
             "exec.max_capacity_capacity": "125 students",
             "exec.max_capacity_capex": "$812,000",
             "exec.max_capacity_open_date": "11/26",
@@ -478,7 +478,7 @@ class TestBuildDdReportDoc:
             "cost_gc_fee", "cost_contingency", "cost_grand_total",
         ]
         for key in cost_keys:
-            repl[f"exec.{key}_fastest_open"] = f"${hash(key) % 100},000"
+            repl[f"exec.{key}_furniture_only"] = f"${hash(key) % 100},000"
             repl[f"exec.{key}_max_capacity"] = f"${hash(key) % 200},000"
         return repl
 
@@ -626,7 +626,7 @@ class TestBuildDdReportDocRequestStructure:
         repl = {
             "meta.site_name": "Test",
             "meta.report_date": "04/14/2026",
-            "exec.direct_viable_buildout": "Fastest Open",
+            "exec.direct_viable_buildout": "Furniture Only",
             "exec.alpha_fit": "No",
         }
 

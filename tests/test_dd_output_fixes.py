@@ -383,7 +383,7 @@ class TestCheckReportCompleteness:
             "No Education Regulatory Approval: Required have not done "
             "Occupancy path: Change of use required, needs work Zoning: Use Permit Required (Public approval)\n"
             "Build Scenarios\n"
-            "exec.cost_demolition_fastest_open exec.max_capacity_capex\n"
+            "exec.cost_demolition_furniture_only exec.max_capacity_capex\n"
         )
 
         with patch(
@@ -395,7 +395,7 @@ class TestCheckReportCompleteness:
         assert result["status"] == "success"
         assert result["ready_to_send"] is False
         assert result["raw_template_token_count"] == 2
-        assert "exec.cost_demolition_fastest_open" in result["raw_template_tokens"]
+        assert "exec.cost_demolition_furniture_only" in result["raw_template_tokens"]
         assert "raw template token" in result["summary"]
 
 
@@ -849,12 +849,12 @@ class TestAsyncOffloading:
             result = asyncio.run(get_cost_estimate(total_building_sf=1000, classroom_count=2))
 
         assert result["status"] == "success"
-        assert result["report_data_fields"]["exec.fastest_open_capex"] == "$86,000"
+        assert result["report_data_fields"]["exec.furniture_only_capex"] == "$86,000"
         assert result["report_data_fields"]["exec.max_capacity_capex"] == "$245,000"
-        assert result["report_data_fields"]["exec.cost_finish_work_fastest_open"] == "$42,000"
+        assert result["report_data_fields"]["exec.cost_finish_work_furniture_only"] == "$42,000"
         assert result["report_data_fields"]["exec.cost_demolition_max_capacity"] == "$5,200"
         assert result["report_data_fields"]["exec.cost_framing_doors_max_capacity"] == "$26,500"
-        assert result["report_data_fields"]["exec.cost_tech_security_signage_fastest_open"] == "$4,100"
+        assert result["report_data_fields"]["exec.cost_tech_security_signage_furniture_only"] == "$4,100"
         assert result["report_data_fields"]["exec.cost_soft_costs_max_capacity"] == "$22,000"
         assert result["report_data_fields"]["exec.cost_grand_total_max_capacity"] == "$245,000"
         assert "exec.cost_grand_total_max_value" not in result["report_data_fields"]
@@ -889,7 +889,7 @@ class TestAsyncOffloading:
                 "estimate_cards": {
                     "cards": [
                         {
-                            "label": "Fastest Open (MVP - As-Is + Code)",
+                            "label": "Furniture Only (MVP - As-Is + Code)",
                             "timeline": {
                                 "weeks": 24,
                                 "note": "16 weeks permitting + 8 weeks construction",
@@ -912,9 +912,9 @@ class TestAsyncOffloading:
             result = asyncio.run(get_cost_estimate(total_building_sf=1000, classroom_count=2))
 
         assert result["status"] == "success"
-        assert result["timeline_summary"]["fastest_open_weeks"] == 24
+        assert result["timeline_summary"]["furniture_only_weeks"] == 24
         assert result["timeline_summary"]["max_capacity_weeks"] == 28
-        assert result["report_data_fields"]["exec.fastest_open_open_date"] == "10/12/26"
+        assert result["report_data_fields"]["exec.furniture_only_open_date"] == "10/12/26"
         assert result["report_data_fields"]["exec.max_capacity_open_date"] == "11/09/26"
 
     def test_save_skill_report_uses_to_thread(self) -> None:

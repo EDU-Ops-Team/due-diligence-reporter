@@ -47,17 +47,17 @@ Four dimensions, each a fixed pick-menu:
 
 The report now uses three scenarios:
 
-- `Fastest Open`: minimum work required to reach E-occupancy compliance. The token names remain `*_mvp_*` for backward compatibility.
+- `Furniture Only`: minimum work required to reach E-occupancy compliance. The token names remain `*_mvp_*` for backward compatibility.
 - `Max Capacity`: the highest student count supportable by the space.
 - `Max Value`: the highest capacity achievable for the least amount of money.
 
-| Row | Fastest Open token | Max Capacity token | Max Value token |
+| Row | Furniture Only token | Max Capacity token | Max Value token |
 |-----|---------------|-------------------|----------------|
-| Capacity | `exec.fastest_open_capacity` | `exec.max_capacity_capacity` | `exec.max_value_capacity` |
-| Cost | `exec.fastest_open_capex` | `exec.max_capacity_capex` | `exec.max_value_capex` |
-| Timeline | `exec.fastest_open_open_date` | `exec.max_capacity_open_date` | `exec.max_value_open_date` |
+| Capacity | `exec.furniture_only_capacity` | `exec.max_capacity_capacity` | `exec.max_value_capacity` |
+| Cost | `exec.furniture_only_capex` | `exec.max_capacity_capex` | `exec.max_value_capex` |
+| Timeline | `exec.furniture_only_open_date` | `exec.max_capacity_open_date` | `exec.max_value_open_date` |
 
-Delta analysis compares each scenario against Fastest Open:
+Delta analysis compares each scenario against Furniture Only:
 
 | Row | Max Capacity delta | Max Value delta |
 |-----|-------------------|----------------|
@@ -355,7 +355,7 @@ Three skill tools analyze the source data and produce structured outputs. The fi
    - Filters to only keys matching the 34 canonical template tokens
    - Returns diagnostics: replacements applied, unmatched keys, unfilled tokens, token sources
 
-3. **Compute deltas** â€” Server-side computation of the Max Capacity and Max Value delta columns against Fastest Open
+3. **Compute deltas** â€” Server-side computation of the Max Capacity and Max Value delta columns against Furniture Only
 
 4. **Fill template** â€” `batchUpdate` to Docs API with `replaceAllText` per token. Link tokens (`sources.*`, `meta.drive_folder_url`) are inserted as clickable hyperlinks with display labels.
 
