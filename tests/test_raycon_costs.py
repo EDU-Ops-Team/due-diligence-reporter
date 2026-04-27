@@ -5,6 +5,8 @@ from __future__ import annotations
 from due_diligence_reporter.server import (
     _build_breakdown_fields,
     _build_raycon_request_payload,
+    _extract_raycon_scenario,
+    _extract_raycon_timeline_weeks,
     _read_raycon_done_event,
 )
 
@@ -80,4 +82,42 @@ def test_build_raycon_request_payload_includes_source_documents() -> None:
     assert payload["drive_doc_summaries"]["inspection"] == "BUILDING INSPECTION FULL TEXT"
     assert payload["drive_doc_summaries"]["sir"] == "SIR FULL TEXT"
     assert payload["drive_doc_summaries"]["block_plan"] == "BLOCK PLAN FULL TEXT"
+
+
+def test_extract_raycon_scenario_merges_matching_estimate_card_timeline() -> None:
+    scenario = _extract_raycon_scenario(
+        {
+            "structured": {
+                "costs_mvp": {
+                    "grandTotal": 123000,
+                    "timelineWeeks": 4,
+                },
+            },
+            "estimate_cards": {
+                "cards": [{
+                    "label": "Fastest Open (MVP - As-Is + Code)",
+                    "timeline": {
+                        "weeks": 24,
+                        "note": "16 weeks permitting + 8 weeks construction",
+                    },
+                }],
+            },
+        },
+        "costs_mvp",
+        "mvp",
+    )
+
+    assert scenario["grandTotal"] == 123000
+    assert scenario["timelineWeeks"] == 4
+    assert scenario["estimateCardTimelineWeeks"] == 24
+    assert scenario["estimateCardTimelineNote"] == "16 weeks permitting + 8 weeks construction"
+
+
+def test_extract_raycon_timeline_weeks_prefers_total_card_timeline() -> None:
+    weeks = _extract_raycon_timeline_weeks({
+        "timelineWeeks": 4,
+        "estimateCardTimelineWeeks": 24,
+    })
+
+    assert weeks == 24
 
