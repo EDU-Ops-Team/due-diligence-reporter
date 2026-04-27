@@ -860,6 +860,63 @@ class TestAsyncOffloading:
         assert "exec.cost_grand_total_max_value" not in result["report_data_fields"]
         mock_to_thread.assert_awaited_once()
 
+    def test_get_cost_estimate_prefers_total_timeline_from_estimate_card(self) -> None:
+        from datetime import datetime as real_datetime
+
+        from due_diligence_reporter.server import get_cost_estimate
+
+        async def run_inline(func: Any, *args: Any, **kwargs: Any) -> Any:
+            return func(*args, **kwargs)
+
+        with patch(
+            "due_diligence_reporter.server.asyncio.to_thread",
+            new=AsyncMock(side_effect=run_inline),
+        ), patch(
+            "due_diligence_reporter.server._call_raycon_api",
+            return_value={
+                "structured": {
+                    "costs_mvp": {
+                        "grandTotal": 86000,
+                        "timelineWeeks": 4,
+                        "categories": [],
+                    },
+                    "costs_ideal": {
+                        "grandTotal": 245000,
+                        "timelineWeeks": 8,
+                        "categories": [],
+                    },
+                },
+                "estimate_cards": {
+                    "cards": [
+                        {
+                            "label": "Fastest Open (MVP - As-Is + Code)",
+                            "timeline": {
+                                "weeks": 24,
+                                "note": "16 weeks permitting + 8 weeks construction",
+                            },
+                        },
+                        {
+                            "label": "Max Capacity (Ideal - Purpose-Built School)",
+                            "timeline": {
+                                "weeks": 28,
+                                "note": "16 weeks permitting + 12 weeks construction",
+                            },
+                        },
+                    ],
+                },
+            },
+        ), patch(
+            "due_diligence_reporter.server.datetime",
+        ) as mock_datetime:
+            mock_datetime.now.return_value = real_datetime(2026, 4, 27)
+            result = asyncio.run(get_cost_estimate(total_building_sf=1000, classroom_count=2))
+
+        assert result["status"] == "success"
+        assert result["timeline_summary"]["fastest_open_weeks"] == 24
+        assert result["timeline_summary"]["max_capacity_weeks"] == 28
+        assert result["report_data_fields"]["exec.fastest_open_open_date"] == "10/12/26"
+        assert result["report_data_fields"]["exec.max_capacity_open_date"] == "11/09/26"
+
     def test_save_skill_report_uses_to_thread(self) -> None:
         from due_diligence_reporter.server import save_skill_report
 
@@ -909,8 +966,8 @@ class TestAsyncOffloading:
             "due_diligence_reporter.server._make_google_client",
             return_value=gc,
         ), patch(
-            "due_diligence_reporter.server.normalize_report_data",
-            return_value=({}, [], [], {}),
+            "due_diligence_reporter.server._normalize_report_replacements",
+            return_value=({}, [], [], {}, MagicMock()),
         ), patch(
             "due_diligence_reporter.server.build_dd_report_doc",
             return_value={"applied": 0, "found_tokens": [], "not_found_tokens": []},
@@ -925,7 +982,7 @@ class TestAsyncOffloading:
         gc.create_document.assert_called_once()
         mock_to_thread.assert_awaited_once()
 
-    def test_create_dd_report_reuses_existing_same_day_doc(self) -> None:
+    def test_create_dd_report_rebuilds_existing_same_day_doc(self) -> None:
         from due_diligence_reporter.server import create_dd_report
 
         gc = MagicMock()
@@ -934,6 +991,9 @@ class TestAsyncOffloading:
             "name": "Alpha DD Report - 04/02/2026",
             "webViewLink": "https://docs.google.com/document/d/doc-existing",
         }]
+        gc.docs_service = MagicMock()
+        gc.drive_service = MagicMock()
+        gc.upload_file_to_folder.return_value = {"webViewLink": ""}
 
         async def run_inline(func: Any, *args: Any, **kwargs: Any) -> Any:
             return func(*args, **kwargs)
@@ -945,8 +1005,16 @@ class TestAsyncOffloading:
             "due_diligence_reporter.server._make_google_client",
             return_value=gc,
         ), patch(
+            "due_diligence_reporter.server._clear_document_body",
+        ) as mock_clear, patch(
             "due_diligence_reporter.server.datetime",
-        ) as mock_datetime:
+        ) as mock_datetime, patch(
+            "due_diligence_reporter.server._normalize_report_replacements",
+            return_value=({}, [], [], {}, MagicMock()),
+        ), patch(
+            "due_diligence_reporter.server.build_dd_report_doc",
+            return_value={"applied": 0, "found_tokens": [], "not_found_tokens": []},
+        ):
             mock_datetime.now.return_value.strftime.return_value = "04/02/2026"
             result = asyncio.run(create_dd_report(
                 site_name="Alpha",
@@ -957,5 +1025,6 @@ class TestAsyncOffloading:
         assert result["status"] == "success"
         assert result["document"]["id"] == "doc-existing"
         gc.create_document.assert_not_called()
+        mock_clear.assert_called_once_with(gc, doc_id="doc-existing")
 
 

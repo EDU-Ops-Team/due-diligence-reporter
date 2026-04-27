@@ -734,30 +734,50 @@ def _extract_raycon_scenario(
     card_label_hint: str,
 ) -> dict[str, Any]:
     """Extract one scenario from RayCon structured output with card fallback."""
-    structured = response_data.get("structured", {})
-    scenario = structured.get(scenario_key)
-    if isinstance(scenario, dict):
-        return scenario
     cards = response_data.get("estimate_cards", {}).get("cards", [])
+    matching_card: dict[str, Any] | None = None
     for card in cards:
         label = str(card.get("label", "")).lower()
         if card_label_hint in label:
-            timeline = card.get("timeline", {})
-            return {
-                "categories": card.get("costBreakdown", []),
-                "grandTotal": card.get("totals", {}).get("grandTotal", 0),
-                "softCosts": card.get("totals", {}).get("softCosts", 0),
-                "gcFee": card.get("totals", {}).get("gcFee", 0),
-                "contingency": card.get("totals", {}).get("contingency", 0),
-                "furniture": card.get("totals", {}).get("furniture", 0),
-                "timelineWeeks": timeline.get("weeks") if isinstance(timeline, dict) else None,
-                "timelineNote": timeline.get("note", "") if isinstance(timeline, dict) else "",
-            }
+            matching_card = card
+            break
+
+    structured = response_data.get("structured", {})
+    scenario = structured.get(scenario_key)
+    if isinstance(scenario, dict):
+        merged = dict(scenario)
+        if matching_card:
+            timeline = matching_card.get("timeline", {})
+            if isinstance(timeline, dict):
+                weeks = timeline.get("weeks")
+                if isinstance(weeks, (int, float)) and weeks > 0:
+                    merged["estimateCardTimelineWeeks"] = int(weeks)
+                note = str(timeline.get("note", "")).strip()
+                if note:
+                    merged["estimateCardTimelineNote"] = note
+        return merged
+    if matching_card:
+        timeline = matching_card.get("timeline", {})
+        return {
+            "categories": matching_card.get("costBreakdown", []),
+            "grandTotal": matching_card.get("totals", {}).get("grandTotal", 0),
+            "softCosts": matching_card.get("totals", {}).get("softCosts", 0),
+            "gcFee": matching_card.get("totals", {}).get("gcFee", 0),
+            "contingency": matching_card.get("totals", {}).get("contingency", 0),
+            "furniture": matching_card.get("totals", {}).get("furniture", 0),
+            "timelineWeeks": timeline.get("weeks") if isinstance(timeline, dict) else None,
+            "timelineNote": timeline.get("note", "") if isinstance(timeline, dict) else "",
+            "estimateCardTimelineWeeks": timeline.get("weeks") if isinstance(timeline, dict) else None,
+            "estimateCardTimelineNote": timeline.get("note", "") if isinstance(timeline, dict) else "",
+        }
     return {}
 
 
 def _extract_raycon_timeline_weeks(scenario_data: dict[str, Any]) -> int | None:
     """Return an integer timeline week estimate from a RayCon scenario."""
+    estimate_card_weeks = scenario_data.get("estimateCardTimelineWeeks")
+    if isinstance(estimate_card_weeks, (int, float)) and estimate_card_weeks > 0:
+        return int(estimate_card_weeks)
     for key in ("timelineWeeks", "timeline_weeks"):
         value = scenario_data.get(key)
         if isinstance(value, (int, float)) and value > 0:
@@ -775,6 +795,34 @@ def _weeks_to_open_date(weeks: int | None) -> str:
     if weeks is None or weeks <= 0:
         return ""
     return (datetime.now() + timedelta(weeks=weeks)).strftime("%m/%d/%y")
+
+
+def _clear_document_body(
+    gc: GoogleClient,
+    *,
+    doc_id: str,
+) -> None:
+    """Delete all body content from an existing Google Doc before rebuilding it."""
+    doc = gc.docs_service.documents().get(documentId=doc_id).execute()
+    body_content = doc.get("body", {}).get("content", [])
+    if not body_content:
+        return
+    end_index = int(body_content[-1].get("endIndex", 1))
+    if end_index <= 2:
+        return
+    gc.docs_service.documents().batchUpdate(
+        documentId=doc_id,
+        body={
+            "requests": [{
+                "deleteContentRange": {
+                    "range": {
+                        "startIndex": 1,
+                        "endIndex": end_index - 1,
+                    }
+                }
+            }]
+        },
+    ).execute()
 
 
 def _match_breakdown_bucket(category_name: str) -> str:
@@ -3296,36 +3344,28 @@ async def create_dd_report(
         try:
             gc = _make_google_client()
             existing_doc = _find_existing_report_doc(gc, folder_id=folder_id, doc_name=doc_name)
+            doc_id: str | None = None
+            doc_url: str | None = None
             if existing_doc:
                 existing_doc_id = existing_doc.get("id")
-                existing_doc_url = existing_doc.get("webViewLink")
-                logger.info("Existing DD report found, reusing: %s (id=%s)", doc_name, existing_doc_id)
-                return {
-                    "status": "success",
-                    "document": {
-                        "id": existing_doc_id,
-                        "name": doc_name,
-                        "url": existing_doc_url,
-                    },
-                    "replacements_applied": 0,
-                    "unmatched_agent_keys": 0,
-                    "unfilled_template_tokens": 0,
-                    "hyperlinks_applied": 0,
-                    "message": f"DD report already exists: {existing_doc_url}",
-                }
-
-            logger.info("Creating blank document in folder %s as '%s'", folder_id, doc_name)
-            new_doc = gc.create_document(
-                name=doc_name,
-                folder_id=folder_id,
-                text_content="",
-            )
-            doc_id = new_doc.get("id")
-            doc_url = new_doc.get("webViewLink")
-            if not doc_id or not isinstance(doc_id, str):
-                raise RuntimeError("Invalid document ID returned from create operation")
-
-            logger.info("Created blank document: %s (id=%s)", doc_name, doc_id)
+                if not isinstance(existing_doc_id, str) or not existing_doc_id:
+                    raise RuntimeError(f"Existing DD report is missing a valid document ID: {doc_name}")
+                doc_id = existing_doc_id
+                doc_url = existing_doc.get("webViewLink")
+                logger.info("Existing DD report found, rebuilding in place: %s (id=%s)", doc_name, doc_id)
+                _clear_document_body(gc, doc_id=doc_id)
+            else:
+                logger.info("Creating blank document in folder %s as '%s'", folder_id, doc_name)
+                new_doc = gc.create_document(
+                    name=doc_name,
+                    folder_id=folder_id,
+                    text_content="",
+                )
+                doc_id = new_doc.get("id")
+                doc_url = new_doc.get("webViewLink")
+                if not doc_id or not isinstance(doc_id, str):
+                    raise RuntimeError("Invalid document ID returned from create operation")
+                logger.info("Created blank document: %s (id=%s)", doc_name, doc_id)
             replacements, unmatched, unfilled, _token_sources, rebl_resolution = _normalize_report_replacements(
                 report_data=report_data,
                 site_name=site_name.strip(),
@@ -3433,7 +3473,7 @@ async def create_dd_report(
                 "unfilled_template_tokens": len(unfilled),
                 "hyperlinks_applied": hyperlink_trace["applied"],
                 "normalized_report_data": replacements,
-                "message": f"DD report created: {doc_url}",
+                "message": f"DD report built: {doc_url}",
             }
             if dashboard_payload is not None:
                 response["dashboard_payload"] = {
