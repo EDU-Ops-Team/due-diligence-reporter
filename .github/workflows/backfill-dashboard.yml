@@ -1,0 +1,130 @@
+name: Backfill Dashboard
+
+# Re-publishes every active site's dashboard payload from the latest DD Report
+# Trace JSON in Drive. Idempotent — safe to re-run anytime.
+#
+# Why: report_pipeline only POSTs to /api/sites/:slug/publish when it generates
+# a NEW report. If a site's underlying inputs changed (e.g. a new SIR or
+# inspection PDF was uploaded) but the existing DD report wasn't regenerated,
+# the dashboard never gets the refresh. This workflow rolls every site forward
+# to the latest trace on file.
+#
+# Reuses the same env / OAuth bootstrap as daily-dd-check.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      site:
+        description: 'Filter to a single site (substring match on title). Leave blank for all sites.'
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: dd-pipeline
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Verify required secrets
+        run: |
+          [ -n "${{ secrets.WRIKE_ACCESS_TOKEN }}" ]         || { echo "[ERROR] WRIKE_ACCESS_TOKEN missing"; exit 1; }
+          [ -n "${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}" ] || { echo "[ERROR] GOOGLE_DRIVE_ROOT_FOLDER_ID missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ]            || { echo "[ERROR] OAUTH_CLIENT_ID missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ]        || { echo "[ERROR] OAUTH_CLIENT_SECRET missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ]        || { echo "[ERROR] OAUTH_REFRESH_TOKEN missing"; exit 1; }
+          [ -n "${{ secrets.DASHBOARD_PUBLISH_SECRET }}" ]   || { echo "[ERROR] DASHBOARD_PUBLISH_SECRET missing"; exit 1; }
+          echo "[OK] All required secrets are present"
+
+      - name: Create .env file from secrets
+        env:
+          WRIKE_ACCESS_TOKEN: ${{ secrets.WRIKE_ACCESS_TOKEN }}
+          GOOGLE_DRIVE_ROOT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}
+          SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
+          ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
+          BUILDING_INSPECTION_FOLDER_ID: ${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}
+          DASHBOARD_PUBLISH_SECRET: ${{ secrets.DASHBOARD_PUBLISH_SECRET }}
+        run: |
+          touch .env
+          echo "WRIKE_ACCESS_TOKEN=${WRIKE_ACCESS_TOKEN}" >> .env
+          echo "GOOGLE_DRIVE_ROOT_FOLDER_ID=${GOOGLE_DRIVE_ROOT_FOLDER_ID}" >> .env
+          echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
+          echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
+          echo "BUILDING_INSPECTION_FOLDER_ID=${BUILDING_INSPECTION_FOLDER_ID}" >> .env
+          echo "DASHBOARD_PUBLISH_SECRET=${DASHBOARD_PUBLISH_SECRET}" >> .env
+          echo "[OK] Created .env file"
+
+      - name: Write Google OAuth client secrets
+        env:
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+        run: |
+          mkdir -p credentials
+          python -c "
+          import json, os
+          data = {
+              'installed': {
+                  'client_id': os.environ['OAUTH_CLIENT_ID'],
+                  'client_secret': os.environ['OAUTH_CLIENT_SECRET'],
+                  'redirect_uris': ['http://localhost'],
+                  'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+                  'token_uri': 'https://oauth2.googleapis.com/token',
+              }
+          }
+          with open('credentials/client_secrets.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+          echo "[OK] Wrote credentials/client_secrets.json"
+
+      - name: Write Google OAuth refresh token
+        env:
+          OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+        run: |
+          python -c "
+          import json, os
+          data = {
+              'token': None,
+              'refresh_token': os.environ['OAUTH_REFRESH_TOKEN'],
+              'token_uri': 'https://oauth2.googleapis.com/token',
+              'client_id': os.environ['OAUTH_CLIENT_ID'],
+              'client_secret': os.environ['OAUTH_CLIENT_SECRET'],
+              'scopes': [
+                  'https://www.googleapis.com/auth/drive',
+                  'https://www.googleapis.com/auth/documents',
+                  'https://www.googleapis.com/auth/gmail.modify',
+              ],
+          }
+          with open('.gcp-saved-tokens.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+          echo "[OK] Wrote .gcp-saved-tokens.json"
+
+      - name: Run dashboard backfill
+        run: |
+          if [ -n "${{ inputs.site }}" ]; then
+            uv run python scripts/backfill_dashboard.py "${{ inputs.site }}"
+          else
+            uv run python scripts/backfill_dashboard.py
+          fi
+
+      - name: Done
+        run: echo "Dashboard backfill completed"
