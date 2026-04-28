@@ -188,22 +188,42 @@ class Settings(BaseSettings):
     )
 
     # Inbox Scanner
-    # NOTE: emails routed via Google Groups (e.g. auth.permitting@trilogy.com)
-    # are tagged CATEGORY_FORUMS by Gmail. The default Gmail search returns
-    # only the Primary tab, so Group-routed mail is silently excluded.
+    # The scanner runs OAuth-authed AS edu.ops@trilogy.com (the shared inbox
+    # that receives all DD deliveries from CDS, brokers, vendors). Confirmed
+    # via diagnostic run 25069756638 (getProfile emailAddress was redacted by
+    # the EMAIL_SENDER secret mask, and messagesTotal=1226 matches a small
+    # operational mailbox; all scanner-sent automated emails come from
+    # edu.ops@trilogy.com).
     #
-    # Fix: explicitly EXCLUDE the Promotions and Social tabs (instead of
-    # implicitly limiting to Primary). This catches Primary + Forums + Updates
-    # without dragging in marketing/social noise. The positive-form
-    # `category:{primary forums updates}` is honored by the Gmail UI search
-    # bar but NOT by the Gmail REST API users.messages.list q parameter,
-    # which silently returned 0 when we tried it.
-    # See: https://support.google.com/mail/answer/7190 (search operators).
+    # History of this query:
+    #   v1: {to:edu.ops cc:edu.ops} ...           # silently dropped Forums tab
+    #   v2: ... category:{primary forums updates} # Gmail UI syntax, REST API
+    #                                              ignored it -> 0 results
+    #   v3: {to:edu.ops cc:edu.ops} -category:promotions -category:social
+    #                                              # negative form is REST-API
+    #                                              # safe BUT to:/cc:self-
+    #                                              # reference returns 0 when
+    #                                              # run from inside that
+    #                                              # mailbox (especially for
+    #                                              # Group-routed mail where
+    #                                              # the recipient address is
+    #                                              # in Delivered-To, not
+    #                                              # rendered in To/Cc the way
+    #                                              # the API matcher expects).
+    #   v4 (current): in:inbox + has:attachment + filename:(pdf OR docx) +
+    #                 negative-category exclusions. Since the scanner runs AS
+    #                 the receiving mailbox, in:inbox is sufficient and reliable.
+    #                 Also expanded filename to include docx -- many SIRs are
+    #                 delivered as Word documents, which were previously invisible.
     inbox_scan_query: str = Field(
-        "{to:edu.ops@trilogy.com cc:edu.ops@trilogy.com} "
-        "has:attachment filename:pdf "
+        "in:inbox has:attachment filename:(pdf OR docx) "
         "-category:promotions -category:social",
-        description="Gmail search query for incoming DD documents (to or cc)",
+        description=(
+            "Gmail search query for incoming DD documents. Scanner is authed "
+            "as the recipient mailbox, so in:inbox + attachment filters is "
+            "sufficient. Negative category exclusions cover Forums/Updates "
+            "(REST-API safe) without dragging in marketing/social noise."
+        ),
     )
     inbox_internal_sender_domains: str = Field(
         "trilogy.com",
