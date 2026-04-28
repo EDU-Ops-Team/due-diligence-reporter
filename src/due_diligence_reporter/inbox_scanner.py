@@ -336,6 +336,7 @@ def scan_inbox(
 
     # Exclude already-labeled messages from search
     query = f"{settings.inbox_scan_query} -label:{settings.inbox_processed_label}"
+    logger.info("Inbox scan query (resolved): %s", query)
     messages = gc.gmail_search(query, max_results=settings.inbox_scan_max_results)
     logger.info("Found %d unprocessed emails", len(messages))
 
