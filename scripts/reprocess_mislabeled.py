@@ -87,7 +87,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     settings = get_settings()
-    gc = GoogleClient(settings)
+    gc = GoogleClient.from_oauth_config(
+        client_config_path=str(settings.get_client_config_path()),
+        token_file_path=str(settings.get_token_file_path()),
+        oauth_port=settings.oauth_port,
+        scopes=settings.google_scopes,
+    )
 
     since = args.since
     if not since:
