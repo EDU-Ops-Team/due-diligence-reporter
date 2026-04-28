@@ -252,6 +252,15 @@ class Settings(BaseSettings):
         "DD-Manual-Review",
         description="Gmail label applied to emails needing human review",
     )
+    inbox_internal_skip_label: str = Field(
+        "DD-Internal-Skipped",
+        description=(
+            "Gmail label applied to emails skipped by the internal-sender "
+            "heuristic. Kept distinct from DD-Processed so heuristic bugs do "
+            "not burn real DD deliveries: if the heuristic later flips for "
+            "a sender, only this label needs clearing, not DD-Processed."
+        ),
+    )
     inbox_scan_max_results: int = Field(
         50,
         description="Maximum number of emails to process per inbox scan run",
