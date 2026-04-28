@@ -522,25 +522,32 @@ class TestIdempotency:
         query = f"{settings.inbox_scan_query} -label:{settings.inbox_processed_label}"
         assert "-label:DD-Processed" in query
 
-    def test_gmail_search_query_includes_forums_category(self):
-        """The default scan query must include category:forums so Google Group-routed
+    def test_gmail_search_query_covers_forums_category(self):
+        """The default scan query must cover CATEGORY_FORUMS so Google Group-routed
         emails (e.g. via auth.permitting@trilogy.com) are not silently dropped.
 
         Regression: 2026-04-23 Providence Croft Schools SIRs (and several other CDS
         deliveries via the auth.permitting Google Group) landed in CATEGORY_FORUMS
-        and were never picked up by the default Gmail search, which only includes
+        and were never picked up by the default Gmail search, which only returns
         the Primary tab.
+
+        Acceptable forms:
+          - explicit positive: contains 'category:forums' (UI-bar form, not
+            honored by the REST API but kept here for forward-compat).
+          - negative-form: excludes promotions and social (REST-API safe; this
+            is the form the production default uses).
         """
         from due_diligence_reporter.config import Settings
 
         settings = Settings()
-        # Either a multi-value category clause or an explicit category:forums must
-        # appear in the default query.
         q = settings.inbox_scan_query
-        assert (
-            "category:{primary forums updates}" in q
-            or "category:forums" in q
-        ), f"default inbox_scan_query missing forums category: {q!r}"
+        positive_form = "category:forums" in q
+        negative_form = (
+            "-category:promotions" in q and "-category:social" in q
+        )
+        assert positive_form or negative_form, (
+            f"default inbox_scan_query does not cover CATEGORY_FORUMS: {q!r}"
+        )
 
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
