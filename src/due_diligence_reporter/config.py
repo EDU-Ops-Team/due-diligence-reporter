@@ -188,14 +188,21 @@ class Settings(BaseSettings):
     )
 
     # Inbox Scanner
-    # NOTE: include category:{primary forums updates} so emails routed via
-    # Google Groups (e.g. auth.permitting@trilogy.com) — which Gmail tags
-    # CATEGORY_FORUMS — are not silently excluded by the default search.
-    # See: https://support.google.com/mail/answer/3094499 (category: operator).
+    # NOTE: emails routed via Google Groups (e.g. auth.permitting@trilogy.com)
+    # are tagged CATEGORY_FORUMS by Gmail. The default Gmail search returns
+    # only the Primary tab, so Group-routed mail is silently excluded.
+    #
+    # Fix: explicitly EXCLUDE the Promotions and Social tabs (instead of
+    # implicitly limiting to Primary). This catches Primary + Forums + Updates
+    # without dragging in marketing/social noise. The positive-form
+    # `category:{primary forums updates}` is honored by the Gmail UI search
+    # bar but NOT by the Gmail REST API users.messages.list q parameter,
+    # which silently returned 0 when we tried it.
+    # See: https://support.google.com/mail/answer/7190 (search operators).
     inbox_scan_query: str = Field(
         "{to:edu.ops@trilogy.com cc:edu.ops@trilogy.com} "
         "has:attachment filename:pdf "
-        "category:{primary forums updates}",
+        "-category:promotions -category:social",
         description="Gmail search query for incoming DD documents (to or cc)",
     )
     inbox_internal_sender_domains: str = Field(
