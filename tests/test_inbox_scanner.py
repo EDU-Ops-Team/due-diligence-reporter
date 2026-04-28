@@ -549,6 +549,50 @@ class TestIdempotency:
             f"default inbox_scan_query does not cover CATEGORY_FORUMS: {q!r}"
         )
 
+    def test_gmail_search_query_does_not_self_reference_recipient(self):
+        """The scanner runs OAuth-authed AS the recipient mailbox
+        (edu.ops@trilogy.com). Querying `to:edu.ops cc:edu.ops` from inside
+        that same mailbox returns 0 messages -- especially for Group-routed
+        mail where the recipient appears in Delivered-To rather than the
+        rendered To/Cc headers the API matcher inspects.
+
+        The default query must therefore rely on in:inbox (or equivalent)
+        rather than self-referencing to:/cc: filters.
+
+        Regression: 2026-04-28 catch-up sweeps (runs 25068686981 and
+        25068942447) returned 0 messages despite the same query strings
+        returning matches when run from a third-party mailbox via the
+        Gmail connector.
+        """
+        from due_diligence_reporter.config import Settings
+
+        settings = Settings()
+        q = settings.inbox_scan_query
+        assert "to:edu.ops" not in q, (
+            f"inbox_scan_query must not self-reference to:edu.ops: {q!r}"
+        )
+        assert "cc:edu.ops" not in q, (
+            f"inbox_scan_query must not self-reference cc:edu.ops: {q!r}"
+        )
+        assert "in:inbox" in q, (
+            f"inbox_scan_query must use in:inbox to scope to received mail: {q!r}"
+        )
+
+    def test_gmail_search_query_includes_docx_attachments(self):
+        """Many SIRs (and other DD deliverables) are sent as .docx, not .pdf.
+        The default query must accept both filename extensions.
+        """
+        from due_diligence_reporter.config import Settings
+
+        settings = Settings()
+        q = settings.inbox_scan_query
+        assert "docx" in q, (
+            f"inbox_scan_query must include docx attachments: {q!r}"
+        )
+        assert "pdf" in q, (
+            f"inbox_scan_query must still include pdf attachments: {q!r}"
+        )
+
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
     def test_unknown_doc_type_email_marked_processed(self, mock_extract, mock_classify):
