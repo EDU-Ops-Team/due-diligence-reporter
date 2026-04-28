@@ -344,12 +344,26 @@ def scan_inbox(
     logger.info("Starting inbox scan (dry_run=%s)", dry_run)
     site_records = site_records or []
 
-    # Get or create the DD-Processed label
+    # Get or create the labels.
+    # - DD-Processed: applied to emails the scanner has finished with (uploaded
+    #   or had a real reason to skip an attachment).
+    # - DD-Manual-Review: applied when human review is needed.
+    # - DD-Internal-Skipped: applied to emails skipped by the internal-sender
+    #   heuristic. Distinct from DD-Processed so heuristic bugs do not burn
+    #   real DD deliveries (recoverable by clearing this one label).
     label_id = gc.gmail_get_or_create_label(settings.inbox_processed_label)
     review_label_id = gc.gmail_get_or_create_label(settings.inbox_manual_review_label)
+    internal_skip_label_id = gc.gmail_get_or_create_label(
+        settings.inbox_internal_skip_label
+    )
 
-    # Exclude already-labeled messages from search
-    query = f"{settings.inbox_scan_query} -label:{settings.inbox_processed_label}"
+    # Exclude already-labeled messages from search (both completed and internal-
+    # skipped, so we don't re-scan them every run).
+    query = (
+        f"{settings.inbox_scan_query}"
+        f" -label:{settings.inbox_processed_label}"
+        f" -label:{settings.inbox_internal_skip_label}"
+    )
     logger.info("Inbox scan query (resolved): %s", query)
     messages = gc.gmail_search(query, max_results=settings.inbox_scan_max_results)
     logger.info("Found %d unprocessed emails", len(messages))
@@ -376,6 +390,7 @@ def scan_inbox(
                 review_label_id,
                 site_records=site_records,
                 dry_run=dry_run,
+                internal_skip_label_id=internal_skip_label_id,
             )
             if email_result.get("internal_skipped"):
                 results["internal_skipped"] += 1
@@ -414,6 +429,7 @@ def process_email(
     review_label_id: str,
     *,
     site_records: list[dict[str, Any]] | None = None,
+    internal_skip_label_id: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Process a single email: classify attachments by filename, upload, mark done.
@@ -442,8 +458,13 @@ def process_email(
             metadata.effective_sender,
             metadata.subject,
         )
+        # Apply DD-Internal-Skipped (NOT DD-Processed) so future heuristic
+        # bugs only require clearing this single label to recover. Falls back
+        # to DD-Processed only if the new label id wasn't supplied (legacy
+        # callers).
         if not dry_run:
-            _mark_email_processed(gc, message_id, label_id)
+            skip_label = internal_skip_label_id or label_id
+            _mark_email_processed(gc, message_id, skip_label)
         return {"internal_skipped": True, "marked": not dry_run}
 
     uploaded: list[dict[str, Any]] = []

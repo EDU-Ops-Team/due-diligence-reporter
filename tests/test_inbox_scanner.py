@@ -673,6 +673,86 @@ class TestEffectiveSender:
         )
         assert _is_internal_sender(m.effective_sender, settings)
 
+    @patch("due_diligence_reporter.inbox_scanner._mark_email_processed")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_internal_skip_applies_internal_label_not_processed(
+        self, mock_extract, mock_mark
+    ):
+        """Internal-skip path must apply DD-Internal-Skipped, NOT DD-Processed.
+
+        Keeping the label distinct from DD-Processed means future heuristic
+        bugs are recoverable by clearing this single label, without burning
+        the audit trail of legitimate uploads.
+        """
+        from due_diligence_reporter.config import Settings
+
+        settings = Settings()
+        mock_extract.return_value = MagicMock(
+            message_id="msg_int",
+            subject="Internal note",
+            sender="Greg Foote <greg.foote@trilogy.com>",
+            effective_sender="Greg Foote <greg.foote@trilogy.com>",
+            body_snippet="",
+            attachments=[],
+            label_ids=[],
+        )
+
+        gc = MagicMock()
+        result = process_email(
+            gc,
+            "msg_int",
+            settings,
+            label_id="PROCESSED_LABEL_ID",
+            review_label_id="REVIEW_LABEL_ID",
+            internal_skip_label_id="INTERNAL_SKIP_LABEL_ID",
+        )
+
+        assert result["internal_skipped"] is True
+        # _mark_email_processed should be called with the internal-skip label,
+        # NOT the processed label.
+        mock_mark.assert_called_once()
+        called_with_label = mock_mark.call_args[0][2]
+        assert called_with_label == "INTERNAL_SKIP_LABEL_ID", (
+            f"Expected internal-skip label, got {called_with_label!r}"
+        )
+
+    @patch("due_diligence_reporter.inbox_scanner._mark_email_processed")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_internal_skip_falls_back_to_processed_label_if_unset(
+        self, mock_extract, mock_mark
+    ):
+        """Backward-compat: legacy callers that don't pass
+        internal_skip_label_id should still get a label applied (the
+        processed label, since they pre-date the new label).
+        """
+        from due_diligence_reporter.config import Settings
+
+        settings = Settings()
+        mock_extract.return_value = MagicMock(
+            message_id="msg_int2",
+            subject="Internal note",
+            sender="greg.foote@trilogy.com",
+            effective_sender="greg.foote@trilogy.com",
+            body_snippet="",
+            attachments=[],
+            label_ids=[],
+        )
+
+        gc = MagicMock()
+        result = process_email(
+            gc,
+            "msg_int2",
+            settings,
+            label_id="PROCESSED_LABEL_ID",
+            review_label_id="REVIEW_LABEL_ID",
+            # internal_skip_label_id intentionally omitted
+        )
+
+        assert result["internal_skipped"] is True
+        mock_mark.assert_called_once()
+        called_with_label = mock_mark.call_args[0][2]
+        assert called_with_label == "PROCESSED_LABEL_ID"
+
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
     def test_unknown_doc_type_email_marked_processed(self, mock_extract, mock_classify):
