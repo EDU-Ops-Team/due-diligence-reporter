@@ -23,29 +23,29 @@
 | Build Scenarios: Capacity, Capex, Open Date |
 | :---- |
 
-|  | **Furniture Only** | **Max Capacity** |
+|  | **Fastest Open** | **Max Capacity** |
 | :---- | :---- | :---- |
-| **Capacity** | {{exec.furniture_only_capacity}} | {{exec.max_capacity_capacity}} |
-| **Open Date** | {{exec.furniture_only_open_date}} | {{exec.max_capacity_open_date}} |
-| **CAPEX** | {{exec.furniture_only_capex}} | {{exec.max_capacity_capex}} |
+| **Capacity** | {{exec.fastest_open_capacity}} | {{exec.max_capacity_capacity}} |
+| **Open Date** | {{exec.fastest_open_open_date}} | {{exec.max_capacity_open_date}} |
+| **CAPEX** | {{exec.fastest_open_capex}} | {{exec.max_capacity_capex}} |
 
 | Detailed Cost Breakdown |
 | :---- |
 
-|  | **Furniture Only** | **Max Capacity** |
+|  | **Fastest Open** | **Max Capacity** |
 | :---- | :---- | :---- |
-| **Demolition** | {{exec.cost_demolition_furniture_only}} | {{exec.cost_demolition_max_capacity}} |
-| **Framing / Doors** | {{exec.cost_framing_doors_furniture_only}} | {{exec.cost_framing_doors_max_capacity}} |
-| **MEP / Fire / Life Safety** | {{exec.cost_mep_fire_life_safety_furniture_only}} | {{exec.cost_mep_fire_life_safety_max_capacity}} |
-| **Plumbing / Bathrooms** | {{exec.cost_plumbing_bathrooms_furniture_only}} | {{exec.cost_plumbing_bathrooms_max_capacity}} |
-| **Finish Work** | {{exec.cost_finish_work_furniture_only}} | {{exec.cost_finish_work_max_capacity}} |
-| **Furniture** | {{exec.cost_furniture_furniture_only}} | {{exec.cost_furniture_max_capacity}} |
-| **Tech / Security / Signage** | {{exec.cost_tech_security_signage_furniture_only}} | {{exec.cost_tech_security_signage_max_capacity}} |
-| **Other Hard Costs** | {{exec.cost_other_hard_costs_furniture_only}} | {{exec.cost_other_hard_costs_max_capacity}} |
-| **Soft Costs** | {{exec.cost_soft_costs_furniture_only}} | {{exec.cost_soft_costs_max_capacity}} |
-| **GC Fee** | {{exec.cost_gc_fee_furniture_only}} | {{exec.cost_gc_fee_max_capacity}} |
-| **Contingency** | {{exec.cost_contingency_furniture_only}} | {{exec.cost_contingency_max_capacity}} |
-| **Grand Total** | {{exec.cost_grand_total_furniture_only}} | {{exec.cost_grand_total_max_capacity}} |
+| **Demolition** | {{exec.cost_demolition_fastest_open}} | {{exec.cost_demolition_max_capacity}} |
+| **Framing / Doors** | {{exec.cost_framing_doors_fastest_open}} | {{exec.cost_framing_doors_max_capacity}} |
+| **MEP / Fire / Life Safety** | {{exec.cost_mep_fire_life_safety_fastest_open}} | {{exec.cost_mep_fire_life_safety_max_capacity}} |
+| **Plumbing / Bathrooms** | {{exec.cost_plumbing_bathrooms_fastest_open}} | {{exec.cost_plumbing_bathrooms_max_capacity}} |
+| **Finish Work** | {{exec.cost_finish_work_fastest_open}} | {{exec.cost_finish_work_max_capacity}} |
+| **Furniture** | {{exec.cost_furniture_fastest_open}} | {{exec.cost_furniture_max_capacity}} |
+| **Tech / Security / Signage** | {{exec.cost_tech_security_signage_fastest_open}} | {{exec.cost_tech_security_signage_max_capacity}} |
+| **Other Hard Costs** | {{exec.cost_other_hard_costs_fastest_open}} | {{exec.cost_other_hard_costs_max_capacity}} |
+| **Soft Costs** | {{exec.cost_soft_costs_fastest_open}} | {{exec.cost_soft_costs_max_capacity}} |
+| **GC Fee** | {{exec.cost_gc_fee_fastest_open}} | {{exec.cost_gc_fee_max_capacity}} |
+| **Contingency** | {{exec.cost_contingency_fastest_open}} | {{exec.cost_contingency_max_capacity}} |
+| **Grand Total** | {{exec.cost_grand_total_fastest_open}} | {{exec.cost_grand_total_max_capacity}} |
 
 | Lease Conditions |
 | :---- |

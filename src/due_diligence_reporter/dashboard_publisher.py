@@ -3,7 +3,7 @@
 After `create_dd_report` successfully fills out a Google Doc, we also POST the
 structured `report_data` to the dashboard's `/api/sites/:slug/publish`
 endpoint. The endpoint converts flat pipeline tokens (exec.c_zoning,
-exec.furniture_only_capex, sources.sir_link, etc.) into the dashboard's nested
+exec.fastest_open_capex, sources.sir_link, etc.) into the dashboard's nested
 site schema and commits it to `client/public/sites.json`.
 
 Auth: shared bearer secret in the `DASHBOARD_PUBLISH_SECRET` env var.

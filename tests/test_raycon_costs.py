@@ -95,7 +95,7 @@ def test_extract_raycon_scenario_merges_matching_estimate_card_timeline() -> Non
             },
             "estimate_cards": {
                 "cards": [{
-                    "label": "Furniture Only (MVP - As-Is + Code)",
+                    "label": "Fastest Open (MVP - As-Is + Code)",
                     "timeline": {
                         "weeks": 24,
                         "note": "16 weeks permitting + 8 weeks construction",

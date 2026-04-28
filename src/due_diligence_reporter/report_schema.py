@@ -35,7 +35,7 @@ ALLOWED_ZONING_STATUSES: frozenset[str] = frozenset({
 })
 
 ALLOWED_VIABLE_BUILDOUTS: frozenset[str] = frozenset({
-    "Furniture Only",
+    "Fastest Open",
     "Max Capacity",
     "None",
 })
@@ -46,7 +46,7 @@ ALLOWED_ALPHA_FIT_VALUES: frozenset[str] = frozenset({
 })
 
 # School-year start dates for deterministic c_answer computation.
-# furniture_only_open_date <= SCHOOL_YEAR_DEADLINE → "Yes"; otherwise → "No".
+# fastest_open_open_date <= SCHOOL_YEAR_DEADLINE → "Yes"; otherwise → "No".
 SCHOOL_YEAR_START_DATES: tuple[date, ...] = (
     date(2026, 8, 12),  # 08/12/26
     date(2026, 9, 8),   # 09/08/26
@@ -190,7 +190,7 @@ RISK_FLAG_SEVERITY_RANK: dict[str, int] = {
 MISSING_P1_ASSIGNEE_LABEL = "[Not found - P1 Assignee not set in Wrike]"
 
 SCENARIOS: tuple[str, ...] = (
-    "furniture_only",
+    "fastest_open",
     "max_capacity",
 )
 
@@ -292,7 +292,7 @@ for scenario in SCENARIOS:
 for base in COST_TOKEN_BASES:
     for scenario in SCENARIOS:
         source = "Agent"
-        if scenario in {"furniture_only", "max_capacity"}:
+        if scenario in {"fastest_open", "max_capacity"}:
             source = "RayCon"
         TOKEN_SOURCES[f"exec.{base}_{scenario}"] = source
 
@@ -352,13 +352,13 @@ AGENT_KEY_ALIASES: dict[str, str] = {
 }
 
 LEGACY_V2_ALIASES: dict[str, str] = {
-    "exec.e_mvp_capacity": "exec.furniture_only_capacity",
-    "exec.e_mvp_cost": "exec.furniture_only_capex",
-    "exec.f_mvp_ready": "exec.furniture_only_open_date",
+    "exec.e_mvp_capacity": "exec.fastest_open_capacity",
+    "exec.e_mvp_cost": "exec.fastest_open_capex",
+    "exec.f_mvp_ready": "exec.fastest_open_open_date",
     "exec.e_max_capacity_capacity": "exec.max_capacity_capacity",
     "exec.e_max_capacity_cost": "exec.max_capacity_capex",
     "exec.f_max_capacity_ready": "exec.max_capacity_open_date",
-    "exec.f_ready_mm_yy": "exec.furniture_only_open_date",
+    "exec.f_ready_mm_yy": "exec.fastest_open_open_date",
     "e_ideal_capacity": "exec.max_capacity_capacity",
     "e_ideal_cost": "exec.max_capacity_capex",
     "f_ideal_ready": "exec.max_capacity_open_date",
@@ -372,22 +372,24 @@ LEGACY_V2_ALIASES: dict[str, str] = {
 }
 
 for base in COST_TOKEN_BASES:
-    LEGACY_V2_ALIASES[f"exec.{base}_mvp"] = f"exec.{base}_furniture_only"
+    LEGACY_V2_ALIASES[f"exec.{base}_mvp"] = f"exec.{base}_fastest_open"
 
-# 2026-04 rename: "fastest_open" was renamed to "furniture_only". Old reports
-# and any in-flight RayCon payloads that still emit the old key are mapped to
-# the new canonical names here so historical data and external integrations
-# continue to work without coordinated cutover.
-FASTEST_OPEN_LEGACY_ALIASES: dict[str, str] = {
-    "exec.fastest_open_capacity": "exec.furniture_only_capacity",
-    "exec.fastest_open_capex": "exec.furniture_only_capex",
-    "exec.fastest_open_open_date": "exec.furniture_only_open_date",
+# 2026-04: the canonical scenario key is "fastest_open", aligning with the
+# upstream pipeline (alpha-dd-pipeline). PR A briefly renamed it to
+# "furniture_only"; this block keeps any reports or RayCon payloads that were
+# emitted with that interim name working, mapping them back to the canonical
+# fastest_open_* names. Safe to remove once we're confident no in-flight data
+# uses furniture_only_* (~30 days after the rollback ships).
+FURNITURE_ONLY_INTERIM_ALIASES: dict[str, str] = {
+    "exec.furniture_only_capacity": "exec.fastest_open_capacity",
+    "exec.furniture_only_capex": "exec.fastest_open_capex",
+    "exec.furniture_only_open_date": "exec.fastest_open_open_date",
 }
 for base in COST_TOKEN_BASES:
-    FASTEST_OPEN_LEGACY_ALIASES[f"exec.{base}_fastest_open"] = (
-        f"exec.{base}_furniture_only"
+    FURNITURE_ONLY_INTERIM_ALIASES[f"exec.{base}_furniture_only"] = (
+        f"exec.{base}_fastest_open"
     )
-LEGACY_V2_ALIASES.update(FASTEST_OPEN_LEGACY_ALIASES)
+LEGACY_V2_ALIASES.update(FURNITURE_ONLY_INTERIM_ALIASES)
 
 AGENT_KEY_ALIASES.update(LEGACY_V2_ALIASES)
 
@@ -490,9 +492,9 @@ def normalize_viable_buildout(value: str) -> str | None:
     """Normalize the direct buildout answer to the allowed labels."""
     cleaned = value.strip().rstrip(".,;:?!").lower()
     mapping = {
-        "furniture only": "Furniture Only",
-        "fastest": "Furniture Only",
-        "fastest open": "Furniture Only",  # legacy label, pre-2026-04 rename
+        "furniture only": "Fastest Open",
+        "fastest": "Fastest Open",
+        "fastest open": "Fastest Open",  # legacy label, pre-2026-04 rename
         "max capacity": "Max Capacity",
         "maximum capacity": "Max Capacity",
         "none": "None",
@@ -561,10 +563,10 @@ def normalize_report_data(
     _normalize_optional_field(flat, token_sources, "exec.alpha_fit", normalize_alpha_fit)
     _normalize_optional_field(flat, token_sources, "exec.c_answer", normalize_can_we_answer)
 
-    # Deterministic override: compute Yes/No from furniture_only_open_date vs school year deadlines.
+    # Deterministic override: compute Yes/No from fastest_open_open_date vs school year deadlines.
     # If the date is parseable it always overrides the agent's answer.
     # If unparseable, the agent's normalized answer (or absence) stands.
-    fastest_date_str = flat.get("exec.furniture_only_open_date")
+    fastest_date_str = flat.get("exec.fastest_open_open_date")
     if isinstance(fastest_date_str, str):
         parsed_date = parse_open_date(fastest_date_str)
         if parsed_date is not None:
@@ -573,7 +575,7 @@ def normalize_report_data(
             token_sources["exec.c_answer"] = "computed:date_comparison"
         else:
             logger.warning(
-                "Could not parse furniture_only_open_date %r; keeping agent c_answer",
+                "Could not parse fastest_open_open_date %r; keeping agent c_answer",
                 fastest_date_str,
             )
 

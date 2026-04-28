@@ -144,7 +144,7 @@ def _full_replacements() -> dict[str, str]:
         "exec.c_zoning": "Permitted",
         "exec.c_permit_timeline": "8-10 weeks",
         "exec.c_construction_timeline": "12 weeks",
-        "exec.direct_viable_buildout": "Furniture Only",
+        "exec.direct_viable_buildout": "Fastest Open",
         "exec.alpha_fit": "Yes",
         "exec.acquisition_conditions": (
             "Condition lease on permit approval by June 15.\n"
@@ -163,12 +163,12 @@ def _full_replacements() -> dict[str, str]:
         "sources.opening_plan_link": "https://drive.google.com/op",
         "sources.trace_link": "https://drive.google.com/trace.json",
     }
-    for scenario in ("furniture_only", "max_capacity"):
+    for scenario in ("fastest_open", "max_capacity"):
         data[f"exec.{scenario}_capacity"] = "180"
         data[f"exec.{scenario}_open_date"] = "08/12/26"
         data[f"exec.{scenario}_capex"] = "$1.2M"
-    data["exec.cost_demolition_furniture_only"] = "$50k"
-    data["exec.cost_grand_total_furniture_only"] = "$1,200,000"
+    data["exec.cost_demolition_fastest_open"] = "$50k"
+    data["exec.cost_grand_total_fastest_open"] = "$1,200,000"
     return data
 
 
@@ -189,7 +189,7 @@ class TestFromReplacements:
         assert record.prepared_by == "Greg Foote"
         assert record.report_date == "04/22/26"
         assert record.can_we_open == "Yes see notes"
-        assert record.direct_viable_buildout == "Furniture Only"
+        assert record.direct_viable_buildout == "Fastest Open"
         assert record.alpha_fit == "Yes"
         assert record.classification.label == "yes_if"
         assert any(
@@ -207,9 +207,9 @@ class TestFromReplacements:
             drive_folder_url="",
             dd_report_url="",
         )
-        assert set(record.scenarios.keys()) == {"furniture_only", "max_capacity"}
-        assert record.scenarios["furniture_only"].capacity == "180"
-        assert record.scenarios["furniture_only"].costs["cost_grand_total"] == "$1,200,000"
+        assert set(record.scenarios.keys()) == {"fastest_open", "max_capacity"}
+        assert record.scenarios["fastest_open"].capacity == "180"
+        assert record.scenarios["fastest_open"].costs["cost_grand_total"] == "$1,200,000"
         assert record.scenarios["max_capacity"].capacity == "180"
 
     def test_sources_wired(self) -> None:
@@ -259,7 +259,7 @@ class TestFromReplacements:
         assert reloaded["slug"] == "palm-beach-gardens"
         assert reloaded["classification"]["label"] == "yes_if"
         assert reloaded["rebl"]["site_id"] == "palm-beach-gardens-fl"
-        assert reloaded["scenarios"]["furniture_only"]["capacity"] == "180"
+        assert reloaded["scenarios"]["fastest_open"]["capacity"] == "180"
         assert reloaded["sources"]["block_plan"] == "https://drive.google.com/block-plan"
 
     def test_missing_fields_default_to_empty(self) -> None:
@@ -274,8 +274,8 @@ class TestFromReplacements:
         assert record.marketing_name == ""
         assert record.sources.sir == ""
         assert record.classification.label == "yes"
-        assert set(record.scenarios.keys()) == {"furniture_only", "max_capacity"}
-        assert record.scenarios["furniture_only"].capacity == ""
+        assert set(record.scenarios.keys()) == {"fastest_open", "max_capacity"}
+        assert record.scenarios["fastest_open"].capacity == ""
 
     def test_slug_suffix_for_disambiguation(self) -> None:
         record = SiteRecord.from_replacements(

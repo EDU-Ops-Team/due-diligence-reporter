@@ -3,7 +3,7 @@ Return a single JSON object:
 ```json
 {
   "block_plan_summary": "Short factual summary",
-  "furniture_only": {
+  "fastest_open": {
     "capacity_students": 36,
     "classroom_count": 4
   },
