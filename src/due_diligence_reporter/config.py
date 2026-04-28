@@ -210,13 +210,16 @@ class Settings(BaseSettings):
     #                                              # in Delivered-To, not
     #                                              # rendered in To/Cc the way
     #                                              # the API matcher expects).
-    #   v4 (current): in:inbox + has:attachment + filename:(pdf OR docx) +
-    #                 negative-category exclusions. Since the scanner runs AS
-    #                 the receiving mailbox, in:inbox is sufficient and reliable.
-    #                 Also expanded filename to include docx -- many SIRs are
-    #                 delivered as Word documents, which were previously invisible.
+    #   v4: in:inbox + filename:(pdf OR docx) + negative-category exclusions.
+    #       Worked for discovery, but the downstream attachment processor only
+    #       handles PDF, so the docx matches surfaced as 10 errors. Reverted
+    #       to pdf-only here; docx support is a separate follow-up that needs
+    #       to touch the classifier, drive uploader, and reporter.
+    #   v5 (current): in:inbox + filename:pdf + negative-category exclusions.
+    #                 Since the scanner runs AS the recipient mailbox,
+    #                 in:inbox is sufficient and reliable for Group-routed mail.
     inbox_scan_query: str = Field(
-        "in:inbox has:attachment filename:(pdf OR docx) "
+        "in:inbox has:attachment filename:pdf "
         "-category:promotions -category:social",
         description=(
             "Gmail search query for incoming DD documents. Scanner is authed "

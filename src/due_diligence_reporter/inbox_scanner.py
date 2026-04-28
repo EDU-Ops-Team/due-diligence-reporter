@@ -63,10 +63,24 @@ class EmailMetadata:
 
     message_id: str
     subject: str
-    sender: str
+    sender: str  # raw From: header (for display/logging)
     body_snippet: str
     label_ids: list[str]
     attachments: list[dict[str, Any]]  # [{filename, attachment_id?, body_data?, mime_type}]
+    # X-Original-Sender header set by Google Groups when an email is rerouted
+    # through a group. Holds the actual external sender's address. Empty when
+    # the email did not pass through a Google Group.
+    original_sender: str = ""
+
+    @property
+    def effective_sender(self) -> str:
+        """Return the address that should be used for internal/external
+        classification. Prefers X-Original-Sender when set, since Google
+        Groups rewrite the visible From: to the group's domain (e.g.
+        auth.permitting@trilogy.com), which would falsely classify
+        external CDS / regulator / vendor mail as internal.
+        """
+        return self.original_sender.strip() or self.sender
 
 
 @dataclass
@@ -416,11 +430,16 @@ def process_email(
 
     existing_label_ids = metadata.label_ids if isinstance(metadata.label_ids, list) else []
 
-    if _is_internal_sender(metadata.sender, settings):
+    # Use the effective sender for internal/external classification so that
+    # Google-Group-routed mail (where the visible From: is the group address
+    # but X-Original-Sender holds the real external sender) is not falsely
+    # classified as internal. See EmailMetadata.effective_sender.
+    if _is_internal_sender(metadata.effective_sender, settings):
         logger.info(
-            "Skipping internal sender '%s' (subject: '%s') - "
+            "Skipping internal sender '%s' [effective='%s'] (subject: '%s') - "
             "would create false readiness if filed",
             metadata.sender,
+            metadata.effective_sender,
             metadata.subject,
         )
         if not dry_run:
@@ -782,11 +801,15 @@ def _extract_email_metadata(gc: GoogleClient, message_id: str) -> EmailMetadata:
     header_map: dict[str, str] = {}
     for h in headers:
         name = h.get("name", "").lower()
-        if name in ("subject", "from", "to"):
+        # Capture all headers we care about for sender classification.
+        # X-Original-Sender is set by Google Groups when mail is rerouted
+        # through a group; it preserves the actual external sender.
+        if name in ("subject", "from", "to", "x-original-sender"):
             header_map[name] = h.get("value", "")
 
     subject = header_map.get("subject", "")
     sender = header_map.get("from", "")
+    original_sender = header_map.get("x-original-sender", "")
     snippet = message.get("snippet", "")
 
     # Walk MIME parts to find PDF attachments
@@ -800,6 +823,7 @@ def _extract_email_metadata(gc: GoogleClient, message_id: str) -> EmailMetadata:
         body_snippet=snippet,
         label_ids=list(message.get("labelIds", [])),
         attachments=attachments,
+        original_sender=original_sender,
     )
 
 
