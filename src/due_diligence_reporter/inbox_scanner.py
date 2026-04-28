@@ -18,6 +18,7 @@ from typing import Any
 
 from .classifier import classify_document
 from .config import Settings
+from .dashboard_readiness import edits_from_uploads, mark_readiness_complete
 from .google_client import GoogleClient
 from .utils import (
     build_site_match_terms,
@@ -410,6 +411,19 @@ def scan_inbox(
         except Exception as e:
             logger.error("Failed to process email %s: %s", message_id, e)
             results["errors"].append({"message_id": message_id, "error": str(e)})
+
+    # Flip Portfolio doc-readiness columns for any docs we just filed. The
+    # dashboard's auto-readiness endpoint is one-way (Pending -> Complete) and
+    # never overwrites manual overrides, so this is safe to call on every run.
+    # Silent-fail: failures here must never block the scan summary.
+    if not dry_run:
+        readiness_edits = edits_from_uploads(results.get("uploads", []))
+        if readiness_edits:
+            readiness_result = mark_readiness_complete(readiness_edits)
+            results["readiness_flips_applied"] = readiness_result.get("applied", 0)
+            results["readiness_flips_attempted"] = len(readiness_edits)
+            if not readiness_result.get("ok"):
+                results["readiness_error"] = readiness_result.get("reason")
 
     logger.info(
         "Inbox scan complete: %d uploaded, %d skipped, %d internal, %d errors",
