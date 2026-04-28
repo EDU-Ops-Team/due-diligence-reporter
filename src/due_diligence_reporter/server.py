@@ -643,7 +643,7 @@ def _build_raycon_request_payload(
                 "role": "user",
                 "content": (
                     "Calculate two deterministic school conversion scenarios for this space: "
-                    "Furniture Only and Max Capacity scenarios. "
+                    "Fastest Open and Max Capacity scenarios. "
                     "Return structured estimate cards and cost breakdowns for both."
                 ),
             }
@@ -2075,7 +2075,7 @@ def _build_capacity_brainlift_prompt(
         "=" * 60,
         json.dumps({
             "block_plan_summary": "short plain-English summary",
-            "furniture_only": {
+            "fastest_open": {
                 "capacity_students": 36,
                 "classroom_count": 4,
             },
@@ -2102,7 +2102,7 @@ async def apply_capacity_brainlift_skill(
     drive_folder_url: str = "",
     block_plan_url: str = "",
 ) -> dict[str, Any]:
-    """Generate structured Furniture Only and Max Capacity inputs from a Block Plan."""
+    """Generate structured Fastest Open and Max Capacity inputs from a Block Plan."""
     logger.info("Tool called: apply_capacity_brainlift_skill - site=%s", site_name)
 
     if not site_name or not site_address or not block_plan_content or total_building_sf <= 0:
@@ -2161,11 +2161,11 @@ async def apply_capacity_brainlift_skill(
                 "message": str(e),
             }
 
-        furniture_only = parsed.get("furniture_only", {})
+        fastest_open = parsed.get("fastest_open", {})
         max_capacity = parsed.get("max_capacity", {})
         raycon_rooms = _normalize_capacity_brainlift_rooms(parsed.get("raycon_rooms"))
         fastest_capacity = _normalize_capacity_students(
-            furniture_only.get("capacity_students") if isinstance(furniture_only, dict) else None
+            fastest_open.get("capacity_students") if isinstance(fastest_open, dict) else None
         )
         max_capacity_students = _normalize_capacity_students(
             max_capacity.get("capacity_students") if isinstance(max_capacity, dict) else None
@@ -2179,16 +2179,16 @@ async def apply_capacity_brainlift_skill(
             "total_building_sf": total_building_sf,
             "block_plan_url": block_plan_url,
             "block_plan_summary": str(parsed.get("block_plan_summary", "")).strip(),
-            "furniture_only": furniture_only if isinstance(furniture_only, dict) else {},
+            "fastest_open": fastest_open if isinstance(fastest_open, dict) else {},
             "max_capacity": max_capacity if isinstance(max_capacity, dict) else {},
             "raycon_rooms": raycon_rooms,
             "assumptions": assumptions if isinstance(assumptions, list) else [],
             "report_data_fields": {
-                "exec.furniture_only_capacity": fastest_capacity,
+                "exec.fastest_open_capacity": fastest_capacity,
                 "exec.max_capacity_capacity": max_capacity_students,
             },
             "message": (
-                f"Capacity Brainlift extracted Furniture Only capacity {fastest_capacity} and "
+                f"Capacity Brainlift extracted Fastest Open capacity {fastest_capacity} and "
                 f"Max Capacity {max_capacity_students} for {site_name}."
             ),
         }
@@ -2742,7 +2742,7 @@ async def get_cost_estimate(
     inspection_summary: str = "",
     sir_summary: str = "",
 ) -> dict[str, Any]:
-    """Estimate Furniture Only and Max Capacity costs for a school conversion using RayCon."""
+    """Estimate Fastest Open and Max Capacity costs for a school conversion using RayCon."""
     logger.info(
         "Tool called: get_cost_estimate - total_sf=%d, region=%s, rooms_provided=%s",
         total_building_sf,
@@ -2801,16 +2801,16 @@ async def get_cost_estimate(
 
         report_fields: dict[str, str] = {}
         if mvp_data:
-            report_fields["exec.furniture_only_capex"] = _format_currency(mvp_data.get("grandTotal"))
-            report_fields["exec.furniture_only_open_date"] = _weeks_to_open_date(
+            report_fields["exec.fastest_open_capex"] = _format_currency(mvp_data.get("grandTotal"))
+            report_fields["exec.fastest_open_open_date"] = _weeks_to_open_date(
                 _extract_raycon_timeline_weeks(mvp_data)
             )
-            report_fields.update(_build_breakdown_fields("furniture_only", mvp_data))
+            report_fields.update(_build_breakdown_fields("fastest_open", mvp_data))
         else:
-            logger.warning("RayCon did not return Furniture Only scenario; blanking Furniture Only cost fields")
-            report_fields["exec.furniture_only_capex"] = ""
-            report_fields["exec.furniture_only_open_date"] = ""
-            report_fields.update(_blank_breakdown_fields("furniture_only"))
+            logger.warning("RayCon did not return Fastest Open scenario; blanking Fastest Open cost fields")
+            report_fields["exec.fastest_open_capex"] = ""
+            report_fields["exec.fastest_open_open_date"] = ""
+            report_fields.update(_blank_breakdown_fields("fastest_open"))
         if max_capacity_data:
             report_fields["exec.max_capacity_capex"] = _format_currency(max_capacity_data.get("grandTotal"))
             report_fields["exec.max_capacity_open_date"] = _weeks_to_open_date(
@@ -2825,7 +2825,7 @@ async def get_cost_estimate(
 
         scenario_parts = []
         if mvp_data:
-            scenario_parts.append(f"Furniture Only at {_format_currency(mvp_data.get('grandTotal'))}")
+            scenario_parts.append(f"Fastest Open at {_format_currency(mvp_data.get('grandTotal'))}")
         if max_capacity_data:
             scenario_parts.append(f"Max Capacity at {_format_currency(max_capacity_data.get('grandTotal'))}")
 
@@ -2836,13 +2836,13 @@ async def get_cost_estimate(
             "rooms_used": rooms_note,
             "room_count": len(room_list),
             "cost_summary": {
-                "furniture_only": _format_currency(mvp_data.get("grandTotal")) if mvp_data else None,
+                "fastest_open": _format_currency(mvp_data.get("grandTotal")) if mvp_data else None,
                 "max_capacity": _format_currency(max_capacity_data.get("grandTotal")) if max_capacity_data else None,
             },
             "timeline_summary": {
-                "furniture_only_weeks": _extract_raycon_timeline_weeks(mvp_data) if mvp_data else None,
+                "fastest_open_weeks": _extract_raycon_timeline_weeks(mvp_data) if mvp_data else None,
                 "max_capacity_weeks": _extract_raycon_timeline_weeks(max_capacity_data) if max_capacity_data else None,
-                "furniture_only_open_date": report_fields.get("exec.furniture_only_open_date"),
+                "fastest_open_open_date": report_fields.get("exec.fastest_open_open_date"),
                 "max_capacity_open_date": report_fields.get("exec.max_capacity_open_date"),
             },
             "raycon_estimate_cards": raycon_data.get("estimate_cards", {}),
@@ -2876,7 +2876,7 @@ def _normalize_report_replacements(
         normalized_answer = normalize_can_we_answer(replacements["exec.c_answer"])
         if normalized_answer is not None:
             replacements["exec.c_answer"] = normalized_answer
-    _fill_furniture_only_placeholders(replacements)
+    _fill_fastest_open_placeholders(replacements)
     _fill_max_capacity_placeholders(replacements)
 
     replacements.setdefault("meta.drive_folder_url", drive_folder_url)
@@ -3023,11 +3023,11 @@ def _fill_scenario_placeholders(
             replacements[token] = label
 
 
-def _fill_furniture_only_placeholders(replacements: dict[str, str]) -> None:
+def _fill_fastest_open_placeholders(replacements: dict[str, str]) -> None:
     _fill_scenario_placeholders(
         replacements,
-        scenario="furniture_only",
-        label="[Not found - Furniture Only scenario not extracted]",
+        scenario="fastest_open",
+        label="[Not found - Fastest Open scenario not extracted]",
     )
 
 

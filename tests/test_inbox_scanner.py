@@ -657,10 +657,10 @@ class TestBlockPlanDownstream:
             "status": "success",
             "block_plan_summary": "Plan summary",
             "raycon_rooms": [{"type": "learningroom", "sqft": 650, "name": "Classroom 1"}],
-            "furniture_only": {"classroom_count": 4},
+            "fastest_open": {"classroom_count": 4},
             "max_capacity": {"classroom_count": 6},
             "report_data_fields": {
-                "exec.furniture_only_capacity": "36",
+                "exec.fastest_open_capacity": "36",
                 "exec.max_capacity_capacity": "54",
             },
             "doc_url": "https://docs.google.com/document/d/cap",
@@ -668,7 +668,7 @@ class TestBlockPlanDownstream:
         mock_raycon.return_value = {
             "status": "success",
             "report_data_fields": {
-                "exec.furniture_only_capex": "$100,000",
+                "exec.fastest_open_capex": "$100,000",
                 "exec.max_capacity_capex": "$200,000",
             },
         }

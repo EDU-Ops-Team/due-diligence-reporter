@@ -231,7 +231,7 @@ def _run_block_plan_downstream(
 
     raycon_rooms = capacity_result.get("raycon_rooms", [])
     classroom_counts = []
-    for scenario_key in ("furniture_only", "max_capacity"):
+    for scenario_key in ("fastest_open", "max_capacity"):
         scenario = capacity_result.get(scenario_key, {})
         if isinstance(scenario, dict):
             count = scenario.get("classroom_count")
