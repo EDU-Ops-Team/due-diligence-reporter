@@ -69,6 +69,7 @@ jobs:
           BUILDING_INSPECTION_FOLDER_ID: ${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}
           SHOVELS_API_KEY: ${{ secrets.SHOVELS_API_KEY }}
           DASHBOARD_PUBLISH_SECRET: ${{ secrets.DASHBOARD_PUBLISH_SECRET }}
+          INBOX_SCANNER_TOKEN: ${{ secrets.INBOX_SCANNER_TOKEN }}
         run: |
           touch .env
           echo "WRIKE_ACCESS_TOKEN=${WRIKE_ACCESS_TOKEN}" >> .env
@@ -92,6 +93,7 @@ jobs:
           # Without this the report pipeline silently skips the dashboard write
           # (see dashboard_publisher.publish_to_dashboard early-return).
           echo "DASHBOARD_PUBLISH_SECRET=${DASHBOARD_PUBLISH_SECRET}" >> .env
+          echo "INBOX_SCANNER_TOKEN=${INBOX_SCANNER_TOKEN}" >> .env
           echo "Created .env file"
 
       - name: Write Google OAuth client secrets
