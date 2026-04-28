@@ -188,8 +188,14 @@ class Settings(BaseSettings):
     )
 
     # Inbox Scanner
+    # NOTE: include category:{primary forums updates} so emails routed via
+    # Google Groups (e.g. auth.permitting@trilogy.com) — which Gmail tags
+    # CATEGORY_FORUMS — are not silently excluded by the default search.
+    # See: https://support.google.com/mail/answer/3094499 (category: operator).
     inbox_scan_query: str = Field(
-        "{to:edu.ops@trilogy.com cc:edu.ops@trilogy.com} has:attachment filename:pdf",
+        "{to:edu.ops@trilogy.com cc:edu.ops@trilogy.com} "
+        "has:attachment filename:pdf "
+        "category:{primary forums updates}",
         description="Gmail search query for incoming DD documents (to or cc)",
     )
     inbox_internal_sender_domains: str = Field(
