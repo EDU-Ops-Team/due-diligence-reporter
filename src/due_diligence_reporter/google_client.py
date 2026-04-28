@@ -577,6 +577,19 @@ class GoogleClient:
         """
         logger.info("Gmail search: %s (max %d)", query, max_results)
 
+        # Diagnostic: log authenticated identity so we can debug identity-vs-query issues.
+        try:
+            profile = _google_api_execute(
+                self.gmail_service.users().getProfile(userId="me")
+            )
+            logger.info(
+                "Gmail search auth identity: emailAddress=%s messagesTotal=%s",
+                profile.get("emailAddress"),
+                profile.get("messagesTotal"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not fetch Gmail profile for diagnostics: %s", exc)
+
         try:
             messages: list[dict[str, Any]] = []
             page_token: str | None = None
