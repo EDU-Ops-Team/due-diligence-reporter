@@ -84,8 +84,24 @@ logger = logging.getLogger("sync_site_roster")
 _DEFAULT_BASE_URL = "https://dd-dashboard-three.vercel.app"
 
 
-def _existing_slugs() -> set[str]:
-    """Pull the live sites.json and return the set of slugs already on it."""
+def _existing_sites() -> dict[str, dict]:
+    """Pull the live sites.json and return a {slug: record} map.
+
+    Used to decide whether each Wrike site needs a stub publish. Two cases
+    qualify as "needs publishing":
+
+    1. Slug not in sites.json at all (brand new Wrike site).
+    2. Slug is a stub (dd_status == 'not_ready') that's missing
+       wrike_created_at. This happens to stubs created before the
+       dashboard transform learned to persist wrike_created_at
+       (pre-PR #20). Re-stubbing them populates the field without
+       running a full DD pipeline.
+
+    We deliberately do NOT republish real reports (dd_status != 'not_ready')
+    that are missing wrike_created_at — those carry pipeline-derived
+    content we don't want to clobber with empty report_data. Real reports
+    backfill via daily-dd-check.
+    """
     base = (
         os.environ.get("DASHBOARD_PUBLISH_URL") or _DEFAULT_BASE_URL
     ).rstrip("/")
@@ -99,13 +115,26 @@ def _existing_slugs() -> set[str]:
         # rows and clobber published_at on every existing site).
         raise SystemExit(1)
     data = resp.json()
-    slugs = {
-        s.get("slug")
-        for s in data.get("sites", [])
-        if isinstance(s, dict) and s.get("slug")
-    }
-    logger.info("Live sites.json carries %d slugs", len(slugs))
-    return slugs
+    out: dict[str, dict] = {}
+    for s in data.get("sites", []):
+        if isinstance(s, dict) and s.get("slug"):
+            out[s["slug"]] = s
+    logger.info("Live sites.json carries %d slugs", len(out))
+    return out
+
+
+def _needs_stub_publish(rec: dict | None) -> bool:
+    """True when an existing dashboard row should be re-stubbed.
+
+    Only a stub (dd_status == 'not_ready') with no wrike_created_at
+    qualifies. Anything else is left alone.
+    """
+    if not rec:
+        return True  # not on the dashboard at all
+    status = (rec.get("dd_status") or "").strip().lower()
+    if status != "not_ready":
+        return False
+    return not (rec.get("wrike_created_at") or "").strip()
 
 
 def _publish_stub(
@@ -139,7 +168,7 @@ def main(*, site_filter: str | None, dry_run: bool) -> int:
         )
         return 1
 
-    existing = _existing_slugs()
+    existing = _existing_sites()
 
     wrike_cfg = load_wrike_config()
     records = _get_all_site_records(cfg=wrike_cfg)
@@ -157,11 +186,14 @@ def main(*, site_filter: str | None, dry_run: bool) -> int:
         slug = slugify(title)
         if not slug:
             continue
-        if slug in existing:
+        if not _needs_stub_publish(existing.get(slug)):
             continue
         missing.append(rec)
 
-    logger.info("%d Wrike site(s) missing from the dashboard", len(missing))
+    logger.info(
+        "%d Wrike site(s) need a stub publish (missing or stub w/o wrike_created_at)",
+        len(missing),
+    )
     if not missing:
         return 0
 
