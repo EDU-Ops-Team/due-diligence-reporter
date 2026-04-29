@@ -16,7 +16,12 @@ from typing import Any
 
 import anthropic
 
-from .classifier import AI_GENERATED_DOC_TYPES, classify_document_type, match_file_to_site_llm
+from .classifier import (
+    AI_GENERATED_DOC_TYPES,
+    SOURCE_FOLDER_DOC_TYPES,
+    classify_document_type,
+    match_file_to_site_llm,
+)
 from .config import Settings, get_settings
 from .dashboard_publisher import publish_to_dashboard
 from .google_client import GoogleClient
@@ -400,29 +405,45 @@ def check_site_readiness_direct(
         site_title=site_title, site_address=site_address,
     )
 
-    # 2. Recursively list + classify files in the site's own folder (all subfolders)
+    # 2. Recursively list + classify files in the site's own folder (all subfolders).
+    # `max_depth=2` covers the per-site `M1` subfolder where the inbox scanner
+    # files net-new SIR/BI/ISP uploads, so we can pick those up alongside the
+    # AI-generated report artifacts saved at the site folder root.
     all_site_files = [
         {**f, "doc_type": classify_document_type(f.get("name", ""))}
         for f in gc.list_files_recursive(folder_id, max_depth=2)
     ]
-    ai_generated_site_files = [
-        f for f in all_site_files if f.get("doc_type") in AI_GENERATED_DOC_TYPES
+    keep_doc_types = AI_GENERATED_DOC_TYPES | SOURCE_FOLDER_DOC_TYPES
+    site_folder_files = [
+        f for f in all_site_files if f.get("doc_type") in keep_doc_types
     ]
 
-    # 3. Merge — source docs come only from shared folders; site folder only
-    # contributes AI-generated report artifacts.
+    # 3. Merge — site folder (incl. M1) wins over shared cache for SIR/ISP/BI
+    # so the freshly-uploaded copy in M1 takes precedence over any legacy
+    # match from the shared SIR/ISP/Building Inspection folders.
     files_by_type: dict[str, dict[str, Any] | None] = {
-        "sir": shared_docs.get("sir"),
-        "isp": shared_docs.get("isp"),
-        "building_inspection": shared_docs.get("building_inspection"),
+        "sir": None,
+        "isp": None,
+        "building_inspection": None,
         "dd_report": None,
         "e_occupancy_report": None,
         "school_approval_report": None,
     }
-    for f in ai_generated_site_files:
+    for f in site_folder_files:
         dt = f.get("doc_type", "unknown")
         if dt in files_by_type and files_by_type[dt] is None:
             files_by_type[dt] = f
+    # Fall back to shared-folder matches for any source doc type still missing.
+    for dt in ("sir", "isp", "building_inspection"):
+        if files_by_type[dt] is None:
+            files_by_type[dt] = shared_docs.get(dt)
+
+    # `all_files` historically held only the AI-generated artifacts (used by
+    # callers that surface report artifacts back to the dashboard). Preserve
+    # that contract — source docs are exposed via the per-type flags below.
+    ai_generated_site_files = [
+        f for f in site_folder_files if f.get("doc_type") in AI_GENERATED_DOC_TYPES
+    ]
 
     return {
         "sir_found": files_by_type["sir"] is not None,
