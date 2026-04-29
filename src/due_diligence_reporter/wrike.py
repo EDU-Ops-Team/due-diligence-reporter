@@ -194,6 +194,20 @@ def extract_address_from_record(record: dict[str, Any]) -> str | None:
     return None
 
 
+def extract_created_date_from_record(record: dict[str, Any]) -> str | None:
+    """Return the Wrike Site Record creation date as ISO 8601, or None.
+
+    Wrike's API exposes ``createdDate`` at the top level of every Folder/
+    Project record (e.g. ``"2025-09-12T18:04:21Z"``). We surface it raw so
+    callers can either render the full timestamp or slice the date prefix.
+    The dashboard's ``formatDateCreated`` accepts both shapes.
+    """
+    raw = record.get("createdDate")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
 def extract_school_type_from_record(record: dict[str, Any]) -> str | None:
     """Extract and normalise school_type from Wrike Site Record."""
     custom_fields = record.get("customFields", [])

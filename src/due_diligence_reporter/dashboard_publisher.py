@@ -144,6 +144,11 @@ def build_site_meta(
     rebl_url: str | None = None,
     report_date: date | None = None,
     site_owner: str | None = None,
+    # ISO 8601 timestamp from Wrike's Site Record `createdDate`. When set,
+    # the dashboard renders this in the "Date Created" column instead of
+    # `report_date`. The dashboard's `formatDateCreated` already prefers
+    # this field; the publisher just had to start sending it.
+    wrike_created_at: str | None = None,
     # --- Phase 1 DD provenance fields (Rhodes data dictionary, 4/24) ---
     # All optional. Pipeline auto-runs leave them blank for now; explicit
     # callers (backfill scripts, future MCP integrations, manual reruns)
@@ -216,6 +221,7 @@ def build_site_meta(
         "site_owner": (site_owner or "").strip(),
         "report_date": rd,
         "published_at": datetime.now(UTC).isoformat(),
+        "wrike_created_at": (wrike_created_at or "").strip(),
         "drive_folder_url": drive_folder_url or "",
         "dd_report_url": dd_report_url or "",
         "rebl": {
@@ -310,6 +316,10 @@ def publish_to_dashboard(
     rebl_url: str | None = None,
     report_date: date | None = None,
     site_owner: str | None = None,
+    # ISO 8601 timestamp from Wrike's Site Record `createdDate`. Pass-through
+    # to the dashboard so the Portfolio "Date Created" column reflects the
+    # site's birth date in Wrike rather than the report's birth date.
+    wrike_created_at: str | None = None,
     # Phase 1 DD provenance pass-through. See build_site_meta() for semantics.
     dd_author: str | None = None,
     dd_owner: str | None = None,
@@ -450,6 +460,10 @@ def publish_to_dashboard(
         rebl_url=rebl_url or str(report_data.get("sources.rebl_link") or ""),
         report_date=report_date,
         site_owner=site_owner,
+        wrike_created_at=wrike_created_at
+        or (
+            str(report_data.get("meta.wrike_created_at") or "").strip() or None
+        ),
         dd_author=dd_author,
         dd_owner=dd_owner,
         dd_version=dd_version,
