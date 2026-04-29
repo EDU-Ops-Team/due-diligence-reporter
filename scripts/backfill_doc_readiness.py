@@ -93,11 +93,30 @@ def _detect_doc_types_for_site(
 
     Uses the same matchers as the live scanner so behaviour is consistent.
     Detected types are a subset of ``DOC_TYPE_TO_FIELD`` keys.
-    """
-    found: list[str] = []
 
-    # SIR + Building Inspection live in shared Drive folders. We reuse the
-    # scanner's matcher for filename-then-LLM matching so we don't drift.
+    Detection order:
+      1. The site's own M1 subfolder — the canonical location going forward.
+         All four readiness doc_types (SIR, Building Inspection, Block Plan,
+         and ISP-as-needed) live here once the migration has run.
+      2. The legacy shared SIR / Building Inspection folders — still read so
+         that pre-migration state continues to flip Pending→Complete and the
+         endpoint's one-way guard makes re-runs harmless.
+    """
+    found: set[str] = set()
+
+    # 1) M1 subfolder (canonical post-migration location).
+    try:
+        if drive_folder_url:
+            m1_folder_id, _url = _resolve_m1_folder(gc, drive_folder_url)
+            if m1_folder_id:
+                m1_docs = _list_m1_documents_by_type(gc, m1_folder_id)
+                for dt in ("sir", "building_inspection", "block_plan"):
+                    if m1_docs.get(dt):
+                        found.add(dt)
+    except Exception as exc:
+        logger.warning("%s: M1 scan failed: %s", site_title, exc)
+
+    # 2) Legacy shared SIR / Building Inspection folders — fallback path.
     try:
         match_terms = build_site_match_terms(site_title, site_address)
         shared = _find_site_docs_in_shared_folders(
@@ -111,22 +130,12 @@ def _detect_doc_types_for_site(
         shared = {}
 
     if shared.get("sir"):
-        found.append("sir")
+        found.add("sir")
     if shared.get("building_inspection"):
-        found.append("building_inspection")
+        found.add("building_inspection")
 
-    # Block Plan lives in the site's own M1 subfolder.
-    try:
-        if drive_folder_url:
-            m1_folder_id, _url = _resolve_m1_folder(gc, drive_folder_url)
-            if m1_folder_id:
-                m1_docs = _list_m1_documents_by_type(gc, m1_folder_id)
-                if m1_docs.get("block_plan"):
-                    found.append("block_plan")
-    except Exception as exc:
-        logger.warning("%s: M1 scan failed: %s", site_title, exc)
-
-    return found
+    # Preserve a stable ordering for log output.
+    return [dt for dt in ("sir", "building_inspection", "block_plan") if dt in found]
 
 
 def _build_edits_for_site(

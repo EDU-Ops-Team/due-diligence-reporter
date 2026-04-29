@@ -127,37 +127,204 @@ class TestClassification:
             remove_labels=[],
         )
 
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
-    def test_upload_failure_is_returned_as_error(self, mock_extract, mock_classify):
+    def test_upload_failure_is_returned_as_error(
+        self, mock_extract, mock_classify, mock_resolve_m1, mock_build_summary
+    ):
         mock_extract.return_value = MagicMock(
             message_id="msg_3",
-            subject="SIR attached",
+            subject="Alpha Keller SIR",
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="",
-            attachments=[{"filename": "sir.pdf", "attachment_id": "a3", "mime_type": "application/pdf"}],
+            attachments=[{"filename": "Alpha Keller SIR.pdf", "attachment_id": "a3", "mime_type": "application/pdf"}],
         )
         mock_classify.return_value = ("sir", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
+        mock_build_summary.return_value = {
+            "title": "Alpha Keller",
+            "address": "123 Main St, Keller, TX 76248",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site123",
+        }
 
         gc = MagicMock()
         gc.file_exists_in_folder.return_value = False
         gc.gmail_get_attachment.return_value = b"pdf"
         gc.upload_file_to_folder.side_effect = RuntimeError("upload boom")
 
+        site_records = [{"id": "IESIR123", "title": "Alpha Keller", "customFields": []}]
+
         result = process_email(
             gc,
             "msg_3",
-            MagicMock(sir_folder_id="folder123"),
+            MagicMock(),
             "label_123",
             "review_123",
+            site_records=site_records,
         )
 
         assert result["marked"] is True
         assert len(result["uploaded"]) == 0
         assert len(result["errors"]) == 1
-        assert result["errors"][0]["filename"] == "sir.pdf"
+        assert result["errors"][0]["filename"] == "Alpha Keller SIR.pdf"
         assert result["errors"][0]["error"] == "upload boom"
+
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_sir_routes_to_m1_subfolder(
+        self, mock_extract, mock_classify, mock_resolve_m1, mock_build_summary
+    ):
+        """SIRs land in the matched site's M1 folder, not the legacy SIR folder."""
+        mock_extract.return_value = MagicMock(
+            message_id="msg_sir_m1",
+            subject="Alpha Keller SIR",
+            sender="test@example.com",
+            effective_sender="test@example.com",
+            body_snippet="",
+            attachments=[{"filename": "Alpha Keller SIR.pdf", "attachment_id": "sir1", "mime_type": "application/pdf"}],
+        )
+        mock_classify.return_value = ("sir", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
+        mock_build_summary.return_value = {
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site123",
+        }
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"pdf"
+        gc.upload_file_to_folder.return_value = {"id": "sir_id", "webViewLink": "https://drive.google.com/file/d/sir_id"}
+
+        site_records = [{"id": "IEKELLER", "title": "Alpha Keller", "customFields": []}]
+
+        result = process_email(
+            gc, "msg_sir_m1", MagicMock(), "label_123", "review_123",
+            site_records=site_records,
+        )
+
+        assert result["marked"] is True
+        assert len(result["uploaded"]) == 1
+        upload = result["uploaded"][0]
+        assert upload["doc_type"] == "sir"
+        assert upload["site_title"] == "Alpha Keller"
+        gc.upload_file_to_folder.assert_called_once_with(
+            folder_id="m1_folder_id",
+            file_name=upload["drive_filename"],
+            file_bytes=b"pdf",
+        )
+
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_building_inspection_routes_to_m1_subfolder(
+        self, mock_extract, mock_classify, mock_resolve_m1, mock_build_summary
+    ):
+        """Building Inspection PDFs land in M1, mirroring SIR/Block Plan routing."""
+        mock_extract.return_value = MagicMock(
+            message_id="msg_bi_m1",
+            subject="Building Inspection Report - Alpha Keller",
+            sender="test@example.com",
+            effective_sender="test@example.com",
+            body_snippet="",
+            attachments=[{"filename": "Alpha Keller Building Inspection Report.pdf", "attachment_id": "bi1", "mime_type": "application/pdf"}],
+        )
+        mock_classify.return_value = ("building_inspection", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
+        mock_build_summary.return_value = {
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site123",
+        }
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"pdf"
+        gc.upload_file_to_folder.return_value = {"id": "bi_id", "webViewLink": "https://drive.google.com/file/d/bi_id"}
+
+        site_records = [{"id": "IEKELLER", "title": "Alpha Keller", "customFields": []}]
+
+        result = process_email(
+            gc, "msg_bi_m1", MagicMock(), "label_123", "review_123",
+            site_records=site_records,
+        )
+
+        assert len(result["uploaded"]) == 1
+        gc.upload_file_to_folder.assert_called_once()
+        call_kwargs = gc.upload_file_to_folder.call_args.kwargs
+        assert call_kwargs["folder_id"] == "m1_folder_id"
+
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_unmatched_sir_goes_to_manual_review(self, mock_extract, mock_classify):
+        """With no Wrike match, SIR/BI/ISP follow the same review path as Block Plan.
+
+        This guards the uniform fallback: every supported doc type now needs
+        a matched site to know which M1 to upload into; without one, we leave
+        the email in review rather than dumping the file in a generic folder.
+        """
+        mock_extract.return_value = MagicMock(
+            message_id="msg_sir_unmatched",
+            subject="SIR for unknown site",
+            sender="test@example.com",
+            effective_sender="test@example.com",
+            body_snippet="",
+            attachments=[{"filename": "Random SIR.pdf", "attachment_id": "u1", "mime_type": "application/pdf"}],
+        )
+        mock_classify.return_value = ("sir", 0.95)
+
+        gc = MagicMock()
+        result = process_email(gc, "msg_sir_unmatched", MagicMock(), "label_123", "review_123")
+
+        assert result["uploaded"] == []
+        assert result["skipped"] == 1
+        assert result["marked"] is True
+        assert result["low_confidence"][0]["doc_type"] == "sir"
+        # The scanner must NOT have tried to upload anything when site is unmatched.
+        gc.upload_file_to_folder.assert_not_called()
+
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_sir_with_no_drive_folder_flags_review(
+        self, mock_extract, mock_classify, mock_resolve_m1, mock_build_summary
+    ):
+        """Matched site missing a Drive folder URL flags review, never falls back to a shared folder."""
+        mock_extract.return_value = MagicMock(
+            message_id="msg_no_drive",
+            subject="Alpha Keller SIR",
+            sender="test@example.com",
+            effective_sender="test@example.com",
+            body_snippet="",
+            attachments=[{"filename": "Alpha Keller SIR.pdf", "attachment_id": "nd1", "mime_type": "application/pdf"}],
+        )
+        mock_classify.return_value = ("sir", 0.95)
+        # Site exists in Wrike but has no drive_folder_url — the upstream gap
+        # we explicitly want surfaced rather than papered over.
+        mock_build_summary.return_value = {"title": "Alpha Keller", "drive_folder_url": ""}
+
+        gc = MagicMock()
+        site_records = [{"id": "IEKELLER", "title": "Alpha Keller", "customFields": []}]
+        result = process_email(
+            gc, "msg_no_drive", MagicMock(), "label_123", "review_123",
+            site_records=site_records,
+        )
+
+        assert result["uploaded"] == []
+        assert result["marked"] is True
+        assert any(
+            err.get("error") == "Matched site has no Google Drive folder URL"
+            for err in result["errors"]
+        )
+        mock_resolve_m1.assert_not_called()
+        gc.upload_file_to_folder.assert_not_called()
 
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
@@ -774,9 +941,13 @@ class TestEffectiveSender:
         assert len(result["uploaded"]) == 0
         assert result["marked"] is True  # mark so we don't re-scan it forever
 
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
-    def test_site_identity_is_attached_to_uploads(self, mock_extract, mock_classify):
+    def test_site_identity_is_attached_to_uploads(
+        self, mock_extract, mock_classify, mock_resolve_m1, mock_build_summary
+    ):
         mock_extract.return_value = MagicMock(
             message_id="msg_4",
             subject="Alpha Keller SIR",
@@ -786,19 +957,24 @@ class TestEffectiveSender:
             attachments=[{"filename": "Alpha Keller SIR.pdf", "attachment_id": "a4", "mime_type": "application/pdf"}],
         )
         mock_classify.return_value = ("sir", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
+        mock_build_summary.return_value = {
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site123",
+        }
 
         gc = MagicMock()
         gc.file_exists_in_folder.return_value = False
         gc.gmail_get_attachment.return_value = b"pdf"
         gc.upload_file_to_folder.return_value = {"id": "file123", "webViewLink": "https://drive/file123"}
 
-        settings = MagicMock(sir_folder_id="folder123")
         site_records = [{"id": "IEABCD123", "title": "Alpha Keller", "customFields": []}]
 
         result = process_email(
             gc,
             "msg_4",
-            settings,
+            MagicMock(),
             "label_123",
             "review_123",
             site_records=site_records,

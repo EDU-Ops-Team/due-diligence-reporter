@@ -178,8 +178,16 @@ class TestProcessEmailInternalSenderSkip:
         assert result["marked"] is False
         gc.gmail_modify_labels.assert_not_called()
 
-    def test_vendor_sender_proceeds_normally(self, settings):
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    def test_vendor_sender_proceeds_normally(self, mock_resolve_m1, mock_build_summary, settings):
         """Vendor email should NOT be short-circuited."""
+        mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
+        mock_build_summary.return_value = {
+            "title": "Boca Raton",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site123",
+        }
         gc = MagicMock()
         gc.gmail_get_message.return_value = {
             "payload": {
@@ -205,7 +213,7 @@ class TestProcessEmailInternalSenderSkip:
         result = process_email(
             gc, "msg002", settings,
             label_id="lbl1", review_label_id="rlbl1",
-            site_records=[{"title": "Boca Raton", "id": "w1"}],
+            site_records=[{"title": "Boca Raton", "id": "w1", "customFields": []}],
             dry_run=False,
         )
         assert result.get("internal_skipped") is not True
@@ -388,7 +396,9 @@ class TestServiceAccountAddresses:
 class TestScanInboxInternalCounter:
     """Verify internal_skipped is properly accumulated in scan_inbox results."""
 
-    def test_mixed_internal_and_vendor_emails(self):
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    def test_mixed_internal_and_vendor_emails(self, mock_resolve_m1, mock_build_summary):
         settings = Settings(
             inbox_internal_sender_domains="trilogy.com",
             inbox_internal_sender_addresses="",
@@ -440,7 +450,19 @@ class TestScanInboxInternalCounter:
         gc.gmail_get_attachment.return_value = b"%PDF-fake"
         gc.upload_file_to_folder.return_value = {"id": "f1", "webViewLink": "https://..."}
 
-        results = scan_inbox(gc, site_records=[], settings=settings, dry_run=False)
+        mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
+        mock_build_summary.return_value = {
+            "title": "Tampa",
+            "address": "",
+            "drive_folder_url": "https://drive.google.com/drive/folders/tampa",
+        }
+
+        results = scan_inbox(
+            gc,
+            site_records=[{"id": "WTAMPA", "title": "Tampa", "customFields": []}],
+            settings=settings,
+            dry_run=False,
+        )
 
         assert results["internal_skipped"] == 1
         assert results["attachments_uploaded"] == 1

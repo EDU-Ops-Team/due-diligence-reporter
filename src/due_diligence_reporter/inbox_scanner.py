@@ -42,12 +42,18 @@ AUTO_FILE_CONFIDENCE = 0.7
 # Doc types we handle (others are skipped silently)
 SUPPORTED_DOC_TYPES = {"sir", "building_inspection", "isp", "block_plan"}
 
-# Map doc_type to the Settings field name for the target folder ID
-DOC_TYPE_FOLDER_MAP = {
+# Legacy: doc_type -> Settings attr for the dedicated shared Drive folder.
+# As of the M1-routing change, the live scanner uploads all supported doc
+# types into the matched site's `M1` subfolder. This map is retained only
+# so the one-shot migration script (`scripts/copy_legacy_docs_to_m1.py`)
+# knows which shared folders to read from.
+LEGACY_DOC_TYPE_FOLDER_MAP = {
     "sir": "sir_folder_id",
     "building_inspection": "building_inspection_folder_id",
     "isp": "isp_folder_id",
 }
+# Backwards-compatibility alias (older imports/tests).
+DOC_TYPE_FOLDER_MAP = LEGACY_DOC_TYPE_FOLDER_MAP
 
 # Filename templates per doc_type
 DOC_TYPE_FILENAME_TEMPLATES = {
@@ -108,18 +114,46 @@ def _resolve_m1_folder(gc: GoogleClient, drive_folder_url: str) -> tuple[str | N
     return created.get("id"), created.get("webViewLink")
 
 
+# Doc types the scanner now persists into per-site M1 folders, plus the
+# downstream reports the Block Plan pipeline derives. `_list_m1_documents_by_type`
+# returns any of these keyed by doc_type so dedup, readiness backfill, and
+# the Block Plan rerun guard can all introspect a single source of truth.
+M1_RECOGNIZED_DOC_TYPES = {
+    "sir",
+    "building_inspection",
+    "isp",
+    "block_plan",
+    "capacity_brainlift_report",
+    "raycon_scenario_report",
+}
+
+
 def _list_m1_documents_by_type(
     gc: GoogleClient,
     folder_id: str,
 ) -> dict[str, dict[str, Any]]:
-    """Return recognized report files in an M1 folder keyed by doc_type."""
+    """Return recognized report files in an M1 folder keyed by doc_type.
+
+    When multiple files of the same doc_type exist (e.g. an older copy and a
+    newly uploaded one), the most recently modified one wins so callers see
+    the freshest version.
+    """
     files_by_type: dict[str, dict[str, Any]] = {}
     for file_info in gc.list_files_in_folder(folder_id):
         name = str(file_info.get("name", "")).strip()
         if not name:
             continue
         doc_type, _confidence = classify_document(name)
-        if doc_type in {"block_plan", "capacity_brainlift_report", "raycon_scenario_report"}:
+        if doc_type not in M1_RECOGNIZED_DOC_TYPES:
+            continue
+        existing = files_by_type.get(doc_type)
+        if existing is None:
+            files_by_type[doc_type] = file_info
+            continue
+        # Prefer the most recently modified file when duplicates exist.
+        prev_mtime = str(existing.get("modifiedTime") or "")
+        new_mtime = str(file_info.get("modifiedTime") or "")
+        if new_mtime > prev_mtime:
             files_by_type[doc_type] = file_info
     return files_by_type
 
@@ -540,8 +574,12 @@ def process_email(
             review_needed = True
             continue
 
-        if doc_type == "block_plan" and matched_record is None:
-            logger.warning("Block Plan '%s' could not be matched to a site", filename)
+        if matched_record is None:
+            logger.warning(
+                "%s '%s' could not be matched to a site - flagging for manual review",
+                doc_type,
+                filename,
+            )
             low_confidence.append({
                 "filename": filename,
                 "doc_type": doc_type,
@@ -554,56 +592,43 @@ def process_email(
             continue
 
         site_summary = build_site_summary(matched_record) if matched_record else {}
-        if doc_type == "block_plan":
-            drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
-            if not drive_folder_url:
-                errors.append({
-                    "message_id": message_id,
-                    "filename": filename,
-                    "doc_type": doc_type,
-                    "error": "Matched site has no Google Drive folder URL",
-                })
-                all_succeeded = False
-                review_needed = True
-                continue
-            try:
-                target_folder_id, _target_folder_url = _resolve_m1_folder(gc, drive_folder_url)
-            except Exception as e:
-                errors.append({
-                    "message_id": message_id,
-                    "filename": filename,
-                    "doc_type": doc_type,
-                    "error": f"Failed to resolve M1 folder: {e}",
-                })
-                all_succeeded = False
-                review_needed = True
-                continue
-            if not target_folder_id:
-                errors.append({
-                    "message_id": message_id,
-                    "filename": filename,
-                    "doc_type": doc_type,
-                    "error": "Could not resolve M1 folder ID",
-                })
-                all_succeeded = False
-                review_needed = True
-                continue
-        else:
-            folder_attr = DOC_TYPE_FOLDER_MAP.get(doc_type)
-            if not folder_attr:
-                skipped += 1
-                continue
-            target_folder_id = getattr(settings, folder_attr, "")
-            if not target_folder_id:
-                logger.error("No folder ID configured for %s", doc_type)
-                errors.append({
-                    "message_id": message_id,
-                    "filename": filename,
-                    "doc_type": doc_type,
-                    "error": f"No folder ID configured for {doc_type}",
-                })
-                all_succeeded = False
-                continue
+        # All supported doc types route to the matched site's M1 subfolder.
+        # The legacy shared-folder targets (sir_folder_id, building_inspection_folder_id,
+        # isp_folder_id) are no longer used by the live scanner — they remain
+        # configured only so the migration script can read from them.
+        drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
+        if not drive_folder_url:
+            errors.append({
+                "message_id": message_id,
+                "filename": filename,
+                "doc_type": doc_type,
+                "error": "Matched site has no Google Drive folder URL",
+            })
+            all_succeeded = False
+            review_needed = True
+            continue
+        try:
+            target_folder_id, _target_folder_url = _resolve_m1_folder(gc, drive_folder_url)
+        except Exception as e:
+            errors.append({
+                "message_id": message_id,
+                "filename": filename,
+                "doc_type": doc_type,
+                "error": f"Failed to resolve M1 folder: {e}",
+            })
+            all_succeeded = False
+            review_needed = True
+            continue
+        if not target_folder_id:
+            errors.append({
+                "message_id": message_id,
+                "filename": filename,
+                "doc_type": doc_type,
+                "error": "Could not resolve M1 folder ID",
+            })
+            all_succeeded = False
+            review_needed = True
+            continue
 
         drive_filename = (
             _generate_drive_filename(site_title, doc_type)
