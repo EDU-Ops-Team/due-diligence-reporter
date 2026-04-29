@@ -31,6 +31,7 @@ from .config import get_settings
 from .dashboard_publish import publish_site_record
 from .google_client import GoogleClient
 from .google_doc_builder import SOURCE_QUALITY_NOTES_KEY, build_dd_report_doc
+from .m1_lookup import _list_m1_documents_by_type, _resolve_m1_folder
 from .rebl import ReblResolution, resolve_address
 from .report_schema import (
     ALLOWED_CAN_WE_ANSWERS,
@@ -890,8 +891,14 @@ def _find_site_docs_in_shared_folders(
     *,
     site_title: str | None = None,
     site_address: str | None = None,
+    drive_folder_url: str | None = None,
 ) -> dict[str, dict[str, Any] | None]:
-    """Search the three shared Drive folders (SIR, ISP, Building Inspection) for docs matching a site.
+    """Look up SIR / ISP / Building Inspection docs for a site.
+
+    When *drive_folder_url* is provided, the per-site ``M1`` subfolder is
+    checked first — that's where the live inbox scanner now files net-new
+    SIR/BI/ISP uploads. Any doc types still missing fall back to the legacy
+    shared Drive folders (SIR / ISP / Building Inspection) using:
 
     **Pass 1** — substring match on filenames (free, instant).
     **Pass 2** — for any missing doc types, ask GPT-4o-mini to match unmatched
@@ -912,10 +919,43 @@ def _find_site_docs_in_shared_folders(
         "building_inspection": None,
     }
 
+    # Pass 0 — check the per-site M1 folder first when we know the site folder.
+    # Files freshly uploaded by the inbox scanner land here, so M1 wins over
+    # the legacy shared folders for the doc types it covers.
+    if drive_folder_url:
+        try:
+            m1_folder_id, _m1_url = _resolve_m1_folder(gc, drive_folder_url)
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve M1 folder for '%s' (%s): %s",
+                site_title or "",
+                drive_folder_url,
+                e,
+            )
+            m1_folder_id = None
+        if m1_folder_id:
+            try:
+                m1_docs = _list_m1_documents_by_type(gc, m1_folder_id)
+            except Exception as e:
+                logger.warning(
+                    "Failed to list M1 folder %s for '%s': %s",
+                    m1_folder_id,
+                    site_title or "",
+                    e,
+                )
+                m1_docs = {}
+            for doc_type in result:
+                m1_file = m1_docs.get(doc_type)
+                if m1_file is not None:
+                    result[doc_type] = {**m1_file, "doc_type": doc_type}
+
     # Keep track of all files per folder for the LLM fallback pass
     all_files_by_type: dict[str, list[dict[str, Any]]] = {}
 
     for doc_type, folder_id in folder_map.items():
+        if result.get(doc_type) is not None:
+            # Already found in M1; skip the shared-folder scan for this type.
+            continue
         if not folder_id:
             continue
         try:
@@ -1337,6 +1377,7 @@ async def list_drive_documents(
                 shared_docs = _find_site_docs_in_shared_folders(
                     gc, match_terms,
                     site_title=site_name.strip(), site_address=address,
+                    drive_folder_url=drive_folder_url,
                 )
                 for _, doc in shared_docs.items():
                     if doc is not None:
@@ -3540,6 +3581,7 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
             logger.info("Match terms for '%s': %s", site_title, match_terms)
             shared_docs = _find_site_docs_in_shared_folders(
                 gc, match_terms, site_title=site_title, site_address=address,
+                drive_folder_url=drive_folder_url,
             )
             site_reports = _list_ai_generated_site_reports(
                 gc.list_files_recursive(folder_id, max_depth=2)
