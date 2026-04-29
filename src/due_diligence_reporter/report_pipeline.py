@@ -1079,6 +1079,10 @@ def process_site_pipeline(
     # step. None means "don't override the dashboard's stored value".
     school_feasibility: str | None = None,
     timeline_confidence: str | None = None,
+    # ISO 8601 createdDate from the Wrike Site Record. Forwarded to the
+    # dashboard so the Portfolio "Date Created" column reflects when the
+    # site itself was added in Wrike, not when the DD report was generated.
+    wrike_created_at: str | None = None,
 ) -> PipelineResult:
     """Full single-site pipeline: readiness -> report generation -> completeness -> email.
 
@@ -1153,6 +1157,7 @@ def process_site_pipeline(
         p1_name=p1_name,
         school_feasibility=school_feasibility,
         timeline_confidence=timeline_confidence,
+        wrike_created_at=wrike_created_at,
     )
 
     return PipelineResult(
@@ -1178,6 +1183,7 @@ def _publish_to_dashboard_best_effort(
     # dd_status="complete" so it's not threaded through here.
     school_feasibility: str | None = None,
     timeline_confidence: str | None = None,
+    wrike_created_at: str | None = None,
 ) -> None:
     """Fire-and-forget dashboard publish. Never raises.
 
@@ -1210,6 +1216,7 @@ def _publish_to_dashboard_best_effort(
             site_owner=p1_name,
             school_feasibility=school_feasibility,
             timeline_confidence=timeline_confidence,
+            wrike_created_at=wrike_created_at,
         )
     except Exception as e:
         # publish_to_dashboard already swallows requests errors; this is a

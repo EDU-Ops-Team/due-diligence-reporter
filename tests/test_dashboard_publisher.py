@@ -10,6 +10,7 @@ from due_diligence_reporter.dashboard_publisher import (
     build_site_meta,
     publish_to_dashboard,
 )
+from due_diligence_reporter.wrike import extract_created_date_from_record
 
 
 class TestBuildSiteMeta:
@@ -92,6 +93,63 @@ class TestBuildSiteMeta:
             dd_report_length=0,
         )
         assert meta["dd_report_length"] == 0
+
+    def test_wrike_created_at_carried_through(self) -> None:
+        """wrike_created_at distinct from report_date — the dashboard's
+        Date Created column reads it instead of report_date so newly-
+        synced sites show the day they entered Wrike, not the day the
+        first DD report was published.
+        """
+        meta = build_site_meta(
+            "Austin",
+            address="123 Main St, Austin, TX",
+            wrike_created_at="2026-02-14T08:30:00Z",
+            report_date=date(2026, 4, 23),
+        )
+        assert meta["wrike_created_at"] == "2026-02-14T08:30:00Z"
+        assert meta["report_date"] == "2026-04-23"
+
+    def test_wrike_created_at_defaults_to_empty(self) -> None:
+        """Field is always present on the wire (so the dashboard schema
+        is stable) but defaults to an empty string when not provided.
+        """
+        meta = build_site_meta("Austin", address="123 Main St, Austin, TX")
+        assert meta["wrike_created_at"] == ""
+
+    def test_wrike_created_at_is_stripped(self) -> None:
+        meta = build_site_meta(
+            "Austin",
+            address="123 Main St, Austin, TX",
+            wrike_created_at="  2026-02-14T08:30:00Z  ",
+        )
+        assert meta["wrike_created_at"] == "2026-02-14T08:30:00Z"
+
+
+class TestExtractCreatedDateFromRecord:
+    """Wrike Folder/Project records carry createdDate at the top level.
+    The dashboard's Date Created column reads this through the
+    wrike_created_at meta field, so the extractor needs to be tolerant
+    of missing/empty/whitespace values without raising.
+    """
+
+    def test_returns_iso_string(self) -> None:
+        rec = {"id": "abc", "createdDate": "2025-09-12T18:04:21Z"}
+        assert extract_created_date_from_record(rec) == "2025-09-12T18:04:21Z"
+
+    def test_strips_whitespace(self) -> None:
+        rec = {"createdDate": "  2025-09-12T18:04:21Z  "}
+        assert extract_created_date_from_record(rec) == "2025-09-12T18:04:21Z"
+
+    def test_missing_returns_none(self) -> None:
+        assert extract_created_date_from_record({"id": "abc"}) is None
+
+    def test_empty_returns_none(self) -> None:
+        assert extract_created_date_from_record({"createdDate": ""}) is None
+        assert extract_created_date_from_record({"createdDate": "   "}) is None
+
+    def test_non_string_returns_none(self) -> None:
+        assert extract_created_date_from_record({"createdDate": 12345}) is None
+        assert extract_created_date_from_record({"createdDate": None}) is None
 
 
 class TestDeriveDDDates:

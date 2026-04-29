@@ -46,6 +46,7 @@ from due_diligence_reporter.wrike import (  # noqa: E402
     _get_active_status_ids,
     _get_all_site_records,
     extract_address_from_record,
+    extract_created_date_from_record,
     extract_google_folder_from_record,
     extract_p1_email_from_record,
     extract_p1_from_record,
@@ -127,6 +128,10 @@ def main(site_filter: str | None = None) -> None:
         # None when the field isn't populated on the Wrike record.
         school_feasibility = extract_school_feasibility_from_record(record)
         timeline_confidence = extract_timeline_confidence_from_record(record)
+        # When the site was first created in Wrike (NOT when the DD report
+        # was generated). Threaded all the way to the dashboard publish so
+        # the Portfolio "Date Created" column tracks the real birth date.
+        wrike_created_at = extract_created_date_from_record(record)
         logger.info("Checking site: %s (match terms: %s, p1: %s)", site_title, match_terms, p1_email)
 
         try:
@@ -136,6 +141,7 @@ def main(site_filter: str | None = None) -> None:
                 p1_email=p1_email, site_address=address, p1_name=p1_name,
                 school_feasibility=school_feasibility,
                 timeline_confidence=timeline_confidence,
+                wrike_created_at=wrike_created_at,
             )
         except Exception as e:
             logger.exception("Unexpected pipeline failure for '%s'", site_title)
