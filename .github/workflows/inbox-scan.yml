@@ -47,7 +47,7 @@ jobs:
           [ -n "${{ secrets.ISP_FOLDER_ID }}" ]              || { echo "ISP_FOLDER_ID missing"; exit 1; }
           [ -n "${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}" ] || { echo "BUILDING_INSPECTION_FOLDER_ID missing"; exit 1; }
           [ -n "${{ secrets.DASHBOARD_PUBLISH_SECRET }}" ]   || { echo "DASHBOARD_PUBLISH_SECRET missing"; exit 1; }
-          [ -n "${{ secrets.RAYCON_API_KEY }}" ]             || { echo "RAYCON_API_KEY missing"; exit 1; }
+          [ -n "${{ secrets.RAYCON_WEBHOOK_SECRET }}" ]     || { echo "RAYCON_WEBHOOK_SECRET missing (HMAC auth required by spec)"; exit 1; }
           echo "All required secrets are present"
 
       - name: Create .env file from secrets
@@ -71,6 +71,7 @@ jobs:
           SHOVELS_API_KEY: ${{ secrets.SHOVELS_API_KEY }}
           DASHBOARD_PUBLISH_SECRET: ${{ secrets.DASHBOARD_PUBLISH_SECRET }}
           INBOX_SCANNER_TOKEN: ${{ secrets.INBOX_SCANNER_TOKEN }}
+          RAYCON_WEBHOOK_SECRET: ${{ secrets.RAYCON_WEBHOOK_SECRET }}
           RAYCON_API_KEY: ${{ secrets.RAYCON_API_KEY }}
         run: |
           touch .env
@@ -96,6 +97,7 @@ jobs:
           # (see dashboard_publisher.publish_to_dashboard early-return).
           echo "DASHBOARD_PUBLISH_SECRET=${DASHBOARD_PUBLISH_SECRET}" >> .env
           echo "INBOX_SCANNER_TOKEN=${INBOX_SCANNER_TOKEN}" >> .env
+          echo "RAYCON_WEBHOOK_SECRET=${RAYCON_WEBHOOK_SECRET}" >> .env
           echo "RAYCON_API_KEY=${RAYCON_API_KEY}" >> .env
           echo "Created .env file"
 

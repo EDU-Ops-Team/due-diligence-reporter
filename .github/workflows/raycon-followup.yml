@@ -75,7 +75,6 @@ jobs:
           SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
           ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
           BUILDING_INSPECTION_FOLDER_ID: ${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}
-          RAYCON_API_KEY: ${{ secrets.RAYCON_API_KEY }}
         run: |
           touch .env
           echo "WRIKE_ACCESS_TOKEN=${WRIKE_ACCESS_TOKEN}" >> .env
@@ -86,7 +85,6 @@ jobs:
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
           echo "BUILDING_INSPECTION_FOLDER_ID=${BUILDING_INSPECTION_FOLDER_ID}" >> .env
-          echo "RAYCON_API_KEY=${RAYCON_API_KEY}" >> .env
           echo "Created .env file"
 
       - name: Write Google OAuth client secrets
@@ -135,18 +133,25 @@ jobs:
           "
 
       - name: Run RayCon follow-up
+        env:
+          # Pass workflow inputs through env vars so they reach the script
+          # as a single argv element each, never re-parsed by the shell.
+          INPUT_SITE: ${{ inputs.site }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_ALERT_AFTER_MINUTES: ${{ inputs.alert_after_minutes }}
         run: |
-          ARGS=""
-          if [ -n "${{ inputs.site }}" ]; then
-            ARGS="$ARGS --site \"${{ inputs.site }}\""
+          set -euo pipefail
+          ARGS=()
+          if [ -n "${INPUT_SITE:-}" ]; then
+            ARGS+=(--site "$INPUT_SITE")
           fi
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            ARGS="$ARGS --dry-run"
+          if [ "${INPUT_DRY_RUN:-}" = "true" ]; then
+            ARGS+=(--dry-run)
           fi
-          if [ -n "${{ inputs.alert_after_minutes }}" ]; then
-            ARGS="$ARGS --alert-after-minutes ${{ inputs.alert_after_minutes }}"
+          if [ -n "${INPUT_ALERT_AFTER_MINUTES:-}" ]; then
+            ARGS+=(--alert-after-minutes "$INPUT_ALERT_AFTER_MINUTES")
           fi
-          eval uv run python scripts/raycon_followup.py $ARGS
+          uv run python scripts/raycon_followup.py "${ARGS[@]}"
 
       - name: Done
         run: echo "RayCon follow-up completed"

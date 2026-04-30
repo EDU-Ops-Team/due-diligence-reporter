@@ -449,11 +449,15 @@ class TestAgentToolMerging:
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
     @patch("due_diligence_reporter.report_pipeline.anthropic.Anthropic")
-    def test_run_dd_report_agent_merges_cost_fields_and_stops_after_first_report(
+    def test_run_dd_report_agent_merges_skill_fields_and_stops_after_first_report(
         self,
         mock_anthropic,
         mock_route_tool_call_sync,
     ):
+        """Skill tool report_data_fields merge into create_dd_report; agent stops
+        after the first successful create_dd_report call (post-RayCon-cutover:
+        get_cost_estimate is no longer a production tool, so this exercises the
+        same merge path via apply_school_approval_skill instead)."""
         class FakeToolUse:
             def __init__(self, tool_id, name, tool_input):
                 self.type = "tool_use"
@@ -463,7 +467,11 @@ class TestAgentToolMerging:
 
         response = MagicMock()
         response.content = [
-            FakeToolUse("tool-1", "get_cost_estimate", {"total_building_sf": 1000}),
+            FakeToolUse(
+                "tool-1",
+                "apply_school_approval_skill",
+                {"site_name": "Alpha Keller", "address": "123 Main St"},
+            ),
             FakeToolUse(
                 "tool-2",
                 "create_dd_report",
@@ -491,8 +499,8 @@ class TestAgentToolMerging:
             {
                 "status": "success",
                 "report_data_fields": {
-                    "exec.max_capacity_capex": "$245,000",
-                    "exec.cost_demolition_max_capacity": "$5,200",
+                    "q2.school_approval_difficulty": "easy",
+                    "q2.school_approval_score": "9",
                 },
             },
             {
@@ -513,8 +521,8 @@ class TestAgentToolMerging:
         create_call = mock_route_tool_call_sync.call_args_list[1]
         create_input = create_call.args[1]
         assert create_input["report_data"]["exec.fastest_open_capacity"] == "25"
-        assert create_input["report_data"]["exec.max_capacity_capex"] == "$245,000"
-        assert create_input["report_data"]["exec.cost_demolition_max_capacity"] == "$5,200"
+        assert create_input["report_data"]["q2.school_approval_difficulty"] == "easy"
+        assert create_input["report_data"]["q2.school_approval_score"] == "9"
 
 
 class TestSourceReadAlerts:

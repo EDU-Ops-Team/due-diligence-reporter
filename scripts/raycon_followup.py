@@ -78,8 +78,61 @@ logger = logging.getLogger("raycon_followup")
 PUBLISHED_DOC_PREFIX = "RayCon Scenario Assessment"
 BLOCK_PLAN_FILENAME_HINTS = ("block plan", "block_plan", "blockplan")
 
+# Persisted map of {site_name: ISO8601 timestamp of last Chat alert}.
+# Prevents the 5-minute cron from spamming ~96 alerts/day for a stuck site.
+ALERT_DEDUP_PATH = _project_root / ".raycon_followup_alerts.json"
+ALERT_DEDUP_WINDOW = timedelta(hours=24)
+
 
 # ---------------------------------------------------------------------------
+
+
+def _load_alert_state(path: Path = ALERT_DEDUP_PATH) -> dict[str, str]:
+    """Load the {site_name: last_alert_iso} dedup map. Returns {} on any error."""
+    try:
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning("Failed to read alert dedup state at %s: %s", path, e)
+        return {}
+
+
+def _save_alert_state(state: dict[str, str], path: Path = ALERT_DEDUP_PATH) -> None:
+    """Persist the dedup map. Best-effort; logs but does not raise."""
+    try:
+        path.write_text(json.dumps(state, sort_keys=True, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning("Failed to write alert dedup state at %s: %s", path, e)
+
+
+def _filter_dedup_alerts(
+    alerts: list[dict[str, Any]],
+    state: dict[str, str],
+    *,
+    now: datetime | None = None,
+    window: timedelta = ALERT_DEDUP_WINDOW,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Drop alerts for sites alerted within ``window``. Return (fresh_alerts, updated_state).
+
+    The updated state records ``now`` as the last-alert time for every site we
+    are about to notify on, so the next run within the window is suppressed.
+    """
+    now = now or datetime.now(timezone.utc)
+    fresh: list[dict[str, Any]] = []
+    new_state = dict(state)
+    for row in alerts:
+        site = str(row.get("site", "")).strip()
+        if not site:
+            continue
+        last_iso = state.get(site)
+        last_dt = _parse_iso(last_iso) if last_iso else None
+        if last_dt is not None and (now - last_dt) < window:
+            continue
+        fresh.append(row)
+        new_state[site] = now.isoformat()
+    return fresh, new_state
 
 
 def _site_filter(site_summary: dict[str, Any], needle: str | None) -> bool:
@@ -256,10 +309,21 @@ def main(argv: list[str] | None = None) -> int:
     errors = [r for r in results if r.get("error")]
 
     if alerts and settings.google_chat_webhook_url:
-        lines = ["RayCon scenario follow-up: stuck sites"]
-        for row in alerts:
-            lines.append(f"- {row['site']}: {row['alert']}")
-        _post_chat(settings.google_chat_webhook_url, "\n".join(lines))
+        dedup_state = _load_alert_state()
+        fresh_alerts, new_state = _filter_dedup_alerts(alerts, dedup_state)
+        if fresh_alerts:
+            lines = ["RayCon scenario follow-up: stuck sites"]
+            for row in fresh_alerts:
+                lines.append(f"- {row['site']}: {row['alert']}")
+            _post_chat(settings.google_chat_webhook_url, "\n".join(lines))
+            _save_alert_state(new_state)
+        suppressed = len(alerts) - len(fresh_alerts)
+        if suppressed:
+            logger.info(
+                "Suppressed %d stuck-site alert(s) within %s dedup window",
+                suppressed,
+                ALERT_DEDUP_WINDOW,
+            )
 
     if errors and settings.google_chat_webhook_url:
         lines = ["RayCon scenario follow-up: errors"]

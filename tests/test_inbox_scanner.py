@@ -1048,16 +1048,19 @@ class TestBlockPlanDownstream:
     publishes the report Doc.
     """
 
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.raycon_client.post_raycon_job")
-    def test_pings_raycon_with_site_metadata_and_returns_request_record(
+    def test_pings_raycon_with_full_spec_payload_and_returns_request_record(
         self,
         mock_post,
+        mock_resolve_m1,
     ):
         mock_post.return_value = {
             "status": "accepted",
             "raycon_run_id": "run-abc-123",
             "queued_at": "2026-04-30T13:45:00Z",
         }
+        mock_resolve_m1.return_value = ("m1-folder-id", "M1")
 
         gc = MagicMock()
         result = _run_block_plan_downstream(
@@ -1070,7 +1073,8 @@ class TestBlockPlanDownstream:
                 "total_building_sf": 12000,
             },
             block_plan_content="BLOCK PLAN FULL TEXT",
-            block_plan_url="https://drive.google.com/file/d/block123",
+            block_plan_url="https://drive.google.com/file/d/block123/view",
+            block_plan_file_id="block123",
         )
 
         # Exactly one record describing the request — no Capacity Brainlift,
@@ -1080,14 +1084,18 @@ class TestBlockPlanDownstream:
         assert record["doc_type"] == "raycon_scenario_request"
         assert record["raycon_run_id"] == "run-abc-123"
         assert record["status"] == "accepted"
-        assert record["request_id"].startswith("ddr-IEBLOCK123-")
+        assert record["block_plan_file_id"] == "block123"
 
         kwargs = mock_post.call_args.kwargs
+        # All 11 spec §1.2 fields should reach post_raycon_job.
         assert kwargs["site_id"] == "IEBLOCK123"
         assert kwargs["site_name"] == "Alpha Keller"
         assert kwargs["address"] == "123 Main St, Keller, TX 76248"
-        assert kwargs["site_folder_id"] == "site_folder_456"
-        assert kwargs["request_id"] == record["request_id"]
+        assert kwargs["drive_folder_url"].endswith("/site_folder_456")
+        assert kwargs["m1_folder_id"] == "m1-folder-id"
+        assert kwargs["block_plan_file_id"] == "block123"
+        assert kwargs["block_plan_url"].endswith("/view")
+        assert kwargs["total_building_sf"] == 12000
 
     @patch("due_diligence_reporter.raycon_client.post_raycon_job")
     def test_raises_when_drive_folder_url_missing(self, mock_post):
@@ -1104,6 +1112,53 @@ class TestBlockPlanDownstream:
                 },
                 block_plan_content="BLOCK PLAN FULL TEXT",
                 block_plan_url="https://drive.google.com/file/d/block123",
+                block_plan_file_id="block123",
+            )
+        mock_post.assert_not_called()
+
+    @patch("due_diligence_reporter.raycon_client.post_raycon_job")
+    def test_raises_when_block_plan_file_id_missing(self, mock_post):
+        gc = MagicMock()
+        with pytest.raises(RuntimeError, match="block_plan_file_id"):
+            _run_block_plan_downstream(
+                gc,
+                site_summary={
+                    "id": "IEBLOCK123",
+                    "title": "Alpha Keller",
+                    "address": "123 Main St",
+                    "drive_folder_url": "https://drive.google.com/drive/folders/abc",
+                    "total_building_sf": 12000,
+                },
+                block_plan_content="BLOCK PLAN FULL TEXT",
+                block_plan_url="https://drive.google.com/file/d/block123",
+                block_plan_file_id="",
+            )
+        mock_post.assert_not_called()
+
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.raycon_client.post_raycon_job")
+    def test_raises_when_m1_folder_cannot_be_resolved(
+        self,
+        mock_post,
+        mock_resolve_m1,
+    ):
+        # m1_folder_id is required by spec §1.2; if Drive can't resolve it,
+        # we must NOT silently send a malformed payload to RayCon.
+        mock_resolve_m1.return_value = (None, None)
+        gc = MagicMock()
+        with pytest.raises(RuntimeError, match="M1 folder"):
+            _run_block_plan_downstream(
+                gc,
+                site_summary={
+                    "id": "IEBLOCK123",
+                    "title": "Alpha Keller",
+                    "address": "123 Main St",
+                    "drive_folder_url": "https://drive.google.com/drive/folders/abc",
+                    "total_building_sf": 12000,
+                },
+                block_plan_content="BLOCK PLAN FULL TEXT",
+                block_plan_url="https://drive.google.com/file/d/block123",
+                block_plan_file_id="block123",
             )
         mock_post.assert_not_called()
 
