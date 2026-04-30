@@ -31,6 +31,8 @@ M1_RECOGNIZED_DOC_TYPES = {
     "block_plan",
     "capacity_brainlift_report",
     "raycon_scenario_report",
+    # The async-handoff result file RayCon writes when its job finishes.
+    "raycon_scenario_json",
 }
 
 

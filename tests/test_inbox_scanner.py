@@ -6,6 +6,8 @@ import re
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from due_diligence_reporter.inbox_scanner import (
     AUTO_FILE_CONFIDENCE,
     DOC_TYPE_FILENAME_TEMPLATES,
@@ -442,8 +444,7 @@ class TestClassification:
         mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
         mock_list_docs.return_value = {
             "block_plan": {"id": "block123", "name": "Apr 22 2026 - Alpha Keller Block Plan.pdf"},
-            "capacity_brainlift_report": {"id": "cap123", "name": "Capacity Brainlift - Alpha Keller"},
-            "raycon_scenario_report": {"id": "ray123", "name": "RayCon Scenario - Alpha Keller"},
+            "raycon_scenario_json": {"id": "ray-json-123", "name": "raycon_scenario.json"},
         }
         mock_build_summary.return_value = {
             "title": "Alpha Keller",
@@ -1039,73 +1040,71 @@ class TestScanResults:
 
 
 class TestBlockPlanDownstream:
-    @patch("due_diligence_reporter.server._register_file_read_context")
-    @patch("due_diligence_reporter.server.save_skill_report", new_callable=AsyncMock)
-    @patch("due_diligence_reporter.server.get_cost_estimate", new_callable=AsyncMock)
-    @patch("due_diligence_reporter.server.apply_capacity_brainlift_skill", new_callable=AsyncMock)
-    @patch("due_diligence_reporter.server.read_drive_document", new_callable=AsyncMock)
-    @patch("due_diligence_reporter.server._find_site_docs_in_shared_folders")
-    def test_passes_sir_and_inspection_content_to_raycon(
+    """Block Plan downstream now pings RayCon's async /v1/jobs endpoint and exits.
+
+    DDR no longer runs Capacity Brainlift or calls RayCon synchronously. RayCon
+    reads SIR/BI/Block Plan from Drive itself, derives rooms, and writes
+    `raycon_scenario.json` back into the site's M1 folder. The followup script
+    publishes the report Doc.
+    """
+
+    @patch("due_diligence_reporter.raycon_client.post_raycon_job")
+    def test_pings_raycon_with_site_metadata_and_returns_request_record(
         self,
-        mock_find_shared,
-        mock_read_doc,
-        mock_capacity,
-        mock_raycon,
-        mock_save,
-        mock_register_context,
+        mock_post,
     ):
-        mock_find_shared.return_value = {
-            "sir": {"id": "sir123", "name": "Alpha Keller SIR.pdf"},
-            "building_inspection": {"id": "bi123", "name": "Alpha Keller Building Inspection Report.pdf"},
-            "isp": None,
-        }
-        mock_read_doc.side_effect = [
-            {"status": "success", "content": "SIR FULL TEXT"},
-            {"status": "success", "content": "BUILDING INSPECTION FULL TEXT"},
-        ]
-        mock_capacity.return_value = {
-            "status": "success",
-            "block_plan_summary": "Plan summary",
-            "raycon_rooms": [{"type": "learningroom", "sqft": 650, "name": "Classroom 1"}],
-            "fastest_open": {"classroom_count": 4},
-            "max_capacity": {"classroom_count": 6},
-            "report_data_fields": {
-                "exec.fastest_open_capacity": "36",
-                "exec.max_capacity_capacity": "54",
-            },
-            "doc_url": "https://docs.google.com/document/d/cap",
-        }
-        mock_raycon.return_value = {
-            "status": "success",
-            "report_data_fields": {
-                "exec.fastest_open_capex": "$100,000",
-                "exec.max_capacity_capex": "$200,000",
-            },
-        }
-        mock_save.return_value = {
-            "status": "success",
-            "doc_url": "https://docs.google.com/document/d/ray",
-            "doc_id": "ray123",
+        mock_post.return_value = {
+            "status": "accepted",
+            "raycon_run_id": "run-abc-123",
+            "queued_at": "2026-04-30T13:45:00Z",
         }
 
         gc = MagicMock()
         result = _run_block_plan_downstream(
             gc,
             site_summary={
+                "id": "IEBLOCK123",
                 "title": "Alpha Keller",
                 "address": "123 Main St, Keller, TX 76248",
-                "drive_folder_url": "https://drive.google.com/drive/folders/site123",
+                "drive_folder_url": "https://drive.google.com/drive/folders/site_folder_456",
                 "total_building_sf": 12000,
             },
             block_plan_content="BLOCK PLAN FULL TEXT",
             block_plan_url="https://drive.google.com/file/d/block123",
         )
 
-        assert len(result) == 2
-        raycon_kwargs = mock_raycon.call_args.kwargs
-        assert raycon_kwargs["sir_content"] == "SIR FULL TEXT"
-        assert raycon_kwargs["inspection_content"] == "BUILDING INSPECTION FULL TEXT"
-        assert raycon_kwargs["block_plan_content"] == "BLOCK PLAN FULL TEXT"
-        assert raycon_kwargs["region"] == "TX"
-        mock_register_context.assert_called_once()
+        # Exactly one record describing the request — no Capacity Brainlift,
+        # no synchronous RayCon, no Doc publication from the scanner.
+        assert len(result) == 1
+        record = result[0]
+        assert record["doc_type"] == "raycon_scenario_request"
+        assert record["raycon_run_id"] == "run-abc-123"
+        assert record["status"] == "accepted"
+        assert record["request_id"].startswith("ddr-IEBLOCK123-")
+
+        kwargs = mock_post.call_args.kwargs
+        assert kwargs["site_id"] == "IEBLOCK123"
+        assert kwargs["site_name"] == "Alpha Keller"
+        assert kwargs["address"] == "123 Main St, Keller, TX 76248"
+        assert kwargs["site_folder_id"] == "site_folder_456"
+        assert kwargs["request_id"] == record["request_id"]
+
+    @patch("due_diligence_reporter.raycon_client.post_raycon_job")
+    def test_raises_when_drive_folder_url_missing(self, mock_post):
+        gc = MagicMock()
+        with pytest.raises(RuntimeError, match="site_id, title, address"):
+            _run_block_plan_downstream(
+                gc,
+                site_summary={
+                    "id": "IEBLOCK123",
+                    "title": "Alpha Keller",
+                    "address": "123 Main St",
+                    "drive_folder_url": "",
+                    "total_building_sf": 12000,
+                },
+                block_plan_content="BLOCK PLAN FULL TEXT",
+                block_plan_url="https://drive.google.com/file/d/block123",
+            )
+        mock_post.assert_not_called()
+
 
