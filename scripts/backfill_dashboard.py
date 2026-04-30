@@ -73,13 +73,30 @@ _TRACE_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 def _latest_trace_file(
     gc: GoogleClient, folder_id: str
 ) -> dict[str, Any] | None:
-    """Return the most recently modified DD Report Trace JSON in a folder."""
+    """Return the most recently modified DD Report Trace JSON in a folder.
+
+    Kept for backwards compatibility; prefer ``_candidate_trace_files``.
+    """
+    candidates = _candidate_trace_files(gc, folder_id)
+    return candidates[0] if candidates else None
+
+
+def _candidate_trace_files(
+    gc: GoogleClient, folder_id: str
+) -> list[dict[str, Any]]:
+    """Return all Report Trace JSONs in a folder, newest first.
+
+    The pipeline can write two trace files in the same day (older
+    ``... Report Trace - YYYY-MM-DD.json`` from the legacy server.py path and
+    newer ``... DD Report Trace - YYYY-MM-DD.json`` from report_pipeline.py).
+    The newer one is sometimes written before the token_report is populated,
+    leaving the trace empty. Callers should iterate this list and fall back to
+    the next candidate when the chosen trace has no usable token_report.
+    """
     files = gc.list_files_in_folder(folder_id)
     traces = [f for f in files if _TRACE_NAME_RE.search(f.get("name", ""))]
-    if not traces:
-        return None
     traces.sort(key=lambda f: f.get("modifiedTime", ""), reverse=True)
-    return traces[0]
+    return traces
 
 
 def _report_date_from_trace(trace_data: dict[str, Any], fallback: str) -> date:
@@ -144,21 +161,45 @@ def backfill_one(
         logger.warning("%s: could not extract folder id from %s", site_title, drive_folder_url)
         return False
 
-    trace_file = _latest_trace_file(gc, folder_id)
-    if not trace_file:
+    candidates = _candidate_trace_files(gc, folder_id)
+    if not candidates:
         logger.info("%s: no Report Trace file found, skipping", site_title)
         return False
 
-    try:
-        data = gc.download_file_bytes(trace_file["id"])
-        trace_data = json.loads(data.decode("utf-8"))
-    except Exception as e:
-        logger.warning("%s: could not load trace '%s': %s", site_title, trace_file.get("name"), e)
-        return False
+    trace_file: dict[str, Any] | None = None
+    trace_data: dict[str, Any] = {}
+    report_data: dict[str, Any] = {}
+    for candidate in candidates:
+        try:
+            data = gc.download_file_bytes(candidate["id"])
+            candidate_data = json.loads(data.decode("utf-8"))
+        except Exception as e:
+            logger.warning(
+                "%s: could not load trace '%s': %s",
+                site_title,
+                candidate.get("name"),
+                e,
+            )
+            continue
 
-    report_data = _reconstruct_report_data(trace_data)
-    if not report_data:
-        logger.info("%s: trace had no token_report values, skipping", site_title)
+        candidate_report = _reconstruct_report_data(candidate_data)
+        if candidate_report:
+            trace_file = candidate
+            trace_data = candidate_data
+            report_data = candidate_report
+            break
+        logger.info(
+            "%s: trace '%s' has no token_report values, trying next candidate",
+            site_title,
+            candidate.get("name"),
+        )
+
+    if not trace_file or not report_data:
+        logger.info(
+            "%s: no trace with usable token_report found across %d candidate(s), skipping",
+            site_title,
+            len(candidates),
+        )
         return False
 
     rd = _report_date_from_trace(trace_data, trace_file.get("name", ""))
