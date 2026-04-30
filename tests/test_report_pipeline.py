@@ -310,6 +310,132 @@ class TestProcessSitePipeline:
         assert result.doc_id == "doc123"
         assert "export broke" in (result.error or "")
 
+    @patch("due_diligence_reporter.report_pipeline.publish_to_dashboard")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_report_incomplete_still_publishes_to_dashboard_in_progress(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+        mock_publish,
+    ):
+        """report_incomplete reports must still publish partial data to the
+        dashboard with ``dd_status="in_progress"`` so sites do not get
+        stuck on the empty roster-sync stub when the completeness check
+        rejects an otherwise-filled report (raw template tokens leaking,
+        invalid Can-We-Open answer, unfilled placeholders)."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": False,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-04-30T15:53:12+00:00",
+            events=[],
+            final_report_data={"exec.c_answer": "Yes", "q1.school_approval_label": "yes"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+            "trace": trace,
+        }
+
+        async def fake_completeness(doc_id):
+            # Same shape the production code returns when the doc has
+            # raw template tokens leaked: ready_to_send=False with zero
+            # unresolved {{...}} tokens. This is the exact failure mode
+            # observed for both Tulsa sites in run 25175297453.
+            return {
+                "ready_to_send": False,
+                "unresolved_token_count": 0,
+                "unresolved_tokens": [],
+                "raw_template_token_count": 1,
+                "raw_template_tokens": ["INSERT_ANSWER"],
+                "pending_section_count": 0,
+                "summary": "Report NOT ready to send. 1 raw template token(s).",
+            }
+
+        mock_completeness.side_effect = fake_completeness
+        mock_publish.return_value = True
+
+        gc = MagicMock()
+        result = process_site_pipeline(
+            gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"], {}, "system prompt", _make_settings(),
+            site_address="123 Main St, Keller TX",
+            p1_name="Robbie Forrest",
+            wrike_created_at="2026-04-01T00:00:00Z",
+        )
+
+        assert result.status == "report_incomplete"
+        assert result.doc_id == "doc123"
+        # The HTTP publish must fire on the incomplete branch.
+        mock_publish.assert_called_once()
+        kwargs = mock_publish.call_args.kwargs
+        assert kwargs["dd_status"] == "in_progress"
+        assert kwargs["address"] == "123 Main St, Keller TX"
+        assert kwargs["site_owner"] == "Robbie Forrest"
+        assert kwargs["wrike_created_at"] == "2026-04-01T00:00:00Z"
+        # The real report data (not an empty stub) is published.
+        positional = mock_publish.call_args.args
+        assert positional[0] == "Alpha Keller"
+        assert positional[1] == trace.final_report_data
+
+    @patch("due_diligence_reporter.report_pipeline.publish_to_dashboard")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_report_created_publishes_with_default_dd_status(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+        mock_publish,
+    ):
+        """Success path must NOT pass dd_status=in_progress; publisher
+        auto-stamps ``complete`` when the kwarg is None."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": False,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-04-30T15:53:12+00:00",
+            events=[],
+            final_report_data={"exec.c_answer": "Yes"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+            "trace": trace,
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+        mock_publish.return_value = True
+
+        gc = MagicMock()
+        result = process_site_pipeline(
+            gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"], {}, "system prompt", _make_settings(),
+        )
+
+        assert result.status == "report_created"
+        mock_publish.assert_called_once()
+        # The success path leaves dd_status unset so the publisher's
+        # auto-stamp logic still fires ("complete").
+        assert mock_publish.call_args.kwargs["dd_status"] is None
+
 
 class TestCheckSiteReadinessDirect:
     def test_picks_up_source_docs_from_site_folder_m1(self):
