@@ -1283,6 +1283,26 @@ def process_site_pipeline(
                 ),
                 trace_url=trace_url or "",
             )
+        # Publish partial data to the dashboard with dd_status="in_progress"
+        # so the row shows the real report fields instead of leaving the
+        # site stuck on the empty roster-sync stub. Without this branch,
+        # any report that fails the completeness check (raw template
+        # tokens, invalid Can-We-Open answer, unfilled placeholders) never
+        # reaches the dashboard, even when the agent successfully filled
+        # most of the template. Keeps the success-path publish unchanged.
+        if completeness_result.status == "report_incomplete":
+            _publish_to_dashboard_best_effort(
+                site_title=site_title,
+                trace=agent_result.get("trace"),
+                drive_folder_url=drive_folder_url,
+                dd_report_url=doc_url,
+                site_address=site_address,
+                p1_name=p1_name,
+                dd_status="in_progress",
+                school_feasibility=school_feasibility,
+                timeline_confidence=timeline_confidence,
+                wrike_created_at=wrike_created_at,
+            )
         return completeness_result
     assert completeness is not None
 
@@ -1320,7 +1340,11 @@ def _publish_to_dashboard_best_effort(
     site_address: str | None,
     p1_name: str | None = None,
     # Phase 2 DD provenance pass-through. Publisher auto-stamps
-    # dd_status="complete" so it's not threaded through here.
+    # dd_status="complete" when this is None, so callers on the success
+    # path can leave it unset. The ``report_incomplete`` branch passes
+    # ``"in_progress"`` so partial real data still lands on the dashboard
+    # instead of leaving sites stuck on the empty roster-sync stub.
+    dd_status: str | None = None,
     school_feasibility: str | None = None,
     timeline_confidence: str | None = None,
     wrike_created_at: str | None = None,
@@ -1354,6 +1378,7 @@ def _publish_to_dashboard_best_effort(
             drive_folder_url=drive_folder_url,
             dd_report_url=dd_report_url,
             site_owner=p1_name,
+            dd_status=dd_status,
             school_feasibility=school_feasibility,
             timeline_confidence=timeline_confidence,
             wrike_created_at=wrike_created_at,
