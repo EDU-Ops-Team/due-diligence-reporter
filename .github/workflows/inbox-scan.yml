@@ -47,7 +47,10 @@ jobs:
           [ -n "${{ secrets.ISP_FOLDER_ID }}" ]              || { echo "ISP_FOLDER_ID missing"; exit 1; }
           [ -n "${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}" ] || { echo "BUILDING_INSPECTION_FOLDER_ID missing"; exit 1; }
           [ -n "${{ secrets.DASHBOARD_PUBLISH_SECRET }}" ]   || { echo "DASHBOARD_PUBLISH_SECRET missing"; exit 1; }
-          [ -n "${{ secrets.RAYCON_WEBHOOK_SECRET }}" ]     || { echo "RAYCON_WEBHOOK_SECRET missing (HMAC auth required by spec)"; exit 1; }
+          # RAYCON_WEBHOOK_SECRET is optional: RayCon's /v1/jobs is public
+          # under the current /v1/* rollout. When set, we sign the body
+          # with HMAC-SHA256 so we're ready the day RayCon flips on
+          # signature verification.
           echo "All required secrets are present"
 
       - name: Create .env file from secrets
