@@ -126,22 +126,22 @@ def post_raycon_job(
     ``block_plan_file_id`` (idempotency key), ``m1_folder_id`` (where
     RayCon writes ``raycon_scenario.json``), and ``total_building_sf``.
 
-    Auth is HMAC-SHA256 of the raw body, signed with
-    ``RAYCON_WEBHOOK_SECRET`` and sent in ``X-RayCon-Signature`` per
-    spec §1.1. If ``RAYCON_API_KEY`` is also set, it's sent in
-    ``X-RayCon-API-Key`` for backward compatibility while environments
-    roll to HMAC; the HMAC signature is the canonical auth.
+    Auth is currently a no-op: RayCon's ``/v1/jobs`` endpoint is public
+    under the ``/v1/*`` rollout (per RayCon team, 2026-04-30) and does
+    not validate webhook signatures. We still compute an HMAC-SHA256 of
+    the raw body and send it in ``X-RayCon-Signature`` *when*
+    ``RAYCON_WEBHOOK_SECRET`` is configured, so the canonical signing
+    path is exercised and ready the day RayCon enables verification —
+    but the call works fine without a secret. ``RAYCON_API_KEY``, if
+    set, is sent in ``X-RayCon-API-Key`` for the optional Firebase auth
+    path (gated by ``RAYCON_REQUIRE_FIREBASE_AUTH=true`` on RayCon's
+    side, currently disabled).
 
     The standard ``retry_config`` retries on connection errors and
     retryable HTTP status codes (429/5xx). Re-pinging with the same
     ``block_plan_file_id`` is a spec-defined no-op on RayCon's side.
     """
     settings = get_settings()
-    if not settings.raycon_webhook_secret:
-        raise RuntimeError(
-            "RAYCON_WEBHOOK_SECRET is not configured; cannot HMAC-sign the "
-            "Block Plan job request to RayCon (spec §1.1)."
-        )
     missing_required: list[str] = []
     for arg_name, arg_value in (
         ("site_id", site_id),
@@ -177,19 +177,21 @@ def post_raycon_job(
         "requested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
-    # Serialize once, sign those exact bytes, and POST those exact bytes.
-    # Using `requests`' `json=` would re-serialize and risk a signature
-    # mismatch (different separators, key ordering, etc.).
+    # Serialize once and POST those exact bytes. Using `requests`' `json=`
+    # would re-serialize and break the signature when HMAC verification is
+    # eventually enabled on RayCon's side.
     body_bytes = json.dumps(body, separators=(",", ":"), sort_keys=False).encode("utf-8")
-    signature = _compute_hmac_signature(settings.raycon_webhook_secret, body_bytes)
 
-    headers: dict[str, str] = {
-        "Content-Type": "application/json",
-        "X-RayCon-Signature": signature,
-    }
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if settings.raycon_webhook_secret:
+        # Sign and send the signature header now so the canonical path is
+        # ready the day RayCon flips on verification. Until then RayCon
+        # ignores the header.
+        headers["X-RayCon-Signature"] = _compute_hmac_signature(
+            settings.raycon_webhook_secret, body_bytes
+        )
     if settings.raycon_api_key:
-        # Optional, kept for environments still using the legacy API key
-        # while RayCon rolls HMAC enforcement.
+        # Optional, gated by RAYCON_REQUIRE_FIREBASE_AUTH=true on RayCon.
         headers["X-RayCon-API-Key"] = settings.raycon_api_key
 
     logger.info(

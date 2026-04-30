@@ -49,8 +49,12 @@ def _ok_response(status_code: int = 202, body: dict | None = None):
 class TestPostRayConJob:
     """The POST contract is the only place DDR can break RayCon, so guard it.
 
-    Spec: raycon_ddr_integration_spec.md §1 — 11 required body fields,
-    HMAC-SHA256 of the raw body in X-RayCon-Signature.
+    Spec: raycon_ddr_integration_spec.md §1 — 11 required body fields.
+    HMAC-SHA256 of the raw body is sent in X-RayCon-Signature *when*
+    RAYCON_WEBHOOK_SECRET is configured. RayCon's /v1/jobs is currently
+    public (no signature verification) per RayCon team 2026-04-30, so
+    the secret is optional; the signing path is exercised when present
+    so we're ready the day RayCon enables verification.
     """
 
     def _fake_settings(self):
@@ -119,15 +123,29 @@ class TestPostRayConJob:
         assert headers["X-RayCon-API-Key"] == "legacy-key"
         assert headers["X-RayCon-Signature"].startswith("sha256=")
 
-    def test_missing_webhook_secret_raises(self) -> None:
+    def test_missing_webhook_secret_skips_signature_header(self) -> None:
+        """RayCon /v1/jobs is currently public; without a secret we still
+        POST the spec-shaped body but omit the X-RayCon-Signature header."""
         settings = self._fake_settings()
         settings.raycon_webhook_secret = ""
         with patch(
             "due_diligence_reporter.raycon_client.get_settings",
             return_value=settings,
-        ):
-            with pytest.raises(RuntimeError, match="RAYCON_WEBHOOK_SECRET"):
-                post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            result = post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
+
+        assert result == {"status": "accepted"}
+        kwargs = mock_post.call_args.kwargs
+        # Body still sent as raw bytes with the full 11-field payload.
+        body = json.loads(kwargs["data"].decode("utf-8"))
+        assert body["site_id"] == "S-123"
+        assert body["block_plan_file_id"] == "bp-123"
+        # No signature header when secret is unset.
+        assert "X-RayCon-Signature" not in kwargs["headers"]
+        assert "X-RayCon-API-Key" not in kwargs["headers"]
 
     def test_missing_required_field_raises(self) -> None:
         with patch(

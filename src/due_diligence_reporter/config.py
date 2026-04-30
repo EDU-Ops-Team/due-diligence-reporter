@@ -99,19 +99,19 @@ class Settings(BaseSettings):
     raycon_api_key: str = Field(
         "",
         description=(
-            "Optional fallback API key for the X-RayCon-API-Key header. "
-            "The /v1/jobs spec is HMAC-SHA256 signed with raycon_webhook_secret "
-            "(see X-RayCon-Signature). The API key is sent only when set, for "
-            "compatibility with environments that haven't rolled to HMAC yet."
+            "Optional API key sent in X-RayCon-API-Key for RayCon's Firebase "
+            "auth path. Gated by RAYCON_REQUIRE_FIREBASE_AUTH=true on RayCon's "
+            "side (currently disabled), so leaving this blank is fine."
         ),
     )
     raycon_webhook_secret: str = Field(
         "",
         description=(
-            "Shared secret used to HMAC-SHA256 sign the raw /v1/jobs request "
-            "body. RayCon validates the signature in the X-RayCon-Signature "
-            "header. Required by the integration spec; without it, "
-            "post_raycon_job refuses to dispatch."
+            "Optional shared secret. When set, post_raycon_job HMAC-SHA256-signs "
+            "the raw /v1/jobs request body with it and sends X-RayCon-Signature. "
+            "RayCon's /v1/jobs is currently public under the /v1/* rollout and "
+            "does not validate the header, but signing keeps the canonical path "
+            "exercised so we're ready the day verification is turned on."
         ),
     )
 
