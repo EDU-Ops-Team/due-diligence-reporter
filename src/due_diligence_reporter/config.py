@@ -90,10 +90,15 @@ class Settings(BaseSettings):
         description="Branch to push sites.json to.",
     )
 
-    # RayCon cost API
-    pricing_api_url: str = Field(
-        "https://raycon-api-738625530258.us-central1.run.app",
-        description="Base URL for the RayCon pricing API",
+    # RayCon async hand-off (inbox scanner pings RayCon when a Block Plan
+    # lands; RayCon writes raycon_scenario.json into the site's M1 folder).
+    raycon_jobs_url: str = Field(
+        "https://raycon-api-dkxp2hji2q-uc.a.run.app/v1/jobs",
+        description="Endpoint that accepts RayCon scenario job requests.",
+    )
+    raycon_api_key: str = Field(
+        "",
+        description="Static API key sent in the X-RayCon-API-Key header.",
     )
 
     # Shovels.ai permit history API

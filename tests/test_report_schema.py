@@ -382,11 +382,15 @@ class TestPipelineToolDefinitions:
         tool_names = [tool["name"] for tool in TOOL_DEFINITIONS]
         assert "save_skill_report" in tool_names
 
-    def test_capacity_brainlift_tool_exists(self) -> None:
+    def test_capacity_brainlift_tool_removed(self) -> None:
+        """apply_capacity_brainlift_skill and get_cost_estimate were removed when
+        the RayCon async hand-off cutover landed (DDR no longer runs Capacity
+        Brainlift or calls RayCon synchronously)."""
         from due_diligence_reporter.report_pipeline import TOOL_DEFINITIONS
 
         tool_names = [tool["name"] for tool in TOOL_DEFINITIONS]
-        assert "apply_capacity_brainlift_skill" in tool_names
+        assert "apply_capacity_brainlift_skill" not in tool_names
+        assert "get_cost_estimate" not in tool_names
 
 
 class TestSiteScoreBand:

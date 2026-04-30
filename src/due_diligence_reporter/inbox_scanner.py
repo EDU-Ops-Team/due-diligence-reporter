@@ -9,7 +9,6 @@ or ISP). No site matching required — doc_type alone routes the file.
 from __future__ import annotations
 
 import base64
-import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -26,11 +25,9 @@ from .m1_lookup import (
     _resolve_m1_folder,
 )
 from .utils import (
-    build_site_match_terms,
     escape_html_text,
     extract_city_from_address,
     extract_folder_id_from_url,
-    extract_state_from_address,
     extract_text_from_pdf_bytes,
     send_email,
 )
@@ -146,138 +143,78 @@ def _send_block_plan_failure_notification(
     )
 
 
-def _read_required_shared_doc(
-    *,
-    doc_type: str,
-    shared_docs: dict[str, dict[str, Any] | None],
-    read_drive_document: Any,
-) -> str:
-    """Read a required shared source document for Block Plan downstream processing."""
-    doc = shared_docs.get(doc_type)
-    if not isinstance(doc, dict) or not doc.get("id") or not doc.get("name"):
-        raise RuntimeError(f"Required {doc_type.replace('_', ' ')} document was not found")
-    result = asyncio.run(read_drive_document(
-        file_id=str(doc["id"]),
-        file_name=str(doc["name"]),
-    ))
-    if result.get("status") != "success":
-        raise RuntimeError(
-            f"Failed to read {doc_type.replace('_', ' ')} document: {result.get('message', 'unknown error')}"
-        )
-    content = str(result.get("content", "")).strip()
-    if not content:
-        raise RuntimeError(f"Required {doc_type.replace('_', ' ')} document had no readable text")
-    return content
-
-
 def _run_block_plan_downstream(
     gc: GoogleClient,
     *,
     site_summary: dict[str, Any],
-    block_plan_content: str,
-    block_plan_url: str,
+    block_plan_content: str,  # noqa: ARG001 — retained for caller compatibility
+    block_plan_url: str,  # noqa: ARG001 — retained for caller compatibility
 ) -> list[dict[str, str]]:
-    """Run downstream Capacity Brainlift and RayCon processing for a Block Plan."""
-    from .server import (
-        _find_site_docs_in_shared_folders,
-        _register_file_read_context,
-        apply_capacity_brainlift_skill,
-        get_cost_estimate,
-        read_drive_document,
-        save_skill_report,
-    )
+    """Hand the Block Plan off to RayCon's async ``/v1/jobs`` endpoint.
 
+    Pre-cutover (April 2026) this function ran Capacity Brainlift +
+    the synchronous ``/v1/chat`` call inline, which took up to ~10
+    minutes per site. The new contract:
+
+    1. DDR files the Block Plan into the site's M1 folder (already done
+       by the caller at the time we run).
+    2. We POST a small job ping to RayCon. RayCon then reads the Block
+       Plan from Drive itself, derives rooms, computes scenarios, and
+       writes ``raycon_scenario.json`` back into the same M1 folder.
+    3. The ``raycon-followup`` workflow polls every 5 minutes, picks up
+       the JSON when it lands, and publishes the RayCon Scenario
+       Google Doc. (Implemented in scripts/raycon_followup.py.)
+
+    No long inline wait. The two ``block_plan_content`` /
+    ``block_plan_url`` parameters are retained so existing callers don't
+    need to be touched, but RayCon now reads the PDF directly from
+    Drive instead.
+    """
+    from .raycon_client import post_raycon_job
+
+    site_id = str(site_summary.get("id", "")).strip()
     site_name = str(site_summary.get("title", "")).strip()
     site_address = str(site_summary.get("address", "")).strip()
     drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
-    total_building_sf = site_summary.get("total_building_sf")
-    if not isinstance(total_building_sf, int) or total_building_sf <= 0:
-        raise RuntimeError("Wrike record is missing total_building_sf for Block Plan processing")
 
-    match_terms = build_site_match_terms(site_name, site_address)
-    shared_docs = _find_site_docs_in_shared_folders(
-        gc,
-        match_terms,
-        site_title=site_name,
-        site_address=site_address,
-        drive_folder_url=drive_folder_url,
-    )
-    read_context_docs = []
-    for doc_type in ("sir", "building_inspection"):
-        doc = shared_docs.get(doc_type)
-        if isinstance(doc, dict):
-            read_context_docs.append({**doc, "doc_type": doc_type})
-    _register_file_read_context(
-        read_context_docs,
-        site_title=site_name,
-        site_address=site_address,
-    )
-    sir_content = _read_required_shared_doc(
-        doc_type="sir",
-        shared_docs=shared_docs,
-        read_drive_document=read_drive_document,
-    )
-    inspection_content = _read_required_shared_doc(
-        doc_type="building_inspection",
-        shared_docs=shared_docs,
-        read_drive_document=read_drive_document,
-    )
+    if not (site_id and site_name and site_address and drive_folder_url):
+        raise RuntimeError(
+            "Block Plan downstream requires site_id, title, address, and "
+            "drive_folder_url on the Wrike record."
+        )
 
-    capacity_result = asyncio.run(apply_capacity_brainlift_skill(
-        site_name=site_name,
-        site_address=site_address,
-        block_plan_content=block_plan_content,
-        total_building_sf=total_building_sf,
-        drive_folder_url=drive_folder_url,
-        block_plan_url=block_plan_url,
-    ))
-    if capacity_result.get("status") != "success":
-        raise RuntimeError(str(capacity_result.get("message", "Capacity Brainlift failed")))
+    site_folder_id = extract_folder_id_from_url(drive_folder_url)
+    if not site_folder_id:
+        raise RuntimeError(
+            f"Could not extract Drive folder ID from drive_folder_url='{drive_folder_url}'"
+        )
 
-    raycon_rooms = capacity_result.get("raycon_rooms", [])
-    classroom_counts = []
-    for scenario_key in ("fastest_open", "max_capacity"):
-        scenario = capacity_result.get(scenario_key, {})
-        if isinstance(scenario, dict):
-            count = scenario.get("classroom_count")
-            if isinstance(count, (int, float)) and count > 0:
-                classroom_counts.append(int(count))
-    classroom_count = max(classroom_counts) if classroom_counts else 0
-
-    raycon_result = asyncio.run(get_cost_estimate(
-        total_building_sf=total_building_sf,
-        region=extract_state_from_address(site_address) or "",
-        rooms=raycon_rooms if isinstance(raycon_rooms, list) and raycon_rooms else None,
-        classroom_count=classroom_count,
+    request_id = (
+        f"ddr-{site_id}-"
+        f"{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
+    )
+    response = post_raycon_job(
+        site_id=site_id,
         site_name=site_name,
         address=site_address,
-        inspection_content=inspection_content,
-        sir_content=sir_content,
-        block_plan_content=block_plan_content,
-        inspection_summary=f"Block Plan: {capacity_result.get('block_plan_summary', '')}".strip(),
-        sir_summary=f"Block Plan source: {block_plan_url}".strip(),
-    ))
-    if raycon_result.get("status") != "success":
-        raise RuntimeError(str(raycon_result.get("message", "RayCon failed")))
-
-    report_fields = dict(capacity_result.get("report_data_fields", {}))
-    report_fields.update(raycon_result.get("report_data_fields", {}))
-    raycon_skill_payload = {
-        **raycon_result,
-        "report_data_fields": report_fields,
-    }
-    published = asyncio.run(save_skill_report(
-        skill_name="RayCon Scenario",
-        site_name=site_name,
-        drive_folder_url=drive_folder_url,
-        skill_data=raycon_skill_payload,
-    ))
-    if published.get("status") != "success":
-        raise RuntimeError(str(published.get("message", "Failed to save RayCon Scenario report")))
+        site_folder_id=site_folder_id,
+        request_id=request_id,
+    )
+    raycon_run_id = str(response.get("raycon_run_id", "")).strip()
+    logger.info(
+        "RayCon job dispatched for site=%s request_id=%s run_id=%s",
+        site_name,
+        request_id,
+        raycon_run_id or "(unknown)",
+    )
 
     return [
-        {"doc_type": "capacity_brainlift_report", "doc_url": str(capacity_result.get("doc_url", ""))},
-        {"doc_type": "raycon_scenario_report", "doc_url": str(published.get("doc_url", ""))},
+        {
+            "doc_type": "raycon_scenario_request",
+            "request_id": request_id,
+            "raycon_run_id": raycon_run_id,
+            "status": str(response.get("status", "accepted")),
+        }
     ]
 
 
@@ -612,17 +549,17 @@ def process_email(
                 skipped += 1
                 continue
             existing_docs = _list_m1_documents_by_type(gc, target_folder_id)
-            if (
-                "capacity_brainlift_report" in existing_docs
-                and "raycon_scenario_report" in existing_docs
-            ):
-                logger.info("Block Plan '%s' and derived docs already exist - skipping", drive_filename)
+            if "raycon_scenario_json" in existing_docs:
+                logger.info(
+                    "Block Plan '%s' already exists and RayCon scenario is published - skipping",
+                    drive_filename,
+                )
                 skipped += 1
                 continue
             drive_file = existing_docs.get("block_plan")
             rerun_existing_block_plan = True
             logger.info(
-                "Block Plan '%s' already exists but derived docs are missing - rerunning downstream",
+                "Block Plan '%s' already exists but RayCon scenario is missing - re-pinging RayCon",
                 drive_filename,
             )
             if drive_file is None:

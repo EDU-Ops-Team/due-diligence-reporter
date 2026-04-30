@@ -33,6 +33,7 @@ DOC_TYPES = frozenset({
     "opening_plan_report",
     "capacity_brainlift_report",
     "raycon_scenario_report",
+    "raycon_scenario_json",
     "report_trace",
     "unknown",
 })
@@ -73,6 +74,10 @@ def classify_by_keywords(filename: str) -> tuple[str, float]:
         return "opening_plan_report", 0.95
     if "capacity brainlift" in name:
         return "capacity_brainlift_report", 0.95
+    # The async hand-off result file. Filename is fixed by the
+    # DDR/RayCon contract (raycon_scenario.json) so an exact match wins.
+    if name == "raycon_scenario.json":
+        return "raycon_scenario_json", 1.0
     if "raycon scenario" in name or "raycon estimate" in name:
         return "raycon_scenario_report", 0.95
     if "block plan" in name:
