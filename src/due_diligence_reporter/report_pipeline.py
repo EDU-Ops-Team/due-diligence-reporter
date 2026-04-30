@@ -25,6 +25,8 @@ from .classifier import (
 from .config import Settings, get_settings
 from .dashboard_publisher import publish_to_dashboard
 from .google_client import GoogleClient
+from .m1_lookup import _list_m1_documents_by_type, _resolve_m1_folder
+from .provenance import classify_provenance
 from .utils import (
     escape_html_text,
     extract_folder_id_from_url,
@@ -397,10 +399,57 @@ def check_site_readiness_direct(
         f for f in site_folder_files if f.get("doc_type") in AI_GENERATED_DOC_TYPES
     ]
 
+    # ── Vendor-vs-AI provenance ─────────────────────────────────────────────
+    # The presence of a file classified as ``sir`` / ``building_inspection``
+    # is no longer enough; our own pipeline also drops AI-generated SIRs and
+    # CDS overlays into the M1 folder. Run a per-file provenance check (cheap
+    # filename heuristic + cached LLM content fallback) so the readiness gate
+    # only opens on *vendor-sourced* SIR + BI.
+    m1_folder_id, _ = _resolve_m1_folder(gc, drive_folder_url)
+
+    def _vendor_check(doc_type: str) -> bool:
+        f = files_by_type.get(doc_type)
+        if not f:
+            return False
+        try:
+            verdict = classify_provenance(
+                f, gc, m1_folder_id=m1_folder_id, doc_type=doc_type
+            )
+        except Exception as e:  # pragma: no cover
+            logger.warning(
+                "provenance check failed for %s in %s: %s", doc_type, site_title, e
+            )
+            return True  # default to vendor; gate will retry on next run
+        return verdict.is_vendor
+
+    sir_is_vendor = _vendor_check("sir")
+    inspection_is_vendor = _vendor_check("building_inspection")
+
+    # ── RayCon scenario JSON ────────────────────────────────────────────────
+    # The third gating input. Lives only in M1 (written by RayCon's async
+    # /v1/jobs hand-off) and is keyed by the dedicated ``raycon_scenario_json``
+    # doc_type so an AI raycon_scenario_report can never satisfy this slot.
+    raycon_scenario_file: dict[str, Any] | None = None
+    if m1_folder_id:
+        try:
+            m1_files_by_type = _list_m1_documents_by_type(gc, m1_folder_id)
+            raycon_scenario_file = m1_files_by_type.get("raycon_scenario_json")
+        except Exception as e:  # pragma: no cover
+            logger.warning(
+                "M1 lookup failed for raycon_scenario_json in %s: %s", site_title, e
+            )
+
     return {
         "sir_found": files_by_type["sir"] is not None,
         "isp_found": files_by_type["isp"] is not None,
         "inspection_found": files_by_type["building_inspection"] is not None,
+        # Vendor-confirmed flags. The new gate (see ``_missing_required_docs``)
+        # reads these instead of the bare ``*_found`` bools so AI-generated
+        # SIRs in M1 don't open the gate.
+        "sir_vendor": files_by_type["sir"] is not None and sir_is_vendor,
+        "inspection_vendor": files_by_type["building_inspection"] is not None
+            and inspection_is_vendor,
+        "raycon_scenario_found": raycon_scenario_file is not None,
         "report_exists": files_by_type["dd_report"] is not None,
         "e_occupancy_report_found": files_by_type["e_occupancy_report"] is not None,
         "school_approval_report_found": files_by_type["school_approval_report"] is not None,
@@ -733,9 +782,44 @@ def _merge_cached_report_fields(
     return merged
 
 
+def _vendor_gate_enabled() -> bool:
+    """Feature flag for the vendor-only readiness gate.
+
+    Default OFF during soak so the legacy ``*_found`` behavior keeps
+    running for sites that already have AI-only artifacts. Flip
+    ``VENDOR_GATE_ENABLED=1`` once we've confirmed vendor detection
+    classifies cleanly across the live portfolio.
+    """
+    return os.environ.get("VENDOR_GATE_ENABLED", "0").strip() not in {"", "0", "false", "False"}
+
+
 def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
-    """Return human-readable names for missing required DD docs."""
+    """Return human-readable names for missing required DD docs.
+
+    With ``VENDOR_GATE_ENABLED=1`` the gate requires:
+      * Vendor-sourced SIR
+      * Vendor-sourced Building Inspection
+      * RayCon scenario JSON (always vendor by definition — RayCon writes it)
+
+    Without the flag (legacy default), only SIR + Building Inspection presence
+    is checked, regardless of provenance — matches pre-cutover behavior.
+    """
     missing: list[str] = []
+    if _vendor_gate_enabled():
+        if not readiness.get("sir_vendor", False):
+            missing.append(
+                "Vendor SIR" if readiness.get("sir_found") else "SIR"
+            )
+        if not readiness.get("inspection_vendor", False):
+            missing.append(
+                "Vendor Building Inspection"
+                if readiness.get("inspection_found")
+                else "Building Inspection"
+            )
+        if not readiness.get("raycon_scenario_found", False):
+            missing.append("RayCon Scenario JSON")
+        return missing
+
     if not readiness.get("sir_found", False):
         missing.append("SIR")
     if not readiness.get("inspection_found", False):
@@ -796,6 +880,56 @@ def _extract_source_read_issues(trace: ReportTrace | None) -> list[dict[str, str
         })
 
     return issues
+
+
+def _notify_vendor_gate_extraction_failure(
+    webhook_url: str,
+    site_title: str,
+    *,
+    drive_folder_url: str = "",
+    failure_reason: str = "",
+    trace_url: str = "",
+) -> None:
+    """Alert humans when all vendor inputs are present but extraction fails.
+
+    The vendor gate guarantees a vendor SIR + vendor Building Inspection +
+    RayCon scenario JSON were all on hand when generation was attempted. If
+    the agent still couldn't produce a complete report, the inputs almost
+    certainly need a human to disambiguate — OCR failure, malformed RayCon
+    payload, conflicting permit narratives, etc. We escalate to Google Chat
+    rather than silently leaving the row in ``report_incomplete``.
+
+    Idempotency: this alert is keyed on the failure_reason text so multiple
+    runs of the same site with the same root cause don't spam the channel.
+    Per-site dedup is the responsibility of the alert sink (current
+    Google Chat webhook does not natively dedupe; we accept duplicates here
+    rather than build a side-state file).
+    """
+    if not webhook_url:
+        return
+    lines = [
+        f"DD Vendor Gate — Human Intervention Needed: {site_title}",
+        "All three required inputs are present (vendor SIR, vendor Building "
+        "Inspection, RayCon Scenario JSON) but the report could not be "
+        "completed. A human reviewer should inspect the inputs.",
+    ]
+    if failure_reason:
+        lines.append(f"Reason: {failure_reason[:300]}")
+    if drive_folder_url:
+        lines.append(f"Drive: {drive_folder_url}")
+    if trace_url:
+        lines.append(f"Trace: {trace_url}")
+    msg = "\n".join(lines)
+    for url in [u.strip() for u in webhook_url.split(",") if u.strip()]:
+        try:
+            post_google_chat_message(url, msg)
+        except Exception as e:
+            logger.error(
+                "Failed to post vendor-gate alert for '%s' to %s: %s",
+                site_title,
+                url[:60],
+                e,
+            )
 
 
 def _notify_source_read_issues(
@@ -1093,6 +1227,21 @@ def process_site_pipeline(
             drive_folder_url=drive_folder_url,
             trace_url=generation_result.trace_url or "",
         )
+        # Vendor gate has already passed at this point (we're past
+        # ``_resolve_readiness_result``). If the agent still failed to build
+        # a report, escalate to humans — the inputs themselves likely need
+        # review (OCR-stuck PDF, malformed RayCon JSON, conflicting permits).
+        if (
+            _vendor_gate_enabled()
+            and generation_result.status == "generation_failed"
+        ):
+            _notify_vendor_gate_extraction_failure(
+                settings.google_chat_webhook_url,
+                site_title,
+                drive_folder_url=drive_folder_url,
+                failure_reason=generation_result.error or "",
+                trace_url=generation_result.trace_url or "",
+            )
         return generation_result
     assert agent_result is not None
 
@@ -1116,6 +1265,24 @@ def process_site_pipeline(
     if completeness_result is not None:
         completeness_result.trace_url = trace_url
         completeness_result.trace = agent_result.get("trace")
+        # Same escalation as the agent-failure branch above: vendor gate
+        # has passed but the resulting report is incomplete — humans need
+        # to look at the inputs.
+        if (
+            _vendor_gate_enabled()
+            and completeness_result.status == "report_incomplete"
+        ):
+            _notify_vendor_gate_extraction_failure(
+                settings.google_chat_webhook_url,
+                site_title,
+                drive_folder_url=drive_folder_url,
+                failure_reason=(
+                    "Report generated but "
+                    f"{len(completeness_result.unresolved_tokens)} tokens "
+                    "unresolved"
+                ),
+                trace_url=trace_url or "",
+            )
         return completeness_result
     assert completeness is not None
 
