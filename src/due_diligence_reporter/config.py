@@ -98,7 +98,21 @@ class Settings(BaseSettings):
     )
     raycon_api_key: str = Field(
         "",
-        description="Static API key sent in the X-RayCon-API-Key header.",
+        description=(
+            "Optional fallback API key for the X-RayCon-API-Key header. "
+            "The /v1/jobs spec is HMAC-SHA256 signed with raycon_webhook_secret "
+            "(see X-RayCon-Signature). The API key is sent only when set, for "
+            "compatibility with environments that haven't rolled to HMAC yet."
+        ),
+    )
+    raycon_webhook_secret: str = Field(
+        "",
+        description=(
+            "Shared secret used to HMAC-SHA256 sign the raw /v1/jobs request "
+            "body. RayCon validates the signature in the X-RayCon-Signature "
+            "header. Required by the integration spec; without it, "
+            "post_raycon_job refuses to dispatch."
+        ),
     )
 
     # Shovels.ai permit history API

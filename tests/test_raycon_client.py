@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +14,7 @@ from due_diligence_reporter.raycon_client import (
     RAYCON_BREAKDOWN_ROWS,
     RAYCON_SCENARIO_FILENAME,
     RayConSchemaError,
+    _compute_hmac_signature,
     post_raycon_job,
     raycon_scenario_to_report_fields,
     read_raycon_scenario_from_m1,
@@ -23,21 +26,42 @@ from due_diligence_reporter.raycon_client import (
 # ---------------------------------------------------------------------------
 
 
+# Spec-required fields per raycon_ddr_integration_spec.md §1.2.
+_REQUIRED_KW: dict[str, object] = {
+    "site_id": "S-123",
+    "site_name": "Test Site",
+    "address": "100 Main St, Austin, TX",
+    "drive_folder_url": "https://drive.google.com/drive/folders/parent-abc",
+    "m1_folder_id": "m1-xyz",
+    "block_plan_file_id": "bp-123",
+    "block_plan_url": "https://drive.google.com/file/d/bp-123/view",
+}
+
+
+def _ok_response(status_code: int = 202, body: dict | None = None):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = body if body is not None else {"status": "accepted"}
+    return resp
+
+
 class TestPostRayConJob:
-    """The POST contract is the only place DDR can break RayCon, so guard it."""
+    """The POST contract is the only place DDR can break RayCon, so guard it.
+
+    Spec: raycon_ddr_integration_spec.md §1 — 11 required body fields,
+    HMAC-SHA256 of the raw body in X-RayCon-Signature.
+    """
 
     def _fake_settings(self):
         settings = MagicMock()
         settings.raycon_jobs_url = "https://raycon.test/v1/jobs"
-        settings.raycon_api_key = "test-key"
+        settings.raycon_webhook_secret = "shared-secret"
+        settings.raycon_api_key = ""
         return settings
 
-    def test_happy_path_sends_required_fields_and_auth(self) -> None:
-        response = MagicMock()
-        response.status_code = 202
-        response.raise_for_status.return_value = None
-        response.json.return_value = {"status": "accepted"}
-
+    def test_happy_path_sends_all_spec_fields_and_hmac(self) -> None:
+        response = _ok_response()
         with patch(
             "due_diligence_reporter.raycon_client.get_settings",
             return_value=self._fake_settings(),
@@ -45,67 +69,114 @@ class TestPostRayConJob:
             "due_diligence_reporter.raycon_client.requests.post",
             return_value=response,
         ) as mock_post:
-            result = post_raycon_job(
-                site_id="S-123",
-                site_name="Test Site",
-                address="100 Main St, Austin, TX",
-                site_folder_id="folder-abc",
-                request_id="ddr-S-123-20260430T120000Z",
-                m1_folder_id="m1-xyz",
-            )
+            result = post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
 
         assert result == {"status": "accepted"}
         assert mock_post.call_count == 1
         kwargs = mock_post.call_args.kwargs
-        assert kwargs["headers"]["X-RayCon-API-Key"] == "test-key"
-        body = kwargs["json"]
+
+        # Body is sent as raw bytes (data=), not json=, so the bytes we
+        # POST match the bytes we signed.
+        assert "json" not in kwargs
+        body_bytes = kwargs["data"]
+        assert isinstance(body_bytes, (bytes, bytearray))
+        body = json.loads(body_bytes.decode("utf-8"))
+
+        # All 11 spec §1.2 fields present and correct.
         assert body["schema_version"] == "1.0"
         assert body["site_id"] == "S-123"
         assert body["site_name"] == "Test Site"
         assert body["address"] == "100 Main St, Austin, TX"
-        assert body["site_folder_id"] == "folder-abc"
-        assert body["request_id"] == "ddr-S-123-20260430T120000Z"
+        assert body["drive_folder_url"].endswith("/parent-abc")
         assert body["m1_folder_id"] == "m1-xyz"
-        assert "requested_at" in body and body["requested_at"].endswith("Z")
+        assert body["block_plan_file_id"] == "bp-123"
+        assert body["block_plan_url"].endswith("/view")
+        assert body["total_building_sf"] == 8400
+        assert body["callback_marker"] == "raycon_scenario.json"
+        assert body["requested_at"].endswith("Z")
 
-    def test_missing_api_key_raises(self) -> None:
+        # HMAC: signature header matches an independent recompute of the
+        # exact bytes that were sent on the wire.
+        sig_header = kwargs["headers"]["X-RayCon-Signature"]
+        expected = hmac.new(b"shared-secret", body_bytes, hashlib.sha256).hexdigest()
+        assert sig_header == f"sha256={expected}"
+
+        # Legacy API key not sent when unset.
+        assert "X-RayCon-API-Key" not in kwargs["headers"]
+
+    def test_legacy_api_key_sent_alongside_hmac_when_configured(self) -> None:
         settings = self._fake_settings()
-        settings.raycon_api_key = ""
+        settings.raycon_api_key = "legacy-key"
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=settings,
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
+        headers = mock_post.call_args.kwargs["headers"]
+        assert headers["X-RayCon-API-Key"] == "legacy-key"
+        assert headers["X-RayCon-Signature"].startswith("sha256=")
+
+    def test_missing_webhook_secret_raises(self) -> None:
+        settings = self._fake_settings()
+        settings.raycon_webhook_secret = ""
         with patch(
             "due_diligence_reporter.raycon_client.get_settings",
             return_value=settings,
         ):
-            with pytest.raises(RuntimeError, match="RAYCON_API_KEY"):
-                post_raycon_job(
-                    site_id="S-1",
-                    site_name="x",
-                    address="y",
-                    site_folder_id="z",
-                )
+            with pytest.raises(RuntimeError, match="RAYCON_WEBHOOK_SECRET"):
+                post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
 
-    def test_missing_required_fields_raises(self) -> None:
+    def test_missing_required_field_raises(self) -> None:
         with patch(
             "due_diligence_reporter.raycon_client.get_settings",
             return_value=self._fake_settings(),
         ):
-            with pytest.raises(ValueError, match="site_id, site_name, address"):
-                post_raycon_job(
-                    site_id="",
-                    site_name="x",
-                    address="y",
-                    site_folder_id="z",
-                )
+            kw = dict(_REQUIRED_KW)
+            kw["block_plan_file_id"] = ""  # spec §1.2 idempotency key
+            with pytest.raises(ValueError, match="block_plan_file_id"):
+                post_raycon_job(total_building_sf=8400, **kw)
+
+    def test_total_building_sf_omitted_sends_zero(self) -> None:
+        # Spec §1.2 marks total_building_sf required. When the Wrike record
+        # lacks it, we still send the field (as 0) rather than dropping it,
+        # so RayCon's validator sees a complete payload.
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            post_raycon_job(**_REQUIRED_KW)
+        body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        assert body["total_building_sf"] == 0
+
+    def test_signature_matches_byte_exact_payload(self) -> None:
+        # Regression: signing must happen over the exact bytes posted; if
+        # we serialized with one separator scheme and posted with another
+        # (e.g. via requests' json= kwarg), RayCon would reject every call.
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            post_raycon_job(total_building_sf=1000, **_REQUIRED_KW)
+        kwargs = mock_post.call_args.kwargs
+        sent_bytes = kwargs["data"]
+        sent_sig = kwargs["headers"]["X-RayCon-Signature"]
+        recomputed = _compute_hmac_signature("shared-secret", sent_bytes)
+        assert sent_sig == recomputed
 
     def test_retries_on_5xx_then_succeeds(self) -> None:
         flaky = MagicMock()
         flaky.status_code = 503
         flaky.raise_for_status.side_effect = requests.HTTPError(response=flaky)
-
-        ok = MagicMock()
-        ok.status_code = 202
-        ok.raise_for_status.return_value = None
-        ok.json.return_value = {"status": "accepted"}
-
+        ok = _ok_response()
         with patch(
             "due_diligence_reporter.raycon_client.get_settings",
             return_value=self._fake_settings(),
@@ -113,13 +184,7 @@ class TestPostRayConJob:
             "due_diligence_reporter.raycon_client.requests.post",
             side_effect=[flaky, ok],
         ) as mock_post:
-            result = post_raycon_job(
-                site_id="S-1",
-                site_name="x",
-                address="y",
-                site_folder_id="z",
-            )
-
+            result = post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
         assert result == {"status": "accepted"}
         assert mock_post.call_count == 2
 
@@ -128,7 +193,6 @@ class TestPostRayConJob:
         response.status_code = 202
         response.raise_for_status.return_value = None
         response.json.side_effect = ValueError("no body")
-
         with patch(
             "due_diligence_reporter.raycon_client.get_settings",
             return_value=self._fake_settings(),
@@ -136,13 +200,7 @@ class TestPostRayConJob:
             "due_diligence_reporter.raycon_client.requests.post",
             return_value=response,
         ):
-            result = post_raycon_job(
-                site_id="S-1",
-                site_name="x",
-                address="y",
-                site_folder_id="z",
-            )
-
+            result = post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
         assert result == {"status": "accepted"}
 
 
@@ -233,6 +291,71 @@ class TestReadRayConScenarioFromM1:
         assert result is not None
         assert result["_drive_file_id"] == "newer"
         gc.download_file_bytes.assert_called_once_with("newer")
+
+    def test_empty_drive_folder_url_returns_none(self) -> None:
+        """Defensive: empty drive_folder_url short-circuits without hitting Drive."""
+        gc = MagicMock()
+        result = read_raycon_scenario_from_m1(gc, "")
+        assert result is None
+        gc.list_files_in_folder.assert_not_called()
+        gc.download_file_bytes.assert_not_called()
+
+    def test_drive_list_files_error_propagates(self) -> None:
+        """Transient Drive errors during folder listing surface to the caller
+        so the follow-up script can report them as per-site errors instead of
+        treating them as 'no scenario yet'."""
+        gc = MagicMock()
+        gc.list_files_in_folder.side_effect = RuntimeError("Drive 503 unavailable")
+        with patch(
+            "due_diligence_reporter.raycon_client._resolve_m1_folder",
+            return_value=("m1-id", "M1 Folder"),
+        ):
+            with pytest.raises(RuntimeError, match="Drive 503"):
+                read_raycon_scenario_from_m1(
+                    gc, "https://drive.google.com/folder/abc"
+                )
+
+    def test_non_dict_top_level_json_raises_schema_error(self) -> None:
+        """A JSON array (or other non-object root) at the top level is rejected."""
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = [
+            {
+                "id": "f1",
+                "name": RAYCON_SCENARIO_FILENAME,
+                "modifiedTime": "2026-04-30T10:00:00Z",
+            },
+        ]
+        gc.download_file_bytes.return_value = b"[1, 2, 3]"
+        with patch(
+            "due_diligence_reporter.raycon_client._resolve_m1_folder",
+            return_value=("m1-id", "M1 Folder"),
+        ):
+            with pytest.raises(RayConSchemaError, match="must be a JSON object"):
+                read_raycon_scenario_from_m1(
+                    gc, "https://drive.google.com/folder/abc"
+                )
+
+    def test_invalid_utf8_bytes_raises_schema_error(self) -> None:
+        """Non-UTF-8 bytes from Drive are surfaced as RayConSchemaError, not
+        an unhandled UnicodeDecodeError."""
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = [
+            {
+                "id": "f1",
+                "name": RAYCON_SCENARIO_FILENAME,
+                "modifiedTime": "2026-04-30T10:00:00Z",
+            },
+        ]
+        # 0xff alone is not valid UTF-8.
+        gc.download_file_bytes.return_value = b"\xff\xfe\xfd"
+        with patch(
+            "due_diligence_reporter.raycon_client._resolve_m1_folder",
+            return_value=("m1-id", "M1 Folder"),
+        ):
+            with pytest.raises(RayConSchemaError, match="not valid JSON"):
+                read_raycon_scenario_from_m1(
+                    gc, "https://drive.google.com/folder/abc"
+                )
 
 
 # ---------------------------------------------------------------------------

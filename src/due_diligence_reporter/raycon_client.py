@@ -22,9 +22,11 @@ be coordinated with RayCon and validated here before mapping.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -90,69 +92,115 @@ class RayConSchemaError(ValueError):
 # ---------------------------------------------------------------------------
 
 
+# Always-on callback marker per spec §2.
+RAYCON_CALLBACK_MARKER = RAYCON_SCENARIO_FILENAME
+
+
+def _compute_hmac_signature(secret: str, body_bytes: bytes) -> str:
+    """Compute the ``sha256=<hex>`` signature for the X-RayCon-Signature header.
+
+    Per the integration spec §1.1, RayCon validates an HMAC-SHA256 of the
+    *raw request body* using ``RAYCON_WEBHOOK_SECRET`` as the key. We
+    serialize the body once with stable separators and sign those exact
+    bytes so the signature matches the bytes we send on the wire.
+    """
+    digest = hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
+
+
 @retry(**retry_config())  # type: ignore[untyped-decorator]
 def post_raycon_job(
     *,
     site_id: str,
     site_name: str,
     address: str,
-    site_folder_id: str,
-    request_id: str | None = None,
-    m1_folder_id: str | None = None,
-    reason: str | None = None,
+    drive_folder_url: str,
+    m1_folder_id: str,
+    block_plan_file_id: str,
+    block_plan_url: str,
+    total_building_sf: int | None = None,
 ) -> dict[str, Any]:
     """Notify RayCon that a Block Plan is ready in a site's M1 folder.
 
-    The request body matches the ``/v1/jobs`` contract RayCon published
-    on 2026-04-30. Required fields: ``schema_version``, ``site_id``,
-    ``site_name``, ``address``, ``site_folder_id``, ``requested_at``.
-    Optional: ``request_id`` (recommended for traceability),
-    ``m1_folder_id`` (when caller already resolved it), ``reason``
-    (defaults to ``raycon_analysis_requested`` server-side).
+    Request body matches the integration spec §1.2 — 11 fields including
+    ``block_plan_file_id`` (idempotency key), ``m1_folder_id`` (where
+    RayCon writes ``raycon_scenario.json``), and ``total_building_sf``.
 
-    Auth is a static API key in the ``X-RayCon-API-Key`` header. The
-    standard ``retry_config`` retries on connection errors and
-    retryable HTTP status codes (429/5xx).
+    Auth is HMAC-SHA256 of the raw body, signed with
+    ``RAYCON_WEBHOOK_SECRET`` and sent in ``X-RayCon-Signature`` per
+    spec §1.1. If ``RAYCON_API_KEY`` is also set, it's sent in
+    ``X-RayCon-API-Key`` for backward compatibility while environments
+    roll to HMAC; the HMAC signature is the canonical auth.
+
+    The standard ``retry_config`` retries on connection errors and
+    retryable HTTP status codes (429/5xx). Re-pinging with the same
+    ``block_plan_file_id`` is a spec-defined no-op on RayCon's side.
     """
     settings = get_settings()
-    if not settings.raycon_api_key:
+    if not settings.raycon_webhook_secret:
         raise RuntimeError(
-            "RAYCON_API_KEY is not configured; cannot dispatch Block Plan "
-            "job to RayCon."
+            "RAYCON_WEBHOOK_SECRET is not configured; cannot HMAC-sign the "
+            "Block Plan job request to RayCon (spec §1.1)."
         )
-    if not site_id or not site_name or not address or not site_folder_id:
+    missing_required: list[str] = []
+    for arg_name, arg_value in (
+        ("site_id", site_id),
+        ("site_name", site_name),
+        ("address", address),
+        ("drive_folder_url", drive_folder_url),
+        ("m1_folder_id", m1_folder_id),
+        ("block_plan_file_id", block_plan_file_id),
+        ("block_plan_url", block_plan_url),
+    ):
+        if not arg_value:
+            missing_required.append(arg_name)
+    if missing_required:
         raise ValueError(
-            "post_raycon_job requires site_id, site_name, address, and "
-            "site_folder_id."
+            "post_raycon_job missing required fields: " + ", ".join(missing_required)
         )
+
+    # Spec §2.3 requires integer SF. Use 0 as a sentinel when caller
+    # truly has no value so the field is still present on the wire.
+    sf_int = int(total_building_sf) if total_building_sf is not None else 0
 
     body: dict[str, Any] = {
         "schema_version": "1.0",
         "site_id": site_id,
         "site_name": site_name,
         "address": address,
-        "site_folder_id": site_folder_id,
-        "requested_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "drive_folder_url": drive_folder_url,
+        "m1_folder_id": m1_folder_id,
+        "block_plan_file_id": block_plan_file_id,
+        "block_plan_url": block_plan_url,
+        "total_building_sf": sf_int,
+        "callback_marker": RAYCON_CALLBACK_MARKER,
+        "requested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    if request_id:
-        body["request_id"] = request_id
-    if m1_folder_id:
-        body["m1_folder_id"] = m1_folder_id
-    if reason:
-        body["reason"] = reason
+
+    # Serialize once, sign those exact bytes, and POST those exact bytes.
+    # Using `requests`' `json=` would re-serialize and risk a signature
+    # mismatch (different separators, key ordering, etc.).
+    body_bytes = json.dumps(body, separators=(",", ":"), sort_keys=False).encode("utf-8")
+    signature = _compute_hmac_signature(settings.raycon_webhook_secret, body_bytes)
+
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "X-RayCon-Signature": signature,
+    }
+    if settings.raycon_api_key:
+        # Optional, kept for environments still using the legacy API key
+        # while RayCon rolls HMAC enforcement.
+        headers["X-RayCon-API-Key"] = settings.raycon_api_key
 
     logger.info(
-        "Dispatching RayCon job: site=%s request_id=%s",
+        "Dispatching RayCon job: site=%s block_plan_file_id=%s",
         site_name,
-        request_id or "(none)",
+        block_plan_file_id,
     )
     response = requests.post(
         settings.raycon_jobs_url,
-        json=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-RayCon-API-Key": settings.raycon_api_key,
-        },
+        data=body_bytes,
+        headers=headers,
         timeout=60,
     )
     response.raise_for_status()

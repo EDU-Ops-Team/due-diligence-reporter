@@ -27,7 +27,6 @@ from .m1_lookup import (
 from .utils import (
     escape_html_text,
     extract_city_from_address,
-    extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
     send_email,
 )
@@ -148,27 +147,28 @@ def _run_block_plan_downstream(
     *,
     site_summary: dict[str, Any],
     block_plan_content: str,  # noqa: ARG001 — retained for caller compatibility
-    block_plan_url: str,  # noqa: ARG001 — retained for caller compatibility
+    block_plan_url: str,
+    block_plan_file_id: str,
 ) -> list[dict[str, str]]:
     """Hand the Block Plan off to RayCon's async ``/v1/jobs`` endpoint.
 
     Pre-cutover (April 2026) this function ran Capacity Brainlift +
     the synchronous ``/v1/chat`` call inline, which took up to ~10
-    minutes per site. The new contract:
+    minutes per site. The new contract (per ``raycon_ddr_integration_spec.md``):
 
     1. DDR files the Block Plan into the site's M1 folder (already done
        by the caller at the time we run).
-    2. We POST a small job ping to RayCon. RayCon then reads the Block
-       Plan from Drive itself, derives rooms, computes scenarios, and
+    2. We POST an HMAC-signed job ping to RayCon with the 11 spec fields.
+       RayCon reads the Block Plan from Drive itself using
+       ``block_plan_file_id``, derives rooms, computes scenarios, and
        writes ``raycon_scenario.json`` back into the same M1 folder.
     3. The ``raycon-followup`` workflow polls every 5 minutes, picks up
        the JSON when it lands, and publishes the RayCon Scenario
        Google Doc. (Implemented in scripts/raycon_followup.py.)
 
-    No long inline wait. The two ``block_plan_content`` /
-    ``block_plan_url`` parameters are retained so existing callers don't
-    need to be touched, but RayCon now reads the PDF directly from
-    Drive instead.
+    No long inline wait. ``block_plan_content`` is retained so callers
+    don't need to be touched, but RayCon now reads the PDF directly from
+    Drive via ``block_plan_file_id``.
     """
     from .raycon_client import post_raycon_job
 
@@ -182,36 +182,58 @@ def _run_block_plan_downstream(
             "Block Plan downstream requires site_id, title, address, and "
             "drive_folder_url on the Wrike record."
         )
-
-    site_folder_id = extract_folder_id_from_url(drive_folder_url)
-    if not site_folder_id:
+    if not block_plan_file_id:
         raise RuntimeError(
-            f"Could not extract Drive folder ID from drive_folder_url='{drive_folder_url}'"
+            "Block Plan downstream requires block_plan_file_id (Drive file ID "
+            "of the uploaded Block Plan); spec §1.2 uses it as the idempotency key."
+        )
+    if not block_plan_url:
+        raise RuntimeError(
+            "Block Plan downstream requires block_plan_url (Drive webViewLink); "
+            "spec §1.2 requires it for the RayCon job body."
         )
 
-    request_id = (
-        f"ddr-{site_id}-"
-        f"{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
-    )
+    # m1_folder_id is the folder RayCon will write raycon_scenario.json into.
+    m1_folder_id, _ = _resolve_m1_folder(gc, drive_folder_url)
+    if not m1_folder_id:
+        raise RuntimeError(
+            f"Could not resolve M1 folder for drive_folder_url='{drive_folder_url}'; "
+            "RayCon needs m1_folder_id to know where to write the result."
+        )
+
+    # total_building_sf comes from the Wrike record (may be missing for
+    # early-stage sites; the spec marks it required so post_raycon_job
+    # sends 0 when truly unknown rather than dropping the field).
+    total_building_sf_raw = site_summary.get("total_building_sf")
+    try:
+        total_building_sf = (
+            int(total_building_sf_raw) if total_building_sf_raw is not None else None
+        )
+    except (TypeError, ValueError):
+        total_building_sf = None
+
     response = post_raycon_job(
         site_id=site_id,
         site_name=site_name,
         address=site_address,
-        site_folder_id=site_folder_id,
-        request_id=request_id,
+        drive_folder_url=drive_folder_url,
+        m1_folder_id=m1_folder_id,
+        block_plan_file_id=block_plan_file_id,
+        block_plan_url=block_plan_url,
+        total_building_sf=total_building_sf,
     )
     raycon_run_id = str(response.get("raycon_run_id", "")).strip()
     logger.info(
-        "RayCon job dispatched for site=%s request_id=%s run_id=%s",
+        "RayCon job dispatched for site=%s block_plan_file_id=%s run_id=%s",
         site_name,
-        request_id,
+        block_plan_file_id,
         raycon_run_id or "(unknown)",
     )
 
     return [
         {
             "doc_type": "raycon_scenario_request",
-            "request_id": request_id,
+            "block_plan_file_id": block_plan_file_id,
             "raycon_run_id": raycon_run_id,
             "status": str(response.get("status", "accepted")),
         }
@@ -611,6 +633,7 @@ def process_email(
                     site_summary=site_summary,
                     block_plan_content=block_plan_content,
                     block_plan_url=str(drive_file.get("webViewLink", "")),
+                    block_plan_file_id=str(drive_file.get("id", "")),
                 )
                 uploaded[-1]["derived_documents"] = derived_docs
         except Exception as e:
