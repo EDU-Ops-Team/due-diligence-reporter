@@ -321,6 +321,133 @@ def test_main_logs_near_match_hint_for_orphans_with_no_exact_match(monkeypatch, 
     assert "[ACTIVE]" in text
 
 
+# ---------- rename-suspect skip behavior ----------
+
+def test_apply_mode_skips_rename_suspects_with_active_near_match(monkeypatch, caplog):
+    """Apply mode must NOT delete an orphan whose active Wrike near-match
+    suggests the slug is just stale (record was renamed).
+
+    Scenario mirrors the live findings: \\
+    - 'alpha-school-lombard-835' on the dashboard \\
+    - 'Alpha School Lombard 995' is the current active Wrike title \\
+    - 'alpha-school-minneapolis-1128' has no Wrike record — truly cancelled
+    """
+    monkeypatch.setenv("RECONCILE_DRY_RUN", "0")
+    monkeypatch.setenv("DASHBOARD_PUBLISH_SECRET", "shh")
+    monkeypatch.setenv("DASHBOARD_PUBLISH_URL", "https://dash.example")
+
+    monkeypatch.setattr(
+        reconcile_dashboard,
+        "_fetch_dashboard_slugs",
+        lambda base_url: [
+            {"slug": "alpha-school-lombard-835"},          # rename suspect
+            {"slug": "alpha-school-minneapolis-1128"},     # truly orphaned
+            {"slug": "alpha-school-lombard-995"},          # the current active slug
+        ],
+    )
+    monkeypatch.setattr(
+        reconcile_dashboard,
+        "_expected_slugs_from_wrike",
+        lambda: (
+            {"alpha-school-lombard-995"},
+            {},
+            [("Alpha School Lombard 995", True)],
+        ),
+    )
+
+    delete_calls: list[dict] = []
+    monkeypatch.setattr(
+        reconcile_dashboard,
+        "_delete_site",
+        lambda base_url, slug, secret, *, reason, timeout=20: delete_calls.append(
+            {"slug": slug, "reason": reason}
+        )
+        or True,
+    )
+
+    caplog.set_level("INFO", logger="reconcile_dashboard")
+    rc = reconcile_dashboard.main()
+
+    assert rc == 0
+    deleted_slugs = {c["slug"] for c in delete_calls}
+    # Truly orphaned slug is deleted…
+    assert "alpha-school-minneapolis-1128" in deleted_slugs
+    # …but rename-suspect is NOT deleted
+    assert "alpha-school-lombard-835" not in deleted_slugs
+    text = caplog.text
+    assert "RENAME-SUSPECT" in text
+    assert "DELETABLE" in text
+    assert "Alpha School Lombard 995" in text  # active near-match surfaced
+
+
+def test_dry_run_partitions_rename_suspects_separately_from_deletable(monkeypatch, caplog):
+    monkeypatch.setenv("RECONCILE_DRY_RUN", "1")
+    monkeypatch.setattr(
+        reconcile_dashboard,
+        "_fetch_dashboard_slugs",
+        lambda base_url: [
+            {"slug": "alpha-school-lombard-835"},
+            {"slug": "alpha-school-minneapolis-1128"},
+            {"slug": "alpha-school-lombard-995"},
+        ],
+    )
+    monkeypatch.setattr(
+        reconcile_dashboard,
+        "_expected_slugs_from_wrike",
+        lambda: (
+            {"alpha-school-lombard-995"},
+            {},
+            [("Alpha School Lombard 995", True)],
+        ),
+    )
+
+    caplog.set_level("INFO", logger="reconcile_dashboard")
+    rc = reconcile_dashboard.main()
+
+    assert rc == 0
+    text = caplog.text
+    # Dry-run "would delete" count must reflect ONLY truly deletable orphans,
+    # not the rename-suspect ones.
+    assert "would delete 1" in text
+    assert "Skipping 1 rename-suspect" in text
+
+
+def test_apply_mode_treats_inactive_near_match_as_deletable(monkeypatch):
+    """If the only near-matches are INACTIVE Wrike records, the slug is
+    deletable — the underlying site has been cancelled, just under a
+    slightly different title than what the dashboard slug encodes.
+    """
+    monkeypatch.setenv("RECONCILE_DRY_RUN", "0")
+    monkeypatch.setenv("DASHBOARD_PUBLISH_SECRET", "shh")
+
+    monkeypatch.setattr(
+        reconcile_dashboard,
+        "_fetch_dashboard_slugs",
+        lambda base_url: [{"slug": "old-cancelled-site-tx"}],
+    )
+    monkeypatch.setattr(
+        reconcile_dashboard,
+        "_expected_slugs_from_wrike",
+        lambda: (set(), {}, [("Old Cancelled Site", False)]),
+    )
+
+    delete_calls: list[dict] = []
+    monkeypatch.setattr(
+        reconcile_dashboard,
+        "_delete_site",
+        lambda base_url, slug, secret, *, reason, timeout=20: delete_calls.append(
+            {"slug": slug, "reason": reason}
+        )
+        or True,
+    )
+
+    rc = reconcile_dashboard.main()
+    assert rc == 0
+    assert delete_calls == [
+        {"slug": "old-cancelled-site-tx", "reason": "wrike-near-match-inactive"}
+    ]
+
+
 # ---------- _delete_site: 200/404 = success, others = fail ----------
 
 def test_delete_site_treats_200_and_404_as_success(monkeypatch):

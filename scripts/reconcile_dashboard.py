@@ -153,17 +153,47 @@ def _slug_tokens(slug: str) -> list[str]:
 def _find_near_matches(
     slug: str, all_titles: list[tuple[str, bool]], *, limit: int = 3
 ) -> list[tuple[str, bool]]:
-    """Return Wrike (title, is_active) entries whose title contains every
-    meaningful token from ``slug``. Helps a human triage 'no matching Wrike
-    record' orphans by showing what the active record was likely renamed to.
+    """Return Wrike ``(title, is_active)`` entries that look like the same site.
+
+    Matching strategy, in order:
+
+    1. **Strict**: every meaningful slug token (after stripping brand words,
+       street types, USPS state codes) appears in the candidate title. This
+       handles the common case of slug-to-title drift like state suffixes
+       (e.g. dashboard slug ``...-tulsa-ok`` vs Wrike title ``... Tulsa ...``).
+    2. **Non-numeric fallback**: if no candidate matches strictly, retry
+       requiring only the *non-numeric* meaningful tokens to be present. This
+       catches the address-number rename case — e.g. dashboard slug
+       ``alpha-school-lombard-835`` (the original Wrike title) vs current
+       Wrike title ``Alpha School Lombard 995`` (renamed to a new street
+       number). Without this fallback, a rename like 835 → 995 looks like a
+       genuine orphan and the reconciler would prune real data.
+
+    The fallback only fires when at least one non-numeric token survives, so
+    purely numeric slugs (rare) still require the strict path.
     """
     tokens = _slug_tokens(slug)
     if not tokens:
         return []
+
     matches: list[tuple[str, bool]] = []
     for title, active in all_titles:
         lt = title.lower()
         if all(tok in lt for tok in tokens):
+            matches.append((title, active))
+            if len(matches) >= limit:
+                return matches
+    if matches:
+        return matches
+
+    non_numeric = [t for t in tokens if not t.isdigit()]
+    if not non_numeric or non_numeric == tokens:
+        # No fallback available (either all numeric, or fallback equals strict)
+        return matches
+
+    for title, active in all_titles:
+        lt = title.lower()
+        if all(tok in lt for tok in non_numeric):
             matches.append((title, active))
             if len(matches) >= limit:
                 break
@@ -247,48 +277,84 @@ def main() -> int:
         logger.info("No orphan slugs on dashboard — nothing to reconcile")
         return 0
 
+    # Partition orphans into deletable vs rename-suspect.
+    #
+    # Rename-suspect: the dashboard slug has no exact Wrike match, but a Wrike
+    # record that is currently *active* shares the same meaningful tokens. This
+    # almost always means the Wrike record was retitled (e.g. 'Alpha School
+    # Lombard 835' → 'Alpha School Lombard 995') and the dashboard row is real
+    # site data on a stale slug, NOT a cancelled site. Deleting it would
+    # clobber real data, so we surface it for human triage and skip.
+    deletable: list[tuple[str, str]] = []  # (slug, reason)
+    rename_suspects: list[tuple[str, list[tuple[str, bool]]]] = []
+
     logger.info("Found %d orphan slug(s) on dashboard:", len(orphans))
     for slug in orphans:
+        near = _find_near_matches(slug, all_titles)
+        active_near = [m for m in near if m[1]]
+
         if slug in inactive_slugs:
-            logger.info("  - %s (Wrike status_id=%s)", slug, inactive_slugs[slug])
+            reason = f"wrike-status:{inactive_slugs[slug]}"
+            logger.info("  - %s [DELETABLE] (Wrike status_id=%s)", slug, inactive_slugs[slug])
+            deletable.append((slug, reason))
+        elif active_near:
+            hints = "; ".join(
+                f"{title!r} [ACTIVE]" for title, _ in active_near
+            )
+            logger.info(
+                "  - %s [RENAME-SUSPECT] (active near matches: %s)",
+                slug,
+                hints,
+            )
+            rename_suspects.append((slug, active_near))
+        elif near:
+            # All near matches are inactive — still safer to skip; the slug
+            # may map to a record that was renamed and then cancelled. Log it.
+            hints = "; ".join(
+                f"{title!r} [INACTIVE]" for title, _ in near
+            )
+            logger.info(
+                "  - %s [DELETABLE] (no exact match; only inactive near matches: %s)",
+                slug,
+                hints,
+            )
+            deletable.append((slug, "wrike-near-match-inactive"))
         else:
-            near = _find_near_matches(slug, all_titles)
-            if near:
-                hints = "; ".join(
-                    f"{title!r} [{'ACTIVE' if active else 'INACTIVE'}]"
-                    for title, active in near
-                )
-                logger.info(
-                    "  - %s (no exact Wrike record; near matches: %s)",
-                    slug,
-                    hints,
-                )
-            else:
-                logger.info("  - %s (no matching Wrike record)", slug)
+            logger.info("  - %s [DELETABLE] (no matching Wrike record)", slug)
+            deletable.append((slug, "wrike-record-missing"))
+
+    if rename_suspects:
+        logger.info(
+            "Skipping %d rename-suspect orphan(s) — these have an active Wrike "
+            "record under a different title and are NOT pruned. Migrate the "
+            "dashboard data manually if needed.",
+            len(rename_suspects),
+        )
 
     if dry_run:
         logger.info(
-            "RECONCILE_DRY_RUN=1 — no DELETE calls issued. "
-            "Re-run with RECONCILE_DRY_RUN=0 to apply."
+            "RECONCILE_DRY_RUN=1 — no DELETE calls issued (would delete %d). "
+            "Re-run with RECONCILE_DRY_RUN=0 to apply.",
+            len(deletable),
         )
         return 0
 
+    if not deletable:
+        logger.info("Apply mode: nothing safe to delete. Exiting cleanly.")
+        return 0
+
     deleted, failed = 0, 0
-    for slug in orphans:
-        reason = (
-            f"wrike-status:{inactive_slugs[slug]}"
-            if slug in inactive_slugs
-            else "wrike-record-missing"
-        )
+    for slug, reason in deletable:
         if _delete_site(base_url, slug, secret, reason=reason):
             deleted += 1
         else:
             failed += 1
 
     logger.info(
-        "Reconcile complete: %d deleted, %d failed (of %d orphans)",
+        "Reconcile complete: %d deleted, %d failed, %d skipped as rename-suspects (of %d orphans)",
         deleted,
         failed,
+        len(rename_suspects),
         len(orphans),
     )
     return 0 if failed == 0 else 5
