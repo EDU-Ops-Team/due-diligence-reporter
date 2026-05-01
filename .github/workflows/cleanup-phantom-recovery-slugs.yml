@@ -54,17 +54,22 @@ jobs:
           PAIR: ${{ inputs.pair }}
         run: |
           set -euo pipefail
-          # Build args
+          # Build args as a bash array so each token stays a single shell
+          # word even if PAIR contains spaces or shell metacharacters.
+          # Unquoted ${PAIR_ARG} would word-split: PAIR='alpha school'
+          # would have argparse see '--pair alpha school' as three args.
+          ARGS=()
           if [ "${APPLY}" = "true" ]; then
-            FLAG="--apply"
+            ARGS+=("--apply")
           else
-            FLAG="--dry-run"
+            ARGS+=("--dry-run")
           fi
-          PAIR_ARG=""
           if [ -n "${PAIR}" ]; then
-            PAIR_ARG="--pair ${PAIR}"
+            ARGS+=("--pair" "${PAIR}")
           fi
-          uv run python scripts/cleanup_phantom_recovery_slugs.py ${FLAG} ${PAIR_ARG}
+          uv run python scripts/cleanup_phantom_recovery_slugs.py "${ARGS[@]}"
 
       - name: Done
-        run: echo "Cleanup run completed (apply=${{ inputs.apply }})"
+        env:
+          APPLY: ${{ inputs.apply }}
+        run: echo "Cleanup run completed (apply=${APPLY})"

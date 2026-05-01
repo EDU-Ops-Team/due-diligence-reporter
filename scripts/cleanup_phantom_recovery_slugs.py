@@ -55,6 +55,14 @@ logger = logging.getLogger(__name__)
 
 DASHBOARD_BASE_URL = "https://dd-dashboard-three.vercel.app"
 
+# Lightweight predicate for "this canonical-slug record looks like a wiped
+# stub." The recovery wipe leaves the slug present in sites.json but with
+# null/empty hydrated fields (can_we_open, scenarios, sources). A populated
+# record that survived the wipe should NOT be deleted by this script under
+# any circumstance — if seen, the pair is skipped and logged so a human can
+# investigate the map entry.
+_WIPED_STUB_FIELDS = ("can_we_open", "scenarios", "sources")
+
 # Phantom legacy-slug -> canonical Rebl slug. Source: 2026-05-01 recovery
 # workflow run 25226179557 vs PR #60's expected-canonical-slugs list.
 PHANTOM_TO_CANONICAL: list[tuple[str, str]] = [
@@ -83,6 +91,62 @@ PHANTOM_TO_CANONICAL: list[tuple[str, str]] = [
     # Use --pair miami-beach to apply only this row.
     ("400-71st-st-miami-beach-fl", "300-71st-miami-beach-fl"),
 ]
+
+
+def _is_wiped_stub(record: dict[str, Any] | None) -> bool:
+    """Return True if the dashboard record looks like a recovery-wiped stub.
+
+    A wiped stub has no hydrated analytical fields (can_we_open, scenarios,
+    sources). A None record is treated as a stub (already absent).
+
+    A populated record (any of the wiped-stub fields non-empty) is treated
+    as NOT a stub — even if some other field happens to be empty. This is
+    deliberately conservative: better to skip a real cleanup row than to
+    DELETE a populated record because the canonical slug map is wrong.
+    """
+    if record is None:
+        return True
+    for field in _WIPED_STUB_FIELDS:
+        value = record.get(field)
+        # Treat falsy (None, empty list/dict/str) as "not hydrated."
+        # Any truthy value indicates this record carries real data.
+        if value:
+            return False
+    return True
+
+
+def _fetch_site_record(
+    session: requests.Session,
+    base_url: str,
+    slug: str,
+    *,
+    timeout: int = 30,
+) -> tuple[bool, dict[str, Any] | None, str]:
+    """Fetch a single site record from the dashboard's public sites.json.
+
+    Returns (ok, record_or_None, note).
+      ok=True, record=dict   — record found
+      ok=True, record=None   — slug not present in sites.json
+      ok=False               — fetch failure (network, parse, non-200)
+    """
+    url = f"{base_url}/sites.json"
+    try:
+        r = session.get(url, timeout=timeout)
+    except requests.RequestException as e:
+        return False, None, f"GET sites.json network error: {e}"
+    if r.status_code != 200:
+        return False, None, f"GET sites.json HTTP {r.status_code}"
+    try:
+        payload = r.json()
+    except ValueError as e:
+        return False, None, f"GET sites.json parse error: {e}"
+    sites = payload.get("sites") if isinstance(payload, dict) else None
+    if not isinstance(sites, list):
+        return False, None, "sites.json: 'sites' field missing or not a list"
+    for entry in sites:
+        if isinstance(entry, dict) and entry.get("slug") == slug:
+            return True, entry, f"found {slug}"
+    return True, None, f"{slug} not in sites.json"
 
 
 def _delete_stub(
@@ -127,7 +191,19 @@ def _rename(
 ) -> tuple[bool, str]:
     """POST /api/sites/{old}/rename {new_slug}.
 
-    Returns (ok, note). Treats 200 (rename or noop) as success.
+    Returns (ok, note). Success requires:
+      - HTTP 200, AND
+      - body.ok is not False, AND
+      - if body says per-slug data existed, the corresponding _moved flag
+        must be True.
+
+    A 502 with action='rename_partial' from the dashboard means the
+    per-slug data re-key did not complete (commit error OR fetch error).
+    We surface this as a failure so the caller retries on the next run.
+    Convergence is guaranteed by the dashboard: on retry, the noop path
+    of /rename re-attempts the per-slug re-key with the current sites.json
+    state, so the retry either finishes the move or surfaces another 502
+    that reflects the live state.
     """
     url = f"{base_url}/api/sites/{old_slug}/rename"
     try:
@@ -143,15 +219,56 @@ def _rename(
         )
     except requests.RequestException as e:
         return False, f"rename {old_slug} -> {new_slug} network error: {e}"
-    if r.status_code == 200:
-        try:
-            body = r.json()
-        except ValueError:
-            body = {}
-        action = body.get("action", "rename") if isinstance(body, dict) else "rename"
-        return True, f"renamed {old_slug} -> {new_slug} ({action})"
-    return False, (
-        f"rename {old_slug} -> {new_slug} HTTP {r.status_code}: {r.text[:300]}"
+
+    try:
+        body = r.json() if r.text else {}
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    if r.status_code == 502 and body.get("action") == "rename_partial":
+        return False, (
+            f"rename {old_slug} -> {new_slug} partial: "
+            f"sites_renamed={body.get('sites_renamed')} "
+            f"note={body.get('note')!r} "
+            f"overrides_had_data={body.get('overrides_had_data')} "
+            f"overrides_moved={body.get('overrides_moved')} "
+            f"overrides_fetch_failed={body.get('overrides_fetch_failed')} "
+            f"overrides_error={body.get('overrides_error')!r} "
+            f"reviews_had_data={body.get('reviews_had_data')} "
+            f"reviews_moved={body.get('reviews_moved')} "
+            f"reviews_fetch_failed={body.get('reviews_fetch_failed')} "
+            f"reviews_error={body.get('reviews_error')!r}"
+        )
+
+    if r.status_code != 200:
+        return False, (
+            f"rename {old_slug} -> {new_slug} HTTP {r.status_code}: "
+            f"{r.text[:300]}"
+        )
+
+    # 200 path. Honest-check the response: if the dashboard ever stops
+    # returning ok:true on success, treat that as a failure rather than
+    # silently advancing.
+    if body.get("ok") is False:
+        return False, (
+            f"rename {old_slug} -> {new_slug} returned 200 but ok=false: "
+            f"{body!r}"
+        )
+
+    action = body.get("action", "rename")
+
+    # Honest-check the move flags. The dashboard returns overrides_moved /
+    # reviews_moved on the 200 path. If a future bug causes either to be
+    # false when data existed, the dashboard should return 502 (above), but
+    # we belt-and-suspenders here: if either flag is explicitly False AND
+    # the action is rename (not noop), we still log it for visibility.
+    overrides_moved = body.get("overrides_moved")
+    reviews_moved = body.get("reviews_moved")
+    return True, (
+        f"renamed {old_slug} -> {new_slug} ({action}, "
+        f"overrides_moved={overrides_moved}, reviews_moved={reviews_moved})"
     )
 
 
@@ -166,23 +283,123 @@ def _process_pair(
 ) -> bool:
     """Drop canonical stub then rename phantom onto canonical.
 
+    Pre-flight reads sites.json to classify the (phantom, canonical) state
+    and pick a safe action:
+
+      Case A — fresh state (phantom present, canonical is wiped stub or absent):
+          Happy path. DELETE canonical stub, then POST /rename phantom -> canonical.
+
+      Case B — post-502 convergence (phantom absent, canonical is populated):
+          A prior run already advanced sites.json but failed the per-slug
+          re-key. Skip DELETE entirely (canonical now holds the real data;
+          deleting it would destroy what we just moved). Call /rename anyway
+          — it will hit the dashboard's noop branch which re-attempts the
+          per-slug data move and either finishes or surfaces another 502.
+
+      Case C — already done (phantom absent, canonical absent or stub):
+          Nothing meaningful to do. Log and return success.
+
+      Case D — wrong map entry (phantom present, canonical populated):
+          Both records carry real data. Refuse. The map row is wrong;
+          a human must investigate before any further action.
+
+      Case E — fetch failure on either slug:
+          Cannot classify. Refuse and surface the error.
+
     Returns True on overall success.
     """
-    if dry_run:
-        logger.info(
-            "DRY_RUN: would DELETE %s (wiped stub) then rename %s -> %s",
+    # Pre-flight: classify the live state of both slugs.
+    fetch_ok, canonical_rec, fetch_note = _fetch_site_record(
+        session, base_url, canonical
+    )
+    if not fetch_ok:
+        logger.error(
+            "pre-flight fetch failed for %s: %s; skipping pair",
+            canonical,
+            fetch_note,
+        )
+        return False
+    fetch_ok, phantom_rec, fetch_note = _fetch_site_record(
+        session, base_url, phantom
+    )
+    if not fetch_ok:
+        logger.error(
+            "pre-flight fetch failed for %s: %s; skipping pair",
+            phantom,
+            fetch_note,
+        )
+        return False
+
+    canonical_is_stub = _is_wiped_stub(canonical_rec)
+    phantom_present = phantom_rec is not None
+
+    # Case D: wrong map entry. Both records exist with real data.
+    if phantom_present and canonical_rec is not None and not canonical_is_stub:
+        logger.error(
+            "REFUSING: both %s and %s exist with hydrated data. Map entry "
+            "%s -> %s is suspect; skipping pair. Inspect manually.",
+            phantom,
             canonical,
             phantom,
             canonical,
         )
+        return False
+
+    # Case C: nothing to do. Phantom already gone and canonical isn't
+    # holding real data either (truly absent, or a stub that no one
+    # populated yet). Treat as success (idempotent skip).
+    if not phantom_present and canonical_is_stub:
+        logger.info(
+            "%s -> %s already converged (phantom absent, canonical %s); skipping",
+            phantom,
+            canonical,
+            "absent" if canonical_rec is None else "is wiped stub",
+        )
         return True
 
-    ok, note = _delete_stub(session, base_url, secret, canonical)
-    if ok:
-        logger.info(note)
+    # Case B: post-502 convergence retry. Phantom is gone, canonical is
+    # populated (with what should be phantom's data). Skip DELETE.
+    convergence_retry = (
+        not phantom_present
+        and canonical_rec is not None
+        and not canonical_is_stub
+    )
+
+    if dry_run:
+        if convergence_retry:
+            logger.info(
+                "DRY_RUN: %s -> %s convergence retry (phantom absent, canonical "
+                "populated); would skip DELETE and re-call /rename to retry "
+                "per-slug re-key",
+                phantom,
+                canonical,
+            )
+        else:
+            logger.info(
+                "DRY_RUN: %s pre-flight OK (%s); would DELETE %s then rename %s -> %s",
+                canonical,
+                "absent" if canonical_rec is None else "wiped stub",
+                canonical,
+                phantom,
+                canonical,
+            )
+        return True
+
+    if convergence_retry:
+        logger.info(
+            "%s -> %s convergence retry: skipping DELETE; re-calling /rename "
+            "to retry per-slug re-key on dashboard noop path",
+            phantom,
+            canonical,
+        )
     else:
-        logger.error(note)
-        return False
+        # Case A: fresh DELETE + rename.
+        ok, note = _delete_stub(session, base_url, secret, canonical)
+        if ok:
+            logger.info(note)
+        else:
+            logger.error(note)
+            return False
 
     ok, note = _rename(
         session,
