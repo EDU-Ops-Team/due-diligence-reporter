@@ -55,6 +55,14 @@ logger = logging.getLogger(__name__)
 
 DASHBOARD_BASE_URL = "https://dd-dashboard-three.vercel.app"
 
+# Lightweight predicate for "this canonical-slug record looks like a wiped
+# stub." The recovery wipe leaves the slug present in sites.json but with
+# null/empty hydrated fields (can_we_open, scenarios, sources). A populated
+# record that survived the wipe should NOT be deleted by this script under
+# any circumstance — if seen, the pair is skipped and logged so a human can
+# investigate the map entry.
+_WIPED_STUB_FIELDS = ("can_we_open", "scenarios", "sources")
+
 # Phantom legacy-slug -> canonical Rebl slug. Source: 2026-05-01 recovery
 # workflow run 25226179557 vs PR #60's expected-canonical-slugs list.
 PHANTOM_TO_CANONICAL: list[tuple[str, str]] = [
@@ -83,6 +91,62 @@ PHANTOM_TO_CANONICAL: list[tuple[str, str]] = [
     # Use --pair miami-beach to apply only this row.
     ("400-71st-st-miami-beach-fl", "300-71st-miami-beach-fl"),
 ]
+
+
+def _is_wiped_stub(record: dict[str, Any] | None) -> bool:
+    """Return True if the dashboard record looks like a recovery-wiped stub.
+
+    A wiped stub has no hydrated analytical fields (can_we_open, scenarios,
+    sources). A None record is treated as a stub (already absent).
+
+    A populated record (any of the wiped-stub fields non-empty) is treated
+    as NOT a stub — even if some other field happens to be empty. This is
+    deliberately conservative: better to skip a real cleanup row than to
+    DELETE a populated record because the canonical slug map is wrong.
+    """
+    if record is None:
+        return True
+    for field in _WIPED_STUB_FIELDS:
+        value = record.get(field)
+        # Treat falsy (None, empty list/dict/str) as "not hydrated."
+        # Any truthy value indicates this record carries real data.
+        if value:
+            return False
+    return True
+
+
+def _fetch_site_record(
+    session: requests.Session,
+    base_url: str,
+    slug: str,
+    *,
+    timeout: int = 30,
+) -> tuple[bool, dict[str, Any] | None, str]:
+    """Fetch a single site record from the dashboard's public sites.json.
+
+    Returns (ok, record_or_None, note).
+      ok=True, record=dict   — record found
+      ok=True, record=None   — slug not present in sites.json
+      ok=False               — fetch failure (network, parse, non-200)
+    """
+    url = f"{base_url}/sites.json"
+    try:
+        r = session.get(url, timeout=timeout)
+    except requests.RequestException as e:
+        return False, None, f"GET sites.json network error: {e}"
+    if r.status_code != 200:
+        return False, None, f"GET sites.json HTTP {r.status_code}"
+    try:
+        payload = r.json()
+    except ValueError as e:
+        return False, None, f"GET sites.json parse error: {e}"
+    sites = payload.get("sites") if isinstance(payload, dict) else None
+    if not isinstance(sites, list):
+        return False, None, "sites.json: 'sites' field missing or not a list"
+    for entry in sites:
+        if isinstance(entry, dict) and entry.get("slug") == slug:
+            return True, entry, f"found {slug}"
+    return True, None, f"{slug} not in sites.json"
 
 
 def _delete_stub(
@@ -127,7 +191,17 @@ def _rename(
 ) -> tuple[bool, str]:
     """POST /api/sites/{old}/rename {new_slug}.
 
-    Returns (ok, note). Treats 200 (rename or noop) as success.
+    Returns (ok, note). Success requires:
+      - HTTP 200, AND
+      - body.ok is not False, AND
+      - if body says per-slug data existed, the corresponding _moved flag
+        must be True.
+
+    A 502 with action='rename_partial' from the dashboard means sites.json
+    was renamed but overrides/reviews re-key failed. We surface this as a
+    failure so the caller retries on the next run; sites.json is now under
+    new_slug, so the retry will hit the idempotent noop path on sites and
+    re-attempt the per-slug data move.
     """
     url = f"{base_url}/api/sites/{old_slug}/rename"
     try:
@@ -143,15 +217,53 @@ def _rename(
         )
     except requests.RequestException as e:
         return False, f"rename {old_slug} -> {new_slug} network error: {e}"
-    if r.status_code == 200:
-        try:
-            body = r.json()
-        except ValueError:
-            body = {}
-        action = body.get("action", "rename") if isinstance(body, dict) else "rename"
-        return True, f"renamed {old_slug} -> {new_slug} ({action})"
-    return False, (
-        f"rename {old_slug} -> {new_slug} HTTP {r.status_code}: {r.text[:300]}"
+
+    try:
+        body = r.json() if r.text else {}
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    if r.status_code == 502 and body.get("action") == "rename_partial":
+        return False, (
+            f"rename {old_slug} -> {new_slug} partial: "
+            f"sites_renamed={body.get('sites_renamed')} "
+            f"overrides_had_data={body.get('overrides_had_data')} "
+            f"overrides_moved={body.get('overrides_moved')} "
+            f"overrides_error={body.get('overrides_error')!r} "
+            f"reviews_had_data={body.get('reviews_had_data')} "
+            f"reviews_moved={body.get('reviews_moved')} "
+            f"reviews_error={body.get('reviews_error')!r}"
+        )
+
+    if r.status_code != 200:
+        return False, (
+            f"rename {old_slug} -> {new_slug} HTTP {r.status_code}: "
+            f"{r.text[:300]}"
+        )
+
+    # 200 path. Honest-check the response: if the dashboard ever stops
+    # returning ok:true on success, treat that as a failure rather than
+    # silently advancing.
+    if body.get("ok") is False:
+        return False, (
+            f"rename {old_slug} -> {new_slug} returned 200 but ok=false: "
+            f"{body!r}"
+        )
+
+    action = body.get("action", "rename")
+
+    # Honest-check the move flags. The dashboard returns overrides_moved /
+    # reviews_moved on the 200 path. If a future bug causes either to be
+    # false when data existed, the dashboard should return 502 (above), but
+    # we belt-and-suspenders here: if either flag is explicitly False AND
+    # the action is rename (not noop), we still log it for visibility.
+    overrides_moved = body.get("overrides_moved")
+    reviews_moved = body.get("reviews_moved")
+    return True, (
+        f"renamed {old_slug} -> {new_slug} ({action}, "
+        f"overrides_moved={overrides_moved}, reviews_moved={reviews_moved})"
     )
 
 
@@ -166,11 +278,40 @@ def _process_pair(
 ) -> bool:
     """Drop canonical stub then rename phantom onto canonical.
 
+    Pre-flight: fetch the canonical slug record and verify it looks like a
+    wiped stub (no can_we_open / scenarios / sources). If the canonical
+    record is populated, REFUSE to delete — the map entry must be wrong.
+    This prevents the script from destroying real data on a re-run.
+
     Returns True on overall success.
     """
+    # Pre-flight: confirm canonical looks like a wiped stub before DELETE.
+    # We always fetch — even in dry-run — so the user gets a real picture
+    # of what would happen.
+    fetch_ok, record, fetch_note = _fetch_site_record(session, base_url, canonical)
+    if not fetch_ok:
+        logger.error(
+            "pre-flight fetch failed for %s: %s; skipping pair",
+            canonical,
+            fetch_note,
+        )
+        return False
+    if record is not None and not _is_wiped_stub(record):
+        logger.error(
+            "REFUSING to delete %s: record is populated, not a wiped stub. "
+            "Map entry %s -> %s is suspect; skipping pair. "
+            "Inspect the record manually before re-running.",
+            canonical,
+            phantom,
+            canonical,
+        )
+        return False
+
     if dry_run:
         logger.info(
-            "DRY_RUN: would DELETE %s (wiped stub) then rename %s -> %s",
+            "DRY_RUN: %s pre-flight OK (%s); would DELETE %s then rename %s -> %s",
+            canonical,
+            "absent" if record is None else "wiped stub",
             canonical,
             phantom,
             canonical,
