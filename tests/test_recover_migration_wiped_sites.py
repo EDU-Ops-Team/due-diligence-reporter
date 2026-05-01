@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 
@@ -244,8 +246,10 @@ class TestRecoverOneThreadsForceSlug:
         assert ok is False
         mock_backfill.assert_not_called()
 
-    def test_recover_one_returns_false_when_backfill_raises(self) -> None:
-        """backfill_one exceptions must be caught and surfaced as False.
+    def test_recover_one_returns_false_when_backfill_raises(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """backfill_one exceptions must be caught, logged, and surfaced as False.
 
         The recovery loop processes ~26 records; one transient publisher
         error must not abort the whole run. ``_recover_one`` is responsible
@@ -254,17 +258,28 @@ class TestRecoverOneThreadsForceSlug:
         stays accurate. If this guard regresses, the recover_migration
         workflow becomes "all-or-nothing" and a single 502 from the publish
         endpoint loses the rest of the batch.
+
+        We also assert that:
+          1. ``logger.exception`` (ERROR level + traceback) fires — the only
+             operator signal that a site silently failed.
+          2. The exception message text (which historically embeds raw
+             addresses, e.g. "publish endpoint 502 for 123 Main St") is NOT
+             %s-formatted into the top-level log line. The traceback may
+             carry it, but the summary line must be slug-only so PII
+             doesn't appear in the run summary that operators skim.
         """
         rec = self._make_record()
+        leak_marker = "123-Main-St-PII-leak-marker"
 
         def raising_backfill(*args, **kwargs):
-            raise RuntimeError("publish endpoint 502")
+            raise RuntimeError(f"publish endpoint 502 for {leak_marker}")
 
         with patch.object(recover, "backfill_one", side_effect=raising_backfill), \
              patch.object(recover, "extract_address_from_record", return_value=rec["_test_address"]), \
              patch.object(recover, "extract_google_folder_from_record", return_value=rec["_test_drive"]), \
              patch.object(recover, "extract_school_type_from_record", return_value="K-8"), \
-             patch.object(recover, "extract_p1_from_record", return_value={"name": "Greg"}):
+             patch.object(recover, "extract_p1_from_record", return_value={"name": "Greg"}), \
+             caplog.at_level("ERROR", logger="recover_migration_wiped_sites"):
             ok = recover._recover_one(
                 gc=None,
                 rec=rec,
@@ -273,3 +288,16 @@ class TestRecoverOneThreadsForceSlug:
             )
 
         assert ok is False
+        # Operator-visibility guarantee: logger.exception fired at ERROR level.
+        error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert error_records, "backfill failure must surface an ERROR log"
+        assert any(r.exc_info for r in error_records), (
+            "logger.exception must attach the traceback (exc_info)"
+        )
+        # PII guarantee: the formatted top-level message must not contain the
+        # raw exception text. The traceback may; the summary line must not.
+        summary_messages = [r.getMessage() for r in error_records]
+        assert all(leak_marker not in msg for msg in summary_messages), (
+            "exception message must not be %%s-formatted into the summary line; "
+            f"got: {summary_messages!r}"
+        )

@@ -1,10 +1,11 @@
 name: cleanup-phantom-recovery-slugs
 
 # One-shot cleanup for the 2026-05-01 recover_migration_wiped_sites.py run.
-# DELETEs the 11 wiped canonical-slug stubs and renames the 11 phantom
-# legacy-slug records onto their canonical slugs. After this runs, the
-# 11 sites that landed under wrong slugs are restored under canonical
-# slugs with their hydrated analytical fields intact.
+# DELETEs the 12 wiped canonical-slug stubs and renames the 12 stale
+# records (11 reporter-generated phantoms + 1 Miami Beach 300 typo'd
+# duplicate) onto their canonical slugs. After this runs, the 12 sites
+# that landed under wrong slugs are restored under canonical slugs with
+# their hydrated analytical fields intact.
 #
 # Manual dispatch only. Run with apply=false first to see the plan.
 

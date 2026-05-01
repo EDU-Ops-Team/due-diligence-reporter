@@ -13,19 +13,18 @@ the dashboard:
     14 sites: hydrated under their canonical slug (Update commits) ✓
      1 site: hydrated under the wrong existing slug (Miami Beach 300
              trace landed on 400-71st-st-miami-beach-fl) ✗
-    12 sites: published as new records under reporter-generated
+    11 sites: published as new records under reporter-generated
              legacy slugs (Add alpha-school-* commits). The wiped
              canonical-slug stubs were left untouched. ✗
+  (14 + 1 + 11 = 26, matching the wiped-site count in recover_migration_wiped_sites.py.)
 
-This script fixes the 12-phantom case in two steps per pair:
+This script fixes both the 11-phantom case and the Miami Beach 300
+wrong-slug case via the same DELETE+rename per-pair procedure (12 pairs total):
   1. DELETE the wiped canonical-slug stub (it's empty).
   2. Rename the phantom legacy slug onto the canonical slug.
 
 Outcome: 12 canonical slugs become populated with the hydrated data
-the phantoms hold, 12 phantom legacy-slug records disappear.
-
-Miami Beach 300 is handled separately (single re-run of the patched
-recovery script). This cleanup does NOT touch 400-71st-st-miami-beach-fl.
+the stale records hold, 12 stale records disappear.
 
 Auth
 ----
@@ -445,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Filter to a single phantom slug (substring match). "
-            "May be repeated. Default: process all 12 pairs."
+            "May be repeated. Default: process all 12 pairs (11 phantoms + Miami Beach 300)."
         ),
     )
     args = parser.parse_args(argv)

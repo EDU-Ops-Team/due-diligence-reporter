@@ -208,8 +208,18 @@ def _recover_one(
             site_owner=site_owner,
             force_slug=dashboard_slug,
         )
-    except Exception as e:
-        logger.exception("%s [%s]: backfill_one raised: %s", title, dashboard_slug, e)
+    except Exception:
+        # logger.exception attaches the traceback automatically via exc_info=True.
+        # We intentionally don't %s-format the exception message here: backfill_one
+        # error strings have historically embedded the raw address (e.g. "failed to
+        # fetch trace for 123 Main St, Anytown XX"). Keeping the args slug-only and
+        # letting the traceback carry the detail keeps the single-line summary
+        # readable in GHA logs without re-leaking PII at the top level.
+        logger.exception(
+            "backfill_one raised for %s [slug=%s]",
+            title,
+            dashboard_slug,
+        )
         return False
 
 
