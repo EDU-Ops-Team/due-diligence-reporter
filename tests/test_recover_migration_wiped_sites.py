@@ -141,3 +141,78 @@ class TestMatchWrikeToBrokenSites:
             pairs = recover._match_wrike_to_broken_sites(records, broken_by_slug={})
 
         assert pairs == []
+
+
+# ---------------------------------------------------------------------------
+# _recover_one threads dashboard_slug -> backfill_one(force_slug=...)
+
+
+class TestRecoverOneThreadsForceSlug:
+    """The recovery path's whole reason for existing is to pin the slug.
+
+    ``_recover_one`` already knows ``dashboard_slug`` -- the canonical Rebl
+    slug pulled from the live ``sites.json`` -- and must forward it as
+    ``force_slug`` to ``backfill_one`` so the publisher does not re-derive
+    one from the legacy trace. Without this thread, recovery silently
+    publishes under the reporter's slugify(title) fallback and creates
+    phantom records (the bug fixed by cleanup_phantom_recovery_slugs.py).
+    """
+
+    def _make_record(self) -> dict:
+        return {
+            "title": "Alpha School Tulsa 421",
+            "_test_address": "421 E 11th St, Tulsa, OK",
+            "_test_drive": "https://drive.google.com/drive/folders/abc",
+            "_test_school_type": "K-8",
+            "_test_p1": {"name": "Greg"},
+        }
+
+    def test_recover_one_passes_dashboard_slug_as_force_slug(self) -> None:
+        rec = self._make_record()
+        canonical = "421-e-11th-st-tulsa-ok"
+        captured: dict = {}
+
+        def fake_backfill_one(gc, title, drive, addr, school_type, **kwargs):
+            captured["title"] = title
+            captured["kwargs"] = kwargs
+            return True
+
+        with patch.object(recover, "backfill_one", side_effect=fake_backfill_one), \
+             patch.object(recover, "extract_address_from_record", return_value=rec["_test_address"]), \
+             patch.object(recover, "extract_google_folder_from_record", return_value=rec["_test_drive"]), \
+             patch.object(recover, "extract_school_type_from_record", return_value=rec["_test_school_type"]), \
+             patch.object(recover, "extract_p1_from_record", return_value=rec["_test_p1"]):
+            ok = recover._recover_one(
+                gc=None,  # backfill_one is fully mocked, so gc is unused
+                rec=rec,
+                dashboard_slug=canonical,
+                dry_run=False,
+            )
+
+        assert ok is True
+        assert captured["kwargs"].get("force_slug") == canonical
+        assert captured["kwargs"].get("site_owner") == "Greg"
+
+    def test_recover_one_dry_run_does_not_call_backfill(self) -> None:
+        """dry_run=True must short-circuit before reaching backfill_one.
+
+        Sanity check on the existing dry-run gate -- ensures the new
+        force_slug threading sits below the dry-run early return so that
+        preview output stays cheap.
+        """
+        rec = self._make_record()
+
+        with patch.object(recover, "backfill_one") as mock_backfill, \
+             patch.object(recover, "extract_address_from_record", return_value=rec["_test_address"]), \
+             patch.object(recover, "extract_google_folder_from_record", return_value=rec["_test_drive"]), \
+             patch.object(recover, "extract_school_type_from_record", return_value="K-8"), \
+             patch.object(recover, "extract_p1_from_record", return_value={"name": "Greg"}):
+            ok = recover._recover_one(
+                gc=None,
+                rec=rec,
+                dashboard_slug="any-slug",
+                dry_run=True,
+            )
+
+        assert ok is True
+        mock_backfill.assert_not_called()

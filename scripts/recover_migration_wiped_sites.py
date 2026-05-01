@@ -179,6 +179,10 @@ def _recover_one(
 
     logger.info("Recovering %s [slug=%s] …", title, dashboard_slug)
     try:
+        # Pass dashboard_slug as force_slug so the publisher does NOT re-derive
+        # a fresh slug from the trace's rebl_site_id token (empty on legacy
+        # traces) or slugify(title). Without this, recovery has historically
+        # minted phantom legacy-slug records on the dashboard.
         return backfill_one(
             gc,
             title,
@@ -186,6 +190,7 @@ def _recover_one(
             address,
             school_type,
             site_owner=site_owner,
+            force_slug=dashboard_slug,
         )
     except Exception as e:
         logger.exception("%s [%s]: backfill_one raised: %s", title, dashboard_slug, e)

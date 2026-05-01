@@ -166,3 +166,86 @@ def test_backfill_one_skips_unparseable_trace_and_uses_next(monkeypatch):
     )
 
     assert ok is True
+
+def test_backfill_one_threads_force_slug_to_publish(monkeypatch):
+    """backfill_one(force_slug=...) must forward the kwarg to publish_to_dashboard.
+
+    This is the recovery-path safety: callers that already know the canonical
+    dashboard slug (the migration-recovery script) pass it as force_slug so
+    the publisher does not re-derive one from the trace's rebl_site_id token
+    or slugify(title). Without this threading, recovery silently mints
+    phantom legacy-slug records.
+    """
+    gc = MagicMock()
+    gc.list_files_in_folder.return_value = [
+        _trace_file("ok", "Site Report Trace - 04-30-2026.json", "2026-04-30T10:00:00Z"),
+    ]
+    gc.download_file_bytes.return_value = _trace_payload(
+        {"address.full": {"value": "421 E 11th St, Tulsa, OK"}}
+    )
+
+    publish_calls: list[dict] = []
+
+    def fake_publish(site_title, report_data, **kwargs):
+        publish_calls.append({"site_title": site_title, "kwargs": kwargs})
+        return True
+
+    monkeypatch.setattr(backfill_dashboard, "publish_to_dashboard", fake_publish)
+    monkeypatch.setattr(
+        backfill_dashboard,
+        "extract_folder_id_from_url",
+        lambda url: "folder123",
+    )
+
+    canonical = "421-e-11th-st-tulsa-ok"
+    ok = backfill_dashboard.backfill_one(
+        gc,
+        "Alpha School Tulsa 421",
+        "https://drive.google.com/drive/folders/folder123",
+        address="421 E 11th St, Tulsa, OK",
+        school_type="K-8",
+        site_owner="Greg",
+        force_slug=canonical,
+    )
+
+    assert ok is True
+    assert len(publish_calls) == 1
+    assert publish_calls[0]["kwargs"].get("force_slug") == canonical
+
+
+def test_backfill_one_omits_force_slug_when_caller_omits_it(monkeypatch):
+    """When force_slug is not passed, the kwarg defaults to None.
+
+    Pre-existing callers (the daily backfill loop) must keep working
+    unchanged: they don't know the canonical slug and rely on the
+    rebl_site_id token / slugify(title) chain inside publish_to_dashboard.
+    """
+    gc = MagicMock()
+    gc.list_files_in_folder.return_value = [
+        _trace_file("ok", "Site Report Trace - 04-30-2026.json", "2026-04-30T10:00:00Z"),
+    ]
+    gc.download_file_bytes.return_value = _trace_payload(
+        {"address.full": {"value": "X"}}
+    )
+
+    publish_calls: list[dict] = []
+    monkeypatch.setattr(
+        backfill_dashboard,
+        "publish_to_dashboard",
+        lambda *a, **kw: publish_calls.append({"args": a, "kwargs": kw}) or True,
+    )
+    monkeypatch.setattr(
+        backfill_dashboard,
+        "extract_folder_id_from_url",
+        lambda url: "folder123",
+    )
+
+    backfill_dashboard.backfill_one(
+        gc,
+        "Site",
+        "https://drive.google.com/drive/folders/folder123",
+        address=None,
+        school_type=None,
+    )
+
+    assert publish_calls[0]["kwargs"].get("force_slug") is None
