@@ -62,6 +62,7 @@ from due_diligence_reporter.dashboard_publisher import (  # noqa: E402
     publish_to_dashboard,
     slugify,
 )
+from due_diligence_reporter.rebl import canonical_slug_for_address  # noqa: E402
 from due_diligence_reporter.wrike import (  # noqa: E402
     _get_active_status_ids,
     _get_all_site_records,
@@ -145,8 +146,13 @@ def _publish_stub(
     drive_folder_url: str,
     site_owner: str,
     wrike_created_at: str | None,
+    rebl_site_id: str | None = None,
 ) -> bool:
-    """Publish an empty-report stub for one site. Returns True on success."""
+    """Publish an empty-report stub for one site. Returns True on success.
+
+    ``rebl_site_id`` should be passed when known so the dashboard slug is
+    minted from Rebl's canonical id (matching the per-report publish path).
+    """
     return publish_to_dashboard(
         site_title,
         report_data={},
@@ -155,6 +161,7 @@ def _publish_stub(
         drive_folder_url=drive_folder_url or None,
         site_owner=site_owner or None,
         wrike_created_at=wrike_created_at,
+        rebl_site_id=rebl_site_id or None,
         # Force the not_ready label - without this the publisher auto-stamps
         # "complete" since it normally only runs after a finished report.
         dd_status="not_ready",
@@ -176,19 +183,26 @@ def main(*, site_filter: str | None, dry_run: bool) -> int:
     active = filter_active_site_records(records, active_status_ids)
     logger.info("Wrike returned %d active site record(s)", len(active))
 
-    missing: list[dict] = []
+    # Resolve every active address to its Rebl canonical slug so the
+    # existence check below uses the same slug the publisher would mint.
+    # Without this, sync would mistake every recently-published site (now
+    # carrying a Rebl-canonical slug) for missing and re-stub it.
+    missing: list[tuple[dict, str, str | None]] = []  # (rec, slug, rebl_site_id)
     for rec in active:
         title = (rec.get("title") or "").strip()
         if not title:
             continue
         if site_filter and site_filter.lower() not in title.lower():
             continue
-        slug = slugify(title)
+        addr = (extract_address_from_record(rec) or "").strip()
+        title_slug = slugify(title)
+        rebl_slug = canonical_slug_for_address(addr, fallback="") if addr else ""
+        slug = rebl_slug or title_slug
         if not slug:
             continue
         if not _needs_stub_publish(existing.get(slug)):
             continue
-        missing.append(rec)
+        missing.append((rec, slug, rebl_slug or None))
 
     logger.info(
         "%d Wrike site(s) need a stub publish (missing or stub w/o wrike_created_at)",
@@ -200,7 +214,7 @@ def main(*, site_filter: str | None, dry_run: bool) -> int:
     failures = 0
     succeeded = 0
 
-    for rec in missing:
+    for rec, slug, rebl_site_id in missing:
         title = (rec.get("title") or "").strip()
         address = extract_address_from_record(rec) or ""
         school_type = extract_school_type_from_record(rec)
@@ -210,8 +224,10 @@ def main(*, site_filter: str | None, dry_run: bool) -> int:
         created = extract_created_date_from_record(rec)
 
         logger.info(
-            "Stub publish: %s | addr=%r | type=%r | owner=%r | created=%s",
+            "Stub publish: %s | slug=%s | rebl_id=%r | addr=%r | type=%r | owner=%r | created=%s",
             title,
+            slug,
+            rebl_site_id or "",
             address,
             school_type,
             owner,
@@ -229,6 +245,7 @@ def main(*, site_filter: str | None, dry_run: bool) -> int:
                 drive_folder_url=drive,
                 site_owner=owner,
                 wrike_created_at=created,
+                rebl_site_id=rebl_site_id,
             )
         except Exception as exc:  # publish_to_dashboard already swallows;
             # belt-and-suspenders.

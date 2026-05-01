@@ -116,3 +116,78 @@ def resolve_address(
         timeout=timeout,
         session=session,
     )[0]
+
+
+def canonical_slug_for_address(
+    address: str,
+    *,
+    fallback: str = "",
+    base_url: str = DEFAULT_REBL_BASE_URL,
+    timeout: float = DEFAULT_REBL_TIMEOUT_SEC,
+    session: Any = requests,
+) -> str:
+    """Return Rebl's canonical slug for ``address``, or ``fallback`` if unavailable.
+
+    Used by readers/scripts (reconcile, sync_site_roster, etc.) that need to
+    know the slug a *publish* would mint. Single source of truth: the
+    publisher uses the same Rebl ``site_id``, so any caller that runs this
+    helper and gets a non-empty result will agree with the dashboard.
+
+    Returns ``fallback`` (which most callers will pass as ``slugify(title)``)
+    when:
+      * the address is empty,
+      * the network call fails,
+      * Rebl returns no ``site_id``.
+
+    Never raises — callers in batch loops should not be aborted by a
+    single Rebl miss.
+    """
+    cleaned = (address or "").strip()
+    if not cleaned:
+        return fallback
+    try:
+        result = resolve_address(
+            cleaned,
+            base_url=base_url,
+            timeout=timeout,
+            session=session,
+        )
+    except Exception:  # network/runtime errors should not abort the caller
+        return fallback
+    return result.site_id.strip() or fallback
+
+
+def canonical_slugs_for_addresses(
+    addresses: list[str],
+    *,
+    base_url: str = DEFAULT_REBL_BASE_URL,
+    timeout: float = DEFAULT_REBL_TIMEOUT_SEC,
+    session: Any = requests,
+) -> dict[str, str]:
+    """Batch-resolve a list of addresses to canonical Rebl slugs.
+
+    Returns ``{address: site_id}`` for every address Rebl could resolve.
+    Addresses that fail to resolve (or return an empty ``site_id``) are
+    omitted. Empty/whitespace addresses are skipped silently.
+
+    Never raises — a network failure returns ``{}`` so callers can fall
+    back to title-based slugs without aborting an entire reconcile/sync run.
+    """
+    cleaned: list[str] = [a.strip() for a in addresses if a and a.strip()]
+    if not cleaned:
+        return {}
+    try:
+        results = resolve_addresses(
+            cleaned,
+            base_url=base_url,
+            timeout=timeout,
+            session=session,
+        )
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for r in results:
+        slug = (r.site_id or "").strip()
+        if slug and r.address_submitted:
+            out[r.address_submitted] = slug
+    return out

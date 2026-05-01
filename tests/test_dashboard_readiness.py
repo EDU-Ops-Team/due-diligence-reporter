@@ -75,6 +75,58 @@ class TestEditsFromUploads:
         assert edits_from_uploads([]) == []
         assert edits_from_uploads([None, "not a dict", 42]) == []  # type: ignore[list-item]
 
+    def test_prefers_rebl_canonical_slug_when_site_address_present(self) -> None:
+        """When upload payload carries ``site_address``, use Rebl's canonical slug.
+
+        Mirrors the publisher's slug precedence so readiness flips target the
+        same dashboard row the publisher creates. Falls back to slugify(title)
+        only when Rebl can't resolve.
+        """
+        uploads = [
+            {
+                "doc_type": "sir",
+                "site_title": "Austin",
+                "site_address": "123 Main St, Austin, TX 78701",
+            },
+            {
+                "doc_type": "building_inspection",
+                "site_title": "Austin",
+                "site_address": "123 Main St, Austin, TX 78701",
+            },
+            # No address → falls back to slugify(title).
+            {"doc_type": "block_plan", "site_title": "Lombard"},
+        ]
+        with patch(
+            "due_diligence_reporter.rebl.canonical_slug_for_address",
+            return_value="123-main-st-austin-tx",
+        ) as mock_resolve:
+            edits = edits_from_uploads(uploads)
+
+        # Same address resolved twice should hit the per-call cache: only one
+        # network call, even though two uploads share the address.
+        assert mock_resolve.call_count == 1
+        assert {(e["slug"], e["fieldPath"]) for e in edits} == {
+            ("123-main-st-austin-tx", "cds_sir_status"),
+            ("123-main-st-austin-tx", "building_inspection_status"),
+            ("lombard", "block_plan_status"),
+        }
+
+    def test_falls_back_to_slugify_when_rebl_returns_empty(self) -> None:
+        """If Rebl can't resolve, ``edits_from_uploads`` keeps slugify(title)."""
+        uploads = [
+            {
+                "doc_type": "sir",
+                "site_title": "Austin",
+                "site_address": "123 Main St, Austin, TX 78701",
+            },
+        ]
+        with patch(
+            "due_diligence_reporter.rebl.canonical_slug_for_address",
+            return_value="",
+        ):
+            edits = edits_from_uploads(uploads)
+        assert edits == [{"slug": "austin", "fieldPath": "cds_sir_status"}]
+
 
 class TestMarkReadinessComplete:
     def test_empty_edits_short_circuits(self) -> None:

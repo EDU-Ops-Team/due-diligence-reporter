@@ -52,6 +52,7 @@ load_dotenv(_project_root / ".env")
 
 from due_diligence_reporter.config import get_settings  # noqa: E402
 from due_diligence_reporter.dashboard_publisher import slugify  # noqa: E402
+from due_diligence_reporter.rebl import canonical_slug_for_address  # noqa: E402
 from due_diligence_reporter.dashboard_readiness import (  # noqa: E402
     DOC_TYPE_TO_FIELD,
     mark_readiness_complete,
@@ -139,9 +140,20 @@ def _detect_doc_types_for_site(
 
 
 def _build_edits_for_site(
-    *, site_title: str, doc_types: list[str]
+    *, site_title: str, doc_types: list[str], site_address: str = ""
 ) -> list[dict[str, str]]:
-    slug = slugify(site_title)
+    """Build doc-readiness edit dicts for one site.
+
+    Slug precedence mirrors the publisher: prefer Rebl's canonical site_id
+    (resolved from the address) over ``slugify(site_title)``. Without this,
+    every readiness flip targets a slug that no longer exists on the
+    dashboard once the publisher has migrated to Rebl-canonical slugs.
+    """
+    title_slug = slugify(site_title)
+    rebl_slug = (
+        canonical_slug_for_address(site_address, fallback="") if site_address else ""
+    )
+    slug = rebl_slug or title_slug
     if not slug:
         return []
     edits: list[dict[str, str]] = []
@@ -200,7 +212,9 @@ def main(*, site_filter: str | None, dry_run: bool) -> int:
         for dt in doc_types:
             breakdown[dt] = breakdown.get(dt, 0) + 1
 
-        site_edits = _build_edits_for_site(site_title=title, doc_types=doc_types)
+        site_edits = _build_edits_for_site(
+            site_title=title, doc_types=doc_types, site_address=address
+        )
         all_edits.extend(site_edits)
         sites_with_any_doc += 1
 

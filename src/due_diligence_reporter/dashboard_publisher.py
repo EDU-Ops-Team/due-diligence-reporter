@@ -195,8 +195,16 @@ def build_site_meta(
     """Assemble the `site_meta` payload from pipeline inputs.
 
     Everything optional falls back to sensible defaults.
+
+    Slug precedence: ``rebl_site_id`` (when truthy) is the canonical slug
+    minted by Rebl from the address. We prefer it so the dashboard slug
+    stays in lock-step with Rebl's identity for the property — preventing
+    drift between Wrike titles, Rebl, and the dashboard. Falls back to
+    ``slugify(site_title)`` only when no Rebl id is available (early DD
+    sites, manual stubs, fixtures).
     """
-    slug = slugify(site_title)
+    rebl_id_clean = (rebl_site_id or "").strip()
+    slug = rebl_id_clean or slugify(site_title)
     city_state_zip, state = _parse_city_state_zip(address)
     rd = (report_date or date.today()).isoformat()
 

@@ -45,9 +45,11 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(_project_root / ".env")
 
 from due_diligence_reporter.dashboard_publisher import slugify  # noqa: E402
+from due_diligence_reporter.rebl import canonical_slugs_for_addresses  # noqa: E402
 from due_diligence_reporter.wrike import (  # noqa: E402
     _get_active_status_ids,
     _get_all_site_records,
+    extract_address_from_record,
     is_record_active,
     load_wrike_config,
 )
@@ -99,6 +101,28 @@ def _expected_slugs_from_wrike() -> tuple[set[str], dict[str, str], list[tuple[s
     records = _get_all_site_records(cfg=cfg)
     active_ids = _get_active_status_ids(access_token=cfg.access_token)
 
+    # The publisher's slug precedence is ``rebl_site_id → slugify(title)``.
+    # Reconcile must follow the same precedence or every newly-published
+    # site (whose dashboard slug is the Rebl id) would look like an orphan.
+    # Batch-resolve every active address up-front; fall back to the title
+    # slug only when Rebl can't resolve it (network failure, missing
+    # address, or ``site_id`` not yet minted).
+    addresses_for_active: list[str] = []
+    for rec in records:
+        if not is_record_active(rec, active_ids):
+            continue
+        addr = (extract_address_from_record(rec) or "").strip()
+        if addr:
+            addresses_for_active.append(addr)
+    rebl_slug_by_address = canonical_slugs_for_addresses(addresses_for_active)
+    if addresses_for_active and not rebl_slug_by_address:
+        logger.warning(
+            "Rebl resolve returned no canonical slugs for %d active address(es); "
+            "falling back to slugify(title). Reconcile may flag false orphans "
+            "until Rebl is reachable.",
+            len(addresses_for_active),
+        )
+
     expected: set[str] = set()
     inactive_slugs: dict[str, str] = {}
     all_titles: list[tuple[str, bool]] = []
@@ -106,10 +130,13 @@ def _expected_slugs_from_wrike() -> tuple[set[str], dict[str, str], list[tuple[s
         title = (rec.get("title") or "").strip()
         if not title:
             continue
-        slug = slugify(title)
+        active = is_record_active(rec, active_ids)
+        addr = (extract_address_from_record(rec) or "").strip()
+        # Prefer Rebl's canonical slug to match the publisher.
+        rebl_slug = rebl_slug_by_address.get(addr) if active and addr else None
+        slug = (rebl_slug or slugify(title)).strip()
         if not slug:
             continue
-        active = is_record_active(rec, active_ids)
         all_titles.append((title, active))
         if active:
             expected.add(slug)

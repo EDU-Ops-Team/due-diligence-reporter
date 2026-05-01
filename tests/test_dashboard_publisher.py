@@ -26,10 +26,38 @@ class TestBuildSiteMeta:
             report_date=date(2026, 4, 23),
         )
 
-        assert meta["slug"] == "austin"
+        # Slug is sourced from Rebl's canonical site_id (not slugify(title)) so
+        # the dashboard, Rebl, and Wrike all agree on the property's identity.
+        assert meta["slug"] == "123-main-st-austin-tx"
         assert meta["rebl"]["site_id"] == "123-main-st-austin-tx"
         assert meta["rebl"]["url"] == "https://rebl3.vercel.app/site/123-main-st-austin-tx"
         assert meta["report_date"] == "2026-04-23"
+
+    def test_slug_falls_back_to_title_when_rebl_site_id_missing(self) -> None:
+        """Without a Rebl id (early DD, stubs, fixtures) we fall back to slugify.
+
+        This preserves the legacy behaviour for any code path that hasn't
+        plumbed Rebl through yet.
+        """
+        # No rebl_site_id passed at all
+        meta = build_site_meta("Austin", address="123 Main St, Austin, TX 78701")
+        assert meta["slug"] == "austin"
+        assert meta["rebl"]["site_id"] == ""
+
+        # Empty / whitespace-only rebl_site_id should also fall through
+        meta_blank = build_site_meta(
+            "Austin",
+            address="123 Main St, Austin, TX 78701",
+            rebl_site_id="   ",
+        )
+        assert meta_blank["slug"] == "austin"
+
+        meta_none = build_site_meta(
+            "Austin",
+            address="123 Main St, Austin, TX 78701",
+            rebl_site_id=None,
+        )
+        assert meta_none["slug"] == "austin"
 
     def test_dd_provenance_omitted_when_unset(self) -> None:
         """Phase 1 dd_* keys must NOT appear when callers don't pass them.

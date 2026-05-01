@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from due_diligence_reporter.rebl import ReblResolution, resolve_address, resolve_addresses
+from due_diligence_reporter.rebl import (
+    ReblResolution,
+    canonical_slug_for_address,
+    canonical_slugs_for_addresses,
+    resolve_address,
+    resolve_addresses,
+)
 from due_diligence_reporter.server import _build_report_trace_data
 
 
@@ -70,6 +76,96 @@ class TestResolveAddresses:
 
         with pytest.raises(RuntimeError, match="REBL resolve 503"):
             resolve_addresses(["123 Main St, Austin, TX"], session=session)
+
+
+class TestCanonicalSlugForAddress:
+    """Convenience wrapper used by the publisher and downstream callers.
+
+    Returns the Rebl ``site_id`` for resolved addresses; gracefully falls
+    back to a caller-supplied default for empty inputs, network failures,
+    or empty Rebl responses — never raises.
+    """
+
+    def test_returns_site_id_when_resolved(self) -> None:
+        session = _FakeSession(_FakeResponse(
+            ok=True,
+            status_code=200,
+            body=[{"site_id": "123-main-st-austin-tx", "url": "", "matched_by": "slug"}],
+        ))
+        slug = canonical_slug_for_address(
+            "123 Main St, Austin, TX",
+            fallback="austin",
+            session=session,
+        )
+        assert slug == "123-main-st-austin-tx"
+
+    def test_returns_fallback_when_address_empty(self) -> None:
+        # No HTTP call should be attempted.
+        session = _FakeSession(_FakeResponse(ok=True, status_code=200, body=[]))
+        slug = canonical_slug_for_address("   ", fallback="austin", session=session)
+        assert slug == "austin"
+        assert session.calls == []
+
+    def test_returns_fallback_when_rebl_returns_empty_site_id(self) -> None:
+        session = _FakeSession(_FakeResponse(
+            ok=True,
+            status_code=200,
+            body=[{"site_id": "", "url": "", "matched_by": "none"}],
+        ))
+        slug = canonical_slug_for_address(
+            "unknown address",
+            fallback="my-fallback",
+            session=session,
+        )
+        assert slug == "my-fallback"
+
+    def test_returns_fallback_on_network_error(self) -> None:
+        # Resolver raises (HTTP 5xx etc.) — must not propagate.
+        class _RaisingSession:
+            def post(self, *args, **kwargs):
+                raise RuntimeError("network down")
+
+        slug = canonical_slug_for_address(
+            "123 Main St, Austin, TX",
+            fallback="austin",
+            session=_RaisingSession(),
+        )
+        assert slug == "austin"
+
+
+class TestCanonicalSlugsForAddresses:
+    """Batch variant used by reconcile_dashboard for many sites at once."""
+
+    def test_returns_only_resolved_addresses(self) -> None:
+        session = _FakeSession(_FakeResponse(
+            ok=True,
+            status_code=200,
+            body=[
+                {"site_id": "123-main-st-austin-tx", "url": "", "matched_by": "slug"},
+                {"site_id": "", "url": "", "matched_by": "none"},
+            ],
+        ))
+        result = canonical_slugs_for_addresses(
+            ["123 Main St, Austin, TX", "500 Unknown Way"],
+            session=session,
+        )
+        # Empty site_id is dropped; only resolved entries are returned.
+        assert result == {"123 Main St, Austin, TX": "123-main-st-austin-tx"}
+
+    def test_empty_input_returns_empty_dict(self) -> None:
+        assert canonical_slugs_for_addresses([]) == {}
+        assert canonical_slugs_for_addresses(["", "   "]) == {}
+
+    def test_returns_empty_on_network_error(self) -> None:
+        class _RaisingSession:
+            def post(self, *args, **kwargs):
+                raise RuntimeError("network down")
+
+        result = canonical_slugs_for_addresses(
+            ["123 Main St, Austin, TX"],
+            session=_RaisingSession(),
+        )
+        assert result == {}
 
 
 class TestReportTraceRebl:

@@ -179,12 +179,16 @@ def edits_from_uploads(uploads: list[dict[str, Any]]) -> list[dict[str, str]]:
     ``DOC_TYPE_TO_FIELD`` produce a flip. Duplicates (same slug+field) are
     deduped. Dry-run uploads are ignored.
     """
-    # Local import to keep this module dependency-light for tests that
-    # don't need the publisher.
+    # Local imports to keep this module dependency-light for tests that
+    # don't need the publisher / network helpers.
     from .dashboard_publisher import slugify
+    from .rebl import canonical_slug_for_address
 
     seen: set[tuple[str, str]] = set()
     out: list[dict[str, str]] = []
+    # Cache Rebl resolutions per (address) so a batch of uploads for the
+    # same site (SIR + Building Inspection) doesn't trigger N HTTP calls.
+    rebl_slug_by_address: dict[str, str] = {}
     for u in uploads or []:
         if not isinstance(u, dict):
             continue
@@ -192,10 +196,22 @@ def edits_from_uploads(uploads: list[dict[str, Any]]) -> list[dict[str, str]]:
             continue
         doc_type = (u.get("doc_type") or "").strip()
         site_title = (u.get("site_title") or "").strip()
+        site_address = (u.get("site_address") or "").strip()
         field = DOC_TYPE_TO_FIELD.get(doc_type)
         if not site_title or not field:
             continue
-        slug = slugify(site_title)
+        # Slug precedence mirrors the publisher: Rebl canonical id when
+        # available, slugify(title) as fallback. inbox_scanner started
+        # plumbing ``site_address`` through the upload payload so this
+        # path stays in lock-step with the dashboard.
+        rebl_slug = ""
+        if site_address:
+            if site_address in rebl_slug_by_address:
+                rebl_slug = rebl_slug_by_address[site_address]
+            else:
+                rebl_slug = canonical_slug_for_address(site_address, fallback="")
+                rebl_slug_by_address[site_address] = rebl_slug
+        slug = (rebl_slug or slugify(site_title)).strip()
         if not slug:
             continue
         key = (slug, field)
