@@ -155,7 +155,17 @@ def backfill_one(
     address: str | None,
     school_type: str | None,
     site_owner: str | None = None,
+    force_slug: str | None = None,
 ) -> bool:
+    """Backfill one site from its Drive trace.
+
+    Args:
+        force_slug: Optional canonical dashboard slug to publish under. When
+            provided, suppresses the `publish_to_dashboard` slug-derivation
+            chain (rebl_site_id token -> slugify(title)) that has historically
+            minted phantom legacy-slug records when callers already knew the
+            correct slug. Used by the migration recovery flow.
+    """
     folder_id = extract_folder_id_from_url(drive_folder_url)
     if not folder_id:
         logger.warning("%s: could not extract folder id from %s", site_title, drive_folder_url)
@@ -222,6 +232,7 @@ def backfill_one(
         dd_report_url=doc_url,
         report_date=rd,
         site_owner=site_owner,
+        force_slug=force_slug,
     )
 
 

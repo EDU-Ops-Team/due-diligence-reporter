@@ -811,3 +811,88 @@ class TestDashboardPublishOwnerCutover:
             )
         assert returned is False
         post_mock.assert_not_called()
+
+
+class TestPublishToDashboardForceSlug:
+    """force_slug overrides BOTH the URL slug and meta.slug.
+
+    Recovery / migration callers know the canonical dashboard slug from the
+    live ``sites.json`` and must not let the publisher re-derive a fresh slug
+    from the trace (rebl_site_id token -> slugify(title)). Without this
+    override, recovery has historically minted phantom legacy-slug records
+    on the dashboard when traces predate the rebl_site_id token.
+    """
+
+    @staticmethod
+    def _run(force_slug: str | None, report_data: dict | None = None) -> tuple[str, dict]:
+        """Run publish_to_dashboard and return (post_url, posted_site_meta)."""
+        post_mock = MagicMock()
+        post_mock.return_value.status_code = 200
+        env = {
+            "DASHBOARD_PUBLISH_SECRET": "test-secret",
+            "DASHBOARD_PUBLISH_ENABLED": "1",
+            "DASHBOARD_PUBLISH_URL": "https://dd.example.com",
+            "DASHBOARD_PUBLISH_OWNER": "reporter",
+        }
+        with patch.dict("os.environ", env, clear=True), patch(
+            "due_diligence_reporter.dashboard_publisher.requests.post",
+            new=post_mock,
+        ):
+            kwargs = {}
+            if force_slug is not None:
+                kwargs["force_slug"] = force_slug
+            ok = publish_to_dashboard(
+                "Alpha School Tulsa 421",
+                report_data or {"exec.c_answer": "Yes"},
+                address="421 E 11th St, Tulsa, OK 74120",
+                **kwargs,
+            )
+        assert ok is True
+        post_mock.assert_called_once()
+        call = post_mock.call_args
+        url = call.args[0] if call.args else call.kwargs["url"]
+        body = call.kwargs.get("json") or {}
+        return url, body.get("site_meta") or {}
+
+    def test_force_slug_overrides_url_and_meta(self) -> None:
+        """Both the POST URL and meta.slug use force_slug, not the derived slug."""
+        canonical = "421-e-11th-st-tulsa-ok"
+        url, meta = self._run(force_slug=canonical)
+        assert url == f"https://dd.example.com/api/sites/{canonical}/publish"
+        assert meta["slug"] == canonical
+
+    def test_force_slug_blank_falls_back_to_derived(self) -> None:
+        """An empty/whitespace force_slug must NOT override -- normal derivation runs."""
+        url, meta = self._run(force_slug="   ")
+        # Title slugified (no rebl_site_id token in the report_data).
+        assert "alpha-school-tulsa-421" in url
+        assert meta["slug"] == "alpha-school-tulsa-421"
+
+    def test_no_force_slug_uses_rebl_token_when_present(self) -> None:
+        """Default behavior unchanged: meta.rebl.site_id from token wins."""
+        url, meta = self._run(
+            force_slug=None,
+            report_data={
+                "exec.c_answer": "Yes",
+                "meta.rebl_site_id": "rebl-canonical-from-token",
+            },
+        )
+        assert url.endswith("/api/sites/rebl-canonical-from-token/publish")
+        assert meta["slug"] == "rebl-canonical-from-token"
+
+    def test_force_slug_overrides_rebl_token(self) -> None:
+        """Even when the trace has a rebl_site_id token, force_slug wins.
+
+        This is the core safety: a recovery caller shouldn't have to scrub the
+        report_data to suppress an inherited rebl_site_id.
+        """
+        canonical = "operator-known-slug"
+        url, meta = self._run(
+            force_slug=canonical,
+            report_data={
+                "exec.c_answer": "Yes",
+                "meta.rebl_site_id": "stale-rebl-token",
+            },
+        )
+        assert url.endswith(f"/api/sites/{canonical}/publish")
+        assert meta["slug"] == canonical

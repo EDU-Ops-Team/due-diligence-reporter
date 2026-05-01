@@ -345,6 +345,12 @@ def publish_to_dashboard(
     dd_site_score_band: str | None = None,
     # Phase 4 DD analytical pass-through. See build_site_meta() for semantics.
     dd_risk_flags: list[dict[str, Any]] | None = None,
+    # Override the slug derived from rebl_site_id / slugify(title). Used by
+    # recovery flows that already know the canonical dashboard slug and must
+    # not let the publisher mint a fresh one (which has historically created
+    # phantom legacy-slug records on the dashboard). When provided, the URL
+    # slug AND the meta.slug field both use this value.
+    force_slug: str | None = None,
     base_url: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT_SEC,
 ) -> bool:
@@ -486,7 +492,15 @@ def publish_to_dashboard(
         dd_site_score_band=dd_site_score_band,
         dd_risk_flags=effective_dd_risk_flags,
     )
-    slug = meta["slug"]
+    # Slug override path: callers in recovery / migration flows know the
+    # canonical dashboard slug and must not let `build_site_meta` re-derive
+    # one from the report's rebl_site_id token (which is empty on legacy
+    # traces). The dashboard's publish handler forces meta.slug from the URL
+    # slug regardless, so updating both keeps the in-memory meta consistent
+    # with what gets persisted.
+    slug = (force_slug or "").strip() or meta["slug"]
+    if force_slug and slug != meta["slug"]:
+        meta["slug"] = slug
 
     endpoint = f"{url_base}/api/sites/{slug}/publish"
     payload = {"site_meta": meta, "report_data": report_data}
