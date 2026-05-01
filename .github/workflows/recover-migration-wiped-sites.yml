@@ -153,4 +153,6 @@ jobs:
           uv run python scripts/recover_migration_wiped_sites.py "${ARGS[@]}"
 
       - name: Done
-        run: echo "Recovery run completed (apply=${{ inputs.apply }})"
+        env:
+          APPLY: ${{ inputs.apply }}
+        run: echo "Recovery run completed (apply=${APPLY})"
