@@ -338,13 +338,138 @@ def test_rename_malformed_json_body():
     assert ok is True
 
 
+
 # ──────────────────────────────────────────────────────────────────────────────
-# _process_pair — pre-flight + full flow
+# _rename — additional 502 partial-failure scenarios (iter2)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_rename_502_partial_failure_overrides():
+    """502 with overrides_had_data=True, overrides_moved=False — surfaces
+    the GitHub commit error in the note for ops to triage."""
+    session = MagicMock()
+    session.post.return_value = _resp(
+        502,
+        body={
+            "ok": False,
+            "action": "rename_partial",
+            "sites_renamed": True,
+            "note": "rename",
+            "overrides_had_data": True,
+            "overrides_moved": False,
+            "overrides_fetch_failed": False,
+            "overrides_error": "GitHub 422",
+            "reviews_had_data": False,
+            "reviews_moved": False,
+            "reviews_fetch_failed": False,
+            "reviews_error": None,
+        },
+    )
+    ok, note = cleanup._rename(
+        session, "https://x", "secret", old_slug="old", new_slug="new"
+    )
+    assert ok is False
+    assert "overrides_had_data=True" in note
+    assert "overrides_moved=False" in note
+    assert "overrides_fetch_failed=False" in note
+    assert "GitHub 422" in note
+
+
+def test_rename_502_partial_failure_reviews():
+    """IMP-4: reviews-side per-slug data failed — caller MUST retry."""
+    session = MagicMock()
+    session.post.return_value = _resp(
+        502,
+        body={
+            "ok": False,
+            "action": "rename_partial",
+            "sites_renamed": True,
+            "note": "rename",
+            "overrides_had_data": False,
+            "overrides_moved": False,
+            "overrides_fetch_failed": False,
+            "overrides_error": None,
+            "reviews_had_data": True,
+            "reviews_moved": False,
+            "reviews_fetch_failed": False,
+            "reviews_error": "GitHub 409",
+        },
+    )
+    ok, note = cleanup._rename(
+        session, "https://x", "secret", old_slug="old", new_slug="new"
+    )
+    assert ok is False
+    assert "reviews_had_data=True" in note
+    assert "reviews_moved=False" in note
+    assert "GitHub 409" in note
+
+
+def test_rename_502_fetch_failure_surfaced():
+    """C-1 regression test: fetch-side throw on the dashboard must surface
+    in the 502 body, not silently turn into a 200 success. Caller logs
+    the fetch_failed flag and retries."""
+    session = MagicMock()
+    session.post.return_value = _resp(
+        502,
+        body={
+            "ok": False,
+            "action": "rename_partial",
+            "sites_renamed": True,
+            "note": "rename",
+            "overrides_had_data": False,
+            "overrides_moved": False,
+            "overrides_fetch_failed": True,
+            "overrides_error": "GitHub fetch network error: ETIMEDOUT",
+            "reviews_had_data": False,
+            "reviews_moved": False,
+            "reviews_fetch_failed": False,
+            "reviews_error": None,
+        },
+    )
+    ok, note = cleanup._rename(
+        session, "https://x", "secret", old_slug="old", new_slug="new"
+    )
+    assert ok is False
+    assert "overrides_fetch_failed=True" in note
+    assert "ETIMEDOUT" in note
+
+
+def test_rename_502_already_renamed_note():
+    """Convergence retry hits the dashboard noop branch, which can still
+    return 502 if the per-slug re-key fails again. The 'already-renamed'
+    note distinguishes this from the fresh-rename 502 in logs."""
+    session = MagicMock()
+    session.post.return_value = _resp(
+        502,
+        body={
+            "ok": False,
+            "action": "rename_partial",
+            "sites_renamed": False,
+            "note": "already-renamed",
+            "overrides_had_data": True,
+            "overrides_moved": False,
+            "overrides_fetch_failed": False,
+            "overrides_error": "GitHub 422",
+            "reviews_had_data": False,
+            "reviews_moved": False,
+            "reviews_fetch_failed": False,
+            "reviews_error": None,
+        },
+    )
+    ok, note = cleanup._rename(
+        session, "https://x", "secret", old_slug="old", new_slug="new"
+    )
+    assert ok is False
+    assert "note='already-renamed'" in note
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _process_pair — pre-flight + Cases A/B/C/D/E
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def _stub_canonical_record():
-    """Return a record that _is_wiped_stub considers a stub."""
+    """Wiped canonical stub: present in sites.json but no real fields."""
     return {"slug": "canonical", "published_at": "2026-04-01T00:00:00Z"}
 
 
@@ -356,12 +481,61 @@ def _populated_canonical_record():
     }
 
 
-def test_process_pair_dry_run_skips_writes_but_runs_preflight():
-    """Dry run still does the pre-flight fetch (so the user sees real
-    state) but performs no DELETE or rename."""
+def _phantom_record():
+    return {
+        "slug": "phantom",
+        "can_we_open": "Yes",
+        "scenarios": [{"id": "s1"}],
+        "sources": {"x": "https://example.com"},
+    }
+
+
+def _make_get_returning(*records):
+    """Build a session.get that returns sites.json with the given records on
+    BOTH calls (canonical fetch and phantom fetch). Each fetch scans the
+    same sites list for its own slug — so include both records here when
+    both must be present."""
+    payload = {"sites": list(records)}
+
+    def fake_get(url, timeout=None):
+        return _resp(200, body=payload)
+
+    return fake_get
+
+
+def _make_get_per_slug(canonical_rec=None, phantom_rec=None):
+    """Build a session.get that returns DIFFERENT sites.json snapshots per
+    fetch. _process_pair calls _fetch_site_record(canonical) first, then
+    _fetch_site_record(phantom). Each looks up its own slug in the payload.
+
+    For most tests the same sites list works for both calls. Use this only
+    when you need the canonical and phantom fetches to see different
+    payloads (e.g. simulating a race)."""
+    canonical_payload = {
+        "sites": [canonical_rec] if canonical_rec is not None else []
+    }
+    phantom_payload = {
+        "sites": [phantom_rec] if phantom_rec is not None else []
+    }
+    calls = {"n": 0}
+
+    def fake_get(url, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _resp(200, body=canonical_payload)
+        return _resp(200, body=phantom_payload)
+
+    return fake_get
+
+
+# ── Case A: fresh state — canonical is wiped stub (or absent), phantom present
+
+
+def test_process_pair_dry_run_fresh_state_skips_writes():
+    """Dry run on Case A: pre-flight runs, no DELETE/rename issued."""
     session = MagicMock()
-    session.get.return_value = _resp(
-        200, body={"sites": [_stub_canonical_record()]}
+    session.get.side_effect = _make_get_returning(
+        _stub_canonical_record(), _phantom_record()
     )
     ok = cleanup._process_pair(
         session,
@@ -372,53 +546,17 @@ def test_process_pair_dry_run_skips_writes_but_runs_preflight():
         dry_run=True,
     )
     assert ok is True
-    session.get.assert_called_once()
+    assert session.get.call_count == 2
     session.delete.assert_not_called()
     session.post.assert_not_called()
-
-
-def test_process_pair_refuses_to_delete_populated_canonical():
-    """Footgun guard: canonical record is populated, NOT a wiped stub.
-    Map entry must be wrong — refuse to delete and skip the pair."""
-    session = MagicMock()
-    session.get.return_value = _resp(
-        200, body={"sites": [_populated_canonical_record()]}
-    )
-    ok = cleanup._process_pair(
-        session,
-        "https://x",
-        "secret",
-        phantom="phantom",
-        canonical="canonical",
-        dry_run=False,
-    )
-    assert ok is False
-    session.delete.assert_not_called()
-    session.post.assert_not_called()
-
-
-def test_process_pair_refuses_to_delete_populated_canonical_dry_run():
-    """Same guard applies in dry-run: surfaces the issue without writes."""
-    session = MagicMock()
-    session.get.return_value = _resp(
-        200, body={"sites": [_populated_canonical_record()]}
-    )
-    ok = cleanup._process_pair(
-        session,
-        "https://x",
-        "secret",
-        phantom="phantom",
-        canonical="canonical",
-        dry_run=True,
-    )
-    assert ok is False
 
 
 def test_process_pair_canonical_absent_proceeds():
-    """Canonical not in sites.json = absent = stub-equivalent. Proceed."""
+    """Canonical not in sites.json (treated as stub-equivalent), phantom
+    present — Case A. DELETE is idempotent (404), rename succeeds."""
     session = MagicMock()
-    session.get.return_value = _resp(200, body={"sites": []})
-    session.delete.return_value = _resp(404)  # already gone
+    session.get.side_effect = _make_get_returning(_phantom_record())
+    session.delete.return_value = _resp(404)
     session.post.return_value = _resp(
         200,
         body={
@@ -437,12 +575,16 @@ def test_process_pair_canonical_absent_proceeds():
         dry_run=False,
     )
     assert ok is True
+    session.delete.assert_called_once()
+    session.post.assert_called_once()
 
 
 def test_process_pair_happy_path():
+    """Case A happy path: canonical is wiped stub, phantom present.
+    DELETE 200, rename 200."""
     session = MagicMock()
-    session.get.return_value = _resp(
-        200, body={"sites": [_stub_canonical_record()]}
+    session.get.side_effect = _make_get_returning(
+        _stub_canonical_record(), _phantom_record()
     )
     session.delete.return_value = _resp(200)
     session.post.return_value = _resp(
@@ -450,7 +592,7 @@ def test_process_pair_happy_path():
         body={
             "ok": True,
             "action": "rename",
-            "overrides_moved": False,
+            "overrides_moved": True,
             "reviews_moved": False,
         },
     )
@@ -463,12 +605,15 @@ def test_process_pair_happy_path():
         dry_run=False,
     )
     assert ok is True
+    session.delete.assert_called_once()
+    session.post.assert_called_once()
 
 
 def test_process_pair_delete_failure_aborts_rename():
+    """Case A: DELETE 500 — abort, do not call rename."""
     session = MagicMock()
-    session.get.return_value = _resp(
-        200, body={"sites": [_stub_canonical_record()]}
+    session.get.side_effect = _make_get_returning(
+        _stub_canonical_record(), _phantom_record()
     )
     session.delete.return_value = _resp(500, text="bad")
     ok = cleanup._process_pair(
@@ -484,12 +629,11 @@ def test_process_pair_delete_failure_aborts_rename():
 
 
 def test_process_pair_rename_partial_failure_returns_false():
-    """Pre-flight passes, DELETE succeeds, but rename returns 502
-    rename_partial. Caller must surface this so the run reports failure
-    and is retried."""
+    """Case A: pre-flight ok, DELETE 200, rename 502 rename_partial.
+    Surface as failure for retry on next run."""
     session = MagicMock()
-    session.get.return_value = _resp(
-        200, body={"sites": [_stub_canonical_record()]}
+    session.get.side_effect = _make_get_returning(
+        _stub_canonical_record(), _phantom_record()
     )
     session.delete.return_value = _resp(200)
     session.post.return_value = _resp(
@@ -498,11 +642,14 @@ def test_process_pair_rename_partial_failure_returns_false():
             "ok": False,
             "action": "rename_partial",
             "sites_renamed": True,
+            "note": "rename",
             "overrides_had_data": True,
             "overrides_moved": False,
+            "overrides_fetch_failed": False,
             "overrides_error": "GitHub 422",
             "reviews_had_data": False,
             "reviews_moved": False,
+            "reviews_fetch_failed": False,
             "reviews_error": None,
         },
     )
@@ -517,12 +664,211 @@ def test_process_pair_rename_partial_failure_returns_false():
     assert ok is False
 
 
+# ── Case D: wrong map entry — both records populated. REFUSE.
+
+
+def test_process_pair_refuses_when_both_records_populated():
+    """Case D: phantom AND canonical both carry hydrated data.
+    The map row is wrong — refuse to act."""
+    session = MagicMock()
+    session.get.side_effect = _make_get_returning(
+        _populated_canonical_record(), _phantom_record()
+    )
+    ok = cleanup._process_pair(
+        session,
+        "https://x",
+        "secret",
+        phantom="phantom",
+        canonical="canonical",
+        dry_run=False,
+    )
+    assert ok is False
+    session.delete.assert_not_called()
+    session.post.assert_not_called()
+
+
+def test_process_pair_refuses_when_both_records_populated_dry_run():
+    """Same Case D guard fires under dry-run — surfaces the issue early."""
+    session = MagicMock()
+    session.get.side_effect = _make_get_returning(
+        _populated_canonical_record(), _phantom_record()
+    )
+    ok = cleanup._process_pair(
+        session,
+        "https://x",
+        "secret",
+        phantom="phantom",
+        canonical="canonical",
+        dry_run=True,
+    )
+    assert ok is False
+
+
+# ── Case B: post-502 convergence retry — phantom absent, canonical populated.
+#    DELETE must be skipped (canonical now holds the real data); rename is
+#    re-issued so the dashboard noop path retries the per-slug re-key.
+
+
+def test_process_pair_convergence_retry_skips_delete_calls_rename():
+    """C-2 regression test. Phantom gone, canonical populated. Skipping
+    DELETE is critical — the canonical slug now holds phantom's hydrated
+    data; deleting it would destroy what we just moved. Rename hits the
+    dashboard noop branch which re-attempts the per-slug re-key."""
+    session = MagicMock()
+    session.get.side_effect = _make_get_returning(_populated_canonical_record())
+    session.post.return_value = _resp(
+        200,
+        body={
+            "ok": True,
+            "action": "noop",
+            "note": "already-renamed",
+            "overrides_had_data": True,
+            "overrides_moved": True,
+            "reviews_had_data": False,
+            "reviews_moved": False,
+        },
+    )
+    ok = cleanup._process_pair(
+        session,
+        "https://x",
+        "secret",
+        phantom="phantom",
+        canonical="canonical",
+        dry_run=False,
+    )
+    assert ok is True
+    session.delete.assert_not_called()
+    session.post.assert_called_once()
+
+
+def test_process_pair_convergence_retry_dry_run():
+    """Dry-run on Case B: log the retry plan, no DELETE, no rename."""
+    session = MagicMock()
+    session.get.side_effect = _make_get_returning(_populated_canonical_record())
+    ok = cleanup._process_pair(
+        session,
+        "https://x",
+        "secret",
+        phantom="phantom",
+        canonical="canonical",
+        dry_run=True,
+    )
+    assert ok is True
+    session.delete.assert_not_called()
+    session.post.assert_not_called()
+
+
+def test_process_pair_convergence_retry_rename_still_502():
+    """Convergence retry: rename hits noop path but re-key still fails.
+    Surface as failure — next run will retry again."""
+    session = MagicMock()
+    session.get.side_effect = _make_get_returning(_populated_canonical_record())
+    session.post.return_value = _resp(
+        502,
+        body={
+            "ok": False,
+            "action": "rename_partial",
+            "sites_renamed": False,
+            "note": "already-renamed",
+            "overrides_had_data": True,
+            "overrides_moved": False,
+            "overrides_fetch_failed": False,
+            "overrides_error": "GitHub 422",
+            "reviews_had_data": False,
+            "reviews_moved": False,
+            "reviews_fetch_failed": False,
+            "reviews_error": None,
+        },
+    )
+    ok = cleanup._process_pair(
+        session,
+        "https://x",
+        "secret",
+        phantom="phantom",
+        canonical="canonical",
+        dry_run=False,
+    )
+    assert ok is False
+    session.delete.assert_not_called()
+    session.post.assert_called_once()
+
+
+# ── Case C: already converged — phantom absent, canonical absent OR stub.
+
+
+def test_process_pair_already_converged_canonical_absent():
+    """Case C: nothing in sites.json for either slug. Idempotent skip."""
+    session = MagicMock()
+    session.get.side_effect = _make_get_returning()  # empty sites
+    ok = cleanup._process_pair(
+        session,
+        "https://x",
+        "secret",
+        phantom="phantom",
+        canonical="canonical",
+        dry_run=False,
+    )
+    assert ok is True
+    session.delete.assert_not_called()
+    session.post.assert_not_called()
+
+
+def test_process_pair_already_converged_canonical_stub():
+    """Case C: canonical is a wiped stub, phantom absent. Idempotent skip."""
+    session = MagicMock()
+    session.get.side_effect = _make_get_returning(_stub_canonical_record())
+    ok = cleanup._process_pair(
+        session,
+        "https://x",
+        "secret",
+        phantom="phantom",
+        canonical="canonical",
+        dry_run=False,
+    )
+    assert ok is True
+    session.delete.assert_not_called()
+    session.post.assert_not_called()
+
+
+# ── Case E: pre-flight fetch failure on either slug.
+
+
 def test_process_pair_preflight_fetch_failure_aborts():
-    """Pre-flight network failure: don't blindly proceed; abort the pair."""
+    """Pre-flight network failure on canonical fetch: don't blindly
+    proceed; abort the pair without calling DELETE or rename."""
     import requests as _req
 
     session = MagicMock()
     session.get.side_effect = _req.RequestException("dns")
+    ok = cleanup._process_pair(
+        session,
+        "https://x",
+        "secret",
+        phantom="phantom",
+        canonical="canonical",
+        dry_run=False,
+    )
+    assert ok is False
+    session.delete.assert_not_called()
+    session.post.assert_not_called()
+
+
+def test_process_pair_preflight_fetch_failure_on_phantom_aborts():
+    """Pre-flight network failure on phantom fetch (second GET): abort."""
+    import requests as _req
+
+    session = MagicMock()
+    # First GET succeeds (canonical), second GET (phantom) raises.
+    canonical_payload = {"sites": [_stub_canonical_record()]}
+    calls = {"n": 0}
+
+    def fake_get(url, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _resp(200, body=canonical_payload)
+        raise _req.RequestException("dns")
+
+    session.get.side_effect = fake_get
     ok = cleanup._process_pair(
         session,
         "https://x",
