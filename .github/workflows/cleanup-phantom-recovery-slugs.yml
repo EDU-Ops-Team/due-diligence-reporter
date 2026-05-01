@@ -20,7 +20,7 @@ on:
           - "false"
           - "true"
       pair:
-        description: "Optional substring filter on phantom slug (e.g. 'bethesda'). Leave blank for all 11."
+        description: "Optional substring filter on phantom slug (e.g. 'bethesda'). Leave blank for all 12."
         type: string
         required: false
         default: ""

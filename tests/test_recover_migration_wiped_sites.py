@@ -216,3 +216,60 @@ class TestRecoverOneThreadsForceSlug:
 
         assert ok is True
         mock_backfill.assert_not_called()
+
+    def test_recover_one_returns_false_on_empty_drive_url(self) -> None:
+        """A Wrike record with no Drive folder cannot be recovered.
+
+        ``_recover_one`` returns False without calling backfill_one. Without
+        this guard the publisher would be invoked with an empty drive URL,
+        crash deep inside the trace fetcher, and leave the run in an
+        ambiguous "site present in matched pairs but no Update commit"
+        state for the operator to untangle. The early False keeps the
+        failed-list accounting honest.
+        """
+        rec = self._make_record()
+
+        with patch.object(recover, "backfill_one") as mock_backfill, \
+             patch.object(recover, "extract_address_from_record", return_value=rec["_test_address"]), \
+             patch.object(recover, "extract_google_folder_from_record", return_value=""), \
+             patch.object(recover, "extract_school_type_from_record", return_value="K-8"), \
+             patch.object(recover, "extract_p1_from_record", return_value={"name": "Greg"}):
+            ok = recover._recover_one(
+                gc=None,
+                rec=rec,
+                dashboard_slug="any-slug",
+                dry_run=False,
+            )
+
+        assert ok is False
+        mock_backfill.assert_not_called()
+
+    def test_recover_one_returns_false_when_backfill_raises(self) -> None:
+        """backfill_one exceptions must be caught and surfaced as False.
+
+        The recovery loop processes ~26 records; one transient publisher
+        error must not abort the whole run. ``_recover_one`` is responsible
+        for catching the exception, logging it, and returning False so the
+        loop can continue to the next site and the failed-list accounting
+        stays accurate. If this guard regresses, the recover_migration
+        workflow becomes "all-or-nothing" and a single 502 from the publish
+        endpoint loses the rest of the batch.
+        """
+        rec = self._make_record()
+
+        def raising_backfill(*args, **kwargs):
+            raise RuntimeError("publish endpoint 502")
+
+        with patch.object(recover, "backfill_one", side_effect=raising_backfill), \
+             patch.object(recover, "extract_address_from_record", return_value=rec["_test_address"]), \
+             patch.object(recover, "extract_google_folder_from_record", return_value=rec["_test_drive"]), \
+             patch.object(recover, "extract_school_type_from_record", return_value="K-8"), \
+             patch.object(recover, "extract_p1_from_record", return_value={"name": "Greg"}):
+            ok = recover._recover_one(
+                gc=None,
+                rec=rec,
+                dashboard_slug="any-slug",
+                dry_run=False,
+            )
+
+        assert ok is False

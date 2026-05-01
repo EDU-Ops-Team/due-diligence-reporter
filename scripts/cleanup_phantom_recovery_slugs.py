@@ -13,16 +13,16 @@ the dashboard:
     14 sites: hydrated under their canonical slug (Update commits) ✓
      1 site: hydrated under the wrong existing slug (Miami Beach 300
              trace landed on 400-71st-st-miami-beach-fl) ✗
-    11 sites: published as new records under reporter-generated
+    12 sites: published as new records under reporter-generated
              legacy slugs (Add alpha-school-* commits). The wiped
              canonical-slug stubs were left untouched. ✗
 
-This script fixes the 11-phantom case in two steps per pair:
+This script fixes the 12-phantom case in two steps per pair:
   1. DELETE the wiped canonical-slug stub (it's empty).
   2. Rename the phantom legacy slug onto the canonical slug.
 
-Outcome: 11 canonical slugs become populated with the hydrated data
-the phantoms hold, 11 phantom legacy-slug records disappear.
+Outcome: 12 canonical slugs become populated with the hydrated data
+the phantoms hold, 12 phantom legacy-slug records disappear.
 
 Miami Beach 300 is handled separately (single re-run of the patched
 recovery script). This cleanup does NOT touch 400-71st-st-miami-beach-fl.
@@ -53,7 +53,13 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-DASHBOARD_BASE_URL = "https://dd-dashboard-three.vercel.app"
+# Dashboard URL is overridable via env var so this script can be repointed at
+# a preview deployment for end-to-end tests without code changes. Mirrors the
+# pattern in scripts/recover_migration_wiped_sites.py (DASHBOARD_PUBLISH_URL).
+_DEFAULT_DASHBOARD_URL = "https://dd-dashboard-three.vercel.app"
+DASHBOARD_BASE_URL = (
+    os.environ.get("DASHBOARD_PUBLISH_URL") or _DEFAULT_DASHBOARD_URL
+).rstrip("/")
 
 # Lightweight predicate for "this canonical-slug record looks like a wiped
 # stub." The recovery wipe leaves the slug present in sites.json but with
@@ -439,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Filter to a single phantom slug (substring match). "
-            "May be repeated. Default: process all 11 pairs."
+            "May be repeated. Default: process all 12 pairs."
         ),
     )
     args = parser.parse_args(argv)
