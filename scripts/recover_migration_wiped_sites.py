@@ -177,14 +177,19 @@ def _recover_one(
         return False
 
     if dry_run:
+        # Mask PII (street address + site_owner name) from the dry-run log line.
+        # GHA workflow logs are visible to every collaborator on the repo, and
+        # the recover workflow runs across active sites whose owners may not
+        # have consented to having their name and street address surfaced in
+        # CI logs. The slug, school_type, and Drive URL are sufficient for an
+        # operator to identify a row at a glance; if the operator needs the
+        # full record, the Wrike record id is one click away.
         logger.info(
-            "DRY_RUN: would recover %s [slug=%s | drive=%s | addr=%s | type=%s | owner=%s]",
+            "DRY_RUN: would recover %s [slug=%s | drive=%s | type=%s]",
             title,
             dashboard_slug,
             drive_url,
-            address,
             school_type,
-            site_owner,
         )
         return True
 
@@ -203,22 +208,38 @@ def _recover_one(
             site_owner=site_owner,
             force_slug=dashboard_slug,
         )
-    except Exception as e:
-        logger.exception("%s [%s]: backfill_one raised: %s", title, dashboard_slug, e)
+    except Exception:
+        # logger.exception attaches the traceback automatically via exc_info=True.
+        # We intentionally don't %s-format the exception message here: backfill_one
+        # error strings have historically embedded the raw address (e.g. "failed to
+        # fetch trace for 123 Main St, Anytown XX"). Keeping the args slug-only and
+        # letting the traceback carry the detail keeps the single-line summary
+        # readable in GHA logs without re-leaking PII at the top level.
+        logger.exception(
+            "backfill_one raised for %s [slug=%s]",
+            title,
+            dashboard_slug,
+        )
         return False
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    # Require an explicit choice to match cleanup_phantom_recovery_slugs.py's
+    # behavior: a missing flag now exits 2 rather than silently dry-running.
+    # In CI the workflow always passes one of --apply or --dry-run; locally,
+    # this prevents a careless `python recover_migration_wiped_sites.py` from
+    # being interpreted as "dry-run, but for real on the next paste."
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
         "--apply",
         action="store_true",
-        help="Actually issue POSTs to recover sites. Default is dry-run.",
+        help="Actually issue POSTs to recover sites.",
     )
-    parser.add_argument(
+    mode.add_argument(
         "--dry-run",
         action="store_true",
-        help="Explicit dry-run (default behaviour). Mutually exclusive with --apply.",
+        help="Preview recovery actions without issuing POSTs.",
     )
     parser.add_argument(
         "--site",
@@ -229,15 +250,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.apply and args.dry_run:
-        logger.error("--apply and --dry-run are mutually exclusive")
-        return 2
-
     apply = bool(args.apply)
     if not apply:
-        logger.info(
-            "DRY_RUN mode (default). Pass --apply to actually issue POSTs."
-        )
+        logger.info("DRY_RUN mode. Pass --apply to actually issue POSTs.")
 
     if apply and not os.environ.get("DASHBOARD_PUBLISH_SECRET"):
         logger.error("--apply requires DASHBOARD_PUBLISH_SECRET in env")
