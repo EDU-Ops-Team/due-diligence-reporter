@@ -26,7 +26,10 @@ from tenacity import (
     wait_exponential,
 )
 
-logger = logging.getLogger("[retry]")
+# Use the module's dotted name so log filters scoped to
+# ``due_diligence_reporter.*`` capture our records (matches the
+# ``due_diligence_reporter.rebl`` and ``.run`` loggers used elsewhere).
+logger = logging.getLogger(__name__)
 
 # Max 5 attempts total (1 initial + 4 retries) — enough to survive a
 # Gmail API 429 with a ~15-minute coolback window.

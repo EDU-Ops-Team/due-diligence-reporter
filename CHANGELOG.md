@@ -28,10 +28,17 @@ changes do not get an entry.
   style). Prior to this change, every `requests`-based 429 fell back to
   exponential backoff because the Retry-After path was silently disabled.
   Affects Rebl, dashboard publish, and any other `requests`-based client.
-- **Retry-After parser cap (defense-in-depth).** The parser now caps
-  the returned value at 1200 seconds (20 minutes). The downstream wait
-  strategy was already capping; the parser-level cap protects callers
-  that bypass the wait strategy.
+- **Retry-After parser cap on the integer-header branch (defense-in-depth).**
+  `_parse_retry_after_seconds` now caps the value returned from the
+  integer-header branch at `_RETRY_AFTER_MAX_SECONDS` (1200 seconds /
+  20 minutes) and emits a `WARNING` on the
+  `due_diligence_reporter.retry` logger when the upstream value
+  exceeds the cap. The ISO-timestamp branch remains uncapped at the
+  parser level by design — `_rate_limit_aware_wait` clips both branches
+  via `min(parsed, _RETRY_AFTER_MAX_SECONDS)` so callers that go through
+  the wait strategy are protected on both paths. The parser-level cap
+  exists for callers that bypass the wait strategy (e.g. one-shot
+  diagnostics) and for the per-call WARNING signal.
 - **uv version pinned to `0.5.14` across all GitHub Actions workflows**
   that use `astral-sh/setup-uv`. Previously most workflows used
   `version: "latest"`, which let lockfile-incompatible uv releases land

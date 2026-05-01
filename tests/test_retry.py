@@ -219,11 +219,31 @@ class TestParseRetryAfterSeconds:
         assert _parse_retry_after_seconds(_FakeGoogleHttpError()) == 30.0
 
     def test_caps_retry_after_at_20_minutes(self) -> None:
-        """Defense-in-depth: cap parsed Retry-After at 1200s in the parser."""
+        """Defense-in-depth: cap parsed Retry-After at the constant in the parser.
+
+        Asserts against ``_RETRY_AFTER_MAX_SECONDS`` so that if the cap
+        ever shifts, this test follows in lockstep with production code.
+        /check iter2 IMP-C caught the prior literal ``1200.0`` here
+        defeating iter1's constant unification.
+        """
         response = MagicMock(spec=requests.Response)
         response.headers = {"Retry-After": "999999999"}
         exc = requests.HTTPError(response=response)
-        assert _parse_retry_after_seconds(exc) == 1200.0
+        assert _parse_retry_after_seconds(exc) == _RETRY_AFTER_MAX_SECONDS
+
+    def test_no_clamp_at_exact_boundary(self) -> None:
+        """At ``Retry-After: 1200`` (exact boundary) the parser must NOT clamp.
+
+        retry.py uses ``if value > _RETRY_AFTER_MAX_SECONDS`` (strict ``>``)
+        so the boundary value passes through unchanged. /check iter2 LE-1
+        (anti-pattern #27) called this out as missing coverage; a future
+        change to ``>=`` would silently flip the boundary's behaviour
+        without a test failure.
+        """
+        response = MagicMock(spec=requests.Response)
+        response.headers = {"Retry-After": str(int(_RETRY_AFTER_MAX_SECONDS))}
+        exc = requests.HTTPError(response=response)
+        assert _parse_retry_after_seconds(exc) == _RETRY_AFTER_MAX_SECONDS
 
     def test_ignores_non_integer_retry_after_header(self) -> None:
         """HTTP-date format is not handled; non-digit headers return None."""
@@ -265,6 +285,9 @@ class TestParseRetryAfterSeconds:
             f"Expected exactly one clamp warning, got {[r.getMessage() for r in warnings]}"
         )
         assert "99999" in warnings[0].getMessage()
+        # /check iter2 IMP-A: lock the logger name so future renames can't
+        # silently break log-pipeline filters that key off the dotted path.
+        assert warnings[0].name == "due_diligence_reporter.retry"
 
     def test_no_warning_when_header_within_cap(
         self, caplog: pytest.LogCaptureFixture
@@ -279,6 +302,12 @@ class TestParseRetryAfterSeconds:
             result = _parse_retry_after_seconds(exc)
         assert result == 60.0
         assert not any("clamping" in r.getMessage() for r in caplog.records)
+        # No warning record at all should belong to the retry logger when
+        # the header is within cap.
+        assert not any(
+            r.name == "due_diligence_reporter.retry" and r.levelno >= logging.WARNING
+            for r in caplog.records
+        )
 
 
 # ---------------------------------------------------------------------------
