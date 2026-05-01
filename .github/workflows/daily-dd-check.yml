@@ -22,6 +22,7 @@ jobs:
   daily-check:
     runs-on: ubuntu-latest
 
+    timeout-minutes: 60  # scheduled full-roster DD scan
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
