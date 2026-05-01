@@ -1,0 +1,85 @@
+name: Delete Dashboard Slugs
+
+# One-off cleanup workflow for hand-confirmed orphan slugs that the
+# title-driven reconciler skips as RENAME-SUSPECT but a human has cleared
+# for deletion. See scripts/delete_dashboard_slugs.py for usage details.
+#
+# Triggers: manual workflow_dispatch only (no cron). Default is dry-run;
+# set apply=true to actually issue DELETE.
+#
+# Required secrets:
+#   DASHBOARD_PUBLISH_SECRET
+# Optional:
+#   DASHBOARD_PUBLISH_URL (defaults to https://dd-dashboard-three.vercel.app)
+
+on:
+  workflow_dispatch:
+    inputs:
+      slugs:
+        description: 'Comma-separated slug list to DELETE.'
+        required: true
+        type: string
+      reason:
+        description: 'X-Reconcile-Reason header value (shows up in dashboard commits).'
+        required: false
+        default: 'manual-cleanup'
+        type: string
+      apply:
+        description: 'Set true to actually issue DELETE. Leave false for dry-run.'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+concurrency:
+  group: dd-pipeline
+  cancel-in-progress: false
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Verify required secrets
+        run: |
+          [ -n "${{ secrets.DASHBOARD_PUBLISH_SECRET }}" ] || { echo "[ERROR] DASHBOARD_PUBLISH_SECRET missing"; exit 1; }
+          echo "[OK] Required secrets present"
+
+      - name: Create .env file from secrets
+        env:
+          DASHBOARD_PUBLISH_SECRET: ${{ secrets.DASHBOARD_PUBLISH_SECRET }}
+          DASHBOARD_PUBLISH_URL: ${{ secrets.DASHBOARD_PUBLISH_URL }}
+        run: |
+          touch .env
+          echo "DASHBOARD_PUBLISH_SECRET=${DASHBOARD_PUBLISH_SECRET}" >> .env
+          if [ -n "${DASHBOARD_PUBLISH_URL}" ]; then
+            echo "DASHBOARD_PUBLISH_URL=${DASHBOARD_PUBLISH_URL}" >> .env
+          fi
+          echo "[OK] Created .env file"
+
+      - name: Run slug deleter
+        env:
+          APPLY_FLAG: ${{ inputs.apply == 'true' && '--apply' || '' }}
+        run: |
+          ARGS="--slugs '${{ inputs.slugs }}' --reason '${{ inputs.reason }}'"
+          if [ -n "${APPLY_FLAG}" ]; then
+            ARGS="${ARGS} ${APPLY_FLAG}"
+          fi
+          echo "[INFO] Args: ${ARGS}"
+          eval uv run python scripts/delete_dashboard_slugs.py ${ARGS}
+
+      - name: Done
+        run: echo "Slug deletion completed"
