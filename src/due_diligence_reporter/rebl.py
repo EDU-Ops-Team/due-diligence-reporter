@@ -6,6 +6,9 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import requests
+from tenacity import retry
+
+from .retry import retry_config
 
 DEFAULT_REBL_BASE_URL = "https://rebl3.vercel.app"
 DEFAULT_REBL_TIMEOUT_SEC = 15.0
@@ -66,6 +69,7 @@ def _parse_resolution_item(address: str, item: Any) -> ReblResolution:
     )
 
 
+@retry(**retry_config())  # type: ignore[untyped-decorator]
 def resolve_addresses(
     addresses: list[str],
     *,
@@ -73,7 +77,15 @@ def resolve_addresses(
     timeout: float = DEFAULT_REBL_TIMEOUT_SEC,
     session: Any = requests,
 ) -> list[ReblResolution]:
-    """Resolve a batch of site addresses to canonical REBL site IDs."""
+    """Resolve a batch of site addresses to canonical REBL site IDs.
+
+    Wrapped in the standard ``retry_config`` so transient 429 (rate limit) and
+    5xx responses are retried with the project's rate-limit-aware backoff,
+    rather than collapsing into a single "REBL resolve 429" RuntimeError that
+    callers would interpret as a permanent address miss. Empty payloads are
+    short-circuited before the network call so the retry decorator never runs
+    on a no-op.
+    """
     payload = [{"address": address.strip()} for address in addresses if address.strip()]
     if not payload:
         return []
@@ -84,8 +96,11 @@ def resolve_addresses(
         headers={"Content-Type": "application/json"},
         timeout=timeout,
     )
-    if not response.ok:
-        raise RuntimeError(f"REBL resolve {response.status_code}: {response.text[:200]}")
+    # Use raise_for_status so 429/5xx surface as requests.HTTPError, which the
+    # shared retry decorator's `_is_retryable_http_error` recognizes. The old
+    # `RuntimeError("REBL resolve 429: ...")` was opaque to the retry layer
+    # and made every rate-limited call look like a permanent failure.
+    response.raise_for_status()
 
     body = response.json()
     if not isinstance(body, list):

@@ -96,15 +96,14 @@ class TestMatchWrikeToBrokenSites:
         def fake_extract_address(rec: dict) -> str:
             return rec["_test_address"]
 
-        def fake_rebl(addr: str, fallback: str = "") -> str:
-            return {
-                "421 E 11th St, Tulsa, OK": "421-e-11th-st-tulsa-ok",
-                "1726 Whitley Ave, Los Angeles, CA": "1726-whitley-ave-los-angeles-ca",
-                "999 Healthy Way, Austin, TX": "999-healthy-way-austin-tx",
-            }.get(addr, fallback)
+        slug_map = {
+            "421 E 11th St, Tulsa, OK": "421-e-11th-st-tulsa-ok",
+            "1726 Whitley Ave, Los Angeles, CA": "1726-whitley-ave-los-angeles-ca",
+            "999 Healthy Way, Austin, TX": "999-healthy-way-austin-tx",
+        }
 
         with patch.object(recover, "extract_address_from_record", side_effect=fake_extract_address), \
-             patch.object(recover, "canonical_slug_for_address", side_effect=fake_rebl):
+             patch.object(recover, "canonical_slugs_for_addresses", return_value=slug_map):
             pairs = recover._match_wrike_to_broken_sites(records, broken)
 
         assert len(pairs) == 2
@@ -116,28 +115,29 @@ class TestMatchWrikeToBrokenSites:
         records = [self._make_record("")]
 
         with patch.object(recover, "extract_address_from_record", return_value=""), \
-             patch.object(recover, "canonical_slug_for_address", return_value="any-slug"):
+             patch.object(recover, "canonical_slugs_for_addresses", return_value={}):
             pairs = recover._match_wrike_to_broken_sites(records, broken)
 
         assert pairs == []
 
     def test_skips_records_rebl_cannot_resolve(self) -> None:
-        # Rebl returns "" (the fallback) when it can't find the address.
-        # Such a record can't be matched to any broken slug.
+        # Rebl drops unresolvable addresses from the returned mapping; an
+        # address with no slug entry can't be matched to any broken slug.
         broken = {"any-slug": {"slug": "any-slug"}}
         records = [self._make_record("Unknown Address")]
 
         with patch.object(recover, "extract_address_from_record", return_value="Unknown Address"), \
-             patch.object(recover, "canonical_slug_for_address", return_value=""):
+             patch.object(recover, "canonical_slugs_for_addresses", return_value={}):
             pairs = recover._match_wrike_to_broken_sites(records, broken)
 
         assert pairs == []
 
     def test_returns_empty_when_no_broken_sites(self) -> None:
         records = [self._make_record("123 Main St, Austin, TX")]
+        slug_map = {"123 Main St, Austin, TX": "123-main-st-austin-tx"}
 
         with patch.object(recover, "extract_address_from_record", return_value="123 Main St, Austin, TX"), \
-             patch.object(recover, "canonical_slug_for_address", return_value="123-main-st-austin-tx"):
+             patch.object(recover, "canonical_slugs_for_addresses", return_value=slug_map):
             pairs = recover._match_wrike_to_broken_sites(records, broken_by_slug={})
 
         assert pairs == []

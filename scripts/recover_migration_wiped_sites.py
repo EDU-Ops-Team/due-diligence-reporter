@@ -67,7 +67,7 @@ from due_diligence_reporter.wrike import (  # noqa: E402
     filter_active_site_records,
     load_wrike_config,
 )
-from due_diligence_reporter.rebl import canonical_slug_for_address  # noqa: E402
+from due_diligence_reporter.rebl import canonical_slugs_for_addresses  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,19 +119,30 @@ def _match_wrike_to_broken_sites(
     """Pair every Wrike active record with its broken dashboard slug, if any.
 
     Match strategy:
-      1. Resolve the Wrike record's address through Rebl. The dashboard
-         slug after migration *is* the Rebl canonical id, so equal Rebl
-         slugs are a hard match.
-      2. Skip records whose Rebl slug isn't in the broken set.
+      1. Batch-resolve every Wrike record's address through Rebl in a single
+         POST. The dashboard slug after migration *is* the Rebl canonical id,
+         so equal Rebl slugs are a hard match.
+      2. Skip records whose address is empty or whose Rebl slug isn't in the
+         broken set.
 
     Returns a list of (wrike_record, dashboard_slug) pairs to recover.
+
+    Why batch: the prior serial implementation issued one POST per Wrike
+    record. With ~80 active sites that's 80 sequential network calls, plus
+    80 chances to trip Rebl's rate limiter. ``canonical_slugs_for_addresses``
+    folds the entire list into one POST.
     """
-    pairs: list[tuple[dict[str, Any], str]] = []
+    addr_by_rec: list[tuple[dict[str, Any], str]] = []
     for rec in active_records:
         addr = (extract_address_from_record(rec) or "").strip()
-        if not addr:
-            continue
-        rebl_slug = canonical_slug_for_address(addr, fallback="")
+        if addr:
+            addr_by_rec.append((rec, addr))
+
+    slug_map = canonical_slugs_for_addresses([addr for _, addr in addr_by_rec])
+
+    pairs: list[tuple[dict[str, Any], str]] = []
+    for rec, addr in addr_by_rec:
+        rebl_slug = slug_map.get(addr) or ""
         if not rebl_slug:
             continue
         if rebl_slug in broken_by_slug:
