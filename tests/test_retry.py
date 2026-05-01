@@ -195,6 +195,53 @@ class TestParseRetryAfterSeconds:
         assert result is not None
         assert result == 1  # max(negative + 5, 1) = 1
 
+    def test_parses_retry_after_from_response_headers(self) -> None:
+        """requests.HTTPError carries the header on exc.response.headers.
+
+        Regression test for the iter1 fix: prior to the dual-source probe,
+        ``hasattr(exc, "headers")`` returned False for requests.HTTPError
+        and rate-limit-aware waits were silently disabled for every
+        requests-based client (Rebl, dashboard publish, etc.).
+        """
+        response = MagicMock(spec=requests.Response)
+        response.headers = {"Retry-After": "45"}
+        exc = requests.HTTPError(response=response)
+        assert _parse_retry_after_seconds(exc) == 45.0
+
+    def test_parses_retry_after_from_exc_headers(self) -> None:
+        """googleapiclient.errors.HttpError exposes headers directly on the exception."""
+
+        class _FakeGoogleHttpError(Exception):
+            headers = {"Retry-After": "30"}
+
+        assert _parse_retry_after_seconds(_FakeGoogleHttpError()) == 30.0
+
+    def test_caps_retry_after_at_20_minutes(self) -> None:
+        """Defense-in-depth: cap parsed Retry-After at 1200s in the parser."""
+        response = MagicMock(spec=requests.Response)
+        response.headers = {"Retry-After": "999999999"}
+        exc = requests.HTTPError(response=response)
+        assert _parse_retry_after_seconds(exc) == 1200.0
+
+    def test_ignores_non_integer_retry_after_header(self) -> None:
+        """HTTP-date format is not handled; non-digit headers return None."""
+        response = MagicMock(spec=requests.Response)
+        response.headers = {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
+        exc = requests.HTTPError(response=response)
+        assert _parse_retry_after_seconds(exc) is None
+
+    def test_response_headers_take_precedence_over_exc_headers(self) -> None:
+        """When both exc.headers and exc.response.headers exist, prefer the wire value."""
+        response = MagicMock(spec=requests.Response)
+        response.headers = {"Retry-After": "60"}
+
+        class _DualSource(Exception):
+            headers = {"Retry-After": "10"}
+
+        exc = _DualSource()
+        exc.response = response  # type: ignore[attr-defined]
+        assert _parse_retry_after_seconds(exc) == 60.0
+
 
 # ---------------------------------------------------------------------------
 # Wrike _wrike_get integration test

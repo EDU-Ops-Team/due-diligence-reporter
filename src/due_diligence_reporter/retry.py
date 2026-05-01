@@ -38,6 +38,13 @@ BACKOFF_MAX = 30
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
+# Defense-in-depth: cap parsed Retry-After at 20 minutes inside the parser
+# itself so a malicious or buggy upstream returning ``Retry-After: 99999999``
+# can't blow up the wait calculation in callers that forget to cap it. The
+# downstream ``_rate_limit_aware_wait`` also caps at 1200, so this is
+# belt-and-suspenders.
+_RETRY_AFTER_MAX_SECONDS = 1200.0
+
 
 def _parse_retry_after_seconds(exc: BaseException) -> float | None:
     """Extract the number of seconds to wait from a 429 response.
@@ -85,7 +92,7 @@ def _parse_retry_after_seconds(exc: BaseException) -> float | None:
     if candidate_headers:
         header = candidate_headers.get("Retry-After")
         if header and str(header).isdigit():
-            return float(header)
+            return min(float(header), _RETRY_AFTER_MAX_SECONDS)
 
     return None
 

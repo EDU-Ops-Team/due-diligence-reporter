@@ -26,6 +26,13 @@ Run
     uv run python scripts/recover_migration_wiped_sites.py --apply
     uv run python scripts/recover_migration_wiped_sites.py --apply --site austin
 
+BREAKING CHANGE (2026-05-01)
+----------------------------
+``--apply`` and ``--dry-run`` are now a *required* mutually-exclusive group.
+A bare invocation (``python recover_migration_wiped_sites.py``) used to
+silently dry-run; it now exits 2 with a usage error. CI workflows must
+always pass exactly one of the two flags. See ``CHANGELOG.md`` for context.
+
 Env (from .env):
     DASHBOARD_PUBLISH_URL, DASHBOARD_PUBLISH_SECRET
     plus the usual pipeline env (Wrike, Google)
