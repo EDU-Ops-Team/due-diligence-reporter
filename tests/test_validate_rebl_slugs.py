@@ -278,28 +278,42 @@ def _ok_response(status: int = 200, text: str = "{}"):
     return resp
 
 
-def test_migrate_slug_posts_then_deletes():
+def _json_response(status: int, body: dict | None = None, raw_text: str | None = None):
+    """Build a mock requests.Response.
+
+    If ``raw_text`` is given, ``.json()`` raises ValueError (mimics Vercel's
+    HTML 404 page, which our fallback path keys on).
+    """
+    resp = MagicMock()
+    resp.status_code = status
+    if raw_text is not None:
+        resp.text = raw_text
+        resp.json.side_effect = ValueError("not json")
+    else:
+        body = body or {}
+        resp.text = repr(body)
+        resp.json.return_value = body
+    return resp
+
+
+def test_migrate_slug_calls_rename_endpoint_on_happy_path():
+    """Preferred path: POST /api/sites/{old}/rename {new_slug}. No
+    fallback to publish/delete."""
     captured: dict = {}
 
     def fake_post(url, json=None, headers=None, timeout=None):
-        captured["post_url"] = url
-        captured["post_headers"] = headers
-        captured["post_payload"] = json
-        return _ok_response(200)
-
-    def fake_delete(url, headers=None, timeout=None):
-        captured["delete_url"] = url
-        captured["delete_headers"] = headers
-        return _ok_response(200)
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["payload"] = json
+        return _json_response(200, {"ok": True, "action": "rename"})
 
     full_record = {
         "slug": "alpha-school-tulsa-6940-s-utica-ave",
         "site_name": "Tulsa",
-        "address": "6940 S Utica Ave, Tulsa, OK",
     }
 
     with patch.object(validate_rebl_slugs.requests, "post", side_effect=fake_post), \
-         patch.object(validate_rebl_slugs.requests, "delete", side_effect=fake_delete):
+         patch.object(validate_rebl_slugs.requests, "delete") as mock_delete:
         ok, note = validate_rebl_slugs.migrate_slug(
             "https://dash.example.com",
             "secret-xyz",
@@ -309,22 +323,96 @@ def test_migrate_slug_posts_then_deletes():
         )
 
     assert ok is True
-    assert "migrated" in note
-    # POST hits the new slug URL with the record (slug overwritten to new).
-    assert captured["post_url"].endswith("/api/sites/6940-s-utica-ave-tulsa-ok/publish")
-    assert captured["post_payload"]["site_meta"]["slug"] == "6940-s-utica-ave-tulsa-ok"
-    # Both calls carry the reason header pointing back at the old slug.
-    assert "rebl-canonical-slug-migration" in captured["post_headers"]["X-Reconcile-Reason"]
-    assert "alpha-school-tulsa-6940-s-utica-ave" in captured["post_headers"]["X-Reconcile-Reason"]
-    assert captured["delete_url"].endswith("/api/sites/alpha-school-tulsa-6940-s-utica-ave/publish")
-    assert captured["delete_headers"]["Authorization"] == "Bearer secret-xyz"
+    assert "renamed" in note
+    assert captured["url"].endswith(
+        "/api/sites/alpha-school-tulsa-6940-s-utica-ave/rename"
+    )
+    assert captured["payload"] == {"new_slug": "6940-s-utica-ave-tulsa-ok"}
+    assert captured["headers"]["Authorization"] == "Bearer secret-xyz"
+    assert "rebl-canonical-slug-migration" in captured["headers"]["X-Reconcile-Reason"]
+    assert "alpha-school-tulsa-6940-s-utica-ave" in captured["headers"]["X-Reconcile-Reason"]
+    # Critical: the legacy DELETE path must NOT run when rename succeeds,
+    # otherwise we'd nuke the row we just renamed.
+    mock_delete.assert_not_called()
 
 
-def test_migrate_slug_treats_delete_404_as_success():
-    """If old slug is already gone (perhaps a half-applied prior run),
-    DELETE 404 should not fail the migration."""
-    with patch.object(validate_rebl_slugs.requests, "post", return_value=_ok_response(200)), \
-         patch.object(validate_rebl_slugs.requests, "delete", return_value=_ok_response(404)):
+def test_migrate_slug_fails_on_real_slug_not_found():
+    """JSON 404 with message='slug not found' = real not-found, not
+    a missing endpoint. Do NOT fall back to legacy."""
+    with patch.object(
+        validate_rebl_slugs.requests,
+        "post",
+        return_value=_json_response(404, {"message": "slug not found"}),
+    ) as mock_post, \
+         patch.object(validate_rebl_slugs.requests, "delete") as mock_delete:
+        ok, note = validate_rebl_slugs.migrate_slug(
+            "https://dash.example.com",
+            "secret",
+            old_slug="old",
+            new_slug="new",
+            full_record={"slug": "old"},
+        )
+    assert ok is False
+    assert "not on dashboard" in note
+    # Exactly one POST (rename), no fallback POST/DELETE.
+    assert mock_post.call_count == 1
+    mock_delete.assert_not_called()
+
+
+def test_migrate_slug_falls_back_to_legacy_on_endpoint_missing():
+    """HTML 404 (Vercel hasn't deployed rename.ts yet) triggers legacy
+    POST(new)+DELETE(old) so the slug rename still happens."""
+    posts: list[dict] = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        posts.append({"url": url, "json": json})
+        if url.endswith("/rename"):
+            return _json_response(404, raw_text="<html>404</html>")
+        # Legacy publish call.
+        return _json_response(200, {"ok": True})
+
+    with patch.object(validate_rebl_slugs.requests, "post", side_effect=fake_post), \
+         patch.object(
+             validate_rebl_slugs.requests,
+             "delete",
+             return_value=_json_response(200, {"ok": True}),
+         ) as mock_delete:
+        ok, note = validate_rebl_slugs.migrate_slug(
+            "https://dash.example.com",
+            "secret",
+            old_slug="old",
+            new_slug="new",
+            full_record={"slug": "old", "site_name": "X"},
+        )
+    assert ok is True
+    assert "legacy" in note
+    # rename + legacy publish.
+    assert len(posts) == 2
+    assert posts[0]["url"].endswith("/api/sites/old/rename")
+    assert posts[1]["url"].endswith("/api/sites/new/publish")
+    # Slug was overwritten on the legacy site_meta.
+    assert posts[1]["json"]["site_meta"]["slug"] == "new"
+    # And legacy DELETE fired against the old slug.
+    assert mock_delete.call_count == 1
+    assert mock_delete.call_args.args[0].endswith("/api/sites/old/publish")
+
+
+def test_migrate_slug_legacy_treats_delete_404_as_success():
+    """Half-applied prior legacy run: rename returns HTML 404 (endpoint
+    missing), publish succeeds, DELETE returns 404 (already gone). The
+    overall migration should still report success."""
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        if url.endswith("/rename"):
+            return _json_response(404, raw_text="missing")
+        return _json_response(200, {"ok": True})
+
+    with patch.object(validate_rebl_slugs.requests, "post", side_effect=fake_post), \
+         patch.object(
+             validate_rebl_slugs.requests,
+             "delete",
+             return_value=_json_response(404, {"message": "slug not found"}),
+         ):
         ok, note = validate_rebl_slugs.migrate_slug(
             "https://dash.example.com",
             "secret",
@@ -333,11 +421,65 @@ def test_migrate_slug_treats_delete_404_as_success():
             full_record={"slug": "old"},
         )
     assert ok is True
-    assert "migrated" in note
+    assert "legacy" in note
 
 
-def test_migrate_slug_fails_on_post_error():
-    with patch.object(validate_rebl_slugs.requests, "post", return_value=_ok_response(500, "boom")), \
+def test_migrate_slug_fails_on_collision():
+    """409 from rename = both slugs exist as distinct records. Caller
+    must resolve manually; do NOT fall back to legacy (which would
+    silently merge)."""
+    with patch.object(
+        validate_rebl_slugs.requests,
+        "post",
+        return_value=_json_response(409, {"message": "new_slug collides"}),
+    ) as mock_post, \
+         patch.object(validate_rebl_slugs.requests, "delete") as mock_delete:
+        ok, note = validate_rebl_slugs.migrate_slug(
+            "https://dash.example.com",
+            "secret",
+            old_slug="old",
+            new_slug="new",
+            full_record={"slug": "old"},
+        )
+    assert ok is False
+    assert "409" in note
+    assert "collides" in note
+    assert mock_post.call_count == 1
+    mock_delete.assert_not_called()
+
+
+def test_migrate_slug_fails_on_unexpected_status():
+    """500 from rename = real server error. Surface verbatim, no
+    fallback (the rename endpoint exists, it just blew up)."""
+    with patch.object(
+        validate_rebl_slugs.requests,
+        "post",
+        return_value=_json_response(500, {"message": "boom"}),
+    ) as mock_post, \
+         patch.object(validate_rebl_slugs.requests, "delete") as mock_delete:
+        ok, note = validate_rebl_slugs.migrate_slug(
+            "https://dash.example.com",
+            "secret",
+            old_slug="old",
+            new_slug="new",
+            full_record={"slug": "old"},
+        )
+    assert ok is False
+    assert "500" in note
+    assert mock_post.call_count == 1
+    mock_delete.assert_not_called()
+
+
+def test_migrate_slug_legacy_fails_on_publish_error():
+    """Fallback path: if legacy publish fails after rename returns HTML
+    404, surface the error and do NOT issue DELETE."""
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        if url.endswith("/rename"):
+            return _json_response(404, raw_text="nope")
+        return _json_response(500, {"message": "boom"})
+
+    with patch.object(validate_rebl_slugs.requests, "post", side_effect=fake_post), \
          patch.object(validate_rebl_slugs.requests, "delete") as mock_delete:
         ok, note = validate_rebl_slugs.migrate_slug(
             "https://dash.example.com",
@@ -348,23 +490,7 @@ def test_migrate_slug_fails_on_post_error():
         )
     assert ok is False
     assert "POST new" in note
-    # If POST fails we never DELETE the old row (defensive: avoid leaving the
-    # dashboard with neither slug present).
     mock_delete.assert_not_called()
-
-
-def test_migrate_slug_fails_loudly_on_delete_error():
-    with patch.object(validate_rebl_slugs.requests, "post", return_value=_ok_response(200)), \
-         patch.object(validate_rebl_slugs.requests, "delete", return_value=_ok_response(500, "boom")):
-        ok, note = validate_rebl_slugs.migrate_slug(
-            "https://dash.example.com",
-            "secret",
-            old_slug="old",
-            new_slug="new",
-            full_record={"slug": "old"},
-        )
-    assert ok is False
-    assert "DELETE old" in note
 
 
 # ---------- render_report ----------

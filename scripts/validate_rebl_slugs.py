@@ -223,19 +223,99 @@ def migrate_slug(
     full_record: dict[str, Any],
     timeout: int = 30,
 ) -> tuple[bool, str]:
-    """POST the record under ``new_slug``, then DELETE the old. Idempotent.
+    """Rename a dashboard site from ``old_slug`` to ``new_slug``.
 
-    The POST endpoint forces ``slug`` from the URL, so we copy the existing
-    site_meta + report_data wholesale; the only change is the URL slug.
+    Preferred path: ``POST /api/sites/{old}/rename {new_slug}``. The dashboard
+    mutates the slug field in place and preserves all analytical fields
+    (can_we_open, scenarios, sources.*, etc.) verbatim.
+
+    Fallback path (only on 404 — dashboard predates the rename endpoint):
+    ``POST {new}/publish`` then ``DELETE {old}/publish``. This wipes
+    analytical fields if the rename endpoint is unavailable, but keeps
+    the rebl-canonical slug consistent. Recovery via
+    ``recover_migration_wiped_sites.py`` if needed.
 
     Returns ``(success, note)``.
     """
     reason = f"rebl-canonical-slug-migration (was {old_slug})"
 
-    # Reuse the dashboard's existing record as both site_meta and report_data.
-    # The dashboard's transform layer is tolerant of report_data shape and
-    # falls back to site_meta on every field — so passing the live record back
-    # in produces an identical row under the new slug.
+    # ── Preferred: rename endpoint (preserves analytical fields) ───────────
+    rename_url = f"{base_url}/api/sites/{old_slug}/rename"
+    try:
+        r = requests.post(
+            rename_url,
+            json={"new_slug": new_slug},
+            headers={
+                "Authorization": f"Bearer {secret}",
+                "Content-Type": "application/json",
+                "X-Reconcile-Reason": reason,
+            },
+            timeout=timeout,
+        )
+    except requests.RequestException as e:
+        return False, f"rename {old_slug} -> {new_slug} network error: {e}"
+
+    if r.status_code == 200:
+        return True, f"renamed {old_slug} -> {new_slug}"
+    if r.status_code == 404:
+        # Distinguish dashboard-doesn't-have-the-route (legacy) from
+        # site-not-found (real 404). The endpoint returns a JSON body with
+        # ``message: "slug not found"`` for the latter — anything else
+        # (e.g. Vercel's HTML 404 page) is taken as "endpoint missing" and
+        # we fall back. Be defensive: parse body if JSON, else fallback.
+        body_text = (r.text or "")[:500]
+        try:
+            body = r.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict) and body.get("message") == "slug not found":
+            return False, f"rename: site {old_slug} not on dashboard"
+        # Endpoint missing — fall through to legacy POST+DELETE.
+        logger.info(
+            "rename endpoint not available (404 %s); falling back to "
+            "legacy POST+DELETE for %s -> %s",
+            body_text[:80],
+            old_slug,
+            new_slug,
+        )
+        return _migrate_slug_legacy(
+            base_url,
+            secret,
+            old_slug=old_slug,
+            new_slug=new_slug,
+            full_record=full_record,
+            timeout=timeout,
+            reason=reason,
+        )
+    if r.status_code == 409:
+        return False, (
+            f"rename {old_slug} -> {new_slug} HTTP 409: "
+            f"new_slug collides with existing site"
+        )
+    return False, (
+        f"rename {old_slug} -> {new_slug} HTTP {r.status_code}: "
+        f"{r.text[:200]}"
+    )
+
+
+def _migrate_slug_legacy(
+    base_url: str,
+    secret: str,
+    *,
+    old_slug: str,
+    new_slug: str,
+    full_record: dict[str, Any],
+    timeout: int,
+    reason: str,
+) -> tuple[bool, str]:
+    """Legacy POST(new) + DELETE(old) migration path.
+
+    WARNING: Wipes analytical fields (can_we_open, scenarios, sources.*)
+    because the dashboard's transformPipelineToSite reads flat reporter
+    tokens, not the round-tripped dashboard schema. Only used as a
+    fallback when the rename endpoint isn't deployed yet. After cutover
+    this code path should be unreachable on prod.
+    """
     site_meta = dict(full_record)
     site_meta["slug"] = new_slug
     payload = {"site_meta": site_meta, "report_data": full_record}
@@ -275,7 +355,7 @@ def migrate_slug(
             f"{d.text[:200]}"
         )
 
-    return True, f"migrated {old_slug} -> {new_slug}"
+    return True, f"migrated {old_slug} -> {new_slug} (legacy)"
 
 
 # ---------------------------------------------------------------------------
