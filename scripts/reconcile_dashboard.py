@@ -155,22 +155,27 @@ def _find_near_matches(
 ) -> list[tuple[str, bool]]:
     """Return Wrike ``(title, is_active)`` entries that look like the same site.
 
-    Matching strategy, in order:
+    Matching strategy, in order. Stops at the first tier that yields any hits:
 
     1. **Strict**: every meaningful slug token (after stripping brand words,
-       street types, USPS state codes) appears in the candidate title. This
-       handles the common case of slug-to-title drift like state suffixes
-       (e.g. dashboard slug ``...-tulsa-ok`` vs Wrike title ``... Tulsa ...``).
-    2. **Non-numeric fallback**: if no candidate matches strictly, retry
-       requiring only the *non-numeric* meaningful tokens to be present. This
-       catches the address-number rename case — e.g. dashboard slug
-       ``alpha-school-lombard-835`` (the original Wrike title) vs current
-       Wrike title ``Alpha School Lombard 995`` (renamed to a new street
-       number). Without this fallback, a rename like 835 → 995 looks like a
-       genuine orphan and the reconciler would prune real data.
+       street types, USPS state codes) appears in the candidate title. Handles
+       slug↔title drift like state suffixes (dashboard ``...-tulsa-ok`` vs
+       Wrike ``... Tulsa ...``).
+    2. **Non-numeric fallback**: only the non-numeric meaningful tokens must
+       appear. Catches address-number renames like ``alpha-school-lombard-835``
+       vs current Wrike title ``Alpha School Lombard 995``.
+    3. **Numeric-anchor fallback**: every *numeric* token in the slug appears
+       in the candidate title AND at least one non-numeric token also appears.
+       Catches slugs that carry an extra qualifier the active Wrike title
+       dropped — e.g. ``alpha-school-chicago-350-gems-full-school`` vs current
+       ``Alpha School Chicago 350 (GEMS)``: shared address # ``350`` plus city
+       token ``chicago`` is a strong rename signal. Requires at least one
+       numeric and one non-numeric token in the slug, so this tier never fires
+       for slugs that are pure city/word lists (avoids false positives across
+       same-city sites with different addresses).
 
-    The fallback only fires when at least one non-numeric token survives, so
-    purely numeric slugs (rare) still require the strict path.
+    Each fallback only fires when its precondition is met, so purely numeric
+    or purely text slugs still require the strict path.
     """
     tokens = _slug_tokens(slug)
     if not tokens:
@@ -187,16 +192,31 @@ def _find_near_matches(
         return matches
 
     non_numeric = [t for t in tokens if not t.isdigit()]
-    if not non_numeric or non_numeric == tokens:
-        # No fallback available (either all numeric, or fallback equals strict)
-        return matches
+    numeric = [t for t in tokens if t.isdigit()]
 
-    for title, active in all_titles:
-        lt = title.lower()
-        if all(tok in lt for tok in non_numeric):
-            matches.append((title, active))
-            if len(matches) >= limit:
-                break
+    # Tier 2: non-numeric fallback (skip if it would equal strict).
+    if non_numeric and non_numeric != tokens:
+        for title, active in all_titles:
+            lt = title.lower()
+            if all(tok in lt for tok in non_numeric):
+                matches.append((title, active))
+                if len(matches) >= limit:
+                    return matches
+        if matches:
+            return matches
+
+    # Tier 3: numeric-anchor fallback. Requires at least one numeric AND one
+    # non-numeric token in the slug; numeric tokens must all appear in the
+    # candidate title, plus at least one non-numeric token.
+    if numeric and non_numeric:
+        for title, active in all_titles:
+            lt = title.lower()
+            if all(num in lt for num in numeric) and any(
+                tok in lt for tok in non_numeric
+            ):
+                matches.append((title, active))
+                if len(matches) >= limit:
+                    break
     return matches
 
 

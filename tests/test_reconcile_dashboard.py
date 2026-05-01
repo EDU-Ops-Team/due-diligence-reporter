@@ -288,6 +288,65 @@ def test_find_near_matches_returns_empty_when_no_overlap():
     )
 
 
+def test_find_near_matches_numeric_anchor_catches_qualifier_drop_rename():
+    """Numeric-anchor fallback: dashboard slug carries an extra qualifier the
+    active Wrike title dropped. Same numeric address + same city must surface
+    the active title as a rename suspect, not a genuine orphan.
+    """
+    all_titles = [
+        ("Alpha School Chicago 350 (GEMS)", True),
+        ("Alpha School Dallas 4152", True),
+    ]
+
+    # 'gems-full-school' qualifier: tier-3 picks up 350 + chicago.
+    matches = reconcile_dashboard._find_near_matches(
+        "alpha-school-chicago-350-gems-full-school", all_titles
+    )
+    assert matches == [("Alpha School Chicago 350 (GEMS)", True)]
+
+    # 'microschool' qualifier dropped from active title: same anchor logic.
+    matches = reconcile_dashboard._find_near_matches(
+        "alpha-school-chicago-350-microschool", all_titles
+    )
+    assert matches == [("Alpha School Chicago 350 (GEMS)", True)]
+
+
+def test_find_near_matches_numeric_anchor_requires_all_numeric_tokens_in_title():
+    """Tier-3 (numeric anchor) must require EVERY numeric token in the slug
+    to be present in the candidate title. A different-# same-city record
+    must not be returned by tier 3 — only by tier 2 (city-only fallback),
+    which is intentionally lax for safety.
+    """
+    all_titles = [
+        ("Alpha School Minneapolis 4500", True),  # different street #
+    ]
+
+    # Slug 'alpha-school-minneapolis-1128' has tokens [minneapolis, 1128].
+    # Tier 1 fails (no '1128' in title). Tier 2 succeeds because
+    # 'minneapolis' is the only non-numeric token — by design, this is the
+    # safe-by-default path: when in doubt, surface a rename suspect rather
+    # than silently delete real data. The reconciler's skip behavior is the
+    # correct outcome here.
+    matches = reconcile_dashboard._find_near_matches(
+        "alpha-school-minneapolis-1128", all_titles
+    )
+    assert matches == [("Alpha School Minneapolis 4500", True)]
+
+    # But tier 3 alone (numeric anchor) must not fire when the slug's
+    # numeric token is absent from the title. Verify by exercising a slug
+    # whose tier-2 path is blocked (multiple non-numeric tokens, only one
+    # of which appears in title) and whose only numeric token is missing.
+    all_titles_2 = [
+        ("Alpha School Chicago 4500 (GEMS)", True),
+    ]
+    matches = reconcile_dashboard._find_near_matches(
+        "alpha-school-detroit-350-microschool", all_titles_2
+    )
+    # detroit not in title (tier 1 fails on 350+detroit+microschool), tier 2
+    # fails on detroit+microschool, tier 3 fails because '350' not in title.
+    assert matches == []
+
+
 def test_main_logs_near_match_hint_for_orphans_with_no_exact_match(monkeypatch, caplog):
     monkeypatch.setenv("RECONCILE_DRY_RUN", "1")
     monkeypatch.setattr(
