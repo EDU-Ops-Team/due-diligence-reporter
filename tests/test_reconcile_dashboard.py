@@ -69,13 +69,20 @@ def test_expected_slugs_from_wrike_partitions_active_and_inactive(monkeypatch):
         lambda access_token: {"ACTIVE_ID"},
     )
 
-    expected, inactive = reconcile_dashboard._expected_slugs_from_wrike()
+    expected, inactive, all_titles = reconcile_dashboard._expected_slugs_from_wrike()
 
     assert expected == {
         "alpha-school-tulsa-421-e-11th-st",
         "alpha-school-dallas-4152",
     }
     assert inactive == {"alpha-school-minneapolis-1128": "CANCELLED_ID"}
+    # all_titles preserves order from records, including the inactive one,
+    # so downstream near-match search can find renamed/retitled candidates.
+    assert all_titles == [
+        ("Alpha School Tulsa 421 E 11th St", True),
+        ("Alpha School Minneapolis 1128", False),
+        ("Alpha School Dallas 4152", True),
+    ]
 
 
 # ---------- main(): dry-run finds orphans without deleting ----------
@@ -100,6 +107,10 @@ def test_main_dry_run_logs_orphans_and_does_not_delete(monkeypatch, caplog):
         lambda: (
             {"alpha-school-tulsa-421-e-11th-st"},
             {"alpha-school-minneapolis-1128": "CANCELLED_ID"},
+            [
+                ("Alpha School Tulsa 421 E 11th St", True),
+                ("Alpha School Minneapolis 1128", False),
+            ],
         ),
     )
     delete_calls: list[tuple] = []
@@ -143,6 +154,7 @@ def test_main_apply_mode_deletes_each_orphan_with_reason(monkeypatch):
         lambda: (
             {"active-site"},
             {"alpha-school-minneapolis-1128": "CANCELLED_ID"},
+            [("Active Site", True), ("Alpha School Minneapolis 1128", False)],
         ),
     )
 
@@ -191,7 +203,7 @@ def test_main_no_orphans_returns_zero(monkeypatch):
     monkeypatch.setattr(
         reconcile_dashboard,
         "_expected_slugs_from_wrike",
-        lambda: ({"active-site"}, {}),
+        lambda: ({"active-site"}, {}, [("Active Site", True)]),
     )
     delete_calls: list = []
     monkeypatch.setattr(
@@ -218,7 +230,7 @@ def test_main_apply_mode_returns_nonzero_when_delete_fails(monkeypatch):
     monkeypatch.setattr(
         reconcile_dashboard,
         "_expected_slugs_from_wrike",
-        lambda: (set(), {}),
+        lambda: (set(), {}, []),
     )
 
     def flaky_delete(base_url, slug, secret, *, reason, timeout=20):
@@ -228,6 +240,85 @@ def test_main_apply_mode_returns_nonzero_when_delete_fails(monkeypatch):
 
     rc = reconcile_dashboard.main()
     assert rc == 5  # one failure
+
+
+# ---------- _slug_tokens / _find_near_matches ----------
+
+def test_slug_tokens_drops_stopwords_and_short_pieces():
+    assert reconcile_dashboard._slug_tokens("alpha-school-minneapolis-1128") == [
+        "minneapolis",
+        "1128",
+    ]
+    assert reconcile_dashboard._slug_tokens("alpha-school-tulsa-6940-s-utica-ave") == [
+        "tulsa",
+        "6940",
+        "utica",
+    ]
+    assert reconcile_dashboard._slug_tokens("") == []
+
+
+def test_find_near_matches_surfaces_renamed_active_record():
+    """An orphan slug like '6940-s-utica-ave-tulsa-ok' should surface its
+    likely renamed active counterpart 'Alpha School Tulsa 6940 S Utica Ave'.
+    """
+    all_titles = [
+        ("Alpha School Tulsa 6940 S Utica Ave", True),
+        ("Alpha School Tulsa 421 E 11th St", True),
+        ("Alpha School Minneapolis 1128", False),
+    ]
+
+    matches = reconcile_dashboard._find_near_matches(
+        "6940-s-utica-ave-tulsa-ok", all_titles
+    )
+    assert matches == [("Alpha School Tulsa 6940 S Utica Ave", True)]
+
+    matches = reconcile_dashboard._find_near_matches(
+        "alpha-school-minneapolis-1128", all_titles
+    )
+    assert matches == [("Alpha School Minneapolis 1128", False)]
+
+
+def test_find_near_matches_returns_empty_when_no_overlap():
+    all_titles = [("Alpha School Dallas 4152", True)]
+    assert (
+        reconcile_dashboard._find_near_matches(
+            "alpha-school-chicago-350-microschool", all_titles
+        )
+        == []
+    )
+
+
+def test_main_logs_near_match_hint_for_orphans_with_no_exact_match(monkeypatch, caplog):
+    monkeypatch.setenv("RECONCILE_DRY_RUN", "1")
+    monkeypatch.setattr(
+        reconcile_dashboard,
+        "_fetch_dashboard_slugs",
+        lambda base_url: [
+            {"slug": "6940-s-utica-ave-tulsa-ok"},
+            {"slug": "alpha-school-tulsa-6940-s-utica-ave"},
+        ],
+    )
+    monkeypatch.setattr(
+        reconcile_dashboard,
+        "_expected_slugs_from_wrike",
+        lambda: (
+            {"alpha-school-tulsa-6940-s-utica-ave"},
+            {},
+            [("Alpha School Tulsa 6940 S Utica Ave", True)],
+        ),
+    )
+
+    caplog.set_level("INFO", logger="reconcile_dashboard")
+    rc = reconcile_dashboard.main()
+
+    assert rc == 0
+    text = caplog.text
+    assert "6940-s-utica-ave-tulsa-ok" in text
+    # The orphan log line should call out the near-match active record so a
+    # human can see this is a rename/retitle, not a stale row to delete blindly.
+    assert "near matches" in text
+    assert "Alpha School Tulsa 6940 S Utica Ave" in text
+    assert "[ACTIVE]" in text
 
 
 # ---------- _delete_site: 200/404 = success, others = fail ----------
