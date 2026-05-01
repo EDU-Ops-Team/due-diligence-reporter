@@ -1,0 +1,80 @@
+name: Reconcile Dashboard
+
+# Prunes the DD Dashboard to match Wrike's Active status group. The live
+# publish path only ever ADDS or UPDATES sites, so cancelled / on-hold /
+# deferred sites accumulate forever without this. Default mode is dry-run.
+#
+# Triggers:
+#   - manual workflow_dispatch (with apply=true to actually delete)
+#   - weekly cron (Mondays 13:00 UTC) — always dry-run, surfaces orphans in logs
+#
+# Required secrets:
+#   WRIKE_ACCESS_TOKEN, DASHBOARD_PUBLISH_SECRET
+# Optional:
+#   DASHBOARD_PUBLISH_URL (defaults to https://dd-dashboard-three.vercel.app)
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Set true to actually DELETE orphan sites. Leave false for dry-run.'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+  schedule:
+    # Mondays 13:00 UTC = 08:00 CDT, before the daily-dd-check cron at 14:00 UTC
+    - cron: '0 13 * * 1'
+
+concurrency:
+  group: dd-pipeline
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Verify required secrets
+        run: |
+          [ -n "${{ secrets.WRIKE_ACCESS_TOKEN }}" ]       || { echo "[ERROR] WRIKE_ACCESS_TOKEN missing"; exit 1; }
+          [ -n "${{ secrets.DASHBOARD_PUBLISH_SECRET }}" ] || { echo "[ERROR] DASHBOARD_PUBLISH_SECRET missing"; exit 1; }
+          echo "[OK] Required secrets present"
+
+      - name: Create .env file from secrets
+        env:
+          WRIKE_ACCESS_TOKEN: ${{ secrets.WRIKE_ACCESS_TOKEN }}
+          DASHBOARD_PUBLISH_SECRET: ${{ secrets.DASHBOARD_PUBLISH_SECRET }}
+          DASHBOARD_PUBLISH_URL: ${{ secrets.DASHBOARD_PUBLISH_URL }}
+        run: |
+          touch .env
+          echo "WRIKE_ACCESS_TOKEN=${WRIKE_ACCESS_TOKEN}" >> .env
+          echo "DASHBOARD_PUBLISH_SECRET=${DASHBOARD_PUBLISH_SECRET}" >> .env
+          if [ -n "${DASHBOARD_PUBLISH_URL}" ]; then
+            echo "DASHBOARD_PUBLISH_URL=${DASHBOARD_PUBLISH_URL}" >> .env
+          fi
+          echo "[OK] Created .env file"
+
+      - name: Run dashboard reconciler
+        env:
+          # Cron always runs dry. workflow_dispatch honours the apply input.
+          RECONCILE_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.apply == 'true') && '0' || '1' }}
+        run: |
+          echo "[INFO] RECONCILE_DRY_RUN=${RECONCILE_DRY_RUN}"
+          uv run python scripts/reconcile_dashboard.py
+
+      - name: Done
+        run: echo "Dashboard reconcile completed"
