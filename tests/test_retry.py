@@ -231,19 +231,33 @@ class TestParseRetryAfterSeconds:
         exc = requests.HTTPError(response=response)
         assert _parse_retry_after_seconds(exc) == _RETRY_AFTER_MAX_SECONDS
 
-    def test_no_clamp_at_exact_boundary(self) -> None:
+    def test_no_clamp_at_exact_boundary(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """At ``Retry-After: 1200`` (exact boundary) the parser must NOT clamp.
 
         retry.py uses ``if value > _RETRY_AFTER_MAX_SECONDS`` (strict ``>``)
         so the boundary value passes through unchanged. /check iter2 LE-1
-        (anti-pattern #27) called this out as missing coverage; a future
-        change to ``>=`` would silently flip the boundary's behaviour
-        without a test failure.
+        called this out as missing coverage. iter3 hardening: the value
+        comparison alone can't distinguish ``>`` from ``>=`` (both return
+        1200.0 when input is 1200), so we also assert that the clamping
+        WARNING is NOT emitted at the boundary. A regression to ``>=``
+        would emit the warning and fail this test.
         """
+        import logging
+
         response = MagicMock(spec=requests.Response)
         response.headers = {"Retry-After": str(int(_RETRY_AFTER_MAX_SECONDS))}
         exc = requests.HTTPError(response=response)
-        assert _parse_retry_after_seconds(exc) == _RETRY_AFTER_MAX_SECONDS
+        with caplog.at_level(logging.WARNING, logger="due_diligence_reporter.retry"):
+            result = _parse_retry_after_seconds(exc)
+        assert result == _RETRY_AFTER_MAX_SECONDS
+        # Strict ``>`` means the boundary input passes through without a
+        # clamp; no WARNING should fire. Future change to ``>=`` would
+        # emit the WARNING and fail this assertion.
+        assert not any(
+            "clamping" in r.getMessage() for r in caplog.records
+        ), f"Boundary value 1200 should NOT clamp, but got: {[r.getMessage() for r in caplog.records]}"
 
     def test_ignores_non_integer_retry_after_header(self) -> None:
         """HTTP-date format is not handled; non-digit headers return None."""
