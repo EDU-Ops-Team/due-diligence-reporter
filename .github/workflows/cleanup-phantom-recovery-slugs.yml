@@ -38,6 +38,9 @@ jobs:
         with:
           version: "0.5.14"
 
+      - name: Install dependencies
+        run: uv sync
+
       - name: Verify required secrets
         run: |
           [ -n "${{ secrets.DASHBOARD_PUBLISH_SECRET }}" ] || {
@@ -61,7 +64,7 @@ jobs:
           if [ -n "${PAIR}" ]; then
             PAIR_ARG="--pair ${PAIR}"
           fi
-          uv run --no-sync python -m scripts.cleanup_phantom_recovery_slugs ${FLAG} ${PAIR_ARG}
+          uv run python scripts/cleanup_phantom_recovery_slugs.py ${FLAG} ${PAIR_ARG}
 
       - name: Done
         run: echo "Cleanup run completed (apply=${{ inputs.apply }})"
