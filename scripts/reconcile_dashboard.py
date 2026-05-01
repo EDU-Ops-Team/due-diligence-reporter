@@ -84,12 +84,16 @@ def _fetch_dashboard_slugs(base_url: str, *, timeout: int = 20) -> list[dict[str
     return [s for s in sites if isinstance(s, dict) and s.get("slug")]
 
 
-def _expected_slugs_from_wrike() -> tuple[set[str], dict[str, str]]:
+def _expected_slugs_from_wrike() -> tuple[set[str], dict[str, str], list[tuple[str, bool]]]:
     """Build the set of slugs that *should* exist on the dashboard.
 
-    Returns (slug_set, slug_to_status_label) — the status label is used purely
-    for log/audit messages on inactive records that we are NOT pruning (e.g.
-    they were never published in the first place).
+    Returns ``(slug_set, slug_to_status_label, all_titles)``.
+
+    The status label is used purely for log/audit messages on inactive
+    records that we are NOT pruning (e.g. they were never published in the
+    first place). ``all_titles`` is a list of every Wrike record
+    ``(title, is_active)`` tuple, used downstream to suggest near-match
+    candidates when an orphan slug doesn't match any Wrike record exactly.
     """
     cfg = load_wrike_config()
     records = _get_all_site_records(cfg=cfg)
@@ -97,6 +101,7 @@ def _expected_slugs_from_wrike() -> tuple[set[str], dict[str, str]]:
 
     expected: set[str] = set()
     inactive_slugs: dict[str, str] = {}
+    all_titles: list[tuple[str, bool]] = []
     for rec in records:
         title = (rec.get("title") or "").strip()
         if not title:
@@ -104,13 +109,65 @@ def _expected_slugs_from_wrike() -> tuple[set[str], dict[str, str]]:
         slug = slugify(title)
         if not slug:
             continue
-        if is_record_active(rec, active_ids):
+        active = is_record_active(rec, active_ids)
+        all_titles.append((title, active))
+        if active:
             expected.add(slug)
         else:
             # Track status id for the audit log, raw value is informative
             # enough even if we don't resolve it to a human name here.
             inactive_slugs[slug] = str(rec.get("customStatusId") or "inactive")
-    return expected, inactive_slugs
+    return expected, inactive_slugs, all_titles
+
+
+_TOKEN_STOPWORDS = {
+    # Brand / role words always present and never disambiguating
+    "alpha", "school", "the", "and", "of",
+    # Street type abbreviations
+    "st", "ave", "rd", "dr", "ln", "blvd", "hwy", "pkwy", "ct",
+    # USPS two-letter state codes — dashboard slugs sometimes append the
+    # state, Wrike titles usually don't, and these are never the
+    # disambiguating piece of an address.
+    "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga",
+    "hi", "id", "il", "in", "ia", "ks", "ky", "la", "me", "md",
+    "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv", "nh", "nj",
+    "nm", "ny", "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc",
+    "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy",
+    "dc",
+}
+
+
+def _slug_tokens(slug: str) -> list[str]:
+    """Tokenize a slug for fuzzy matching: keep meaningful words/numbers.
+
+    Drops alpha/school/etc. plus single-letter pieces, so tokens like
+    'tulsa' / '6940' / 'minneapolis' / '1128' survive for near-match search.
+    """
+    return [
+        t
+        for t in slug.split("-")
+        if t and len(t) > 1 and t not in _TOKEN_STOPWORDS
+    ]
+
+
+def _find_near_matches(
+    slug: str, all_titles: list[tuple[str, bool]], *, limit: int = 3
+) -> list[tuple[str, bool]]:
+    """Return Wrike (title, is_active) entries whose title contains every
+    meaningful token from ``slug``. Helps a human triage 'no matching Wrike
+    record' orphans by showing what the active record was likely renamed to.
+    """
+    tokens = _slug_tokens(slug)
+    if not tokens:
+        return []
+    matches: list[tuple[str, bool]] = []
+    for title, active in all_titles:
+        lt = title.lower()
+        if all(tok in lt for tok in tokens):
+            matches.append((title, active))
+            if len(matches) >= limit:
+                break
+    return matches
 
 
 def _delete_site(
@@ -174,7 +231,7 @@ def main() -> int:
     logger.info("Dashboard currently has %d sites", len(dashboard_slugs))
 
     try:
-        expected, inactive_slugs = _expected_slugs_from_wrike()
+        expected, inactive_slugs, all_titles = _expected_slugs_from_wrike()
     except Exception as e:
         logger.error("Failed to load Wrike active set: %s", e)
         return 4
@@ -195,7 +252,19 @@ def main() -> int:
         if slug in inactive_slugs:
             logger.info("  - %s (Wrike status_id=%s)", slug, inactive_slugs[slug])
         else:
-            logger.info("  - %s (no matching Wrike record)", slug)
+            near = _find_near_matches(slug, all_titles)
+            if near:
+                hints = "; ".join(
+                    f"{title!r} [{'ACTIVE' if active else 'INACTIVE'}]"
+                    for title, active in near
+                )
+                logger.info(
+                    "  - %s (no exact Wrike record; near matches: %s)",
+                    slug,
+                    hints,
+                )
+            else:
+                logger.info("  - %s (no matching Wrike record)", slug)
 
     if dry_run:
         logger.info(
