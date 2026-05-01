@@ -75,6 +75,13 @@ PHANTOM_TO_CANONICAL: list[tuple[str, str]] = [
     ("alpha-school-lombard-995", "995-oak-creek-dr-lombard-il"),
     ("alpha-school-portland-838", "838-sw-1st-ave-portland-or"),
     ("alpha-school-winter-park-460", "460-e-new-england-ave-winter-park-fl"),
+    # Miami Beach 300: the recovery's POST(transformed-record) hit an
+    # already-existing typo'd duplicate slug instead of creating the
+    # canonical one. Net effect: 300's hydrated data sits under
+    # 400-71st-st-miami-beach-fl. Treat 400-71st as the "phantom" and
+    # rename it onto 300's canonical slug, dropping the wiped 300 stub.
+    # Use --pair miami-beach to apply only this row.
+    ("400-71st-st-miami-beach-fl", "300-71st-miami-beach-fl"),
 ]
 
 
