@@ -278,10 +278,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = get_settings()
-    gc = GoogleClient()
+    gc = GoogleClient.from_oauth_config(
+        client_config_path=str(settings.get_client_config_path()),
+        token_file_path=str(settings.get_token_file_path()),
+        oauth_port=settings.oauth_port,
+        scopes=settings.google_scopes,
+    )
     config = load_wrike_config()
-    records = _get_all_site_records(config)
-    active_status_ids = _get_active_status_ids(config)
+    records = _get_all_site_records(cfg=config)
+    active_status_ids = _get_active_status_ids(access_token=config.access_token)
     active_records = filter_active_site_records(records, active_status_ids)
 
     summaries = [build_site_summary(r) for r in active_records]
