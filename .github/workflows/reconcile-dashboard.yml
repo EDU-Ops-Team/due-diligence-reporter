@@ -24,6 +24,16 @@ on:
         options:
           - 'false'
           - 'true'
+      lookup_keywords:
+        description: 'Optional: comma-separated keywords to search Wrike record titles (case-insensitive). Leave blank to skip.'
+        required: false
+        default: ''
+        type: string
+      lookup_permalink_ids:
+        description: 'Optional: comma-separated Wrike permalinkIds to look up (e.g. 1791910698).'
+        required: false
+        default: ''
+        type: string
   schedule:
     # Mondays 13:00 UTC = 08:00 CDT, before the daily-dd-check cron at 14:00 UTC
     - cron: '0 13 * * 1'
@@ -75,6 +85,13 @@ jobs:
         run: |
           echo "[INFO] RECONCILE_DRY_RUN=${RECONCILE_DRY_RUN}"
           uv run python scripts/reconcile_dashboard.py
+
+      - name: Optional Wrike keyword lookup
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.lookup_keywords != '' }}
+        env:
+          WRIKE_PERMALINK_IDS: ${{ inputs.lookup_permalink_ids }}
+        run: |
+          uv run python scripts/wrike_search.py "${{ inputs.lookup_keywords }}"
 
       - name: Done
         run: echo "Dashboard reconcile completed"
