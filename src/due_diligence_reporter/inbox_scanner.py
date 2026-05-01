@@ -551,6 +551,11 @@ def process_email(
             else _prefix_original_filename(filename)
         )
 
+        # Plumb the matched site's address into the upload payload so
+        # downstream readiness flips can resolve the canonical Rebl slug
+        # (the publisher's slug source) instead of slugify(title).
+        site_address = str(site_summary.get("address", "")).strip()
+
         if dry_run:
             logger.info("[DRY RUN] Would upload '%s' to folder %s", drive_filename, target_folder_id)
             uploaded.append({
@@ -558,6 +563,7 @@ def process_email(
                 "drive_filename": drive_filename,
                 "doc_type": doc_type,
                 "site_title": site_title,
+                "site_address": site_address,
                 "matched_site_id": matched_site_id,
                 "dry_run": True,
             })
@@ -609,6 +615,7 @@ def process_email(
                     "drive_filename": drive_filename,
                     "doc_type": doc_type,
                     "site_title": site_title,
+                    "site_address": site_address,
                     "matched_site_id": matched_site_id,
                     "drive_file_id": drive_file.get("id"),
                     "drive_link": drive_file.get("webViewLink"),
@@ -620,6 +627,7 @@ def process_email(
                     "drive_filename": drive_filename,
                     "doc_type": doc_type,
                     "site_title": site_title,
+                    "site_address": site_address,
                     "matched_site_id": matched_site_id,
                     "drive_file_id": drive_file.get("id"),
                     "drive_link": drive_file.get("webViewLink"),
