@@ -301,3 +301,45 @@ class TestRecoverOneThreadsForceSlug:
             "exception message must not be %%s-formatted into the summary line; "
             f"got: {summary_messages!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# main() argparse contract
+#
+# The script uses a required mutually-exclusive group for --apply / --dry-run
+# (see scripts/recover_migration_wiped_sites.py). A CI workflow that forgets
+# to pass either flag must fail loudly rather than silently dry-run, since the
+# old behavior (no flag = dry-run) was a footgun.
+# ---------------------------------------------------------------------------
+
+
+class TestMainArgparseContract:
+    def test_main_exits_when_neither_apply_nor_dry_run_passed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Bare invocation must argparse-exit, not silently dry-run."""
+        with pytest.raises(SystemExit) as exc_info:
+            recover.main([])
+        # argparse exits 2 on usage errors.
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "--apply" in captured.err
+        assert "--dry-run" in captured.err
+
+    def test_main_rejects_apply_and_dry_run_together(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--apply and --dry-run are mutually exclusive.
+
+        We assert the argparse mutex error string "not allowed with"
+        directly. ``--dry-run`` always appears in the usage line on any
+        argparse error, so a fallback like ``"--dry-run" in captured.err``
+        would silently survive a regression that removed the mutex group.
+        """
+        with pytest.raises(SystemExit) as exc_info:
+            recover.main(["--apply", "--dry-run"])
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "not allowed with" in captured.err.lower(), (
+            f"Expected argparse mutex error 'not allowed with' in stderr; got: {captured.err!r}"
+        )

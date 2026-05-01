@@ -26,7 +26,10 @@ from tenacity import (
     wait_exponential,
 )
 
-logger = logging.getLogger("[retry]")
+# Use the module's dotted name so log filters scoped to
+# ``due_diligence_reporter.*`` capture our records (matches the
+# ``due_diligence_reporter.rebl`` and ``.run`` loggers used elsewhere).
+logger = logging.getLogger(__name__)
 
 # Max 5 attempts total (1 initial + 4 retries) — enough to survive a
 # Gmail API 429 with a ~15-minute coolback window.
@@ -37,6 +40,13 @@ BACKOFF_MAX = 30
 
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+# Defense-in-depth: cap parsed Retry-After at 20 minutes inside the parser
+# itself so a malicious or buggy upstream returning ``Retry-After: 99999999``
+# can't blow up the wait calculation in callers that forget to cap it. The
+# downstream ``_rate_limit_aware_wait`` also caps at 1200, so this is
+# belt-and-suspenders.
+_RETRY_AFTER_MAX_SECONDS = 1200.0
 
 
 def _parse_retry_after_seconds(exc: BaseException) -> float | None:
@@ -85,7 +95,15 @@ def _parse_retry_after_seconds(exc: BaseException) -> float | None:
     if candidate_headers:
         header = candidate_headers.get("Retry-After")
         if header and str(header).isdigit():
-            return float(header)
+            value = float(header)
+            if value > _RETRY_AFTER_MAX_SECONDS:
+                logger.warning(
+                    "Retry-After header %s exceeds cap %.0fs; clamping",
+                    header,
+                    _RETRY_AFTER_MAX_SECONDS,
+                )
+                return _RETRY_AFTER_MAX_SECONDS
+            return value
 
     return None
 
@@ -118,8 +136,10 @@ def _rate_limit_aware_wait(retry_state: RetryCallState) -> float:
     if exc is not None:
         wait_secs = _parse_retry_after_seconds(exc)
         if wait_secs is not None:
-            # Cap at 20 minutes to avoid infinite waits
-            capped = min(wait_secs, 1200)
+            # Cap at 20 minutes to avoid infinite waits. Use the shared
+            # constant so the parser-level cap (header path) and caller-level
+            # cap (covers ISO-timestamp path) stay locked together.
+            capped = min(wait_secs, _RETRY_AFTER_MAX_SECONDS)
             logger.info(
                 "Rate limited — waiting %.0f seconds before retry (attempt %d/%d)",
                 capped,
