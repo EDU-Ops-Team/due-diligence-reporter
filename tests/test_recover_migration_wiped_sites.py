@@ -329,10 +329,17 @@ class TestMainArgparseContract:
     def test_main_rejects_apply_and_dry_run_together(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """--apply and --dry-run are mutually exclusive."""
+        """--apply and --dry-run are mutually exclusive.
+
+        We assert the argparse mutex error string "not allowed with"
+        directly. ``--dry-run`` always appears in the usage line on any
+        argparse error, so a fallback like ``"--dry-run" in captured.err``
+        would silently survive a regression that removed the mutex group.
+        """
         with pytest.raises(SystemExit) as exc_info:
             recover.main(["--apply", "--dry-run"])
         assert exc_info.value.code == 2
         captured = capsys.readouterr()
-        assert "not allowed with" in captured.err.lower() or \
-               "--dry-run" in captured.err
+        assert "not allowed with" in captured.err.lower(), (
+            f"Expected argparse mutex error 'not allowed with' in stderr; got: {captured.err!r}"
+        )

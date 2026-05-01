@@ -92,7 +92,15 @@ def _parse_retry_after_seconds(exc: BaseException) -> float | None:
     if candidate_headers:
         header = candidate_headers.get("Retry-After")
         if header and str(header).isdigit():
-            return min(float(header), _RETRY_AFTER_MAX_SECONDS)
+            value = float(header)
+            if value > _RETRY_AFTER_MAX_SECONDS:
+                logger.warning(
+                    "Retry-After header %s exceeds cap %.0fs; clamping",
+                    header,
+                    _RETRY_AFTER_MAX_SECONDS,
+                )
+                return _RETRY_AFTER_MAX_SECONDS
+            return value
 
     return None
 
@@ -125,8 +133,10 @@ def _rate_limit_aware_wait(retry_state: RetryCallState) -> float:
     if exc is not None:
         wait_secs = _parse_retry_after_seconds(exc)
         if wait_secs is not None:
-            # Cap at 20 minutes to avoid infinite waits
-            capped = min(wait_secs, 1200)
+            # Cap at 20 minutes to avoid infinite waits. Use the shared
+            # constant so the parser-level cap (header path) and caller-level
+            # cap (covers ISO-timestamp path) stay locked together.
+            capped = min(wait_secs, _RETRY_AFTER_MAX_SECONDS)
             logger.info(
                 "Rate limited — waiting %.0f seconds before retry (attempt %d/%d)",
                 capped,

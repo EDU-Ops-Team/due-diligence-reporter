@@ -9,8 +9,10 @@ import requests
 
 from due_diligence_reporter.retry import (
     MAX_ATTEMPTS,
+    _RETRY_AFTER_MAX_SECONDS,
     _is_retryable_http_error,
     _parse_retry_after_seconds,
+    _rate_limit_aware_wait,
     api_retry,
     retry_config,
 )
@@ -241,6 +243,90 @@ class TestParseRetryAfterSeconds:
         exc = _DualSource()
         exc.response = response  # type: ignore[attr-defined]
         assert _parse_retry_after_seconds(exc) == 60.0
+
+    def test_clamp_logs_warning_when_header_exceeds_cap(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When the parser clamps an outsized header, it must log a WARNING
+        so operators can spot abnormal upstream behaviour during incidents."""
+        import logging
+
+        response = MagicMock(spec=requests.Response)
+        response.headers = {"Retry-After": "99999"}
+        exc = requests.HTTPError(response=response)
+        with caplog.at_level(logging.WARNING, logger="due_diligence_reporter.retry"):
+            result = _parse_retry_after_seconds(exc)
+        assert result == _RETRY_AFTER_MAX_SECONDS
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "clamping" in r.getMessage()
+        ]
+        assert len(warnings) == 1, (
+            f"Expected exactly one clamp warning, got {[r.getMessage() for r in warnings]}"
+        )
+        assert "99999" in warnings[0].getMessage()
+
+    def test_no_warning_when_header_within_cap(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Headers below the cap must not trigger the clamp warning."""
+        import logging
+
+        response = MagicMock(spec=requests.Response)
+        response.headers = {"Retry-After": "60"}
+        exc = requests.HTTPError(response=response)
+        with caplog.at_level(logging.WARNING, logger="due_diligence_reporter.retry"):
+            result = _parse_retry_after_seconds(exc)
+        assert result == 60.0
+        assert not any("clamping" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# _rate_limit_aware_wait integration tests (caller-level cap)
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimitAwareWaitCap:
+    """The caller-level cap in _rate_limit_aware_wait covers BOTH the
+    integer-header path (already capped at parser level) and the
+    ISO-timestamp path (NOT capped at parser level). This test class locks
+    that contract so future refactors can't regress either branch."""
+
+    def _make_retry_state(self, exc: BaseException) -> object:
+        """Build a minimal RetryCallState-shaped object for _rate_limit_aware_wait."""
+        outcome = MagicMock()
+        outcome.exception.return_value = exc
+        state = MagicMock()
+        state.outcome = outcome
+        state.attempt_number = 1
+        return state
+
+    def test_caps_header_path_at_constant(self) -> None:
+        """Header path: parser caps to _RETRY_AFTER_MAX_SECONDS, caller is no-op."""
+        response = MagicMock(spec=requests.Response)
+        response.headers = {"Retry-After": "999999999"}
+        exc = requests.HTTPError(response=response)
+        wait = _rate_limit_aware_wait(self._make_retry_state(exc))
+        assert wait == _RETRY_AFTER_MAX_SECONDS
+
+    def test_caps_iso_timestamp_path_at_constant(self) -> None:
+        """ISO-timestamp path: parser returns uncapped value (e.g. 50 years
+        in the future); caller's min() is the ONLY thing protecting the
+        caller from a multi-decade sleep. If this regresses, change
+        retry.py:_rate_limit_aware_wait or _parse_retry_after_seconds."""
+        # 30 minutes in the future = 1800s + 5s buffer = 1805s, > 1200s cap.
+        from datetime import datetime, timedelta, timezone
+
+        future = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+        exc = Exception(f"429 Too Many Requests. Retry after {future}")
+        # First confirm the parser-level path returns > cap (uncapped).
+        parsed = _parse_retry_after_seconds(exc)
+        assert parsed is not None and parsed > _RETRY_AFTER_MAX_SECONDS
+        # Then confirm the caller caps it.
+        wait = _rate_limit_aware_wait(self._make_retry_state(exc))
+        assert wait == _RETRY_AFTER_MAX_SECONDS
 
 
 # ---------------------------------------------------------------------------

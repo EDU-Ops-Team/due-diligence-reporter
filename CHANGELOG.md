@@ -36,9 +36,12 @@ changes do not get an entry.
   that use `astral-sh/setup-uv`. Previously most workflows used
   `version: "latest"`, which let lockfile-incompatible uv releases land
   silently between runs.
-- **`DASHBOARD_PUBLISH_URL` and `DASHBOARD_PUBLISH_SECRET` in
-  `.env.example`.** These were previously undocumented; the recover
-  script and dashboard publish flow both require them.
+- **`DASHBOARD_PUBLISH_SECRET` rotation procedure documented in
+  `.env.example`.** The variable itself was added in a prior change
+  (the workflow-hardening / Rebl batch / 429-aware retry release);
+  this entry adds the `openssl rand -hex 32` generation hint, the
+  Vercel-secret sync requirement, and the rotation order (deploy to
+  dd-dashboard first, then update here).
 
 ### Operator notes
 
@@ -49,13 +52,17 @@ endpoint via `canonical_slugs_for_addresses()`. Both an outage and a
 legitimate empty result return `{}`, but only the outage path logs:
 
 - **Rebl is down or rate-limited past the retry budget** (outage):
-  the wrapper logs at `ERROR` with `"canonical_slugs_for_addresses:
+  the batch wrapper logs at `ERROR` with `"canonical_slugs_for_addresses:
   Rebl batch resolve failed after retries; falling back to empty
   mapping (N address(es) affected)"` *with a traceback (`exc_info`)*
-  before returning `{}`. Equivalent ERROR for the singleton path:
-  `"canonical_slug_for_address: Rebl resolve failed after retries…"`
-  at `WARNING` level (singleton has caller fallback). Both originate
-  from the `due_diligence_reporter.rebl` logger.
+  before returning `{}`. The singleton wrapper logs the equivalent
+  message at `WARNING` level (it has a caller-supplied fallback so the
+  call site can still proceed) — `"canonical_slug_for_address: Rebl
+  resolve failed after retries…"` — also with `exc_info`. Both
+  originate from the `due_diligence_reporter.rebl` logger.
+  **Operator note:** if you grep only for `ERROR` during an incident,
+  you will miss singleton-path failures. Filter for the
+  `due_diligence_reporter.rebl` logger and include `WARNING`.
 - **Rebl returned a result but no addresses resolved** (legitimate
   empty / nothing-matched): silent — no log line. The wrapper just
   returns `{}`. This is normal when Rebl has not yet indexed a fresh
