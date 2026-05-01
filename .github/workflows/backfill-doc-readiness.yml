@@ -39,6 +39,7 @@ jobs:
   backfill-readiness:
     runs-on: ubuntu-latest
 
+    timeout-minutes: 30  # doc readiness scan across roster
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

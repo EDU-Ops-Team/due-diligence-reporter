@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import requests
 
 from due_diligence_reporter.rebl import (
     ReblResolution,
@@ -10,6 +11,10 @@ from due_diligence_reporter.rebl import (
     resolve_addresses,
 )
 from due_diligence_reporter.server import _build_report_trace_data
+
+# resolve_addresses is wrapped in @retry; tests of error paths call the
+# underlying function directly to avoid 5x retry latency on synthetic 5xx.
+_resolve_addresses_unwrapped = resolve_addresses.__wrapped__
 
 
 class _FakeResponse:
@@ -21,6 +26,14 @@ class _FakeResponse:
 
     def json(self):
         return self._body
+
+    def raise_for_status(self) -> None:
+        # Mirror requests.Response.raise_for_status so the production code's
+        # retry-aware error path runs the same way it does in prod.
+        if not self.ok:
+            err = requests.HTTPError(f"{self.status_code} Server Error")
+            err.response = self  # type: ignore[assignment]
+            raise err
 
 
 class _FakeSession:
@@ -74,8 +87,14 @@ class TestResolveAddresses:
             text="service unavailable",
         ))
 
-        with pytest.raises(RuntimeError, match="REBL resolve 503"):
-            resolve_addresses(["123 Main St, Austin, TX"], session=session)
+        # Call the unwrapped function so we don't pay the retry decorator's
+        # 5-attempt exponential backoff on a deterministic 5xx fixture. The
+        # production retry behavior (5xx -> retry -> reraise) is asserted by
+        # the dedicated retry tests in test_retry.py.
+        with pytest.raises(requests.HTTPError):
+            _resolve_addresses_unwrapped(
+                ["123 Main St, Austin, TX"], session=session,
+            )
 
 
 class TestCanonicalSlugForAddress:

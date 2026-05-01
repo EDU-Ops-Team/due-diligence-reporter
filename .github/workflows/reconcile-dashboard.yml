@@ -46,6 +46,7 @@ jobs:
   reconcile:
     runs-on: ubuntu-latest
 
+    timeout-minutes: 30  # roster reconcile
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass
 from typing import Any
 
 import requests
+from tenacity import retry
+
+from .retry import retry_config
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_REBL_BASE_URL = "https://rebl3.vercel.app"
 DEFAULT_REBL_TIMEOUT_SEC = 15.0
@@ -66,6 +72,7 @@ def _parse_resolution_item(address: str, item: Any) -> ReblResolution:
     )
 
 
+@retry(**retry_config())  # type: ignore[untyped-decorator]
 def resolve_addresses(
     addresses: list[str],
     *,
@@ -73,7 +80,15 @@ def resolve_addresses(
     timeout: float = DEFAULT_REBL_TIMEOUT_SEC,
     session: Any = requests,
 ) -> list[ReblResolution]:
-    """Resolve a batch of site addresses to canonical REBL site IDs."""
+    """Resolve a batch of site addresses to canonical REBL site IDs.
+
+    Wrapped in the standard ``retry_config`` so transient 429 (rate limit) and
+    5xx responses are retried with the project's rate-limit-aware backoff,
+    rather than collapsing into a single "REBL resolve 429" RuntimeError that
+    callers would interpret as a permanent address miss. Empty payloads are
+    short-circuited before the network call so the retry decorator never runs
+    on a no-op.
+    """
     payload = [{"address": address.strip()} for address in addresses if address.strip()]
     if not payload:
         return []
@@ -84,8 +99,11 @@ def resolve_addresses(
         headers={"Content-Type": "application/json"},
         timeout=timeout,
     )
-    if not response.ok:
-        raise RuntimeError(f"REBL resolve {response.status_code}: {response.text[:200]}")
+    # Use raise_for_status so 429/5xx surface as requests.HTTPError, which the
+    # shared retry decorator's `_is_retryable_http_error` recognizes. The old
+    # `RuntimeError("REBL resolve 429: ...")` was opaque to the retry layer
+    # and made every rate-limited call look like a permanent failure.
+    response.raise_for_status()
 
     body = response.json()
     if not isinstance(body, list):
@@ -152,7 +170,17 @@ def canonical_slug_for_address(
             timeout=timeout,
             session=session,
         )
-    except Exception:  # network/runtime errors should not abort the caller
+    except Exception:
+        # Network/runtime errors must not abort the caller, but a totally
+        # silent fallback turns a Rebl outage into "every site mapped to
+        # title-slug" with no operator signal. Log at WARNING with a
+        # traceback so a Rebl-down incident is visible in run logs without
+        # changing the fallback behavior the callers rely on.
+        logger.warning(
+            "canonical_slug_for_address: Rebl resolve failed after retries; "
+            "falling back to caller-supplied slug",
+            exc_info=True,
+        )
         return fallback
     return result.site_id.strip() or fallback
 
@@ -184,6 +212,17 @@ def canonical_slugs_for_addresses(
             session=session,
         )
     except Exception:
+        # See the rationale on canonical_slug_for_address. A silent {} return
+        # during a Rebl outage looks identical to "nothing matched" in the
+        # recover/cleanup flows, so emit a single ERROR with traceback before
+        # falling back. Emitting once per batch (not per address) keeps log
+        # volume bounded under sustained outages.
+        logger.error(
+            "canonical_slugs_for_addresses: Rebl batch resolve failed after "
+            "retries; falling back to empty mapping (%d address(es) affected)",
+            len(cleaned),
+            exc_info=True,
+        )
         return {}
     out: dict[str, str] = {}
     for r in results:

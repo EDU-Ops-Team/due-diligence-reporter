@@ -63,10 +63,28 @@ def _parse_retry_after_seconds(exc: BaseException) -> float | None:
         except (ValueError, OSError):
             pass
 
-    # Standard Retry-After header (integer seconds)
+    # Standard Retry-After header (integer seconds).
+    #
+    # The header lives in different places depending on exception type:
+    #   * googleapiclient.errors.HttpError exposes ``exc.headers`` directly.
+    #   * requests.HTTPError carries the response on ``exc.response``;
+    #     the headers are at ``exc.response.headers``.
+    #
+    # The original ``hasattr(exc, "headers")`` check returned False for
+    # requests.HTTPError, which silently disabled rate-limit-aware waits
+    # for every HTTP client (Rebl, dashboard publish, etc.). Probe both
+    # locations so a 429 from a requests-based client is honored.
+    candidate_headers: Any = None
     if hasattr(exc, "headers"):
-        header = getattr(exc, "headers", {}).get("Retry-After")
-        if header and header.isdigit():
+        candidate_headers = getattr(exc, "headers", None)
+    response = getattr(exc, "response", None)
+    if response is not None and hasattr(response, "headers"):
+        # When both are present, prefer the response (HTTP wire value) over
+        # whatever the SDK set on the exception itself.
+        candidate_headers = response.headers
+    if candidate_headers:
+        header = candidate_headers.get("Retry-After")
+        if header and str(header).isdigit():
             return float(header)
 
     return None

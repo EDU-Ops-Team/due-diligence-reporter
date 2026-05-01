@@ -25,6 +25,16 @@ on:
         required: false
         default: ""
 
+# Same group as recover-migration-wiped-sites.yml and the regular publish run.
+# These three writers all commit to dd-dashboard's main branch; running two at
+# once would race the GitHub commit API and either lose a write or fork main.
+# `cancel-in-progress: false` is intentional: a phantom-cleanup run that has
+# already started a DELETE/rename loop must not be killed mid-run by another
+# dispatch — the partial state would leave half-renamed pairs.
+concurrency:
+  group: dd-pipeline
+  cancel-in-progress: false
+
 jobs:
   cleanup:
     runs-on: ubuntu-latest

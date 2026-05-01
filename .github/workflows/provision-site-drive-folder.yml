@@ -34,6 +34,7 @@ jobs:
   provision:
     runs-on: ubuntu-latest
 
+    timeout-minutes: 15  # single-site Drive provisioning
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

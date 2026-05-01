@@ -41,6 +41,7 @@ jobs:
   delete:
     runs-on: ubuntu-latest
 
+    timeout-minutes: 15  # small batch DELETE
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
