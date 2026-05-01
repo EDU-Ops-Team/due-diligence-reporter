@@ -1,0 +1,98 @@
+name: Validate Rebl Slugs
+
+# Cross-references the DD Dashboard's slugs with Rebl's canonical
+# /api/resolve output. Default is dry-run (report only). Set apply=true on
+# manual dispatch to actually migrate stale slugs (POST under the new slug,
+# DELETE the old). The weekly cron is dry-run by design — only operators
+# trigger an apply, and the consolidated Google Chat alert tells us when.
+#
+# Triggers:
+#   - manual workflow_dispatch (apply input)
+#   - weekly cron (Tuesdays 13:30 UTC) — always dry-run
+#
+# Required secrets:
+#   WRIKE_ACCESS_TOKEN, DASHBOARD_PUBLISH_SECRET, GOOGLE_CHAT_WEBHOOK_URL
+# Optional:
+#   DASHBOARD_PUBLISH_URL (defaults to https://dd-dashboard-three.vercel.app)
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Set true to actually MIGRATE slugs (POST new + DELETE old). Leave false for dry-run.'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      site:
+        description: 'Optional: filter to sites whose Wrike title or address contains this substring.'
+        required: false
+        default: ''
+        type: string
+  schedule:
+    # Tuesdays 13:30 UTC = 08:30 CDT, 30 min after the reconcile-dashboard cron.
+    - cron: '30 13 * * 2'
+
+concurrency:
+  group: dd-pipeline
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Verify required secrets
+        run: |
+          [ -n "${{ secrets.WRIKE_ACCESS_TOKEN }}" ]       || { echo "[ERROR] WRIKE_ACCESS_TOKEN missing"; exit 1; }
+          [ -n "${{ secrets.DASHBOARD_PUBLISH_SECRET }}" ] || { echo "[ERROR] DASHBOARD_PUBLISH_SECRET missing"; exit 1; }
+          echo "[OK] Required secrets present"
+
+      - name: Create .env file from secrets
+        env:
+          WRIKE_ACCESS_TOKEN: ${{ secrets.WRIKE_ACCESS_TOKEN }}
+          DASHBOARD_PUBLISH_SECRET: ${{ secrets.DASHBOARD_PUBLISH_SECRET }}
+          DASHBOARD_PUBLISH_URL: ${{ secrets.DASHBOARD_PUBLISH_URL }}
+          GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+        run: |
+          touch .env
+          echo "WRIKE_ACCESS_TOKEN=${WRIKE_ACCESS_TOKEN}" >> .env
+          echo "DASHBOARD_PUBLISH_SECRET=${DASHBOARD_PUBLISH_SECRET}" >> .env
+          if [ -n "${DASHBOARD_PUBLISH_URL}" ]; then
+            echo "DASHBOARD_PUBLISH_URL=${DASHBOARD_PUBLISH_URL}" >> .env
+          fi
+          if [ -n "${GOOGLE_CHAT_WEBHOOK_URL}" ]; then
+            echo "GOOGLE_CHAT_WEBHOOK_URL=${GOOGLE_CHAT_WEBHOOK_URL}" >> .env
+          fi
+          echo "[OK] Created .env file"
+
+      - name: Run Rebl slug validator
+        env:
+          APPLY_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.apply == 'true') && '--apply' || '' }}
+          SITE_FILTER: ${{ github.event_name == 'workflow_dispatch' && inputs.site || '' }}
+        run: |
+          ARGS=""
+          if [ -n "${APPLY_FLAG}" ]; then
+            ARGS="${ARGS} ${APPLY_FLAG}"
+          fi
+          if [ -n "${SITE_FILTER}" ]; then
+            ARGS="${ARGS} --site ${SITE_FILTER}"
+          fi
+          echo "[INFO] Running with args: ${ARGS:-(dry-run, all sites)}"
+          uv run python scripts/validate_rebl_slugs.py ${ARGS}
+
+      - name: Done
+        run: echo "Rebl slug validation completed"
