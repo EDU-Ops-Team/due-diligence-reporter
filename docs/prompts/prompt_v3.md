@@ -2,7 +2,7 @@
 
 **Version:** 3.0.0
 **Team:** EDU Ops Intelligence
-**Last Updated:** 2026-04-22
+**Last Updated:** 2026-05-05
 
 > **V3 report Format** -- This prompt produces the V3 structured DD report.
 > Key differences from V1: structured exec summary checklists (not prose),
@@ -134,6 +134,58 @@ If any bullet implies something needs to happen, start with a verb.
 - GOOD: "Complete traffic study before filing permits -- SIR p.4"
 - BAD: "The fire marshal should be contacted"
 - GOOD: "Contact State Fire Marshal to confirm sprinkler requirements -- Building Inspection p.5"
+
+---
+
+
+## Output Hygiene -- Punctuation, Citations, Names
+
+These are hard rules. JC rejects reports that violate them, so the completeness checker now treats them as blocking.
+
+### Plain ASCII punctuation only
+
+- Never use em-dashes (` -- `, U+2014) or en-dashes (`-`, U+2013) anywhere in narrative or evidence fields. Replace with `--` (two hyphens), `,`, `;`, or break the sentence.
+- Never use the en-dash for numeric ranges. Write `$3-7/SF`, `$22,650-$52,850`, `May 13-27`, not `$3-7/SF` or `$22,650-$52,850`.
+- Never use smart quotes. ASCII `"` and `'` only.
+- Self-check before calling `create_dd_report`: scan every value in `report_data` and `token_evidence` for U+2014, U+2013, U+2018, U+2019, U+201C, U+201D. If any are present, rewrite the value before submitting.
+
+### One citations block per report, not one per section
+
+`exec.acquisition_conditions` and `exec.tradeoffs_and_deficiencies` each render with footnote markers like `[1]`, `[2]`. Today the agent is appending the footnote definitions inside each field, which produces two separate `[1]..[N]` blocks in the rendered Doc. Do not embed footnote definitions in either field.
+
+Rules:
+
+- Inside `exec.acquisition_conditions`: use markers `[1]`, `[2]`, ... at the end of each bullet. Do **not** include the `[1] Source: ...` lines in the field value.
+- Inside `exec.tradeoffs_and_deficiencies`: use markers continuing the same sequence (so if Lease Conditions ends at `[4]`, Trade-Offs starts at `[5]`). Do **not** include the `[N] Source: ...` lines in the field value.
+- Pass the consolidated footnote definitions in a single field, `exec.citations_block`, as one block of text where each line is `[N] Source label: short evidence quote`. The renderer places this once at the end of Supporting Notes under a single `Citations` heading.
+- If `exec.citations_block` is omitted, the renderer will fall back to the per-field embedded markers, but reviewers will see no source list. Always supply `exec.citations_block` when you cite anything in either field.
+
+### Source labels are document names, not file IDs
+
+In `exec.citations_block` and inside `token_evidence`, refer to source documents by their human label, not the Drive file name or token key:
+
+| Use this label | Not |
+|---|---|
+| `SIR` | `Site Investigation Report Final v3.pdf`, `sources.sir_link` |
+| `Building Inspection` | `Pre-Lease Building Assessment Report.pdf` |
+| `Block Plan` | the file ID, the Drive URL |
+| `E-Occupancy Report` | `e_occupancy_report` |
+| `School Approval Report` | `school_approval_report` |
+| `Wrike comment <MM/DD>` | `Wrike task ID 123456` |
+| `Shovels.ai` | `shovels.permit_history` |
+| `RayCon Scenario` | `raycon_scenario.json`, run_id |
+
+When two citations come from the same document, cite the section: `SIR Flag Page`, `SIR Planning & Zoning`, `Building Inspection 1.7`, `Building Inspection Deficiency Chart`.
+
+### JC Style applies to every narrative field
+
+`exec.acquisition_conditions`, `exec.tradeoffs_and_deficiencies`, `exec.c_*` conditional/blocker lines, and `source_quality_notes` all follow JC Style:
+
+- Mom test: a person with no context could read the bullet and understand it.
+- Front-loaded finding: lead with the conclusion, then the reason.
+- No jargon: replace `ingest`, `compression opportunities`, `pre-socialize`, `RFP gap` with plain English.
+- Verb-first action items: `Ask landlord to confirm...`, not `We need landlord to confirm...`.
+- Compressed citations: one short marker `[N]`, no verbatim statute quotes.
 
 ---
 
@@ -373,7 +425,7 @@ For **every** report-relevant document found in `shared_folder_files` and `site_
     - `Required have not done` when approval is required and the state is not in the current operating list.
 
 When present, also read this M1-generated scenario artifact:
-- **RayCon Scenario Report** â†’ authoritative source for scenario capacity, capex, cost breakdown rows, and scenario construction timeline/open-date fields
+- **RayCon Scenario Report** -> authoritative source for scenario capacity, capex, cost breakdown rows, and scenario construction timeline/open-date fields. The Doc opens with a "RayCon Run" header (status, run_id, block plan file id, summary). On a successful run, the Doc contains the Scenario Summary and Detailed Cost Breakdown tables. On a failed run the Doc is **not published** -- if you ever see a Doc whose header reads `Status: failed` or contains a `Validation Errors` block, treat every cost/capacity row as gap-labeled and route the failure into `source_quality_notes`.
 
 **Do not skip reading a report-relevant document that was found.** Read the SIR, Building Inspection, Block Plan, E-Occupancy Report, School Approval Report, and RayCon Scenario Report when present. If an ISP is present, ignore it for this report.
 
@@ -384,10 +436,13 @@ Use the `doc_type` values from the Step 2 `list_drive_documents` output to decid
 
 ### Step 5.0 -- RayCon scenario hand-off (asynchronous)
 
-The agent does **not** compute room layouts, capacity, or costs. RayCon owns rooms + costs end-to-end and publishes a `raycon_scenario.json` artifact into the site's M1 folder.
+The agent does **not** compute room layouts, capacity, or costs. RayCon owns rooms + costs end-to-end and publishes a `raycon_scenario.json` artifact into the site's M1 folder. The follow-up workflow renders it into a "RayCon Scenario" Google Doc only when RayCon's run succeeded.
 
-- If a RayCon Scenario report is present in Step 4, treat it as the authoritative source for `exec.fastest_open_capacity`, `exec.max_capacity_capacity`, scenario capex, every row in the Detailed Cost Breakdown, and the scenario open-date fields. Copy each key from the scenario's `report_data_fields` directly into `report_data` -- transfer every line item, not just grand totals.
-- If no RayCon Scenario report is present, the inbox scanner has already pinged RayCon when the Block Plan landed. The DD report is published asynchronously by `scripts/raycon_followup.py` after `raycon_scenario.json` arrives in M1. **Do not attempt to compute capacity or cost yourself, and do not call any cost or capacity tool.** If the agent is invoked manually before RayCon has responded, populate every RayCon-derived field with a sourced gap label (`[Not found -- RayCon scenario pending]`) and let the follow-up workflow republish the report once the scenario lands.
+Three cases:
+
+1. **RayCon Scenario Doc present (successful run).** Treat it as the authoritative source for `exec.fastest_open_capacity`, `exec.max_capacity_capacity`, scenario capex, every row in the Detailed Cost Breakdown, and the scenario open-date fields. Copy each key from the Doc's data fields directly into `report_data` -- transfer every line item, not just grand totals. Capture the "RayCon Run" header values in `token_evidence["raycon.run"]` (run_id, block_plan_file_id, status, summary) so the trace ties every cost/capacity number back to a specific RayCon run.
+2. **RayCon Scenario Doc absent, no failure alert.** RayCon has not responded yet. The inbox scanner already pinged RayCon when the Block Plan landed; the DD report is republished asynchronously by `scripts/raycon_followup.py` once `raycon_scenario.json` arrives. **Do not compute capacity or cost yourself, and do not call any cost or capacity tool.** Populate every RayCon-derived field with `[Not found -- RayCon scenario pending]` and let the follow-up workflow republish.
+3. **RayCon Scenario Doc absent, RayCon run failed.** RayCon ran but could not produce scenarios (typically a Block Plan or SIR input issue). Use `[Not found -- RayCon scenario pending]` for cost/capacity fields exactly like case 2, and add one line to `source_quality_notes` describing the failed run if the failure reason is available from chat or Wrike. Do not invent costs or capacity. The Block Plan or SIR will be corrected and re-uploaded; the next RayCon run produces the Doc and the report republishes automatically.
 
 **DO NOT call `apply_e_occupancy_skill` or `apply_school_approval_skill`** -- these assessments are read from pre-existing documents in the site's Drive folder (see Step 4). The agent does not run these skills during DD report generation.
 
