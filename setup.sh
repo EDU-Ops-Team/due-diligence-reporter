@@ -3,13 +3,19 @@
 # Setup script for Due Diligence Reporter MCP Server
 echo "Setting up Due Diligence Reporter MCP Server..." >&2
 
-# Install dependencies using uv
-echo "Installing dependencies..." >&2
-uv sync > /dev/null 2>&1
-
-# Install the package in editable mode so the module can be found
-echo "Installing due_diligence_reporter package..." >&2
-uv pip install -e . > /dev/null 2>&1
+# Install dependencies using uv.
+#
+# --frozen: do NOT re-resolve the dependency graph. Use uv.lock as-is.
+#   This is the request-path-blocking step on MCP Hive cold starts; without
+#   --frozen, every cold container does a full resolver pass on the ~14
+#   direct deps (and their transitive graph), which has caused 60s tools/list
+#   timeouts on `mcp-server.ti.trilogy.com`. With --frozen this drops to ~2s.
+# --no-dev: skip dev/test extras in the runtime container.
+#
+# `uv sync` also installs the project itself, so the separate
+# `uv pip install -e .` that used to run here is no longer needed.
+echo "Installing dependencies (frozen, no dev extras)..." >&2
+uv sync --frozen --no-dev > /dev/null 2>&1
 
 # Create credentials directory
 mkdir -p credentials

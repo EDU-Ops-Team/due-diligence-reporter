@@ -10,6 +10,21 @@ changes do not get an entry.
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP Hive cold-start tool-list timeout (502 / 60s `tools/list` timeouts on
+  `mcp-server.ti.trilogy.com`).** `uv.lock` is now tracked in git and shipped
+  inside the MCP Hive publish zip, and `setup.sh` runs
+  `uv sync --frozen --no-dev` instead of an unfrozen `uv sync` followed by
+  `uv pip install -e .`. Without a frozen lockfile, every cold container did
+  a full dependency resolver pass on the request path, which intermittently
+  pushed the BrainTrust `tools/list` handshake past its 60-second timeout
+  (and produced 502s when the resolver crashed mid-flight). Frozen-install
+  cold start drops from "sometimes >60s" to ~2s. The `publish-to-mcp-hive.yml`
+  workflow now hard-fails the publish if `uv.lock` is missing from the working
+  tree or the zip, so we cannot regress this silently. `.gitignore` no longer
+  excludes `uv.lock`.
+
 ### Changed
 
 - **`scripts/recover_migration_wiped_sites.py`: `--apply` / `--dry-run` are
