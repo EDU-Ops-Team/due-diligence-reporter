@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
+from due_diligence_reporter.rebl import ReblResolution
 from due_diligence_reporter.server import (
     _analyze_permit_flags,
     _build_report_trace_data,
@@ -238,6 +239,10 @@ def test_format_permit_report_fields_empty_flags():
 
 
 def _minimal_trace_args(**overrides) -> dict:
+    # `rebl_resolution` is required by `_build_report_trace_data`. These
+    # supplemental_evidence tests don't care about Rebl behaviour, so we
+    # pass a default (empty) ReblResolution. The Rebl-specific assertions
+    # live in tests/test_rebl.py.
     base = {
         "site_name": "Test Site",
         "report_date": "2026-04-03",
@@ -248,6 +253,7 @@ def _minimal_trace_args(**overrides) -> dict:
         "unmatched": [],
         "hyperlink_trace": {},
         "token_evidence": None,
+        "rebl_resolution": ReblResolution(),
     }
     return {**base, **overrides}
 
