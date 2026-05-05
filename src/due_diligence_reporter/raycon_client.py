@@ -436,42 +436,184 @@ def _scenario_breakdown(
     }
 
 
+# Status values from RayCon's top-level envelope. RayCon emits ``"failed"``
+# when validation didn't pass (no scenarios computed); ``"completed"`` /
+# ``"success"`` for a happy run. Anything else is treated as completed for
+# back-compat with payloads that predate the envelope.
+RAYCON_FAILED_STATUSES: frozenset[str] = frozenset({"failed", "error"})
+
+
+def raycon_payload_status(payload: dict[str, Any]) -> str:
+    """Return the lower-cased top-level ``status`` if present, else ``""``.
+
+    A blank string means the payload has no envelope status — treat it as
+    a successful (legacy-flat) result for back-compat.
+    """
+    return str(payload.get("status", "") or "").strip().lower()
+
+
+def raycon_payload_failed(payload: dict[str, Any]) -> bool:
+    """Whether the payload represents a failed RayCon run.
+
+    A run is failed if either:
+      * top-level ``status`` is in :data:`RAYCON_FAILED_STATUSES`, or
+      * ``validation.passed`` is explicitly ``False``.
+
+    A missing/blank status with no validation block is *not* failed —
+    that's the legacy flat-payload shape.
+    """
+    if raycon_payload_status(payload) in RAYCON_FAILED_STATUSES:
+        return True
+    validation = payload.get("validation") or {}
+    if isinstance(validation, dict) and validation.get("passed") is False:
+        return True
+    return False
+
+
+def _payload_failure_reason(payload: dict[str, Any]) -> str:
+    """Build a human-readable failure reason from validation + summary.
+
+    Prefer ``validation.errors`` (machine-actionable list); fall back to
+    ``analysis.summary`` (RayCon's plain-English explanation). Returns ``""``
+    when there's nothing to report.
+    """
+    parts: list[str] = []
+    validation = payload.get("validation") or {}
+    if isinstance(validation, dict):
+        errors = validation.get("errors") or []
+        if isinstance(errors, list):
+            parts.extend(str(e).strip() for e in errors if str(e).strip())
+    if not parts:
+        analysis = payload.get("analysis") or {}
+        if isinstance(analysis, dict):
+            summary = str(analysis.get("summary", "") or "").strip()
+            if summary:
+                parts.append(summary)
+    return "; ".join(parts)
+
+
+def _payload_summary(payload: dict[str, Any]) -> str:
+    """Plain-English RayCon summary if present (top-level or under ``analysis``)."""
+    summary = str(payload.get("summary", "") or "").strip()
+    if summary:
+        return summary
+    analysis = payload.get("analysis") or {}
+    if isinstance(analysis, dict):
+        return str(analysis.get("summary", "") or "").strip()
+    return ""
+
+
+def _payload_block_plan_used(payload: dict[str, Any]) -> str:
+    """Drive file id of the Block Plan RayCon actually consumed, if known.
+
+    Per the v1.1 envelope, RayCon reports this under
+    ``provenance.selected_block_plan.id``. Older flat payloads echoed it as
+    ``block_plan_file_id`` at the top level — we accept either.
+    """
+    bp = str(payload.get("block_plan_file_id", "") or "").strip()
+    if bp:
+        return bp
+    provenance = payload.get("provenance") or {}
+    if isinstance(provenance, dict):
+        sel = provenance.get("selected_block_plan") or {}
+        if isinstance(sel, dict):
+            return str(sel.get("id", "") or "").strip()
+    return ""
+
+
+def _extract_scenarios(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return ``(fastest_open, max_capacity)`` dicts from either envelope.
+
+    RayCon's v1.1 envelope nests scenarios under ``analysis.``; the
+    original v1.0 spec had them at the top level. We accept both for
+    forward/back compat. Each return value is always a dict — empty when
+    the source key is missing or ``null`` — so callers can treat the
+    "no scenario" case uniformly.
+    """
+    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+
+    def _pick(key: str) -> dict[str, Any]:
+        # Prefer envelope (analysis.*); fall back to top level for legacy
+        # flat payloads. Either may be explicitly ``null``, in which case
+        # we return an empty dict so downstream rendering is consistent.
+        if isinstance(analysis, dict) and key in analysis:
+            value = analysis.get(key)
+            return value if isinstance(value, dict) else {}
+        value = payload.get(key)
+        return value if isinstance(value, dict) else {}
+
+    return _pick("fastest_open"), _pick("max_capacity")
+
+
 def raycon_scenario_to_report_fields(payload: dict[str, Any]) -> dict[str, str]:
     """Translate a parsed ``raycon_scenario.json`` into report-field keys.
 
-    The output dict matches the contract previously satisfied by the
+    Accepts both envelope shapes:
+
+    * **v1.1 envelope** (current production): scenarios live under
+      ``analysis.fastest_open`` / ``analysis.max_capacity``; top-level
+      ``status`` and ``validation`` describe whether the run succeeded.
+    * **v1.0 flat** (original spec, kept for back-compat): scenarios at
+      the top level, no ``status`` envelope.
+
+    On a failed run (``status`` in :data:`RAYCON_FAILED_STATUSES` or
+    ``validation.passed == False``) all ``exec.cost_*``, ``*_capex``, and
+    ``*_open_date`` fields are emitted blank so we don't publish a Doc that
+    looks like a successful zero-dollar scenario. ``exec.raycon_status`` and
+    ``exec.raycon_failure_reason`` carry the explanation.
+
+    Always-emitted traceability fields (regardless of status):
+      * ``exec.raycon_status``
+      * ``exec.raycon_failure_reason``
+      * ``exec.raycon_run_id``
+      * ``exec.raycon_summary``
+      * ``exec.raycon_block_plan_used``
+
+    The output contract for ``exec.fastest_open_*`` / ``exec.cost_<bucket>_*`` /
+    ``exec.max_capacity_*`` matches the contract previously satisfied by the
     synchronous /v1/chat integration so the rest of the report pipeline
-    (Google Doc builder, dashboard publisher) is unaffected by this
-    cutover.
+    (Google Doc builder, dashboard publisher) is unaffected.
     """
     fields: dict[str, str] = {}
 
-    fastest = payload.get("fastest_open") or {}
-    if isinstance(fastest, dict):
-        fields["exec.fastest_open_capex"] = _format_currency(fastest.get("grand_total"))
-        fields["exec.fastest_open_open_date"] = _weeks_to_open_date(
-            fastest.get("timeline_weeks")
-        )
-        fields.update(_scenario_breakdown(fastest, "fastest_open"))
-    else:
+    # Envelope-level traceability — always populated, even on failure.
+    fields["exec.raycon_status"] = raycon_payload_status(payload)
+    fields["exec.raycon_failure_reason"] = _payload_failure_reason(payload)
+    fields["exec.raycon_run_id"] = str(payload.get("raycon_run_id", "") or "").strip()
+    fields["exec.raycon_summary"] = _payload_summary(payload)
+    fields["exec.raycon_block_plan_used"] = _payload_block_plan_used(payload)
+
+    failed = raycon_payload_failed(payload)
+    fastest, max_cap = _extract_scenarios(payload)
+
+    # On a failed run, force every scenario field blank — emitting $0 here
+    # would be indistinguishable from a successful zero-cost scenario and
+    # downstream readers (Doc builder, dashboard) would mis-render it.
+    if failed:
         fields["exec.fastest_open_capex"] = ""
         fields["exec.fastest_open_open_date"] = ""
         fields.update(
             {f"exec.cost_{k}_fastest_open": "" for k, _ in RAYCON_BREAKDOWN_ROWS}
         )
-
-    max_cap = payload.get("max_capacity") or {}
-    if isinstance(max_cap, dict):
-        fields["exec.max_capacity_capex"] = _format_currency(max_cap.get("grand_total"))
-        fields["exec.max_capacity_open_date"] = _weeks_to_open_date(
-            max_cap.get("timeline_weeks")
-        )
-        fields.update(_scenario_breakdown(max_cap, "max_capacity"))
-    else:
         fields["exec.max_capacity_capex"] = ""
         fields["exec.max_capacity_open_date"] = ""
         fields.update(
             {f"exec.cost_{k}_max_capacity": "" for k, _ in RAYCON_BREAKDOWN_ROWS}
         )
+        return fields
+
+    fields["exec.fastest_open_capex"] = _format_currency(fastest.get("grand_total"))
+    fields["exec.fastest_open_open_date"] = _weeks_to_open_date(
+        fastest.get("timeline_weeks")
+    )
+    fields.update(_scenario_breakdown(fastest, "fastest_open"))
+
+    fields["exec.max_capacity_capex"] = _format_currency(max_cap.get("grand_total"))
+    fields["exec.max_capacity_open_date"] = _weeks_to_open_date(
+        max_cap.get("timeline_weeks")
+    )
+    fields.update(_scenario_breakdown(max_cap, "max_capacity"))
 
     return fields

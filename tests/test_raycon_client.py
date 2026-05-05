@@ -17,6 +17,8 @@ from due_diligence_reporter.raycon_client import (
     _compute_hmac_signature,
     post_raycon_folder_ping,
     post_raycon_job,
+    raycon_payload_failed,
+    raycon_payload_status,
     raycon_scenario_to_report_fields,
     read_raycon_scenario_from_m1,
 )
@@ -616,3 +618,229 @@ class TestRayConScenarioToReportFields:
         # so verify the actual behavior: empty dict path → $0, blank date.
         assert fields["exec.fastest_open_capex"] == "$0"
         assert fields["exec.fastest_open_open_date"] == ""
+
+
+# ---------------------------------------------------------------------------
+# v1.1 envelope: scenarios under analysis.*, top-level status, validation
+# ---------------------------------------------------------------------------
+
+
+class TestRayConPayloadEnvelope:
+    """RayCon's production v1.1 payload nests scenarios under ``analysis.``
+    and adds a top-level ``status`` + ``validation`` block. DDR has to
+    accept both the v1.1 envelope and the v1.0 flat shape, and must never
+    publish a successful-looking Doc for a failed run."""
+
+    def test_status_helper_lowercases_and_defaults_blank(self) -> None:
+        assert raycon_payload_status({"status": "FAILED"}) == "failed"
+        assert raycon_payload_status({"status": "  Completed  "}) == "completed"
+        assert raycon_payload_status({}) == ""
+        assert raycon_payload_status({"status": None}) == ""
+
+    def test_failed_helper_detects_failed_status(self) -> None:
+        assert raycon_payload_failed({"status": "failed"}) is True
+        assert raycon_payload_failed({"status": "error"}) is True
+        assert raycon_payload_failed({"status": "completed"}) is False
+        assert raycon_payload_failed({}) is False
+
+    def test_failed_helper_detects_validation_passed_false(self) -> None:
+        # Even if status is missing/optimistic, validation.passed=false
+        # is authoritative — don't publish a successful-looking Doc.
+        payload = {"status": "completed", "validation": {"passed": False}}
+        assert raycon_payload_failed(payload) is True
+
+    def test_failed_helper_treats_missing_validation_as_not_failed(self) -> None:
+        # Legacy flat payloads have no validation block; absence ≠ failure.
+        assert raycon_payload_failed({"fastest_open": {}}) is False
+
+    def test_envelope_payload_maps_scenarios_under_analysis(self) -> None:
+        """v1.1 envelope: scenarios live under ``analysis.fastest_open`` /
+        ``analysis.max_capacity``. The mapper must read from there and
+        produce the same exec.* keys it does for the flat shape."""
+        payload = {
+            "schema_version": "1.0",
+            "status": "completed",
+            "raycon_run_id": "rc_2026_05_05_abc",
+            "analysis": {
+                "fastest_open": {
+                    "grand_total": 412000,
+                    "timeline_weeks": 14,
+                    "soft_costs": 32000,
+                    "gc_fee": 28000,
+                    "contingency": 18000,
+                    "furniture": 24000,
+                    "categories": [
+                        {"category": "Demolition", "subtotal": 12000},
+                        {"category": "MEP / Fire / Life Safety", "subtotal": 86000},
+                    ],
+                },
+                "max_capacity": {
+                    "grand_total": 587000,
+                    "timeline_weeks": 22,
+                    "categories": [],
+                },
+            },
+            "validation": {"passed": True, "errors": [], "warnings": []},
+            "provenance": {
+                "selected_block_plan": {"id": "bp-file-456"},
+            },
+        }
+        fields = raycon_scenario_to_report_fields(payload)
+        assert fields["exec.fastest_open_capex"] == "$412,000"
+        assert fields["exec.max_capacity_capex"] == "$587,000"
+        assert fields["exec.fastest_open_open_date"]  # 14 weeks out, non-empty
+        assert fields["exec.cost_demolition_fastest_open"] == "$12,000"
+        assert fields["exec.cost_mep_fire_life_safety_fastest_open"] == "$86,000"
+        assert fields["exec.cost_soft_costs_fastest_open"] == "$32,000"
+        assert fields["exec.cost_grand_total_fastest_open"] == "$412,000"
+        # Traceability fields populated
+        assert fields["exec.raycon_status"] == "completed"
+        assert fields["exec.raycon_run_id"] == "rc_2026_05_05_abc"
+        assert fields["exec.raycon_block_plan_used"] == "bp-file-456"
+        assert fields["exec.raycon_failure_reason"] == ""
+
+    def test_envelope_prefers_analysis_over_top_level_when_both_present(self) -> None:
+        """If RayCon ever (mistakenly) sends both, we trust the envelope so
+        we don't accidentally read a stale top-level mirror."""
+        payload = {
+            "schema_version": "1.0",
+            "fastest_open": {"grand_total": 999999},  # should be ignored
+            "analysis": {
+                "fastest_open": {"grand_total": 100000, "timeline_weeks": 10},
+                "max_capacity": {"grand_total": 200000, "timeline_weeks": 20},
+            },
+        }
+        fields = raycon_scenario_to_report_fields(payload)
+        assert fields["exec.fastest_open_capex"] == "$100,000"
+
+    def test_failed_status_blanks_all_scenario_fields(self) -> None:
+        """Failed run: $0 is the wrong default — it would render as a real
+        zero-cost scenario in the dashboard. We emit blanks instead and
+        surface the failure reason for the published Doc."""
+        payload = {
+            "schema_version": "1.0",
+            "status": "failed",
+            "analysis": {"fastest_open": None, "max_capacity": None},
+            "validation": {
+                "passed": False,
+                "errors": [
+                    "Real estate spreadsheet did not resolve a usable microschool tier for this address (status: no_address_match)."
+                ],
+            },
+        }
+        fields = raycon_scenario_to_report_fields(payload)
+        assert fields["exec.fastest_open_capex"] == ""
+        assert fields["exec.max_capacity_capex"] == ""
+        assert fields["exec.fastest_open_open_date"] == ""
+        assert fields["exec.max_capacity_open_date"] == ""
+        for row_key, _ in RAYCON_BREAKDOWN_ROWS:
+            assert fields[f"exec.cost_{row_key}_fastest_open"] == ""
+            assert fields[f"exec.cost_{row_key}_max_capacity"] == ""
+        assert fields["exec.raycon_status"] == "failed"
+        assert "no_address_match" in fields["exec.raycon_failure_reason"]
+
+    def test_failed_via_validation_passed_false_blanks_scenarios(self) -> None:
+        """Status optimistic but validation says no — still treat as failure."""
+        payload = {
+            "schema_version": "1.0",
+            "status": "completed",  # RayCon optimistic
+            "analysis": {
+                "fastest_open": {"grand_total": 100, "timeline_weeks": 4},
+                "max_capacity": {"grand_total": 200, "timeline_weeks": 8},
+            },
+            "validation": {"passed": False, "errors": ["missing inputs"]},
+        }
+        fields = raycon_scenario_to_report_fields(payload)
+        # validation overrides optimistic status — scenario fields blanked.
+        assert fields["exec.fastest_open_capex"] == ""
+        assert fields["exec.max_capacity_capex"] == ""
+        assert fields["exec.raycon_failure_reason"] == "missing inputs"
+
+    def test_failure_reason_falls_back_to_analysis_summary(self) -> None:
+        """When validation.errors is empty, surface analysis.summary so the
+        published Doc still has *something* to explain why we failed."""
+        payload = {
+            "status": "failed",
+            "analysis": {"summary": "Block Plan rooms inconsistent with SIR."},
+            "validation": {"passed": False, "errors": []},
+        }
+        fields = raycon_scenario_to_report_fields(payload)
+        assert (
+            fields["exec.raycon_failure_reason"]
+            == "Block Plan rooms inconsistent with SIR."
+        )
+
+    def test_block_plan_used_falls_back_to_provenance(self) -> None:
+        """v1.1 envelope reports the consumed Block Plan id under
+        ``provenance.selected_block_plan.id`` rather than echoing
+        ``block_plan_file_id`` at the top level."""
+        payload = {
+            "status": "completed",
+            "analysis": {"fastest_open": {}, "max_capacity": {}},
+            "provenance": {"selected_block_plan": {"id": "prov-bp-789"}},
+        }
+        fields = raycon_scenario_to_report_fields(payload)
+        assert fields["exec.raycon_block_plan_used"] == "prov-bp-789"
+
+    def test_legacy_flat_payload_still_works(self) -> None:
+        """Back-compat: spec v1.0 flat payloads (no envelope) keep working.
+        This is the contract the original /v1/chat tests captured."""
+        payload = {
+            "schema_version": "1.0",
+            "fastest_open": {
+                "grand_total": 250000,
+                "timeline_weeks": 8,
+                "categories": [{"category": "Demolition", "subtotal": 5000}],
+            },
+            "max_capacity": {"grand_total": 400000, "timeline_weeks": 16},
+        }
+        fields = raycon_scenario_to_report_fields(payload)
+        assert fields["exec.fastest_open_capex"] == "$250,000"
+        assert fields["exec.max_capacity_capex"] == "$400,000"
+        assert fields["exec.cost_demolition_fastest_open"] == "$5,000"
+        # No envelope means no failure, no traceability values.
+        assert fields["exec.raycon_status"] == ""
+        assert fields["exec.raycon_failure_reason"] == ""
+
+    def test_real_payload_pbg_failed_run(self) -> None:
+        """Regression test built from the real RayCon payload for
+        Alpha Palm Beach Gardens (rc_20260505195427_ab6414fec5). RayCon
+        returned ``status: failed`` because the address didn't resolve to a
+        microschool tier; DDR must blank scenarios and surface the reason."""
+        payload = {
+            "schema_version": "1.0",
+            "raycon_run_id": "rc_20260505195427_ab6414fec5",
+            "status": "failed",
+            "site": {
+                "site_id": "PBG-live-verify",
+                "site_name": "Alpha Palm Beach Gardens",
+                "total_building_sf": 5560,
+            },
+            "analysis": {
+                "summary": "RayCon could not complete scenario pricing for Alpha Palm Beach Gardens. See validation errors.",
+                "rooms": [{"name": "1 ENTRY", "type": "lobby", "sqft": 180}],
+                "fastest_open": None,
+                "max_capacity": None,
+                "ray_review": None,
+            },
+            "provenance": {
+                "selected_block_plan": {"id": "14C7o_nwNqM9O-TsHzLYTqbBhHad6rKsg"},
+            },
+            "validation": {
+                "passed": False,
+                "errors": [
+                    "Real estate spreadsheet did not resolve a usable microschool tier for this address (status: no_address_match)."
+                ],
+                "warnings": [],
+            },
+        }
+        fields = raycon_scenario_to_report_fields(payload)
+        assert fields["exec.raycon_status"] == "failed"
+        assert fields["exec.raycon_run_id"] == "rc_20260505195427_ab6414fec5"
+        assert (
+            fields["exec.raycon_block_plan_used"]
+            == "14C7o_nwNqM9O-TsHzLYTqbBhHad6rKsg"
+        )
+        assert "no_address_match" in fields["exec.raycon_failure_reason"]
+        assert fields["exec.fastest_open_capex"] == ""
+        assert fields["exec.max_capacity_capex"] == ""

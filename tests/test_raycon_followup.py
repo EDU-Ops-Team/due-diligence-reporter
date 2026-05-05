@@ -204,6 +204,164 @@ class TestProcessSite:
 
 
 # ---------------------------------------------------------------------------
+# Failed RayCon runs surface as alerts, not published Docs
+# ---------------------------------------------------------------------------
+
+
+class TestFailedScenarioAlerts:
+    """When ``raycon_scenario.json`` arrives with ``status: failed`` (or
+    ``validation.passed: false``), the followup must NOT publish a Doc —
+    that would render an empty/zero-cost scenario the dashboard treats as
+    real. Instead surface the failure as an alert row that flows through
+    the existing Chat alert path."""
+
+    @patch("scripts.raycon_followup.save_skill_report")
+    @patch("scripts.raycon_followup._find_published_doc")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_failed_status_returns_alert_not_published_doc(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_find_doc,
+        mock_save,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        # RayCon's real failed-run shape — envelope with status:failed and a
+        # validation.errors list explaining why scenarios couldn't compute.
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "failed",
+            "raycon_run_id": "rc_pbg_abc",
+            "analysis": {
+                "summary": "RayCon could not complete scenario pricing.",
+                "fastest_open": None,
+                "max_capacity": None,
+            },
+            "validation": {
+                "passed": False,
+                "errors": ["no_address_match: tier not resolved"],
+            },
+            "_drive_modified_time": "2026-05-05T19:54:30Z",
+        }
+        mock_find_doc.return_value = None
+
+        gc = MagicMock()
+        row = _process_site(
+            gc,
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+        )
+
+        assert "alert" in row
+        assert "raycon run failed" in row["alert"]
+        assert "no_address_match" in row["alert"]
+        assert row["raycon_status"] == "failed"
+        assert row["raycon_run_id"] == "rc_pbg_abc"
+        # Critical: no Doc published for a failed run.
+        mock_save.assert_not_called()
+        assert "published" not in row
+
+    @patch("scripts.raycon_followup.save_skill_report")
+    @patch("scripts.raycon_followup._find_published_doc")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_validation_passed_false_alone_blocks_publish(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_find_doc,
+        mock_save,
+    ):
+        """Even with optimistic ``status: completed``, validation.passed=false
+        prevents publishing."""
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "completed",
+            "analysis": {
+                "fastest_open": {"grand_total": 100, "timeline_weeks": 4},
+                "max_capacity": {"grand_total": 200, "timeline_weeks": 8},
+            },
+            "validation": {"passed": False, "errors": ["missing inputs"]},
+            "_drive_modified_time": "2026-05-05T20:00:00Z",
+        }
+        mock_find_doc.return_value = None
+
+        gc = MagicMock()
+        row = _process_site(
+            gc,
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+        )
+
+        assert "alert" in row
+        assert "missing inputs" in row["alert"]
+        mock_save.assert_not_called()
+
+    @patch("scripts.raycon_followup.save_skill_report")
+    @patch("scripts.raycon_followup._find_published_doc")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_successful_envelope_payload_still_publishes(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_find_doc,
+        mock_save,
+    ):
+        """Sanity: a v1.1 envelope with ``status: completed`` and
+        ``validation.passed: true`` still flows to publish like before."""
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "completed",
+            "raycon_run_id": "rc_happy_xyz",
+            "analysis": {
+                "fastest_open": {"grand_total": 412000, "timeline_weeks": 14},
+                "max_capacity": {"grand_total": 587000, "timeline_weeks": 22},
+            },
+            "validation": {"passed": True, "errors": []},
+            "_drive_modified_time": "2026-05-05T20:00:00Z",
+        }
+        mock_find_doc.return_value = None
+
+        async def _fake_save(**_kwargs):
+            return {"status": "success", "doc_url": "https://docs.google.com/d/abc"}
+
+        mock_save.side_effect = _fake_save
+
+        gc = MagicMock()
+        row = _process_site(
+            gc,
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+        )
+
+        assert row.get("published") is True
+        assert row.get("doc_url") == "https://docs.google.com/d/abc"
+        mock_save.assert_called_once()
+        # Verify report_data_fields populated with envelope traceability.
+        call_kwargs = mock_save.call_args.kwargs
+        rdf = call_kwargs["skill_data"]["report_data_fields"]
+        assert rdf["exec.fastest_open_capex"] == "$412,000"
+        assert rdf["exec.raycon_status"] == "completed"
+        assert rdf["exec.raycon_run_id"] == "rc_happy_xyz"
+
+
+# ---------------------------------------------------------------------------
 # Safety-net dispatch (cron-driven post_raycon_job)
 # ---------------------------------------------------------------------------
 

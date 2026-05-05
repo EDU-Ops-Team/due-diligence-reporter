@@ -3410,6 +3410,77 @@ def _format_skill_document(
                 lines.append(f"  {label}: {v}")
             lines.append("")
 
+    elif skill_name == "RayCon Scenario":
+        # The skill_data is the full parsed raycon_scenario.json plus a
+        # flattened ``report_data_fields`` map. We surface envelope status
+        # first (so a failed run is unmistakable), then scenarios when
+        # available, then provenance.
+        rdf = data.get("report_data_fields", {}) or {}
+        status = rdf.get("exec.raycon_status", "") or "completed"
+        run_id = rdf.get("exec.raycon_run_id", "")
+        bp_used = rdf.get("exec.raycon_block_plan_used", "")
+        summary = rdf.get("exec.raycon_summary", "")
+        failure_reason = rdf.get("exec.raycon_failure_reason", "")
+
+        lines.extend([
+            "RayCon Run",
+            f"  Status: {status}",
+            f"  Run ID: {run_id or 'N/A'}",
+            f"  Block Plan File ID: {bp_used or 'N/A'}",
+        ])
+        if summary:
+            lines.append(f"  Summary: {summary}")
+        lines.append("")
+
+        if failure_reason:
+            lines.extend([
+                "Validation Errors",
+                f"  {failure_reason}",
+                "",
+                "No scenario pricing was produced. The Block Plan, SIR, or other",
+                "inputs need to be corrected and re-uploaded for RayCon to retry.",
+                "",
+            ])
+        else:
+            # Scenario summary table — capex + open date for both buckets.
+            lines.extend([
+                "Scenario Summary",
+                f"  Fastest Open  CapEx: {rdf.get('exec.fastest_open_capex', 'N/A')}",
+                f"  Fastest Open  Open Date: {rdf.get('exec.fastest_open_open_date', 'N/A')}",
+                f"  Max Capacity  CapEx: {rdf.get('exec.max_capacity_capex', 'N/A')}",
+                f"  Max Capacity  Open Date: {rdf.get('exec.max_capacity_open_date', 'N/A')}",
+                "",
+            ])
+            # Detailed cost breakdown table — row keys come from
+            # RAYCON_BREAKDOWN_ROWS so the column count matches the V3
+            # template exactly.
+            lines.append("Detailed Cost Breakdown")
+            for row_key, row_label in RAYCON_BREAKDOWN_ROWS:
+                fo = rdf.get(f"exec.cost_{row_key}_fastest_open", "")
+                mc = rdf.get(f"exec.cost_{row_key}_max_capacity", "")
+                lines.append(f"  {row_label}: Fastest Open {fo} | Max Capacity {mc}")
+            lines.append("")
+
+        # Always surface RayCon's room schedule when present — useful even
+        # on failed runs, because the rooms tell us what RayCon read out
+        # of the Block Plan before it got stuck on validation.
+        analysis = data.get("analysis")
+        rooms = []
+        if isinstance(analysis, dict) and isinstance(analysis.get("rooms"), list):
+            rooms = analysis["rooms"]
+        elif isinstance(data.get("rooms"), list):  # legacy flat shape
+            rooms = data["rooms"]
+        if rooms:
+            lines.append("Room Schedule")
+            for room in rooms:
+                if not isinstance(room, dict):
+                    continue
+                name = room.get("name", "")
+                rtype = room.get("type", "")
+                sqft = room.get("sqft", "")
+                lines.append(f"  {name} ({rtype}): {sqft} SF")
+            lines.append("")
+
     elif skill_name == "School Approval":
         lines.extend([
             "State Requirements",
