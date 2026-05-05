@@ -43,6 +43,7 @@ from .config import get_settings
 from .google_client import GoogleClient
 from .m1_lookup import _resolve_m1_folder
 from .retry import retry_config
+from .utils import extract_folder_id_from_url
 
 logger = logging.getLogger("[raycon_client]")
 
@@ -115,6 +116,45 @@ def _compute_hmac_signature(secret: str, body_bytes: bytes) -> str:
     return f"sha256={digest}"
 
 
+def _normalize_drive_folder_url(value: str) -> str | None:
+    """Return a clean canonical Drive folder URL or None if unparseable.
+
+    RayCon's ``/v1/jobs`` validator on ``drive_folder_url`` is strict: it
+    rejects HTML anchor wrapping, leading/trailing text, and file URLs
+    (``/file/d/<id>``) with ``"drive_folder_url must be a Google Drive
+    folder URL or folder ID containing a 10-200 character folder ID"``.
+    Wrike's "Google Folder" custom field, however, sometimes stores an
+    HTML anchor (e.g. ``<a href="...folders/<id>">Site</a>``) or has
+    extra text appended by PMs. We normalize defensively here so a
+    sloppy Wrike entry doesn't burn a RayCon dispatch slot.
+
+    Reuses :func:`extract_folder_id_from_url` (which unwraps anchors and
+    matches both ``/folders/<id>`` and ``?id=<id>``) to pull the ID, then
+    rebuilds the canonical URL shape RayCon's validator accepts.
+    """
+    folder_id = extract_folder_id_from_url(value)
+    if not folder_id:
+        return None
+    return f"https://drive.google.com/drive/folders/{folder_id}"
+
+
+def _unwrap_html_anchor(value: str) -> str:
+    """Return the href content of an HTML anchor, or the value unchanged.
+
+    Wrike rich-text fields can wrap raw URLs in ``<a href="...">label</a>``
+    when a PM pastes via the rich-text editor. RayCon's validators are
+    strict about extraneous markup, so this small unwrapper keeps us
+    forward-safe across fields where the validator currently happens to
+    be lenient.
+    """
+    import re as _re
+
+    match = _re.search(r'href="([^"]+)"', value)
+    if match:
+        return match.group(1).replace("&amp;", "&")
+    return value
+
+
 @retry(**retry_config())  # type: ignore[untyped-decorator]
 def post_raycon_job(
     *,
@@ -165,6 +205,20 @@ def post_raycon_job(
         raise ValueError(
             "post_raycon_job missing required fields: " + ", ".join(missing_required)
         )
+
+    # Normalize Wrike-sourced URLs before they hit RayCon's strict
+    # validators. Live runs surfaced 400s from HTML-anchor-wrapped folder
+    # URLs in Wrike's Google Folder field (e.g. NYC 156 William, Dallas
+    # 4152 Cole on 2026-05-05).
+    normalized_folder = _normalize_drive_folder_url(drive_folder_url)
+    if not normalized_folder:
+        raise ValueError(
+            "post_raycon_job: drive_folder_url is not parseable as a Google "
+            f"Drive folder URL or ID (got {drive_folder_url!r}). Fix the "
+            "site's Google Folder custom field in Wrike."
+        )
+    drive_folder_url = normalized_folder
+    block_plan_url = _unwrap_html_anchor(block_plan_url)
 
     # RayCon's validator rejects 0 ("Number must be greater than 0") and
     # null ("Expected number, received null") on `total_building_sf`. When
@@ -313,6 +367,20 @@ def post_raycon_folder_ping(
             + ", ".join(missing_required)
         )
 
+    # Same defensive normalization as post_raycon_job: a Wrike folder field
+    # wrapped in an HTML anchor (or with extra text) makes RayCon's strict
+    # validator return 400 here too.
+    normalized_folder = _normalize_drive_folder_url(drive_folder_url)
+    if not normalized_folder:
+        raise ValueError(
+            "post_raycon_folder_ping: drive_folder_url is not parseable as a "
+            f"Google Drive folder URL or ID (got {drive_folder_url!r}). Fix "
+            "the site's Google Folder custom field in Wrike."
+        )
+    drive_folder_url = normalized_folder
+    if file_url:
+        file_url = _unwrap_html_anchor(file_url)
+
     body: dict[str, Any] = {
         "schema_version": "1.0",
         "site_id": site_id,
@@ -353,7 +421,23 @@ def post_raycon_folder_ping(
         headers=headers,
         timeout=60,
     )
-    response.raise_for_status()
+    if response.status_code >= 400:
+        body_text = (response.text or "").strip()
+        logger.error(
+            "RayCon folder ping failed: site=%s doc_type=%s status=%s body=%s",
+            site_name,
+            doc_type or "(unspecified)",
+            response.status_code,
+            body_text[:2000],
+        )
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            raise requests.HTTPError(
+                f"{exc} | RayCon response body: {body_text[:2000]}",
+                response=response,
+                request=getattr(exc, "request", None),
+            ) from exc
     try:
         return response.json()
     except ValueError:
