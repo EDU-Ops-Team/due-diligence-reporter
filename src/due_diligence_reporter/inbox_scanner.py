@@ -142,6 +142,88 @@ def _send_block_plan_failure_notification(
     )
 
 
+def _run_doc_arrival_folder_ping(
+    gc: GoogleClient,
+    *,
+    site_summary: dict[str, Any],
+    doc_type: str,
+    drive_file: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Tell RayCon a new doc landed in the site's Drive folder.
+
+    Fired on every successful classified upload (CDS SIR, Worksmith
+    inspection, ISP, Block Plan). RayCon walks the folder server-side
+    using ``drive_folder_url`` and decides whether the document set is
+    now complete enough to start computing scenarios. The ping is
+    idempotent on RayCon's side, so duplicate fires are safe.
+
+    Returns a status dict the caller can attach to the per-attachment
+    ``uploaded`` row. Failures are surfaced in the dict (``status`` =
+    ``error`` + ``error`` message) but never raise — a flaky RayCon
+    must not block a successful Drive upload from being marked done.
+    The cron-driven safety net in ``scripts/raycon_followup.py`` will
+    re-fire any missed pings.
+    """
+    from .raycon_client import post_raycon_folder_ping
+
+    site_id = str(site_summary.get("id", "")).strip()
+    site_name = str(site_summary.get("title", "")).strip()
+    site_address = str(site_summary.get("address", "")).strip()
+    drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
+
+    if not (site_id and site_name and site_address and drive_folder_url):
+        return {
+            "status": "skipped",
+            "reason": "missing site_id/title/address/drive_folder_url",
+        }
+
+    try:
+        m1_folder_id, _ = _resolve_m1_folder(gc, drive_folder_url)
+    except Exception as e:
+        return {"status": "error", "error": f"resolve M1 failed: {e}"}
+    if not m1_folder_id:
+        return {"status": "skipped", "reason": "no M1 folder"}
+
+    file_id = str((drive_file or {}).get("id", ""))
+    file_url = str((drive_file or {}).get("webViewLink", ""))
+
+    try:
+        response = post_raycon_folder_ping(
+            site_id=site_id,
+            site_name=site_name,
+            address=site_address,
+            drive_folder_url=drive_folder_url,
+            m1_folder_id=m1_folder_id,
+            doc_type=doc_type,
+            file_id=file_id,
+            file_url=file_url,
+        )
+    except Exception as e:
+        # Never break the upload on a flaky RayCon ping; cron safety net
+        # in scripts/raycon_followup.py will re-fire missed dispatches.
+        logger.warning(
+            "RayCon folder ping failed for site=%s doc_type=%s file_id=%s: %s",
+            site_name,
+            doc_type,
+            file_id or "(none)",
+            e,
+        )
+        return {"status": "error", "error": str(e)}
+
+    logger.info(
+        "RayCon folder ping accepted for site=%s doc_type=%s file_id=%s status=%s",
+        site_name,
+        doc_type,
+        file_id or "(none)",
+        response.get("status", "accepted"),
+    )
+    return {
+        "status": str(response.get("status", "accepted")),
+        "doc_type": doc_type,
+        "file_id": file_id,
+    }
+
+
 def _run_block_plan_downstream(
     gc: GoogleClient,
     *,
@@ -633,6 +715,20 @@ def process_email(
                     "drive_link": drive_file.get("webViewLink"),
                     "retry_existing_upload": True,
                 })
+
+            # Per-doc folder ping: tell RayCon a new doc landed so it can
+            # walk the folder and decide if the document set is complete
+            # enough to start. Fired for ALL classified doc types
+            # (CDS SIR, Worksmith inspection, ISP, Block Plan). Block
+            # Plan also still fires the full job dispatch below.
+            if drive_file is not None and uploaded:
+                folder_ping = _run_doc_arrival_folder_ping(
+                    gc,
+                    site_summary=site_summary,
+                    doc_type=doc_type,
+                    drive_file=drive_file,
+                )
+                uploaded[-1]["raycon_folder_ping"] = folder_ping
 
             if doc_type == "block_plan" and drive_file is not None:
                 block_plan_content = extract_text_from_pdf_bytes(file_bytes)

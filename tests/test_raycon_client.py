@@ -15,6 +15,7 @@ from due_diligence_reporter.raycon_client import (
     RAYCON_SCENARIO_FILENAME,
     RayConSchemaError,
     _compute_hmac_signature,
+    post_raycon_folder_ping,
     post_raycon_job,
     raycon_scenario_to_report_fields,
     read_raycon_scenario_from_m1,
@@ -219,6 +220,149 @@ class TestPostRayConJob:
             return_value=response,
         ):
             result = post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
+        assert result == {"status": "accepted"}
+
+
+# ---------------------------------------------------------------------------
+# post_raycon_folder_ping
+# ---------------------------------------------------------------------------
+
+
+_PING_REQUIRED_KW: dict[str, object] = {
+    "site_id": "S-123",
+    "site_name": "Test Site",
+    "address": "100 Main St, Austin, TX",
+    "drive_folder_url": "https://drive.google.com/drive/folders/parent-abc",
+    "m1_folder_id": "m1-xyz",
+}
+
+
+class TestPostRayConFolderPing:
+    """Per-doc folder ping: lighter body, same /v1/jobs URL.
+
+    Sent on every classified upload (CDS SIR, Worksmith inspection, ISP,
+    Block Plan). RayCon walks the folder server-side and decides whether
+    the document set is complete. Idempotent on RayCon's side.
+    """
+
+    def _fake_settings(self):
+        settings = MagicMock()
+        settings.raycon_jobs_url = "https://raycon.test/v1/jobs"
+        settings.raycon_webhook_secret = "shared-secret"
+        settings.raycon_api_key = ""
+        return settings
+
+    def test_happy_path_sends_minimal_body_and_hmac(self) -> None:
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            result = post_raycon_folder_ping(
+                doc_type="sir",
+                file_id="file-1",
+                file_url="https://drive.google.com/file/d/file-1/view",
+                **_PING_REQUIRED_KW,
+            )
+
+        assert result == {"status": "accepted"}
+        kwargs = mock_post.call_args.kwargs
+        # Same endpoint as post_raycon_job.
+        assert mock_post.call_args.args[0] == "https://raycon.test/v1/jobs"
+        assert "json" not in kwargs
+        body_bytes = kwargs["data"]
+        body = json.loads(body_bytes.decode("utf-8"))
+
+        # Required fields present.
+        assert body["schema_version"] == "1.0"
+        assert body["site_id"] == "S-123"
+        assert body["site_name"] == "Test Site"
+        assert body["address"] == "100 Main St, Austin, TX"
+        assert body["drive_folder_url"].endswith("/parent-abc")
+        assert body["m1_folder_id"] == "m1-xyz"
+        assert body["event"] == "folder_updated"
+        assert body["callback_marker"] == "raycon_scenario.json"
+        assert body["requested_at"].endswith("Z")
+
+        # Informational hints included.
+        assert body["doc_type"] == "sir"
+        assert body["file_id"] == "file-1"
+        assert body["file_url"].endswith("/view")
+
+        # NO Block Plan handle on the wire — that's how RayCon
+        # distinguishes a folder ping from a job dispatch.
+        assert "block_plan_file_id" not in body
+        assert "block_plan_url" not in body
+        assert "total_building_sf" not in body
+
+        # HMAC matches.
+        sig_header = kwargs["headers"]["X-RayCon-Signature"]
+        expected = hmac.new(b"shared-secret", body_bytes, hashlib.sha256).hexdigest()
+        assert sig_header == f"sha256={expected}"
+
+    def test_optional_hint_fields_omitted_when_not_provided(self) -> None:
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            post_raycon_folder_ping(**_PING_REQUIRED_KW)
+
+        body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        # Optional hints not on the wire when caller didn't supply them.
+        assert "doc_type" not in body
+        assert "file_id" not in body
+        assert "file_url" not in body
+        # Required fields still present.
+        assert body["site_id"] == "S-123"
+        assert body["m1_folder_id"] == "m1-xyz"
+
+    def test_missing_required_field_raises(self) -> None:
+        kw = dict(_PING_REQUIRED_KW)
+        kw["drive_folder_url"] = ""
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ):
+            with pytest.raises(ValueError) as excinfo:
+                post_raycon_folder_ping(**kw)
+        assert "drive_folder_url" in str(excinfo.value)
+        assert "folder_ping" in str(excinfo.value)
+
+    def test_missing_secret_skips_signature_header(self) -> None:
+        settings = self._fake_settings()
+        settings.raycon_webhook_secret = ""
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=settings,
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            post_raycon_folder_ping(**_PING_REQUIRED_KW)
+
+        headers = mock_post.call_args.kwargs["headers"]
+        assert "X-RayCon-Signature" not in headers
+        assert "X-RayCon-API-Key" not in headers
+        assert headers["Content-Type"] == "application/json"
+
+    def test_empty_response_body_returns_default_status(self) -> None:
+        empty = MagicMock()
+        empty.status_code = 202
+        empty.raise_for_status.return_value = None
+        empty.json.side_effect = ValueError("no body")
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=empty,
+        ):
+            result = post_raycon_folder_ping(**_PING_REQUIRED_KW)
         assert result == {"status": "accepted"}
 
 
