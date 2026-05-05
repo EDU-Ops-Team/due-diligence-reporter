@@ -66,6 +66,7 @@ from due_diligence_reporter.m1_lookup import _resolve_m1_folder  # noqa: E402
 from due_diligence_reporter.raycon_client import (  # noqa: E402
     RayConSchemaError,
     post_raycon_job,
+    raycon_payload_failed,
     raycon_scenario_to_report_fields,
     read_raycon_scenario_from_m1,
 )
@@ -455,7 +456,25 @@ def _process_site(
             "dispatch_skipped": dispatch_result.get("dispatch_skipped"),
         }
 
-    # Scenario JSON is here — publish the report Doc if missing or stale.
+    # Scenario JSON is here — but did the run actually succeed? RayCon
+    # writes the same file with ``status: "failed"`` (and ``validation.passed:
+    # false``) when it can't compute scenarios. Publishing a Doc in that
+    # state would render an empty/zero-dollar scenario the dashboard
+    # treats as authoritative. Surface the failure as an alert row instead
+    # so EDU Ops sees it in Chat and we don't pollute the site's M1 folder.
+    if raycon_payload_failed(scenario):
+        report_fields = raycon_scenario_to_report_fields(scenario)
+        reason = report_fields.get("exec.raycon_failure_reason", "") or "unspecified"
+        return {
+            "site": site_name,
+            "alert": f"raycon run failed: {reason}",
+            "raycon_status": report_fields.get("exec.raycon_status", ""),
+            "raycon_run_id": report_fields.get("exec.raycon_run_id", ""),
+            "json_modified": scenario.get("_drive_modified_time", ""),
+        }
+
+    # Scenario JSON is here and the run succeeded — publish the report
+    # Doc if missing or stale.
     published = _find_published_doc(gc, m1_folder_id, site_name)
     json_modified = scenario.get("_drive_modified_time", "")
     doc_modified = (published or {}).get("modifiedTime", "") if published else ""
