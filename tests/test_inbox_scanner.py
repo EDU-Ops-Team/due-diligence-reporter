@@ -16,6 +16,7 @@ from due_diligence_reporter.inbox_scanner import (
     _generate_drive_filename,
     _is_internal_sender,
     _run_block_plan_downstream,
+    _run_doc_arrival_folder_ping,
     _walk_parts,
     has_site_identity,
     process_email,
@@ -1161,5 +1162,151 @@ class TestBlockPlanDownstream:
                 block_plan_file_id="block123",
             )
         mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Per-doc folder ping (RayCon /v1/jobs lightweight notification)
+# ---------------------------------------------------------------------------
+
+
+class TestDocArrivalFolderPing:
+    """On every classified upload — SIR, Worksmith inspection, ISP, Block
+    Plan — we ping RayCon's /v1/jobs with the folder URL so it can decide
+    whether the document set is complete enough to start computing."""
+
+    _SITE = {
+        "id": "IEBLOCK123",
+        "title": "Alpha Keller",
+        "address": "123 Main St, Keller, TX",
+        "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+    }
+    _DRIVE_FILE = {
+        "id": "file-1",
+        "webViewLink": "https://drive.google.com/file/d/file-1/view",
+    }
+
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.raycon_client.post_raycon_folder_ping")
+    def test_ping_fires_for_sir_upload(
+        self, mock_ping, mock_resolve_m1
+    ):
+        mock_resolve_m1.return_value = ("m1-folder-id", "M1")
+        mock_ping.return_value = {"status": "accepted"}
+        gc = MagicMock()
+
+        result = _run_doc_arrival_folder_ping(
+            gc,
+            site_summary=self._SITE,
+            doc_type="sir",
+            drive_file=self._DRIVE_FILE,
+        )
+
+        assert result["status"] == "accepted"
+        assert result["doc_type"] == "sir"
+        kwargs = mock_ping.call_args.kwargs
+        assert kwargs["site_id"] == "IEBLOCK123"
+        assert kwargs["site_name"] == "Alpha Keller"
+        assert kwargs["address"] == "123 Main St, Keller, TX"
+        assert kwargs["drive_folder_url"].endswith("/site_abc")
+        assert kwargs["m1_folder_id"] == "m1-folder-id"
+        assert kwargs["doc_type"] == "sir"
+        assert kwargs["file_id"] == "file-1"
+        assert kwargs["file_url"].endswith("/view")
+
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.raycon_client.post_raycon_folder_ping")
+    def test_ping_fires_for_each_doc_type(
+        self, mock_ping, mock_resolve_m1
+    ):
+        mock_resolve_m1.return_value = ("m1-folder-id", "M1")
+        mock_ping.return_value = {"status": "accepted"}
+        gc = MagicMock()
+
+        for dt in ("sir", "building_inspection", "isp", "block_plan"):
+            mock_ping.reset_mock()
+            result = _run_doc_arrival_folder_ping(
+                gc,
+                site_summary=self._SITE,
+                doc_type=dt,
+                drive_file=self._DRIVE_FILE,
+            )
+            assert result["status"] == "accepted", dt
+            assert mock_ping.call_args.kwargs["doc_type"] == dt
+
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.raycon_client.post_raycon_folder_ping")
+    def test_ping_failure_does_not_raise(self, mock_ping, mock_resolve_m1):
+        """A flaky RayCon must not break a successful Drive upload."""
+        mock_resolve_m1.return_value = ("m1-folder-id", "M1")
+        mock_ping.side_effect = RuntimeError("RayCon 503")
+        gc = MagicMock()
+
+        result = _run_doc_arrival_folder_ping(
+            gc,
+            site_summary=self._SITE,
+            doc_type="sir",
+            drive_file=self._DRIVE_FILE,
+        )
+
+        assert result["status"] == "error"
+        assert "RayCon 503" in result["error"]
+
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.raycon_client.post_raycon_folder_ping")
+    def test_ping_skipped_when_site_summary_incomplete(
+        self, mock_ping, mock_resolve_m1
+    ):
+        """Missing site_id / address / drive_folder_url → graceful skip,
+        not an error. Inbox classifier already gated on these earlier."""
+        gc = MagicMock()
+        result = _run_doc_arrival_folder_ping(
+            gc,
+            site_summary={
+                "id": "",  # incomplete
+                "title": "Alpha Keller",
+                "address": "123 Main",
+                "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+            },
+            doc_type="sir",
+            drive_file=self._DRIVE_FILE,
+        )
+        assert result["status"] == "skipped"
+        assert "missing" in result["reason"]
+        mock_resolve_m1.assert_not_called()
+        mock_ping.assert_not_called()
+
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.raycon_client.post_raycon_folder_ping")
+    def test_ping_skipped_when_m1_folder_unresolvable(
+        self, mock_ping, mock_resolve_m1
+    ):
+        mock_resolve_m1.return_value = (None, None)
+        gc = MagicMock()
+        result = _run_doc_arrival_folder_ping(
+            gc,
+            site_summary=self._SITE,
+            doc_type="sir",
+            drive_file=self._DRIVE_FILE,
+        )
+        assert result["status"] == "skipped"
+        assert "M1" in result["reason"]
+        mock_ping.assert_not_called()
+
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.raycon_client.post_raycon_folder_ping")
+    def test_ping_returns_error_when_m1_resolution_raises(
+        self, mock_ping, mock_resolve_m1
+    ):
+        mock_resolve_m1.side_effect = RuntimeError("Drive 401")
+        gc = MagicMock()
+        result = _run_doc_arrival_folder_ping(
+            gc,
+            site_summary=self._SITE,
+            doc_type="isp",
+            drive_file=self._DRIVE_FILE,
+        )
+        assert result["status"] == "error"
+        assert "resolve M1" in result["error"]
+        mock_ping.assert_not_called()
 
 

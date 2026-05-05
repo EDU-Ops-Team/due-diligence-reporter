@@ -1,14 +1,21 @@
 """RayCon async hand-off client.
 
-DDR pings RayCon's `/v1/jobs` endpoint when a Block Plan lands in a
-site's M1 folder. RayCon then reads the Block Plan from Drive on its
-own, derives the room schedule, runs the Fastest Open / Max Capacity
-scenarios, and writes a single ``raycon_scenario.json`` file back into
-the same M1 folder.
+DDR pings RayCon's `/v1/jobs` endpoint in two flavors:
+
+1. **Job dispatch** (``post_raycon_job``) — sent when a Block Plan
+   lands in a site's M1 folder. Carries ``block_plan_file_id`` as the
+   idempotency key. RayCon runs Fastest Open / Max Capacity scenarios
+   and writes ``raycon_scenario.json`` back into the same M1 folder.
+2. **Folder ping** (``post_raycon_folder_ping``) — sent on every other
+   classified doc arrival (CDS SIR, Worksmith inspection, ISP). Lighter
+   payload, no Block Plan handle. RayCon walks the Drive folder server-
+   side and decides whether the document set is now complete enough to
+   start computing. Idempotent on RayCon's side.
 
 This module owns:
 
-* ``post_raycon_job`` — the outbound POST (auth + retry).
+* ``post_raycon_job`` — the outbound POST for Block Plan triggers.
+* ``post_raycon_folder_ping`` — the lightweight per-doc heads-up.
 * ``read_raycon_scenario_from_m1`` — picks up the JSON RayCon left
   for us in the per-site M1 folder.
 * ``raycon_scenario_to_report_fields`` — maps the parsed JSON into the
@@ -211,6 +218,101 @@ def post_raycon_job(
     except ValueError:
         # RayCon is allowed to return an empty body on success; preserve
         # observability without breaking the caller.
+        return {"status": "accepted"}
+
+
+@retry(**retry_config())  # type: ignore[untyped-decorator]
+def post_raycon_folder_ping(
+    *,
+    site_id: str,
+    site_name: str,
+    address: str,
+    drive_folder_url: str,
+    m1_folder_id: str,
+    doc_type: str = "",
+    file_id: str = "",
+    file_url: str = "",
+) -> dict[str, Any]:
+    """Lightweight ping that a new doc landed in a site's Drive folder.
+
+    Sent on every classified upload (CDS SIR, Worksmith inspection, ISP
+    — and also Block Plan, alongside the full ``post_raycon_job`` call).
+    RayCon walks the folder server-side using ``drive_folder_url`` and
+    decides whether the document set is now complete enough to start
+    computing. The body is intentionally minimal: only ``site_id``,
+    ``drive_folder_url``, and ``m1_folder_id`` are strictly required
+    on the wire; ``doc_type`` / ``file_id`` / ``file_url`` are
+    informational hints and may be empty when called from the cron
+    safety net.
+
+    Same endpoint as ``post_raycon_job`` (``/v1/jobs``). RayCon
+    distinguishes a folder ping from a job dispatch by the absence of
+    ``block_plan_file_id`` in the body. Idempotent on RayCon's side
+    — re-firing for the same ``file_id`` is a no-op.
+
+    Auth, signing, and retry behavior match ``post_raycon_job``.
+    """
+    settings = get_settings()
+    missing_required: list[str] = []
+    for arg_name, arg_value in (
+        ("site_id", site_id),
+        ("site_name", site_name),
+        ("address", address),
+        ("drive_folder_url", drive_folder_url),
+        ("m1_folder_id", m1_folder_id),
+    ):
+        if not arg_value:
+            missing_required.append(arg_name)
+    if missing_required:
+        raise ValueError(
+            "post_raycon_folder_ping missing required fields: "
+            + ", ".join(missing_required)
+        )
+
+    body: dict[str, Any] = {
+        "schema_version": "1.0",
+        "site_id": site_id,
+        "site_name": site_name,
+        "address": address,
+        "drive_folder_url": drive_folder_url,
+        "m1_folder_id": m1_folder_id,
+        "event": "folder_updated",
+        "callback_marker": RAYCON_CALLBACK_MARKER,
+        "requested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if doc_type:
+        body["doc_type"] = doc_type
+    if file_id:
+        body["file_id"] = file_id
+    if file_url:
+        body["file_url"] = file_url
+
+    body_bytes = json.dumps(body, separators=(",", ":"), sort_keys=False).encode("utf-8")
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if settings.raycon_webhook_secret:
+        headers["X-RayCon-Signature"] = _compute_hmac_signature(
+            settings.raycon_webhook_secret, body_bytes
+        )
+    if settings.raycon_api_key:
+        headers["X-RayCon-API-Key"] = settings.raycon_api_key
+
+    logger.info(
+        "RayCon folder ping: site=%s doc_type=%s file_id=%s",
+        site_name,
+        doc_type or "(unspecified)",
+        file_id or "(none)",
+    )
+    response = requests.post(
+        settings.raycon_jobs_url,
+        data=body_bytes,
+        headers=headers,
+        timeout=60,
+    )
+    response.raise_for_status()
+    try:
+        return response.json()
+    except ValueError:
         return {"status": "accepted"}
 
 
