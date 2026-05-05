@@ -12,7 +12,16 @@ This script runs on a 5-minute cadence (``raycon-followup.yml``) and:
   3. If the JSON exists and is newer than the corresponding
      ``RayCon Scenario Assessment - <site>`` Google Doc (or that Doc
      doesn't exist yet), publishes a fresh Doc via ``save_skill_report``.
-  4. Tracks staleness for alerting: if a Block Plan exists but no
+  4. Safety-net dispatch: if a Block Plan is present in M1 but
+     ``raycon_scenario.json`` is missing, calls ``post_raycon_job``
+     directly so Block Plans that arrive via any non-email path
+     (manual upload, recovery, migration) still trigger RayCon.
+     Dispatches are deduped per ``block_plan_file_id`` via
+     ``.raycon_dispatch_state.json`` and only re-fire after
+     ``--redispatch-after-minutes`` (default 30). RayCon's ``/v1/jobs``
+     is itself idempotent on ``block_plan_file_id`` per the
+     integration spec, so a re-fire is safe.
+  5. Tracks staleness for alerting: if a Block Plan exists but no
      scenario JSON has been written within ``--alert-after-minutes``
      (default 60), posts a Google Chat alert listing the stuck sites.
 
@@ -56,6 +65,7 @@ from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.m1_lookup import _resolve_m1_folder  # noqa: E402
 from due_diligence_reporter.raycon_client import (  # noqa: E402
     RayConSchemaError,
+    post_raycon_job,
     raycon_scenario_to_report_fields,
     read_raycon_scenario_from_m1,
 )
@@ -83,6 +93,14 @@ BLOCK_PLAN_FILENAME_HINTS = ("block plan", "block_plan", "blockplan")
 ALERT_DEDUP_PATH = _project_root / ".raycon_followup_alerts.json"
 ALERT_DEDUP_WINDOW = timedelta(hours=24)
 
+# Persisted map of {block_plan_file_id: {"last_dispatch": ISO, "count": int,
+# "site": str, "raycon_run_id": str | None}}. Keyed by Drive file ID so
+# uploading a fresh Block Plan (which gets a new file ID) always re-fires
+# RayCon, while re-walking the same plan within the redispatch window
+# does not. RayCon's /v1/jobs is itself idempotent on block_plan_file_id,
+# so a duplicate dispatch is at worst a no-op on their side.
+DISPATCH_DEDUP_PATH = _project_root / ".raycon_dispatch_state.json"
+
 
 # ---------------------------------------------------------------------------
 
@@ -105,6 +123,37 @@ def _save_alert_state(state: dict[str, str], path: Path = ALERT_DEDUP_PATH) -> N
         path.write_text(json.dumps(state, sort_keys=True, indent=2), encoding="utf-8")
     except Exception as e:
         logger.warning("Failed to write alert dedup state at %s: %s", path, e)
+
+
+def _load_dispatch_state(
+    path: Path = DISPATCH_DEDUP_PATH,
+) -> dict[str, dict[str, Any]]:
+    """Load the {block_plan_file_id: {...}} dispatch dedup map.
+
+    Returns ``{}`` on missing file or any read/parse error so a corrupt
+    state file never blocks the run.
+    """
+    try:
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        # Defensive: drop any non-dict entries from a malformed file.
+        return {k: v for k, v in data.items() if isinstance(v, dict)}
+    except Exception as e:
+        logger.warning("Failed to read dispatch dedup state at %s: %s", path, e)
+        return {}
+
+
+def _save_dispatch_state(
+    state: dict[str, dict[str, Any]], path: Path = DISPATCH_DEDUP_PATH
+) -> None:
+    """Persist the dispatch dedup map. Best-effort; logs but does not raise."""
+    try:
+        path.write_text(json.dumps(state, sort_keys=True, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning("Failed to write dispatch dedup state at %s: %s", path, e)
 
 
 def _filter_dedup_alerts(
@@ -174,14 +223,156 @@ def _post_chat(webhook_url: str, text: str) -> None:
         logger.warning("Failed to post Google Chat alert: %s", e)
 
 
+def _dispatch_raycon_job(
+    site_summary: dict[str, Any],
+    block_plan: dict[str, Any],
+    m1_folder_id: str,
+    dispatch_state: dict[str, dict[str, Any]],
+    *,
+    dry_run: bool,
+    redispatch_after: timedelta,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Fire ``post_raycon_job`` for a site whose Block Plan is present but
+    has no ``raycon_scenario.json`` yet, deduped by ``block_plan_file_id``.
+
+    Returns a result dict that is merged into the per-site row by the
+    caller. Possible shapes:
+
+      - ``{"dispatched": True, "raycon_run_id": str, "status": str}``
+      - ``{"dispatch_skipped": "recently dispatched", "last_dispatch": ISO, "dispatch_count": int}``
+      - ``{"dispatch_skipped": "dry_run", ...}``
+      - ``{"dispatch_error": str}`` — caller decides whether to alert
+
+    The function mutates ``dispatch_state`` in place on a successful
+    dispatch so the caller can persist the updated map at the end of the
+    run. On error or skip, ``dispatch_state`` is left untouched.
+    """
+    now = now or datetime.now(timezone.utc)
+    site_name = str(site_summary.get("title", "")).strip() or "(unnamed)"
+    block_plan_file_id = str(block_plan.get("id", "")).strip()
+    block_plan_url = str(
+        block_plan.get("webViewLink")
+        or f"https://drive.google.com/file/d/{block_plan_file_id}/view"
+    )
+
+    if not block_plan_file_id:
+        return {"dispatch_error": "block plan missing Drive file id"}
+
+    # Dedup: skip if we dispatched this same block_plan_file_id within the
+    # redispatch window. Different Block Plans (new uploads) get new file
+    # IDs and therefore always pass through.
+    prior = dispatch_state.get(block_plan_file_id)
+    if prior:
+        last_iso = str(prior.get("last_dispatch", ""))
+        last_dt = _parse_iso(last_iso)
+        if last_dt is not None and (now - last_dt) < redispatch_after:
+            return {
+                "dispatch_skipped": "recently dispatched",
+                "last_dispatch": last_iso,
+                "dispatch_count": int(prior.get("count", 0)),
+            }
+
+    site_id = str(site_summary.get("id", "")).strip()
+    site_address = str(site_summary.get("address", "")).strip()
+    drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
+
+    # Fail-closed on the same required fields post_raycon_job validates,
+    # so we surface a clean error row instead of letting ValueError bubble
+    # through and abort the whole run.
+    missing = []
+    for label, val in (
+        ("site_id", site_id),
+        ("site_address", site_address),
+        ("drive_folder_url", drive_folder_url),
+        ("m1_folder_id", m1_folder_id),
+    ):
+        if not val:
+            missing.append(label)
+    if missing:
+        return {
+            "dispatch_error": f"missing required field(s) for dispatch: {', '.join(missing)}"
+        }
+
+    # total_building_sf is optional on the wire (post_raycon_job sends 0
+    # when None); coerce defensively the same way inbox_scanner does.
+    raw_sf = site_summary.get("total_building_sf")
+    try:
+        total_building_sf = int(raw_sf) if raw_sf is not None else None
+    except (TypeError, ValueError):
+        total_building_sf = None
+
+    if dry_run:
+        return {
+            "dispatch_skipped": "dry_run",
+            "would_dispatch": True,
+            "block_plan_file_id": block_plan_file_id,
+        }
+
+    try:
+        response = post_raycon_job(
+            site_id=site_id,
+            site_name=site_name,
+            address=site_address,
+            drive_folder_url=drive_folder_url,
+            m1_folder_id=m1_folder_id,
+            block_plan_file_id=block_plan_file_id,
+            block_plan_url=block_plan_url,
+            total_building_sf=total_building_sf,
+        )
+    except Exception as e:
+        logger.warning(
+            "RayCon dispatch failed for site=%s block_plan_file_id=%s: %s",
+            site_name,
+            block_plan_file_id,
+            e,
+        )
+        return {"dispatch_error": f"post_raycon_job failed: {e}"}
+
+    raycon_run_id = str(response.get("raycon_run_id", "")).strip()
+    status = str(response.get("status", "accepted"))
+    logger.info(
+        "RayCon safety-net dispatch for site=%s block_plan_file_id=%s run_id=%s status=%s",
+        site_name,
+        block_plan_file_id,
+        raycon_run_id or "(unknown)",
+        status,
+    )
+
+    prior_count = int((prior or {}).get("count", 0))
+    dispatch_state[block_plan_file_id] = {
+        "site": site_name,
+        "last_dispatch": now.isoformat(),
+        "count": prior_count + 1,
+        "raycon_run_id": raycon_run_id or None,
+        "status": status,
+    }
+    return {
+        "dispatched": True,
+        "raycon_run_id": raycon_run_id,
+        "status": status,
+        "block_plan_file_id": block_plan_file_id,
+    }
+
+
 def _process_site(
     gc: GoogleClient,
     site_summary: dict[str, Any],
     *,
     dry_run: bool,
     alert_after: timedelta,
+    dispatch_state: dict[str, dict[str, Any]] | None = None,
+    redispatch_after: timedelta = timedelta(minutes=30),
 ) -> dict[str, Any]:
-    """Return a per-site result row for the run summary."""
+    """Return a per-site result row for the run summary.
+
+    When a Block Plan is present but ``raycon_scenario.json`` has not yet
+    appeared, this function will additionally call ``post_raycon_job``
+    via :func:`_dispatch_raycon_job` to cover Block Plans that arrived
+    via a non-email path (manual upload, recovery). ``dispatch_state``
+    is mutated in place on a successful dispatch and the caller is
+    expected to persist it at the end of the run.
+    """
     site_name = str(site_summary.get("title", "")).strip() or "(unnamed)"
     drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
     if not drive_folder_url:
@@ -205,15 +396,64 @@ def _process_site(
         return {"site": site_name, "error": f"schema error: {e}"}
 
     if scenario is None:
-        # Stuck or in-flight? Determine by Block Plan age.
+        now = datetime.now(timezone.utc)
         bp_modified = _parse_iso(str(block_plan.get("modifiedTime", "")))
-        if bp_modified is not None and (datetime.now(timezone.utc) - bp_modified) > alert_after:
+        is_stuck = (
+            bp_modified is not None and (now - bp_modified) > alert_after
+        )
+
+        # Safety-net dispatch: try to (re-)fire RayCon for this Block Plan
+        # before we decide whether to alert. If RayCon is just slow, this
+        # is a no-op on their side (idempotent on block_plan_file_id).
+        # If the email path never reached RayCon, this is the recovery.
+        dispatch_result: dict[str, Any] = {}
+        if dispatch_state is not None:
+            dispatch_result = _dispatch_raycon_job(
+                site_summary,
+                block_plan,
+                m1_folder_id,
+                dispatch_state,
+                dry_run=dry_run,
+                redispatch_after=redispatch_after,
+                now=now,
+            )
+
+        # Successful dispatch is the headline outcome for this site.
+        if dispatch_result.get("dispatched"):
+            row = {
+                "site": site_name,
+                "dispatched": True,
+                "raycon_run_id": dispatch_result.get("raycon_run_id"),
+                "status": dispatch_result.get("status"),
+                "block_plan_file_id": dispatch_result.get("block_plan_file_id"),
+            }
+            if bp_modified is not None:
+                row["block_plan_modified"] = bp_modified.isoformat()
+            return row
+
+        # Dispatch errored — surface as an error row so it lands in the
+        # error alert path and we can see it in Chat.
+        if dispatch_result.get("dispatch_error"):
+            return {
+                "site": site_name,
+                "error": f"raycon dispatch: {dispatch_result['dispatch_error']}",
+            }
+
+        # Dispatch skipped (dedup or dry_run) → fall through to the
+        # original stuck-vs-in-flight logic. If the Block Plan has been
+        # sitting >alert_after with no scenario, alert.
+        if is_stuck:
             return {
                 "site": site_name,
                 "alert": f"no raycon_scenario.json after {alert_after}",
-                "block_plan_modified": bp_modified.isoformat(),
+                "block_plan_modified": bp_modified.isoformat() if bp_modified else None,
+                "dispatch_skipped": dispatch_result.get("dispatch_skipped"),
             }
-        return {"site": site_name, "skipped": "scenario JSON not yet present"}
+        return {
+            "site": site_name,
+            "skipped": "scenario JSON not yet present",
+            "dispatch_skipped": dispatch_result.get("dispatch_skipped"),
+        }
 
     # Scenario JSON is here — publish the report Doc if missing or stale.
     published = _find_published_doc(gc, m1_folder_id, site_name)
@@ -275,6 +515,16 @@ def main(argv: list[str] | None = None) -> int:
         default=60,
         help="Alert when raycon_scenario.json hasn't appeared this long after the Block Plan landed",
     )
+    parser.add_argument(
+        "--redispatch-after-minutes",
+        type=int,
+        default=30,
+        help=(
+            "How long to wait before re-dispatching the same block_plan_file_id "
+            "to RayCon's /v1/jobs. Smaller than --alert-after-minutes so we get "
+            "at least one re-fire before the stuck-site alert triggers."
+        ),
+    )
     args = parser.parse_args(argv)
 
     settings = get_settings()
@@ -293,6 +543,9 @@ def main(argv: list[str] | None = None) -> int:
     summaries = [s for s in summaries if _site_filter(s, args.site)]
 
     alert_after = timedelta(minutes=args.alert_after_minutes)
+    redispatch_after = timedelta(minutes=args.redispatch_after_minutes)
+
+    dispatch_state = _load_dispatch_state()
 
     results: list[dict[str, Any]] = []
     for site_summary in summaries:
@@ -302,6 +555,8 @@ def main(argv: list[str] | None = None) -> int:
                 site_summary,
                 dry_run=args.dry_run,
                 alert_after=alert_after,
+                dispatch_state=dispatch_state,
+                redispatch_after=redispatch_after,
             )
         except Exception as e:
             logger.exception("Unhandled error for site '%s'", site_summary.get("title"))
@@ -309,7 +564,13 @@ def main(argv: list[str] | None = None) -> int:
         results.append(row)
         logger.info("%s", json.dumps(row, default=str))
 
+    # Persist dispatch dedup state once at end of run (after all sites
+    # processed) so partial-run state still gets saved on the next run.
+    if not args.dry_run:
+        _save_dispatch_state(dispatch_state)
+
     published = [r for r in results if r.get("published")]
+    dispatched = [r for r in results if r.get("dispatched")]
     alerts = [r for r in results if r.get("alert")]
     errors = [r for r in results if r.get("error")]
 
@@ -337,8 +598,9 @@ def main(argv: list[str] | None = None) -> int:
         _post_chat(settings.google_chat_webhook_url, "\n".join(lines))
 
     logger.info(
-        "Run complete: published=%d alerts=%d errors=%d total_sites=%d",
+        "Run complete: published=%d dispatched=%d alerts=%d errors=%d total_sites=%d",
         len(published),
+        len(dispatched),
         len(alerts),
         len(errors),
         len(results),
