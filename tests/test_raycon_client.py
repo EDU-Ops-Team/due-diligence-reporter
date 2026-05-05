@@ -160,10 +160,10 @@ class TestPostRayConJob:
             with pytest.raises(ValueError, match="block_plan_file_id"):
                 post_raycon_job(total_building_sf=8400, **kw)
 
-    def test_total_building_sf_omitted_sends_zero(self) -> None:
-        # Spec §1.2 marks total_building_sf required. When the Wrike record
-        # lacks it, we still send the field (as 0) rather than dropping it,
-        # so RayCon's validator sees a complete payload.
+    def test_total_building_sf_omitted_drops_field(self) -> None:
+        # RayCon's validator rejects 0 ("Number must be greater than 0") and
+        # null on `total_building_sf`. When the Wrike record lacks a value,
+        # drop the field entirely so the payload validates.
         with patch(
             "due_diligence_reporter.raycon_client.get_settings",
             return_value=self._fake_settings(),
@@ -173,7 +173,88 @@ class TestPostRayConJob:
         ) as mock_post:
             post_raycon_job(**_REQUIRED_KW)
         body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
-        assert body["total_building_sf"] == 0
+        assert "total_building_sf" not in body
+        # Spec §1.2 ordering preserved for the fields we *do* send.
+        assert list(body.keys()) == [
+            "schema_version",
+            "site_id",
+            "site_name",
+            "address",
+            "drive_folder_url",
+            "m1_folder_id",
+            "block_plan_file_id",
+            "block_plan_url",
+            "callback_marker",
+            "requested_at",
+        ]
+
+    def test_total_building_sf_zero_drops_field(self) -> None:
+        # Same guarantee when the caller passes 0 explicitly: the validator
+        # rejects 0, so we treat 0 the same as missing and omit the field.
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            post_raycon_job(total_building_sf=0, **_REQUIRED_KW)
+        body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        assert "total_building_sf" not in body
+
+    def test_positive_sf_sent_in_canonical_position(self) -> None:
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
+        body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        assert body["total_building_sf"] == 8400
+        # Field sits between block_plan_url and callback_marker per spec.
+        keys = list(body.keys())
+        assert keys.index("total_building_sf") == keys.index("block_plan_url") + 1
+        assert keys.index("callback_marker") == keys.index("total_building_sf") + 1
+
+    def test_4xx_error_logs_response_body_and_includes_in_exception(self, caplog) -> None:
+        # Regression: RayCon returns 400 with a JSON body explaining *why*
+        # the payload failed validation. The previous code called
+        # raise_for_status() without capturing that body, leaving cron logs
+        # showing only "400 Client Error" with no diagnostic. We must log
+        # the body and surface it on the raised exception.
+        bad_response = MagicMock()
+        bad_response.status_code = 400
+        bad_response.text = (
+            '{"ok":false,"error":{"code":"VALIDATION_ERROR",'
+            '"message":"Number must be greater than 0",'
+            '"path":"total_building_sf"}}'
+        )
+        bad_response.raise_for_status.side_effect = requests.HTTPError(
+            "400 Client Error: Bad Request for url: https://raycon.test/v1/jobs",
+            response=bad_response,
+        )
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=bad_response,
+        ), caplog.at_level("ERROR", logger="due_diligence_reporter.raycon_client"):
+            with pytest.raises(requests.HTTPError) as excinfo:
+                post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
+
+        # Exception message carries the RayCon response body so the cron
+        # log line and any upstream alert sees the validation reason.
+        assert "VALIDATION_ERROR" in str(excinfo.value)
+        assert "total_building_sf" in str(excinfo.value)
+        # And the structured log captured the same body.
+        assert any(
+            "VALIDATION_ERROR" in record.getMessage()
+            and "status=400" in record.getMessage()
+            for record in caplog.records
+        )
 
     def test_signature_matches_byte_exact_payload(self) -> None:
         # Regression: signing must happen over the exact bytes posted; if
@@ -196,6 +277,7 @@ class TestPostRayConJob:
     def test_retries_on_5xx_then_succeeds(self) -> None:
         flaky = MagicMock()
         flaky.status_code = 503
+        flaky.text = ""
         flaky.raise_for_status.side_effect = requests.HTTPError(response=flaky)
         ok = _ok_response()
         with patch(

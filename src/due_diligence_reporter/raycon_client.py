@@ -166,9 +166,16 @@ def post_raycon_job(
             "post_raycon_job missing required fields: " + ", ".join(missing_required)
         )
 
-    # Spec §2.3 requires integer SF. Use 0 as a sentinel when caller
-    # truly has no value so the field is still present on the wire.
-    sf_int = int(total_building_sf) if total_building_sf is not None else 0
+    # RayCon's validator rejects 0 ("Number must be greater than 0") and
+    # null ("Expected number, received null") on `total_building_sf`. When
+    # the caller has no real SF value, omit the field entirely — RayCon
+    # accepts the payload without it. Only send the field when we have a
+    # positive integer.
+    sf_int: int | None
+    if total_building_sf is not None and int(total_building_sf) > 0:
+        sf_int = int(total_building_sf)
+    else:
+        sf_int = None
 
     body: dict[str, Any] = {
         "schema_version": "1.0",
@@ -179,10 +186,25 @@ def post_raycon_job(
         "m1_folder_id": m1_folder_id,
         "block_plan_file_id": block_plan_file_id,
         "block_plan_url": block_plan_url,
-        "total_building_sf": sf_int,
         "callback_marker": RAYCON_CALLBACK_MARKER,
         "requested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if sf_int is not None:
+        # Insert before callback_marker to preserve the canonical field
+        # ordering documented in the spec for any future debuggers.
+        body = {
+            "schema_version": body["schema_version"],
+            "site_id": body["site_id"],
+            "site_name": body["site_name"],
+            "address": body["address"],
+            "drive_folder_url": body["drive_folder_url"],
+            "m1_folder_id": body["m1_folder_id"],
+            "block_plan_file_id": body["block_plan_file_id"],
+            "block_plan_url": body["block_plan_url"],
+            "total_building_sf": sf_int,
+            "callback_marker": body["callback_marker"],
+            "requested_at": body["requested_at"],
+        }
 
     # Serialize once and POST those exact bytes. Using `requests`' `json=`
     # would re-serialize and break the signature when HMAC verification is
@@ -212,7 +234,29 @@ def post_raycon_job(
         headers=headers,
         timeout=60,
     )
-    response.raise_for_status()
+    if response.status_code >= 400:
+        # Capture RayCon's response body so the validation reason is visible
+        # in cron logs and in the raised exception. Without this the body
+        # was discarded and 400s looked indistinguishable in our telemetry.
+        body_text = (response.text or "").strip()
+        logger.error(
+            "RayCon job dispatch failed: site=%s block_plan_file_id=%s status=%s body=%s",
+            site_name,
+            block_plan_file_id,
+            response.status_code,
+            body_text[:2000],
+        )
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            # Re-raise with the response body inlined in the message so the
+            # validation reason survives into retry logs and bubbles up to
+            # the cron's error counter.
+            raise requests.HTTPError(
+                f"{exc} | RayCon response body: {body_text[:2000]}",
+                response=response,
+                request=getattr(exc, "request", None),
+            ) from exc
     try:
         return response.json()
     except ValueError:
