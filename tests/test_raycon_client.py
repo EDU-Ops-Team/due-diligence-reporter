@@ -15,6 +15,8 @@ from due_diligence_reporter.raycon_client import (
     RAYCON_SCENARIO_FILENAME,
     RayConSchemaError,
     _compute_hmac_signature,
+    _normalize_drive_folder_url,
+    _unwrap_html_anchor,
     post_raycon_folder_ping,
     post_raycon_job,
     raycon_payload_failed,
@@ -22,6 +24,69 @@ from due_diligence_reporter.raycon_client import (
     raycon_scenario_to_report_fields,
     read_raycon_scenario_from_m1,
 )
+
+
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeDriveFolderUrl:
+    """RayCon /v1/jobs validators reject HTML-anchor-wrapped folder URLs.
+
+    Wrike's rich-text Google Folder field can store an anchor; we must
+    rebuild a canonical /drive/folders/<id> URL before dispatch.
+    """
+
+    def test_plain_folder_url_passes_through_canonicalized(self) -> None:
+        out = _normalize_drive_folder_url(
+            "https://drive.google.com/drive/folders/abc123abc123"
+        )
+        assert out == "https://drive.google.com/drive/folders/abc123abc123"
+
+    def test_u0_prefixed_folder_url_canonicalized(self) -> None:
+        out = _normalize_drive_folder_url(
+            "https://drive.google.com/drive/u/0/folders/abc123abc123"
+        )
+        assert out == "https://drive.google.com/drive/folders/abc123abc123"
+
+    def test_html_anchor_unwrapped(self) -> None:
+        out = _normalize_drive_folder_url(
+            '<a href="https://drive.google.com/drive/folders/abc123abc123">Site</a>'
+        )
+        assert out == "https://drive.google.com/drive/folders/abc123abc123"
+
+    def test_open_id_format_canonicalized(self) -> None:
+        out = _normalize_drive_folder_url(
+            "https://drive.google.com/open?id=abc123abc123"
+        )
+        assert out == "https://drive.google.com/drive/folders/abc123abc123"
+
+    def test_file_url_returns_none(self) -> None:
+        # /file/d/<id> is not a folder URL — caller will raise a clear
+        # "fix the Wrike field" error rather than dispatch a doomed POST.
+        out = _normalize_drive_folder_url(
+            "https://drive.google.com/file/d/abc123abc123/view"
+        )
+        assert out is None
+
+    def test_garbage_returns_none(self) -> None:
+        assert _normalize_drive_folder_url("") is None
+        assert _normalize_drive_folder_url("not a url") is None
+
+
+class TestUnwrapHtmlAnchor:
+    def test_anchor_unwrapped(self) -> None:
+        assert _unwrap_html_anchor(
+            '<a href="https://drive.google.com/file/d/xyz/view">BP</a>'
+        ) == "https://drive.google.com/file/d/xyz/view"
+
+    def test_amp_entities_decoded(self) -> None:
+        assert _unwrap_html_anchor('<a href="a?b=1&amp;c=2">x</a>') == "a?b=1&c=2"
+
+    def test_plain_url_passes_through(self) -> None:
+        url = "https://drive.google.com/file/d/xyz/view"
+        assert _unwrap_html_anchor(url) == url
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +282,71 @@ class TestPostRayConJob:
         keys = list(body.keys())
         assert keys.index("total_building_sf") == keys.index("block_plan_url") + 1
         assert keys.index("callback_marker") == keys.index("total_building_sf") + 1
+
+    def test_drive_folder_url_html_anchor_normalized(self) -> None:
+        # Live regression (2026-05-05): NYC 156 William and Dallas 4152 Cole
+        # had Wrike Google Folder fields stored as HTML anchors. RayCon's
+        # validator rejected the raw anchor with 400. We must unwrap to a
+        # canonical /drive/folders/<id> URL before sending.
+        kw = dict(_REQUIRED_KW)
+        kw["drive_folder_url"] = (
+            '<a href="https://drive.google.com/drive/folders/'
+            '13L4rDu9mW4UNPzBjLgZvadsrY8Cnl3zJ">Site Folder</a>'
+        )
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            post_raycon_job(total_building_sf=8400, **kw)
+        body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        assert body["drive_folder_url"] == (
+            "https://drive.google.com/drive/folders/"
+            "13L4rDu9mW4UNPzBjLgZvadsrY8Cnl3zJ"
+        )
+
+    def test_drive_folder_url_open_id_format_normalized(self) -> None:
+        # /open?id=<id> is a valid Drive folder URL shape; rebuild it as
+        # the canonical /drive/folders/<id> form for RayCon.
+        kw = dict(_REQUIRED_KW)
+        kw["drive_folder_url"] = (
+            "https://drive.google.com/open?id=13L4rDu9mW4UNPzBjLgZvadsrY8Cnl3zJ"
+        )
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            post_raycon_job(total_building_sf=8400, **kw)
+        body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        assert body["drive_folder_url"].endswith(
+            "/drive/folders/13L4rDu9mW4UNPzBjLgZvadsrY8Cnl3zJ"
+        )
+
+    def test_drive_folder_url_unparseable_raises_clear_error(self) -> None:
+        # When Wrike has a value with no recoverable folder ID (e.g. the PM
+        # pasted a /file/d/<id> URL by mistake), we must raise a clear
+        # message naming Wrike as the fix-it surface, *before* we burn a
+        # RayCon dispatch on a guaranteed-400.
+        kw = dict(_REQUIRED_KW)
+        kw["drive_folder_url"] = (
+            "https://drive.google.com/file/d/13L4rDu9mW4UNPzBjLgZvadsrY8Cnl3zJ/view"
+        )
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_ok_response(),
+        ) as mock_post:
+            with pytest.raises(ValueError, match="Google Folder custom field in Wrike"):
+                post_raycon_job(total_building_sf=8400, **kw)
+        # Critically: we never made the network call.
+        assert mock_post.call_count == 0
 
     def test_4xx_error_logs_response_body_and_includes_in_exception(self, caplog) -> None:
         # Regression: RayCon returns 400 with a JSON body explaining *why*
