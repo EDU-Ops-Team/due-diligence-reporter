@@ -16,6 +16,21 @@ from .report_schema import LINK_DISPLAY_LABELS, LINK_TOKENS
 logger = logging.getLogger(__name__)
 
 SOURCE_QUALITY_NOTES_KEY = "_internal.source_quality_notes"
+CITATIONS_BLOCK_KEY = "exec.citations_block"
+
+# Map of non-ASCII punctuation characters that JC's style requires we replace
+# with their ASCII equivalents before the report is rendered.
+_ASCII_PUNCTUATION_MAP: dict[str, str] = {
+    "\u2014": "--",   # em dash
+    "\u2013": "-",    # en dash
+    "\u2018": "'",    # left single quote
+    "\u2019": "'",    # right single quote / apostrophe
+    "\u201c": '"',    # left double quote
+    "\u201d": '"',    # right double quote
+    "\u2026": "...",  # horizontal ellipsis
+    "\u2212": "-",    # minus sign
+    "\u00a0": " ",    # non-breaking space
+}
 
 # ---------------------------------------------------------------------------
 # Style constants — reproduce the V3 template visual appearance
@@ -348,6 +363,33 @@ def _canonicalize_note_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _sanitize_ascii_punctuation(text: str) -> str:
+    """Replace common non-ASCII punctuation with ASCII equivalents.
+
+    JC style requires plain ASCII -- no em-dashes, en-dashes, smart quotes,
+    ellipses, or non-breaking spaces in narrative text.
+    """
+    if not text:
+        return text
+    for src, dst in _ASCII_PUNCTUATION_MAP.items():
+        if src in text:
+            text = text.replace(src, dst)
+    return text
+
+
+def _strip_field_footnote_block(value: str) -> str:
+    """Remove trailing [N]-footnote definitions from a bulleted field.
+
+    Used when a consolidated citations block is provided -- per-field
+    footnote definitions become noise. Inline [N] markers in bullet text
+    are preserved so they can resolve against the consolidated block.
+    """
+    bullets, _footnotes = _split_bullets_and_footnotes(value)
+    if not bullets:
+        return value.strip()
+    return "\n".join(f"- {bullet}" for bullet in bullets)
+
+
 def _normalize_bulleted_field(value: str) -> str:
     """Deduplicate repeated footnotes and renumber citation markers."""
     bullets, footnotes = _split_bullets_and_footnotes(value)
@@ -451,6 +493,17 @@ def _normalize_replacements_for_rendering(
 ) -> dict[str, str]:
     """Prepare narrative fields for clean Google Doc rendering."""
     normalized = dict(replacements)
+
+    # Pass 1: ASCII-sanitize every non-link narrative value. Link tokens are
+    # left untouched so URLs are not mangled.
+    for key, value in list(normalized.items()):
+        if not isinstance(value, str):
+            continue
+        if _is_link_token(key):
+            continue
+        if value:
+            normalized[key] = _sanitize_ascii_punctuation(value)
+
     source_quality_lines: list[str] = []
 
     for token in (
@@ -467,9 +520,17 @@ def _normalize_replacements_for_rendering(
         normalized[token] = cleaned
         source_quality_lines.extend(warnings)
 
+    has_citations_block = bool(normalized.get(CITATIONS_BLOCK_KEY, "").strip())
+
     for token in ("exec.acquisition_conditions", "exec.tradeoffs_and_deficiencies"):
         value = normalized.get(token, "")
-        if value.strip():
+        if not value.strip():
+            continue
+        if has_citations_block:
+            # Single citations block lives at end of Supporting Notes; drop
+            # per-field footnote definitions so we don't render two sections.
+            normalized[token] = _strip_field_footnote_block(value)
+        else:
             normalized[token] = _normalize_bulleted_field(value)
 
     existing = normalized.get(SOURCE_QUALITY_NOTES_KEY, "").strip()
@@ -1189,6 +1250,25 @@ def build_dd_report_doc(
 
     b6.insert_text("\n")
 
+    # Citations -- single consolidated block when the agent provides it
+    citations_val = _resolve_value(replacements, CITATIONS_BLOCK_KEY, "")
+    if citations_val.strip():
+        cite_label_start, cite_label_end = b6.insert_text("Citations\n")
+        b6.style_text(
+            cite_label_start,
+            cite_label_end - 1,
+            bold=True,
+            font_size=11,
+            font_family="Arial",
+        )
+        for raw_line in citations_val.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            line_start, line_end = b6.insert_paragraph(line)
+            b6.style_text(line_start, line_end - 1, font_size=8, font_family="Arial")
+        b6.insert_text("\n")
+
     # Referenced Reports heading
     b6.insert_heading("Referenced Reports", level=2)
 
@@ -1214,28 +1294,31 @@ def build_dd_report_doc(
         source_table_data.append((_reference_type_label(token), label, display, url))
 
     phase7_requests: list[dict[str, Any]] = []
-    # Populate in reverse
+    # Populate in strict reverse order: rows reverse, then within each row
+    # iterate columns in strict reverse (col 2 -> col 1 -> col 0). Inserts
+    # are applied sequentially by batchUpdate; reading cached cell indices
+    # from the pre-insert document is only safe when each subsequent insert
+    # is at a *lower* index than the previous, otherwise earlier inserts
+    # shift later cached indices and cell content gets mixed.
     for row_idx in range(len(source_table_data) - 1, -1, -1):
         row = source_table_data[row_idx]
-        type_text = row[0]
-        label_text = row[1]
-        value_text = row[2]
-
-        # Value column
-        if value_text:
-            val_idx = _cell_index(source_table, row_idx, 2)
+        for col_idx in range(2, -1, -1):
+            text = row[col_idx]
+            if not text:
+                continue
+            cell_idx = _cell_index(source_table, row_idx, col_idx)
             phase7_requests.append({
                 "insertText": {
-                    "location": {"index": val_idx},
-                    "text": value_text,
+                    "location": {"index": cell_idx},
+                    "text": text,
                 }
             })
-            # Apply hyperlink if URL is present
-            if len(row) > 3 and row[3] is not None:
+            # Hyperlink only on the value column (col 2) when URL is present
+            if col_idx == 2 and len(row) > 3 and row[3] is not None:
                 url = row[3]
                 phase7_requests.append({
                     "updateTextStyle": {
-                        "range": {"startIndex": val_idx, "endIndex": val_idx + len(value_text)},
+                        "range": {"startIndex": cell_idx, "endIndex": cell_idx + len(text)},
                         "textStyle": {
                             "link": {"url": url},
                             "foregroundColor": {"color": {"rgbColor": _LINK_BLUE}},
@@ -1244,30 +1327,9 @@ def build_dd_report_doc(
                     }
                 })
                 hyperlink_trace["applied"] += 1
-                # Find original token for tracing
                 if row_idx > 0:
                     token_key = _SOURCE_DOC_ROWS[row_idx - 1][1]
                     hyperlink_trace["found_tokens"].append(token_key)
-
-        # Type column
-        if type_text:
-            type_idx = _cell_index(source_table, row_idx, 0)
-            phase7_requests.append({
-                "insertText": {
-                    "location": {"index": type_idx},
-                    "text": type_text,
-                }
-            })
-
-        # Label column
-        if label_text:
-            label_idx = _cell_index(source_table, row_idx, 1)
-            phase7_requests.append({
-                "insertText": {
-                    "location": {"index": label_idx},
-                    "text": label_text,
-                }
-            })
 
     if phase7_requests:
         _batch_update(docs_service, doc_id, phase7_requests)
