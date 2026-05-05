@@ -10,6 +10,7 @@ from due_diligence_reporter.google_doc_builder import (
     _HEADER_ROWS,
     _LINK_GAP_LABELS,
     _SOURCE_DOC_ROWS,
+    CITATIONS_BLOCK_KEY,
     SOURCE_QUALITY_NOTES_KEY,
     _cell_index,
     _doc_end_index,
@@ -19,6 +20,7 @@ from due_diligence_reporter.google_doc_builder import (
     _normalize_replacements_for_rendering,
     _resolve_link_value,
     _resolve_value,
+    _sanitize_ascii_punctuation,
     _split_bullets_and_footnotes,
     build_dd_report_doc,
 )
@@ -765,3 +767,195 @@ class TestNarrativeNormalization:
             "[Not found -- School Approval source could not be validated/read]"
         )
         assert "School Approval.docx" in replacements[SOURCE_QUALITY_NOTES_KEY]
+
+
+class TestAsciiPunctuationSanitizer:
+    def test_replaces_em_and_en_dashes(self) -> None:
+        assert _sanitize_ascii_punctuation("10 weeks \u2014 admin CUP") == "10 weeks -- admin CUP"
+        assert _sanitize_ascii_punctuation("$3\u20137/SF") == "$3-7/SF"
+
+    def test_replaces_smart_quotes(self) -> None:
+        assert _sanitize_ascii_punctuation("\u201chello\u201d") == '"hello"'
+        assert _sanitize_ascii_punctuation("it\u2019s a test") == "it's a test"
+
+    def test_replaces_ellipsis_minus_and_nbsp(self) -> None:
+        assert _sanitize_ascii_punctuation("foo\u2026") == "foo..."
+        assert _sanitize_ascii_punctuation("\u22125") == "-5"
+        assert _sanitize_ascii_punctuation("a\u00a0b") == "a b"
+
+    def test_passes_through_ascii_unchanged(self) -> None:
+        assert _sanitize_ascii_punctuation("plain ascii -- text") == "plain ascii -- text"
+        assert _sanitize_ascii_punctuation("") == ""
+
+    def test_normalize_replacements_sanitizes_narrative_fields(self) -> None:
+        repl = _normalize_replacements_for_rendering({
+            "exec.c_permit_timeline": "10 weeks \u2014 admin CUP",
+            "exec.acquisition_conditions": "- Landlord must provide TI \u2014 6 months\n- Range $3\u20137/SF",
+            "exec.tradeoffs_and_deficiencies": "- It\u2019s old",
+        })
+        assert "\u2014" not in repl["exec.c_permit_timeline"]
+        assert "--" in repl["exec.c_permit_timeline"]
+        assert "\u2014" not in repl["exec.acquisition_conditions"]
+        assert "\u2013" not in repl["exec.acquisition_conditions"]
+        assert "$3-7/SF" in repl["exec.acquisition_conditions"]
+        assert "\u2019" not in repl["exec.tradeoffs_and_deficiencies"]
+        assert "It's old" in repl["exec.tradeoffs_and_deficiencies"]
+
+    def test_normalize_replacements_does_not_mangle_link_urls(self) -> None:
+        url = "https://example.com/path?a=1\u20132"  # contrived URL with en-dash
+        repl = _normalize_replacements_for_rendering({
+            "sources.sir_link": url,
+        })
+        # Link tokens are excluded from sanitization to avoid mangling URLs.
+        assert repl["sources.sir_link"] == url
+
+
+class TestCitationsBlockConsolidation:
+    def test_strips_per_field_footnotes_when_block_present(self) -> None:
+        repl = _normalize_replacements_for_rendering({
+            "exec.acquisition_conditions": (
+                "- TI allowance ~$45,000 [1]\n"
+                "- ADA ramp required [2]\n"
+                "\n"
+                "[1] Building Inspection p.3\n"
+                "[2] SIR p.7"
+            ),
+            "exec.tradeoffs_and_deficiencies": (
+                "- Fire alarm > 15 years old [1]\n"
+                "\n"
+                "[1] Building Inspection p.10"
+            ),
+            CITATIONS_BLOCK_KEY: (
+                "[1] Building Inspection p.3\n"
+                "[2] SIR p.7\n"
+                "[3] Building Inspection p.10"
+            ),
+        })
+
+        assert "[1] Building Inspection p.3" not in repl["exec.acquisition_conditions"]
+        assert "[2] SIR p.7" not in repl["exec.acquisition_conditions"]
+        assert "[1] Building Inspection p.10" not in repl["exec.tradeoffs_and_deficiencies"]
+        # Inline markers in bullet text are preserved
+        assert "[1]" in repl["exec.acquisition_conditions"]
+        assert "[2]" in repl["exec.acquisition_conditions"]
+
+    def test_normalizes_per_field_footnotes_when_block_absent(self) -> None:
+        # Without a citations block, the existing per-field renumbering still runs.
+        repl = _normalize_replacements_for_rendering({
+            "exec.acquisition_conditions": (
+                "- TI allowance ~$45,000 [1]\n"
+                "\n"
+                "[1] Building Inspection p.3"
+            ),
+        })
+        assert "[1] Building Inspection p.3" in repl["exec.acquisition_conditions"]
+
+    def test_citations_block_renders_once_in_supporting_notes(self) -> None:
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {
+            "meta.site_name": "Test",
+            "meta.report_date": "04/14/2026",
+            "exec.acquisition_conditions": (
+                "- TI allowance [1]\n\n[1] Building Inspection p.3"
+            ),
+            "exec.tradeoffs_and_deficiencies": (
+                "- Fire alarm old [1]\n\n[1] Building Inspection p.10"
+            ),
+            CITATIONS_BLOCK_KEY: (
+                "[1] Building Inspection p.3\n[2] Building Inspection p.10"
+            ),
+        }
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        inserted_text = "\n".join(
+            request["insertText"]["text"]
+            for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list
+            for request in call_args.kwargs["body"]["requests"]
+            if "insertText" in request
+        )
+
+        # The Citations heading appears exactly once.
+        assert inserted_text.count("Citations\n") == 1
+        # And appears between Trade-Offs and Referenced Reports.
+        assert (
+            inserted_text.index("Trade-Offs and Deficiencies\n")
+            < inserted_text.index("Citations\n")
+            < inserted_text.index("Referenced Reports\n")
+        )
+
+    def test_citations_block_omitted_when_not_provided(self) -> None:
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {
+            "meta.site_name": "Test",
+            "meta.report_date": "04/14/2026",
+        }
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        inserted_text = "\n".join(
+            request["insertText"]["text"]
+            for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list
+            for request in call_args.kwargs["body"]["requests"]
+            if "insertText" in request
+        )
+        assert "Citations\n" not in inserted_text
+
+
+class TestReferencedReportsTableInsertOrder:
+    """Phase 7 must populate cells in strict reverse so cached cell indices
+    remain valid as inserts shift the document."""
+
+    def test_phase7_inserts_are_in_descending_index_order(self) -> None:
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {
+            "meta.site_name": "Test",
+            "meta.report_date": "04/14/2026",
+            "sources.sir_link": "https://drive.google.com/file/d/sir1",
+            "sources.inspection_link": "https://drive.google.com/file/d/insp1",
+            "sources.block_plan_link": "https://drive.google.com/file/d/block1",
+            "sources.rebl_link": "https://rebl3.vercel.app/site/test",
+            "sources.e_occupancy_link": "https://drive.google.com/file/d/eocc1",
+            "sources.school_approval_link": "https://drive.google.com/file/d/sa1",
+            "sources.opening_plan_link": "https://drive.google.com/file/d/op1",
+        }
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        # The Referenced Reports (source documents) table is the 4th table.
+        # Phase 7 is the batchUpdate that inserts the source-table cell text.
+        # Identify it by looking for the batch whose insertText payload contains
+        # the literal header strings "Type", "Document", "Link".
+        source_table_batch = None
+        for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list:
+            requests = call_args.kwargs["body"]["requests"]
+            inserted_strings = [
+                r["insertText"]["text"] for r in requests if "insertText" in r
+            ]
+            if (
+                "Type" in inserted_strings
+                and "Document" in inserted_strings
+                and "Link" in inserted_strings
+                and "Site Investigation Report (SIR)" in inserted_strings
+            ):
+                source_table_batch = requests
+                break
+
+        assert source_table_batch is not None, "Could not find Phase 7 batchUpdate"
+
+        # Every insertText location index must be strictly non-increasing.
+        # If the loop ever inserts at a larger index after a smaller one,
+        # cached indices for later cells get shifted and content corrupts.
+        insert_indices = [
+            r["insertText"]["location"]["index"]
+            for r in source_table_batch
+            if "insertText" in r
+        ]
+        for prev, cur in zip(insert_indices, insert_indices[1:]):
+            assert cur <= prev, (
+                f"Phase 7 insert order is not strictly reverse: "
+                f"index {cur} follows {prev}"
+            )
