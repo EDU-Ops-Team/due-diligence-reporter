@@ -149,6 +149,20 @@ jobs:
           echo "Custom payload:"
           cat custom_payload.json
 
+      - name: Verify uv.lock is present
+        run: |
+          # uv.lock MUST ship in the publish zip so MCP Hive cold-starts run
+          # `uv sync --frozen --no-dev` instead of doing a full dependency
+          # resolver pass on the request path. Missing-lockfile cold starts
+          # have caused both 502 Bad Gateway and 60s `tools/list` timeouts
+          # on mcp-server.ti.trilogy.com.
+          if [ ! -f uv.lock ]; then
+            echo "ERROR: uv.lock is missing. Refusing to publish without a frozen lockfile."
+            echo "Run \`uv lock\` locally and commit the result."
+            exit 1
+          fi
+          echo "uv.lock present ($(wc -l < uv.lock) lines)"
+
       - name: Create ZIP for MCP Hive
         run: |
           ZIP_PATH="../due-diligence-reporter-mcp.zip"
@@ -162,6 +176,12 @@ jobs:
             ".ruff_cache/*"
           echo "Created zip: $ZIP_PATH"
           ls -la "$ZIP_PATH"
+          # Sanity check: confirm uv.lock made it into the zip.
+          unzip -l "$ZIP_PATH" | grep -q ' uv.lock$' || {
+            echo "ERROR: uv.lock missing from publish zip"
+            exit 1
+          }
+          echo "Confirmed uv.lock is inside publish zip"
 
       - name: Publish to MCP Hive
         env:

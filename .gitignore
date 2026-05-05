@@ -14,7 +14,9 @@ venv/
 env/
 
 # uv
-uv.lock
+# uv.lock IS tracked. We ship it to MCP Hive so cold-starts use a frozen,
+# deterministic install (no resolver pass on the request path). See
+# .github/workflows/publish-to-mcp-hive.yml and setup.sh.
 .uv-cache/
 
 # Environment / secrets
