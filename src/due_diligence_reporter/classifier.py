@@ -80,7 +80,18 @@ def classify_by_keywords(filename: str) -> tuple[str, float]:
         return "raycon_scenario_json", 1.0
     if "raycon scenario" in name or "raycon estimate" in name:
         return "raycon_scenario_report", 0.95
-    if "block plan" in name:
+    # Block Plan aliases: "block plan", "preliminary floor plan(s)" / "PFP".
+    # Vendors and partners use these terms interchangeably for the same
+    # artifact, so they all route to the `block_plan` doc_type and land in
+    # the site's M1 folder.
+    if (
+        "block plan" in name
+        or "blockplan" in name
+        or "block_plan" in name
+        or "preliminary floor plan" in name
+        or re.search(r"\bpfp\b", name)
+        or re.search(r"[-_]pfp(\.[^.]+)?$", name)
+    ):
         return "block_plan", 0.95
     if "report trace" in name and name.endswith(".json"):
         return "report_trace", 0.95
@@ -109,7 +120,7 @@ Given only a filename (and optionally a site name for context), determine the do
 Types:
 - sir: Site Investigation Report (also called Site Inspection Report)
 - isp: Internet Service Provider report / availability report
-- block_plan: Block Plan PDF for a specific school site
+- block_plan: Block Plan PDF for a specific school site (also called "Preliminary Floor Plan", "Preliminary Floor Plans", or "PFP" — these are all the same artifact)
 - building_inspection: Building Inspection Report or property condition report
 - dd_report: Due Diligence Report (the final compiled report)
 - matterport: Matterport 3D scan or virtual tour
@@ -187,7 +198,7 @@ You are given the first page text of a PDF and its filename. Determine the docum
 Types:
 - sir: Site Investigation Report — covers zoning, permits, AHJ info, building code
 - isp: Internet Service Provider report — lists ISPs, speeds, availability
-- block_plan: Block Plan PDF describing the school site layout and capacity assumptions
+- block_plan: Block Plan PDF describing the school site layout and capacity assumptions (also called "Preliminary Floor Plan", "Preliminary Floor Plans", or "PFP" — these are all the same artifact)
 - building_inspection: Building Inspection Report — covers building condition, systems, deficiencies
 - dd_report: Due Diligence Report — the final compiled report with executive summary
 - matterport: Matterport 3D scan documentation

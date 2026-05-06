@@ -46,6 +46,7 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -87,7 +88,34 @@ logging.basicConfig(
 logger = logging.getLogger("raycon_followup")
 
 PUBLISHED_DOC_PREFIX = "RayCon Scenario Assessment"
-BLOCK_PLAN_FILENAME_HINTS = ("block plan", "block_plan", "blockplan")
+
+# Substrings that unambiguously identify a Block Plan filename. "PFP" and
+# "preliminary floor plan(s)" are partner-side aliases for the same artifact
+# and must match the Block Plan classifier in `classifier.py`.
+BLOCK_PLAN_FILENAME_HINTS = (
+    "block plan",
+    "block_plan",
+    "blockplan",
+    "preliminary floor plan",
+)
+# "pfp" is matched separately with word boundaries so we don't false-positive
+# on filenames that merely contain the letters p-f-p (e.g. "epfpro.pdf").
+BLOCK_PLAN_PFP_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bpfp\b"),
+    re.compile(r"[-_]pfp(\.[^.]+)?$"),
+)
+
+
+def _filename_matches_block_plan(name: str) -> bool:
+    """Return True if ``name`` (already lowercased) looks like a Block Plan.
+
+    Recognized aliases: "Block Plan", "Preliminary Floor Plan(s)", and
+    "PFP". All three refer to the same artifact and must route to the
+    same downstream RayCon dispatch path.
+    """
+    if any(hint in name for hint in BLOCK_PLAN_FILENAME_HINTS):
+        return True
+    return any(pat.search(name) for pat in BLOCK_PLAN_PFP_PATTERNS)
 
 # Persisted map of {site_name: ISO8601 timestamp of last Chat alert}.
 # Prevents the 5-minute cron from spamming ~96 alerts/day for a stuck site.
@@ -199,7 +227,7 @@ def _find_block_plan(gc: GoogleClient, m1_folder_id: str) -> dict[str, Any] | No
     candidate: dict[str, Any] | None = None
     for f in gc.list_files_in_folder(m1_folder_id):
         name = str(f.get("name", "")).lower()
-        if not any(hint in name for hint in BLOCK_PLAN_FILENAME_HINTS):
+        if not _filename_matches_block_plan(name):
             continue
         if candidate is None or str(f.get("modifiedTime", "")) > str(
             candidate.get("modifiedTime", "")
