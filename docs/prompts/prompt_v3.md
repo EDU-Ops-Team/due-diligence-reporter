@@ -400,7 +400,7 @@ Before reading any documents, show the user what was found from `shared_folder_f
 Document Discovery for [site name]:
   SIR:                    found -- [filename]  OR  not found
   Building Inspection:    found -- [filename]  OR  not found
-  Block Plan:             found -- [filename]  OR  not found
+  Block Plan / PFP:       found -- [filename]  OR  not found
   E-Occupancy Report:     found -- [filename]  OR  not found
   School Approval Report: found -- [filename]  OR  not found
   RayCon Scenario:        found -- [filename]  OR  not found
@@ -413,7 +413,7 @@ If documents are missing, tell the user which ones and ask whether to proceed. T
 For **every** report-relevant document found in `shared_folder_files` and `site_folder_files`, call `read_drive_document(file_id, file_name)`:
 - Read the **SIR** â†’ extract Q1 fields (zoning, AHJ, permits, timeline, cost/schedule risks)
 - Read the **Building Inspection** â†’ extract structural, MEP, fire safety, ADA, deficiency chart (see "Building Inspection Data Extraction" section)
-- Read the **Block Plan** â†’ use as the raw floor-plan source artifact and set `sources.block_plan_link` to its Drive URL
+- Read the **Block Plan** (also known as **Preliminary Floor Plan / Preliminary Floor Plans / PFP** — these are all the same artifact) â†’ use as the raw floor-plan source artifact and set `sources.block_plan_link` to its Drive URL
 - Read the **E-Occupancy Report** â†’ extract score (0--100), zone (GREEN/YELLOW/RED), tier, timeline, IBC code summary. Compose `exec.c_occupancy` from these fields: `Has E-Occupancy` / `Change of use required, meets E-Occupancy` / `Change of use required, needs work` based on the zone and tier.
 - Read the **School Approval Report** â†’ extract state, approval_type, score, gating requirements, timeline. Compose `exec.c_edreg` from these fields: `Not required` / `Required and have done` / `Required have not done` based on the state requirements and current approval status.
   - Use this Alpha state-history reference when deciding the status:
@@ -427,10 +427,10 @@ For **every** report-relevant document found in `shared_folder_files` and `site_
 When present, also read this M1-generated scenario artifact:
 - **RayCon Scenario Report** -> authoritative source for scenario capacity, capex, cost breakdown rows, and scenario construction timeline/open-date fields. The Doc opens with a "RayCon Run" header (status, run_id, block plan file id, summary). On a successful run, the Doc contains the Scenario Summary and Detailed Cost Breakdown tables. On a failed run the Doc is **not published** -- if you ever see a Doc whose header reads `Status: failed` or contains a `Validation Errors` block, treat every cost/capacity row as gap-labeled and route the failure into `source_quality_notes`.
 
-**Do not skip reading a report-relevant document that was found.** Read the SIR, Building Inspection, Block Plan, E-Occupancy Report, School Approval Report, and RayCon Scenario Report when present. If an ISP is present, ignore it for this report.
+**Do not skip reading a report-relevant document that was found.** Read the SIR, Building Inspection, Block Plan (a.k.a. Preliminary Floor Plan / PFP), E-Occupancy Report, School Approval Report, and RayCon Scenario Report when present. If an ISP is present, ignore it for this report.
 
 Use the `doc_type` values from the Step 2 `list_drive_documents` output to decide which source and derived artifacts are already present:
-- If a Block Plan is found, set `sources.block_plan_link` to its Drive URL
+- If a Block Plan is found (file may be titled "Block Plan", "Preliminary Floor Plan(s)", or "PFP" — all three are the same doc_type `block_plan`), set `sources.block_plan_link` to its Drive URL
 - If an Opening Plan is found: set `sources.opening_plan_link` to its Drive URL and **skip Step 5.8** (plan already exists)
 - If a RayCon Scenario report is found: use it as the scenario capacity / cost / timeline source for all RayCon-derived rows
 

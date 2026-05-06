@@ -95,6 +95,53 @@ class TestClassifyByKeywordsBlockPlan:
             0.95,
         )
 
+    def test_blockplan_concatenated(self):
+        assert classify_by_keywords("AlphaKeller_BlockPlan.pdf") == (
+            "block_plan",
+            0.95,
+        )
+
+    def test_block_plan_underscore(self):
+        assert classify_by_keywords("alpha_keller_block_plan.pdf") == (
+            "block_plan",
+            0.95,
+        )
+
+    def test_preliminary_floor_plan(self):
+        assert classify_by_keywords("Alpha Keller Preliminary Floor Plan.pdf") == (
+            "block_plan",
+            0.95,
+        )
+
+    def test_preliminary_floor_plans_plural(self):
+        """\"Preliminary Floor Plans\" (plural) is the same artifact."""
+        assert classify_by_keywords("Preliminary Floor Plans - Alpha Tampa.pdf") == (
+            "block_plan",
+            0.95,
+        )
+
+    def test_pfp_acronym_uppercase(self):
+        assert classify_by_keywords("Alpha Keller PFP.pdf") == (
+            "block_plan",
+            0.95,
+        )
+
+    def test_pfp_acronym_lowercase_hyphenated(self):
+        assert classify_by_keywords("alpha-keller-pfp.pdf") == (
+            "block_plan",
+            0.95,
+        )
+
+    def test_pfp_acronym_with_extension_only(self):
+        assert classify_by_keywords("PFP.pdf") == (
+            "block_plan",
+            0.95,
+        )
+
+    def test_pfp_substring_does_not_false_positive(self):
+        """PFP word boundary: must not match inside a longer word."""
+        assert classify_by_keywords("epfpro_brochure.pdf") == ("unknown", 0.0)
+
 
 class TestClassifyByKeywordsCapacityBrainlift:
     def test_capacity_brainlift(self):

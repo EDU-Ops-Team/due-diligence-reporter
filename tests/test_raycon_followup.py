@@ -684,3 +684,52 @@ class TestFilterDedupAlerts:
 
         assert len(fresh) == 1
         assert new_state["Alpha Keller"] == now.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Block Plan filename detection (PFP / Preliminary Floor Plan aliases)
+# ---------------------------------------------------------------------------
+
+
+class TestFilenameMatchesBlockPlan:
+    """Verify that ``_filename_matches_block_plan`` recognizes all three
+    partner-side aliases: \"Block Plan\", \"Preliminary Floor Plan(s)\", and
+    \"PFP\". These are interchangeable terms for the same artifact.
+    """
+
+    def test_block_plan_phrase(self):
+        from scripts.raycon_followup import _filename_matches_block_plan
+        assert _filename_matches_block_plan("alpha keller block plan.pdf")
+
+    def test_blockplan_concatenated(self):
+        from scripts.raycon_followup import _filename_matches_block_plan
+        assert _filename_matches_block_plan("alphakeller_blockplan.pdf")
+
+    def test_block_plan_underscore(self):
+        from scripts.raycon_followup import _filename_matches_block_plan
+        assert _filename_matches_block_plan("keller_block_plan_v3.pdf")
+
+    def test_preliminary_floor_plan(self):
+        from scripts.raycon_followup import _filename_matches_block_plan
+        assert _filename_matches_block_plan("alpha keller preliminary floor plan.pdf")
+
+    def test_preliminary_floor_plans_plural(self):
+        from scripts.raycon_followup import _filename_matches_block_plan
+        assert _filename_matches_block_plan("preliminary floor plans - tampa.pdf")
+
+    def test_pfp_word_boundary_match(self):
+        from scripts.raycon_followup import _filename_matches_block_plan
+        assert _filename_matches_block_plan("alpha keller pfp.pdf")
+
+    def test_pfp_hyphenated_match(self):
+        from scripts.raycon_followup import _filename_matches_block_plan
+        assert _filename_matches_block_plan("alpha-keller-pfp.pdf")
+
+    def test_pfp_substring_does_not_match(self):
+        """Word boundary required: 'pfp' inside 'epfpro' must NOT match."""
+        from scripts.raycon_followup import _filename_matches_block_plan
+        assert not _filename_matches_block_plan("epfpro_brochure.pdf")
+
+    def test_unrelated_filename_does_not_match(self):
+        from scripts.raycon_followup import _filename_matches_block_plan
+        assert not _filename_matches_block_plan("alpha keller sir.pdf")
