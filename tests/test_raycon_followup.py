@@ -1091,3 +1091,86 @@ class TestFilenameMatchesBlockPlan:
     def test_unrelated_filename_does_not_match(self):
         from scripts.raycon_followup import _filename_matches_block_plan
         assert not _filename_matches_block_plan("alpha keller sir.pdf")
+
+
+# ---------------------------------------------------------------------------
+# Schema-fail handling (Rec. 6 — raise must not crash the cron)
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaFailHandling:
+    """Verify ``_process_site`` handles ``RayConSchemaError`` gracefully.
+
+    ``read_raycon_scenario_from_m1`` raises ``RayConSchemaError`` when the
+    JSON is present but malformed (vs returning ``None`` for the normal
+    "still polling" case). The caller must surface this as an error row
+    so the end-of-run errors batch posts a Google Chat alert — without
+    crashing the 5-minute cron.
+    """
+
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_schema_error_yields_error_row_not_crash(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+    ):
+        from due_diligence_reporter.raycon_client import RayConSchemaError
+
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.side_effect = RayConSchemaError(
+            "Unsupported RayCon schema_version '9.9' in folder m1_folder_id"
+        )
+
+        gc = MagicMock()
+        # No try/except in the test — the cron itself must not crash.
+        row = _process_site(
+            gc,
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state={},
+        )
+
+        assert row["site"] == "Alpha Keller"
+        assert "error" in row
+        assert "schema" in row["error"].lower()
+        assert "9.9" in row["error"]
+        # No crash, no alert row (errors are surfaced via the errors batch).
+        assert "alert" not in row
+
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_schema_error_logged_at_error_level(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        caplog,
+    ):
+        import logging
+
+        from due_diligence_reporter.raycon_client import RayConSchemaError
+
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.side_effect = RayConSchemaError(
+            "raycon_scenario.json in folder m1_folder_id is not valid JSON"
+        )
+
+        with caplog.at_level(logging.ERROR, logger="raycon_followup"):
+            _process_site(
+                MagicMock(),
+                _site(),
+                dry_run=False,
+                alert_after=timedelta(minutes=60),
+                dispatch_state={},
+            )
+
+        assert any(
+            "not valid JSON" in record.getMessage() for record in caplog.records
+        )

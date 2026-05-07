@@ -12,6 +12,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import anthropic
@@ -1061,13 +1062,75 @@ def _run_pipeline_agent(
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Best-effort observability state files
+#
+# Mirror the ``.raycon_dispatch_state.json`` shape used by ``raycon_followup``
+# so on-call has a single style of failure-state file to look at when a
+# best-effort path silently degraded.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DASHBOARD_PUBLISH_FAILURES_PATH = _PROJECT_ROOT / ".dashboard_publish_failures.json"
+PIPELINE_TRACE_FAILURES_PATH = _PROJECT_ROOT / ".pipeline_trace_failures.json"
+
+
+def _load_failure_state(path: Path) -> dict[str, dict[str, Any]]:
+    """Load a best-effort failure-state map. Returns ``{}`` on any error."""
+    try:
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if isinstance(v, dict)}
+    except Exception as e:
+        logger.warning("Failed to read failure state at %s: %s", path, e)
+        return {}
+
+
+def _save_failure_state(state: dict[str, dict[str, Any]], path: Path) -> None:
+    """Persist a best-effort failure-state map. Logs but does not raise."""
+    try:
+        path.write_text(json.dumps(state, sort_keys=True, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning("Failed to write failure state at %s: %s", path, e)
+
+
+def _record_best_effort_failure(
+    path: Path,
+    key: str,
+    *,
+    site_title: str,
+    error_type: str,
+    error_message: str,
+) -> None:
+    """Append/update a failure record so silent degradations stay observable."""
+    state = _load_failure_state(path)
+    prior = state.get(key, {}) if isinstance(state.get(key), dict) else {}
+    attempts = int(prior.get("attempts", 0)) + 1
+    state[key] = {
+        "site_title": site_title,
+        "error_type": error_type,
+        "error_message": error_message[:500],
+        "failed_at": datetime.now(UTC).isoformat(),
+        "attempts": attempts,
+    }
+    _save_failure_state(state, path)
+
+
 def _save_pipeline_trace(
     gc: GoogleClient,
     drive_folder_url: str,
     site_title: str,
     trace: ReportTrace | None,
 ) -> str | None:
-    """Persist a report trace JSON beside the generated report."""
+    """Persist a report trace JSON beside the generated report.
+
+    Best-effort: on upload failure, log AND append a structured record to
+    ``.pipeline_trace_failures.json`` so a wedged trace upload doesn't go
+    unnoticed for days. Never raises.
+    """
     if not trace:
         return None
 
@@ -1089,6 +1152,20 @@ def _save_pipeline_trace(
         return trace_file.get("webViewLink")
     except Exception as e:
         logger.warning("Failed to save report trace: %s", e)
+        try:
+            _record_best_effort_failure(
+                PIPELINE_TRACE_FAILURES_PATH,
+                key=site_title,
+                site_title=site_title,
+                error_type=type(e).__name__,
+                error_message=str(e),
+            )
+        except Exception as record_err:  # pragma: no cover — defensive
+            logger.warning(
+                "Failed to record pipeline-trace failure for '%s': %s",
+                site_title,
+                record_err,
+            )
         return None
 
 
@@ -1406,7 +1483,31 @@ def _publish_to_dashboard_best_effort(
     except Exception as e:
         # publish_to_dashboard already swallows requests errors; this is a
         # belt-and-suspenders guard against anything truly unexpected.
-        logger.warning("Dashboard publish raised for %s: %s", site_title, e)
+        # We had a recent incident where a wedged dashboard publish went
+        # unnoticed for days because this branch silently swallowed the
+        # error. Surface every failure now: log AND append a structured
+        # record to ``.dashboard_publish_failures.json`` so on-call can
+        # see what's wedged without grepping cron logs.
+        logger.error(
+            "Dashboard publish raised for %s (%s): %s",
+            site_title,
+            type(e).__name__,
+            e,
+        )
+        try:
+            _record_best_effort_failure(
+                DASHBOARD_PUBLISH_FAILURES_PATH,
+                key=site_title,
+                site_title=site_title,
+                error_type=type(e).__name__,
+                error_message=str(e),
+            )
+        except Exception as record_err:  # pragma: no cover — defensive
+            logger.warning(
+                "Failed to record dashboard-publish failure for '%s': %s",
+                site_title,
+                record_err,
+            )
 
 
 # Google Chat notification per pipeline result

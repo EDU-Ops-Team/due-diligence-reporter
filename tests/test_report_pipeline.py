@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from due_diligence_reporter.report_pipeline import (
@@ -10,6 +12,8 @@ from due_diligence_reporter.report_pipeline import (
     TraceEvent,
     _extract_source_read_issues,
     _merge_cached_report_fields,
+    _publish_to_dashboard_best_effort,
+    _save_pipeline_trace,
     check_site_readiness_direct,
     match_site_in_shared_cache,
     process_site_pipeline,
@@ -807,4 +811,150 @@ class TestSourceReadAlerts:
         assert "DD Source Review Needed -- Alpha Keller" in message
         assert "SIR" in message
         assert "Failed to read document" in message
+
+
+# ---------------------------------------------------------------------------
+# Best-effort silent-failure observability (Rec. 6)
+# ---------------------------------------------------------------------------
+
+
+class _ExplodingTrace:
+    """ReportTrace stand-in whose ``to_dict`` raises mid-upload."""
+
+    final_report_data = {"q1.site_owner": "x"}
+
+    def to_dict(self) -> dict:
+        raise RuntimeError("trace serialization exploded")
+
+
+def _redirect_failure_state(monkeypatch, tmp_path) -> tuple[Path, Path]:
+    """Point both failure-state files at tmp_path so tests don't touch repo root."""
+    from due_diligence_reporter import report_pipeline as rp
+
+    pub_path = tmp_path / ".dashboard_publish_failures.json"
+    trace_path = tmp_path / ".pipeline_trace_failures.json"
+    monkeypatch.setattr(rp, "DASHBOARD_PUBLISH_FAILURES_PATH", pub_path)
+    monkeypatch.setattr(rp, "PIPELINE_TRACE_FAILURES_PATH", trace_path)
+    return pub_path, trace_path
+
+
+class TestDashboardPublishObservability:
+    """``_publish_to_dashboard_best_effort`` must surface failures, not swallow."""
+
+    def test_publish_failure_is_recorded_and_not_raised(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        pub_path, _ = _redirect_failure_state(monkeypatch, tmp_path)
+
+        trace = MagicMock()
+        trace.final_report_data = {"q1.site_owner": "P1"}
+
+        with patch(
+            "due_diligence_reporter.report_pipeline.publish_to_dashboard",
+            side_effect=RuntimeError("kaboom"),
+        ):
+            # Must not raise — fail-open behavior preserved.
+            _publish_to_dashboard_best_effort(
+                site_title="Alpha Keller",
+                trace=trace,
+                drive_folder_url="https://drive.google.com/drive/folders/x",
+                dd_report_url="https://docs/x",
+                site_address="123 Main",
+            )
+
+        # Failure must be persisted for on-call to discover.
+        assert pub_path.exists()
+        recorded = json.loads(pub_path.read_text())
+        assert "Alpha Keller" in recorded
+        entry = recorded["Alpha Keller"]
+        assert entry["site_title"] == "Alpha Keller"
+        assert entry["error_type"] == "RuntimeError"
+        assert "kaboom" in entry["error_message"]
+        assert entry["attempts"] == 1
+        assert "failed_at" in entry
+
+    def test_repeated_failures_increment_attempts(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        pub_path, _ = _redirect_failure_state(monkeypatch, tmp_path)
+        trace = MagicMock()
+        trace.final_report_data = {"q1.site_owner": "P1"}
+
+        with patch(
+            "due_diligence_reporter.report_pipeline.publish_to_dashboard",
+            side_effect=RuntimeError("kaboom"),
+        ):
+            for _ in range(3):
+                _publish_to_dashboard_best_effort(
+                    site_title="Alpha Keller",
+                    trace=trace,
+                    drive_folder_url="https://drive.google.com/drive/folders/x",
+                    dd_report_url="https://docs/x",
+                    site_address="123 Main",
+                )
+
+        recorded = json.loads(pub_path.read_text())
+        assert recorded["Alpha Keller"]["attempts"] == 3
+
+    def test_publish_success_does_not_record_failure(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        pub_path, _ = _redirect_failure_state(monkeypatch, tmp_path)
+        trace = MagicMock()
+        trace.final_report_data = {"q1.site_owner": "P1"}
+
+        with patch(
+            "due_diligence_reporter.report_pipeline.publish_to_dashboard",
+            return_value=None,
+        ):
+            _publish_to_dashboard_best_effort(
+                site_title="Alpha Keller",
+                trace=trace,
+                drive_folder_url="https://drive.google.com/drive/folders/x",
+                dd_report_url="https://docs/x",
+                site_address="123 Main",
+            )
+
+        assert not pub_path.exists()
+
+
+class TestPipelineTraceObservability:
+    """``_save_pipeline_trace`` failures land in ``.pipeline_trace_failures.json``."""
+
+    def test_upload_failure_is_recorded_and_returns_none(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        _, trace_path = _redirect_failure_state(monkeypatch, tmp_path)
+
+        gc = MagicMock()
+        gc.upload_file_to_folder.side_effect = RuntimeError("drive upload wedged")
+
+        trace = MagicMock()
+        trace.to_dict.return_value = {"events": []}
+
+        result = _save_pipeline_trace(
+            gc,
+            "https://drive.google.com/drive/folders/abc123",
+            "Alpha Keller",
+            trace,
+        )
+
+        assert result is None
+        assert trace_path.exists()
+        recorded = json.loads(trace_path.read_text())
+        entry = recorded["Alpha Keller"]
+        assert entry["error_type"] == "RuntimeError"
+        assert "drive upload wedged" in entry["error_message"]
+        assert entry["attempts"] == 1
+
+    def test_no_trace_does_not_record(self, monkeypatch, tmp_path) -> None:
+        _, trace_path = _redirect_failure_state(monkeypatch, tmp_path)
+        result = _save_pipeline_trace(
+            MagicMock(),
+            "https://drive.google.com/drive/folders/abc",
+            "Alpha Keller",
+            None,
+        )
+        assert result is None
+        assert not trace_path.exists()
 
