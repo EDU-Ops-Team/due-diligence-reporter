@@ -10,6 +10,19 @@ changes do not get an entry.
 
 ## [Unreleased]
 
+### Changed
+
+- **Vendor gate flipped on for cron paths (daily sweep, inbox scanner, raycon
+  followup republish).** `VENDOR_GATE_ENABLED=1` is now set in the workflow
+  `env` block of `daily-dd-check.yml`, `inbox-scan.yml`, and
+  `raycon-followup.yml`. With the gate on, `_missing_required_docs` requires a
+  vendor-sourced SIR (CDS, not AI-generated), a vendor-sourced Building
+  Inspection (Worksmith, not AI-generated), and `raycon_scenario.json`. Manual
+  MCP `create_dd_report` path is unaffected (it goes through
+  `server.py::check_site_readiness`). Closes pre-vendor-gate Tulsa-class false
+  positives. Revert is a single env-var change per workflow file (or set
+  `VENDOR_GATE_ENABLED=0`); no code revert needed.
+
 ### Fixed
 
 - **MCP Hive cold-start tool-list timeout (502 / 60s `tools/list` timeouts on
