@@ -19,7 +19,6 @@ from .classifier import classify_document
 from .google_client import GoogleClient
 from .utils import extract_folder_id_from_url
 
-
 # Doc types the scanner now persists into per-site M1 folders, plus the
 # downstream reports the Block Plan pipeline derives. ``_list_m1_documents_by_type``
 # returns any of these keyed by doc_type so dedup, readiness backfill, and
@@ -37,9 +36,17 @@ M1_RECOGNIZED_DOC_TYPES = {
 
 
 def _resolve_m1_folder(
-    gc: GoogleClient, drive_folder_url: str
+    gc: GoogleClient,
+    drive_folder_url: str,
+    *,
+    create_if_missing: bool = True,
 ) -> tuple[str | None, str | None]:
-    """Return the site's M1 folder ID, creating a plain ``M1`` folder when absent."""
+    """Return the site's M1 folder ID, creating a plain ``M1`` folder when absent.
+
+    Pass ``create_if_missing=False`` from read-only callers (e.g. the
+    diagnose tool) to skip the ``gc.create_folder`` side effect; this
+    returns ``(None, None)`` instead when M1 doesn't yet exist.
+    """
     folder_id = extract_folder_id_from_url(drive_folder_url)
     if not folder_id:
         return None, None
@@ -47,6 +54,8 @@ def _resolve_m1_folder(
     for subfolder in subfolders:
         if subfolder.get("name", "").lower().startswith("m1"):
             return subfolder.get("id"), subfolder.get("webViewLink")
+    if not create_if_missing:
+        return None, None
     created = gc.create_folder(folder_id, "M1")
     return created.get("id"), created.get("webViewLink")
 

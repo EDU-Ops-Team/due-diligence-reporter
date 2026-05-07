@@ -10,6 +10,30 @@ changes do not get an entry.
 
 ## [Unreleased]
 
+### Added
+
+- **`diagnose_site_readiness` MCP tool** (Recommendation 4B). Read-only "should
+  I run now or wait?" diagnostic that surfaces, for one site: per-doc
+  blocking status (`vendor_sir` / `building_inspection` / `raycon_scenario`)
+  using the cron-path readiness view; for pending RayCon entries the
+  `block_plan_present`, `last_dispatch`, and `minutes_since` derived from
+  `.raycon_dispatch_state.json` (with the Block Plan `modifiedTime` as a
+  documented fallback when the dispatch state file has no entry); the
+  projected `would_be_filled_now` / `would_be_pending` token paths;
+  `partial_report_possible`; `vendor_gate_enabled` so the caller knows
+  which view they're seeing; and `m1_folder_missing` (with
+  `drive_folder_url=null`) when the per-site M1 folder hasn't been
+  created yet. Strictly read-only: passes `read_only=True` /
+  `create_if_missing=False` through `check_site_readiness_direct` so
+  neither the M1 folder nor the provenance cache is ever written, and
+  `ready_for_full_report` mirrors `_missing_required_docs` exactly so
+  RayCon scenario absence does not block readiness when
+  `VENDOR_GATE_ENABLED=0` (the diagnostic `blocking[]` view still
+  reports its actual status). Never triggers generation, republish, or
+  any other side effect. `check_site_readiness` is unchanged and
+  remains the pre-generation projection used internally by
+  `create_dd_report`.
+
 ### Changed
 
 - **Vendor gate flipped on for cron paths (daily sweep, inbox scanner, raycon
