@@ -7,6 +7,25 @@ name: RayCon Follow-up
 #
 # Re-running is safe: only re-publishes when the JSON is newer than
 # the existing report Doc.
+#
+# ---------------------------------------------------------------------------
+# RayCon callback receiver (Rec. 2 from event-driven-ddr-recommendations.md)
+# ---------------------------------------------------------------------------
+# When RayCon finishes a job it fires `workflow_dispatch` against this file
+# with `site_id`, `run_id`, and `status` inputs. When `site_id` is provided
+# the script scopes its work to that single site instead of sweeping every
+# active site, which is the whole point of the callback.
+#
+# Auth model: PAT-only. GitHub's workflow_dispatch API strips custom
+# request headers, so a body-level HMAC adds complexity without real
+# security gain when the endpoint already requires a workflow-scoped
+# token. RayCon authenticates with a fine-scoped PAT (workflow scope,
+# this repo only). The outbound `RAYCON_WEBHOOK_SECRET` used for
+# DDR -> RayCon signing is unrelated and stays in place.
+#
+# Cron remains as the deterministic safety net: any callback GitHub
+# rejects, RayCon abandons, or this workflow fails to deliver gets
+# picked up on the next 5-minute tick.
 
 on:
   schedule:
@@ -32,6 +51,20 @@ on:
         description: 'Alert when a Block Plan has no scenario after this many minutes'
         required: false
         default: '60'
+        type: string
+      # New inputs for RayCon callback (Rec. 2). All optional so manual
+      # triggers and the cron path keep working unchanged.
+      site_id:
+        description: 'Single site to scope the run to (RayCon callback). Wrike site record id.'
+        required: false
+        type: string
+      run_id:
+        description: 'RayCon run UUID (callback observability only)'
+        required: false
+        type: string
+      status:
+        description: 'RayCon job status: succeeded | failed | validation_failed (callback observability only)'
+        required: false
         type: string
 
 concurrency:
@@ -161,8 +194,17 @@ jobs:
           INPUT_SITE: ${{ inputs.site }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
           INPUT_ALERT_AFTER_MINUTES: ${{ inputs.alert_after_minutes }}
+          # RayCon callback inputs (Rec. 2). site_id scopes the run to a
+          # single site; run_id and status are observability-only and
+          # logged so on-call can correlate with RayCon-side logs.
+          INPUT_SITE_ID: ${{ inputs.site_id }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          INPUT_STATUS: ${{ inputs.status }}
         run: |
           set -euo pipefail
+          if [ -n "${INPUT_SITE_ID:-}" ] || [ -n "${INPUT_RUN_ID:-}" ] || [ -n "${INPUT_STATUS:-}" ]; then
+            echo "RayCon callback dispatch: site_id='${INPUT_SITE_ID:-}' run_id='${INPUT_RUN_ID:-}' status='${INPUT_STATUS:-}'"
+          fi
           ARGS=()
           if [ -n "${INPUT_SITE:-}" ]; then
             ARGS+=(--site "$INPUT_SITE")
@@ -172,6 +214,15 @@ jobs:
           fi
           if [ -n "${INPUT_ALERT_AFTER_MINUTES:-}" ]; then
             ARGS+=(--alert-after-minutes "$INPUT_ALERT_AFTER_MINUTES")
+          fi
+          if [ -n "${INPUT_SITE_ID:-}" ]; then
+            ARGS+=(--site-id "$INPUT_SITE_ID")
+          fi
+          if [ -n "${INPUT_RUN_ID:-}" ]; then
+            ARGS+=(--run-id "$INPUT_RUN_ID")
+          fi
+          if [ -n "${INPUT_STATUS:-}" ]; then
+            ARGS+=(--status "$INPUT_STATUS")
           fi
           uv run python scripts/raycon_followup.py "${ARGS[@]}"
 

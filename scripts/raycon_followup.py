@@ -797,7 +797,41 @@ def main(argv: list[str] | None = None) -> int:
             "behavior is to republish."
         ),
     )
+    # Rec. 2: RayCon callback receiver. When --site-id is set, scope the
+    # run to a single site instead of sweeping the full portfolio. The
+    # GitHub Actions workflow passes these from the RayCon callback's
+    # workflow_dispatch inputs.
+    parser.add_argument(
+        "--site-id",
+        dest="site_id",
+        default=None,
+        help=(
+            "Wrike site record id to scope the run to (RayCon callback). "
+            "When set, only that site is processed. Unknown ids exit cleanly "
+            "with a logged warning so the cron safety net can pick the run up."
+        ),
+    )
+    parser.add_argument(
+        "--run-id",
+        dest="run_id",
+        default=None,
+        help="RayCon run UUID — observability only, logged for cross-system correlation.",
+    )
+    parser.add_argument(
+        "--status",
+        dest="raycon_status",
+        default=None,
+        help="RayCon job status (succeeded|failed|validation_failed) — observability only.",
+    )
     args = parser.parse_args(argv)
+
+    if args.site_id or args.run_id or args.raycon_status:
+        logger.info(
+            "RayCon callback dispatch: site_id=%s run_id=%s status=%s",
+            args.site_id or "(none)",
+            args.run_id or "(none)",
+            args.raycon_status or "(none)",
+        )
 
     settings = get_settings()
     gc = GoogleClient.from_oauth_config(
@@ -813,6 +847,27 @@ def main(argv: list[str] | None = None) -> int:
 
     summaries = [build_site_summary(r) for r in active_records]
     summaries = [s for s in summaries if _site_filter(s, args.site)]
+
+    # Rec. 2: when the RayCon callback supplies a site_id, scope the run
+    # to that single site. Unknown ids exit cleanly (return 0) so the
+    # 5-minute cron can recover on its next tick — same fallback shape
+    # the rest of the system uses.
+    if args.site_id:
+        target_id = str(args.site_id).strip()
+        scoped = [s for s in summaries if str(s.get("id", "")).strip() == target_id]
+        if not scoped:
+            logger.warning(
+                "RayCon callback site_id=%s did not match any active site; "
+                "exiting 0 so cron picks it up on the next tick.",
+                target_id,
+            )
+            return 0
+        logger.info(
+            "RayCon callback scoping run to single site: id=%s title=%s",
+            target_id,
+            scoped[0].get("title", "(unnamed)"),
+        )
+        summaries = scoped
 
     alert_after = timedelta(minutes=args.alert_after_minutes)
     redispatch_after = timedelta(minutes=args.redispatch_after_minutes)

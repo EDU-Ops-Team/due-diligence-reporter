@@ -1174,3 +1174,218 @@ class TestSchemaFailHandling:
         assert any(
             "not valid JSON" in record.getMessage() for record in caplog.records
         )
+
+
+# ---------------------------------------------------------------------------
+# RayCon callback receiver — `main()` entry point (Rec. 2)
+# ---------------------------------------------------------------------------
+
+
+class TestCallbackReceiverScoping:
+    """Verify the workflow_dispatch callback path scopes to a single site
+    and falls back cleanly when site_id is unknown or absent.
+
+    Tests target ``main()`` with the integration boundaries (Wrike,
+    Google, _process_site) mocked. The point is to prove the wiring —
+    parsing the new flags, narrowing the site list, and exiting cleanly
+    on an unknown id — not to re-test what `_process_site` already does.
+    """
+
+    def _patch_integration_points(self, summaries):
+        """Return a dict of patches that stand in for Wrike + Google.
+
+        Callers use this with ``contextlib.ExitStack`` to keep test bodies
+        short. ``summaries`` is the list ``main()`` will iterate (each
+        entry is what ``build_site_summary`` would have returned).
+        """
+        from unittest.mock import patch as _patch
+
+        # Each Wrike record carries an ``id`` so build_site_summary's
+        # passthrough returns it unchanged.
+        records = [{"id": s["id"]} for s in summaries]
+
+        return {
+            "get_settings": _patch("scripts.raycon_followup.get_settings"),
+            "google_client": _patch(
+                "scripts.raycon_followup.GoogleClient.from_oauth_config",
+                return_value=MagicMock(),
+            ),
+            "load_wrike_config": _patch(
+                "scripts.raycon_followup.load_wrike_config",
+                return_value=MagicMock(access_token="t"),
+            ),
+            "get_all_site_records": _patch(
+                "scripts.raycon_followup._get_all_site_records",
+                return_value=records,
+            ),
+            "get_active_status_ids": _patch(
+                "scripts.raycon_followup._get_active_status_ids",
+                return_value={"active"},
+            ),
+            "filter_active": _patch(
+                "scripts.raycon_followup.filter_active_site_records",
+                return_value=records,
+            ),
+            "build_summary": _patch(
+                "scripts.raycon_followup.build_site_summary",
+                # Map record -> the matching summary the test set up.
+                side_effect=lambda rec: next(
+                    s for s in summaries if s["id"] == rec["id"]
+                ),
+            ),
+            "process_site": _patch(
+                "scripts.raycon_followup._process_site",
+                return_value={"site": "stub", "skipped": "test"},
+            ),
+            "save_dispatch": _patch("scripts.raycon_followup._save_dispatch_state"),
+            "save_republish": _patch("scripts.raycon_followup._save_republish_state"),
+            "load_dispatch": _patch(
+                "scripts.raycon_followup._load_dispatch_state", return_value={}
+            ),
+            "load_republish": _patch(
+                "scripts.raycon_followup._load_republish_state", return_value={}
+            ),
+        }
+
+    def _run_main(self, argv, summaries):
+        from contextlib import ExitStack
+
+        from scripts.raycon_followup import main
+
+        patches = self._patch_integration_points(summaries)
+        with ExitStack() as stack:
+            mocks = {name: stack.enter_context(p) for name, p in patches.items()}
+            rc = main(argv)
+        return rc, mocks
+
+    def test_site_id_scopes_run_to_one_site(self):
+        """--site-id X causes _process_site to be called exactly once,
+        with the site whose id == X."""
+        summaries = [
+            {"id": "site-A", "title": "Alpha", "drive_folder_url": "https://x/A"},
+            {"id": "site-B", "title": "Bravo", "drive_folder_url": "https://x/B"},
+            {"id": "site-C", "title": "Charlie", "drive_folder_url": "https://x/C"},
+        ]
+        rc, mocks = self._run_main(
+            ["--site-id", "site-B", "--run-id", "r1", "--status", "succeeded"],
+            summaries,
+        )
+        assert rc == 0
+        assert mocks["process_site"].call_count == 1
+        # _process_site is called positionally: (gc, site_summary, **kw)
+        called_summary = mocks["process_site"].call_args.args[1]
+        assert called_summary["id"] == "site-B"
+        assert called_summary["title"] == "Bravo"
+
+    def test_missing_site_id_falls_back_to_full_sweep(self):
+        """Manual / cron path: no --site-id → every site is processed."""
+        summaries = [
+            {"id": "site-A", "title": "Alpha", "drive_folder_url": "https://x/A"},
+            {"id": "site-B", "title": "Bravo", "drive_folder_url": "https://x/B"},
+            {"id": "site-C", "title": "Charlie", "drive_folder_url": "https://x/C"},
+        ]
+        rc, mocks = self._run_main([], summaries)
+        assert rc == 0
+        assert mocks["process_site"].call_count == 3
+
+    def test_unknown_site_id_exits_zero_with_warning(self, caplog):
+        """Unknown site_id → log warning, return 0, do not call _process_site.
+
+        Cron will catch the run on its next tick — same fallback shape
+        the rest of the system uses.
+        """
+        import logging
+
+        summaries = [
+            {"id": "site-A", "title": "Alpha", "drive_folder_url": "https://x/A"},
+        ]
+        with caplog.at_level(logging.WARNING, logger="raycon_followup"):
+            rc, mocks = self._run_main(
+                ["--site-id", "site-DOES-NOT-EXIST"], summaries
+            )
+        assert rc == 0
+        assert mocks["process_site"].call_count == 0
+        assert any(
+            "site-DOES-NOT-EXIST" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_run_id_and_status_logged_for_observability(self, caplog):
+        """run_id and status are observability-only but must be logged."""
+        import logging
+
+        summaries = [
+            {"id": "site-A", "title": "Alpha", "drive_folder_url": "https://x/A"},
+        ]
+        with caplog.at_level(logging.INFO, logger="raycon_followup"):
+            rc, _ = self._run_main(
+                [
+                    "--site-id", "site-A",
+                    "--run-id", "raycon-run-deadbeef",
+                    "--status", "succeeded",
+                ],
+                summaries,
+            )
+        assert rc == 0
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert "raycon-run-deadbeef" in joined
+        assert "succeeded" in joined
+
+
+class TestCallbackIdempotencyWiring:
+    """The receiver path leans on the shared dd_republish helper for
+    idempotency on (site_id, reason, content_fingerprint). This test is a
+    thin wrapper that exercises the receiver-flavored
+    ``_republish_dd_report_if_present`` twice with the same run_id +
+    _drive_modified_time and asserts the underlying pipeline ran exactly
+    once — proving PR #88/#89's dedup still holds when the trigger is a
+    callback rather than the cron.
+    """
+
+    @patch("scripts.raycon_followup.process_site_pipeline")
+    @patch("scripts.raycon_followup._find_existing_dd_report")
+    def test_two_callback_invocations_same_run_id_dedup(
+        self, mock_find_dd, mock_pipeline
+    ):
+        from scripts.raycon_followup import _republish_dd_report_if_present
+
+        # An existing DD Report exists so the helper would otherwise
+        # republish; we want to prove dedup blocks the second call.
+        mock_find_dd.return_value = {"id": "doc-1", "name": "Alpha DD Report"}
+        result_obj = MagicMock()
+        result_obj.status = "report_created"
+        result_obj.doc_url = "https://docs.google.com/document/d/doc-1"
+        mock_pipeline.return_value = result_obj
+
+        site_summary = {
+            "id": "site-1",
+            "title": "Alpha",
+            "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+            "address": "123 Main St",
+        }
+        republish_state: dict[str, str] = {}
+        gc = MagicMock()
+
+        # Settings stub — the helper just passes it through to the
+        # pipeline runner, which we've mocked.
+        settings = MagicMock()
+
+        common = {
+            "settings": settings,
+            "system_prompt": "prompt",
+            "shared_cache": {},
+            "republish_state": republish_state,
+            "dry_run": False,
+            "drive_modified_time": "2026-05-07T14:42:00Z",
+        }
+
+        first = _republish_dd_report_if_present(
+            gc, site_summary, "run-aaaa", **common
+        )
+        second = _republish_dd_report_if_present(
+            gc, site_summary, "run-aaaa", **common
+        )
+
+        assert first["dd_report_republish"] == "republished"
+        assert second["dd_report_republish"] == "deduped"
+        assert mock_pipeline.call_count == 1
