@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import zipfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -28,8 +28,10 @@ from .classifier import (
     classify_document_type as _classify_document_type,
 )
 from .completeness import (
+    REASON_DISPLAY_LABELS,
     compute_completeness_block,
     project_completeness_from_readiness,
+    raycon_token_paths,
 )
 from .config import get_settings
 from .dashboard_publish import publish_site_record
@@ -3077,6 +3079,369 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
                 "status": "error",
                 "error": "check_site_readiness failed",
                 "message": str(e),
+            }
+
+    return await asyncio.to_thread(_work)
+
+
+# ---------------------------------------------------------------------------
+# diagnose_site_readiness — richer "should I run now or wait?" diagnostic.
+# Read-only; never triggers generation, republish, or any side effect.
+# ---------------------------------------------------------------------------
+
+# Path to the dispatch dedup map written by ``scripts/raycon_followup.py``.
+# Keyed by ``block_plan_file_id`` with values
+# ``{"last_dispatch": ISO, "count": int, "site": str, "raycon_run_id": str|None}``.
+# We read it best-effort so the diagnose tool never raises if the cron has
+# never run yet on this checkout.
+_RAYCON_DISPATCH_STATE_PATH = (
+    Path(__file__).resolve().parent.parent.parent / ".raycon_dispatch_state.json"
+)
+
+
+def _load_raycon_dispatch_state(
+    path: Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Best-effort read of the RayCon dispatch dedup map.
+
+    Returns ``{}`` on missing file, parse error, or unexpected shape so a
+    corrupt state file never breaks the diagnose tool. The default path
+    is resolved at call time (not at function-definition time) so tests
+    can monkeypatch ``_RAYCON_DISPATCH_STATE_PATH``.
+    """
+    if path is None:
+        path = _RAYCON_DISPATCH_STATE_PATH
+    try:
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if isinstance(v, dict)}
+    except Exception as e:
+        logger.warning("diagnose_site_readiness: dispatch state read failed (%s): %s", path, e)
+        return {}
+
+
+def _latest_dispatch_for_site(
+    state: dict[str, dict[str, Any]],
+    site_title: str,
+    *,
+    block_plan_file_id: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Return ``(last_dispatch_iso, block_plan_file_id)`` for *site_title*.
+
+    Prefers the entry whose key matches the *block_plan_file_id* we
+    actually see in M1 today. Falls back to the most recent entry whose
+    ``site`` field matches *site_title* so we still surface a dispatch
+    even when the Block Plan was rotated and the prior file ID is now
+    stale.
+    """
+    if block_plan_file_id and block_plan_file_id in state:
+        entry = state[block_plan_file_id]
+        last = entry.get("last_dispatch")
+        if isinstance(last, str) and last:
+            return last, block_plan_file_id
+
+    best_iso: str | None = None
+    best_file_id: str | None = None
+    needle = site_title.strip().lower()
+    for file_id, entry in state.items():
+        site_val = str(entry.get("site", "")).strip().lower()
+        if site_val != needle:
+            continue
+        last = entry.get("last_dispatch")
+        if not isinstance(last, str) or not last:
+            continue
+        if best_iso is None or last > best_iso:
+            best_iso = last
+            best_file_id = file_id
+    return best_iso, best_file_id
+
+
+def _minutes_since_iso(iso: str | None, *, now: datetime | None = None) -> int | None:
+    """Integer minutes between *iso* and *now* (UTC). ``None`` if unparseable."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    current = now or datetime.now(tz=UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    delta = current - dt
+    return int(delta.total_seconds() // 60)
+
+
+def _build_blocking_entries(
+    *,
+    readiness: dict[str, Any],
+    vendor_gate_enabled: bool,
+    block_plan_present: bool,
+    raycon_last_dispatch: str | None,
+    raycon_minutes_since: int | None,
+) -> list[dict[str, Any]]:
+    """Build the ``blocking`` list in the response.
+
+    Mirrors ``_missing_required_docs`` semantics so the diagnose tool
+    reports the same view the cron path uses. The vendor gate state is
+    surfaced explicitly so the caller can see what view they're getting.
+    """
+    if vendor_gate_enabled:
+        sir_present = bool(readiness.get("sir_vendor"))
+        bi_present = bool(readiness.get("inspection_vendor"))
+    else:
+        sir_present = bool(readiness.get("sir_found"))
+        bi_present = bool(readiness.get("inspection_found"))
+
+    raycon_present = bool(readiness.get("raycon_scenario_found"))
+
+    raycon_entry: dict[str, Any] = {
+        "doc": "raycon_scenario",
+        "status": "present" if raycon_present else "pending",
+    }
+    if not raycon_present:
+        raycon_entry["block_plan_present"] = block_plan_present
+        raycon_entry["last_dispatch"] = raycon_last_dispatch
+        raycon_entry["minutes_since"] = raycon_minutes_since
+
+    return [
+        {
+            "doc": "vendor_sir",
+            "status": "present" if sir_present else "missing",
+        },
+        {
+            "doc": "building_inspection",
+            "status": "present" if bi_present else "missing",
+        },
+        raycon_entry,
+    ]
+
+
+@mcp.tool()
+async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
+    """Read-only "should I run now or wait?" diagnostic for a site.
+
+    Surfaces the cron-path readiness view for a site:
+
+    * ``blocking`` — per-doc status (``vendor_sir`` / ``building_inspection``
+      / ``raycon_scenario``). For the RayCon entry, when the scenario JSON
+      hasn't landed yet, also reports ``block_plan_present``,
+      ``last_dispatch`` (most recent ``/v1/jobs`` POST timestamp from the
+      dispatch state file written by ``scripts/raycon_followup.py``), and
+      ``minutes_since`` (integer minutes since that dispatch).
+    * ``ready_for_full_report`` — true iff every entry in ``blocking`` is
+      ``present``.
+    * ``partial_report_possible`` — true iff the floor for "we have
+      something to write about" is met (vendor SIR present, or — with the
+      legacy gate — bare SIR presence). A partial report is possible even
+      if BI is missing or RayCon is pending.
+    * ``would_be_filled_now`` / ``would_be_pending`` — token paths the
+      report would fill or leave pending if it ran right now.
+    * ``vendor_gate_enabled`` — which view (vendor-strict vs. legacy) is
+      being reported.
+
+    Use this BEFORE ``create_dd_report`` to decide whether to run now
+    (accept partial) or wait.
+
+    Differs from ``check_site_readiness``: that tool is the
+    pre-generation projection used internally by ``create_dd_report``;
+    ``diagnose_site_readiness`` is the user/agent-facing diagnostic that
+    composes the cron-path readiness view, RayCon dispatch state, and
+    full token projection into one structured payload. Reports the
+    cron-path view (vendor gate enforced) by default; never bypass.
+
+    This tool is strictly read-only — it must never trigger generation,
+    republish, or any other side effect.
+    """
+    logger.info("Tool called: diagnose_site_readiness - %s", site_name)
+
+    if not site_name or not site_name.strip():
+        return {
+            "status": "error",
+            "error": "Missing parameter",
+            "message": "site_name must be a non-empty string",
+        }
+
+    def _work() -> dict[str, Any]:
+        # Local imports to avoid pulling anthropic et al. into the
+        # top-level server import path.
+        from .report_pipeline import (
+            _vendor_gate_enabled,
+            check_site_readiness_direct,
+            list_shared_folders_once,
+        )
+
+        try:
+            record = find_site_record(site_name_or_id=site_name)
+            if not record:
+                return {
+                    "status": "error",
+                    "error": "Site record not found",
+                    "message": (
+                        f"Could not find a Wrike Site Record matching '{site_name}'."
+                    ),
+                    "site": site_name,
+                }
+
+            summary = build_site_summary(record)
+            site_title = summary.get("title", site_name)
+            address = summary.get("address")
+            drive_folder_url = summary.get("drive_folder_url")
+            if not drive_folder_url:
+                return {
+                    "status": "error",
+                    "error": "No Drive folder",
+                    "message": (
+                        f"Site record '{site_title}' has no Google Drive folder URL in Wrike."
+                    ),
+                    "site": site_title,
+                }
+
+            gc = _make_google_client()
+            match_terms = _build_site_match_terms(site_title, address)
+            shared_cache = list_shared_folders_once(gc)
+
+            readiness = check_site_readiness_direct(
+                gc,
+                drive_folder_url,
+                match_terms,
+                shared_cache,
+                site_title=site_title,
+                site_address=address,
+            )
+
+            # Resolve M1 to find the Block Plan file ID and its
+            # modifiedTime. The Block Plan ID is the lookup key into the
+            # dispatch state map; its modifiedTime is the proxy for
+            # ``last_dispatch`` if the dispatch state file is missing
+            # (e.g. the cron has never run on this checkout).
+            block_plan_file_id: str | None = None
+            block_plan_modified: str | None = None
+            try:
+                m1_folder_id, _ = _resolve_m1_folder(gc, drive_folder_url)
+            except Exception as e:
+                logger.warning(
+                    "diagnose_site_readiness: M1 resolve failed for '%s': %s",
+                    site_title,
+                    e,
+                )
+                m1_folder_id = None
+            if m1_folder_id:
+                try:
+                    m1_docs = _list_m1_documents_by_type(gc, m1_folder_id)
+                    bp = m1_docs.get("block_plan")
+                    if bp:
+                        block_plan_file_id = str(bp.get("id") or "") or None
+                        mt = bp.get("modifiedTime")
+                        if isinstance(mt, str):
+                            block_plan_modified = mt
+                except Exception as e:
+                    logger.warning(
+                        "diagnose_site_readiness: M1 list failed for '%s': %s",
+                        site_title,
+                        e,
+                    )
+
+            block_plan_present = block_plan_file_id is not None
+            raycon_present = bool(readiness.get("raycon_scenario_found"))
+
+            # Resolve last_dispatch:
+            #   1. If RayCon scenario is present, the dispatch already
+            #      succeeded — surface its modifiedTime as the run
+            #      timestamp.
+            #   2. Otherwise, look up the dispatch state map for this
+            #      site / block_plan_file_id.
+            #   3. If neither is available but a Block Plan exists, fall
+            #      back to its modifiedTime as a documented proxy.
+            last_dispatch: str | None = None
+            if raycon_present and m1_folder_id:
+                # Re-resolve to pick up modifiedTime on the scenario.
+                try:
+                    m1_docs = _list_m1_documents_by_type(gc, m1_folder_id)
+                    rs = m1_docs.get("raycon_scenario_json")
+                    if rs and isinstance(rs.get("modifiedTime"), str):
+                        last_dispatch = rs["modifiedTime"]
+                except Exception:
+                    pass
+            if last_dispatch is None:
+                state = _load_raycon_dispatch_state()
+                last_dispatch, _ = _latest_dispatch_for_site(
+                    state,
+                    site_title,
+                    block_plan_file_id=block_plan_file_id,
+                )
+            if last_dispatch is None and block_plan_modified:
+                # Documented fallback: when the dispatch state file has
+                # no entry (e.g. this checkout's cron has never run for
+                # this site), use the Block Plan's Drive ``modifiedTime``
+                # as a proxy for "RayCon has been notified".
+                last_dispatch = block_plan_modified
+
+            minutes_since = _minutes_since_iso(last_dispatch)
+
+            vendor_gate_enabled = _vendor_gate_enabled()
+            blocking = _build_blocking_entries(
+                readiness=readiness,
+                vendor_gate_enabled=vendor_gate_enabled,
+                block_plan_present=block_plan_present,
+                raycon_last_dispatch=last_dispatch,
+                raycon_minutes_since=minutes_since,
+            )
+
+            ready_for_full_report = all(
+                entry["status"] == "present" for entry in blocking
+            )
+
+            # ``partial_report_possible`` floor: vendor SIR present (with
+            # the gate on) or any SIR present (legacy). Mirrors what
+            # ``_missing_required_docs`` would treat as the SIR slot.
+            if vendor_gate_enabled:
+                partial_report_possible = bool(readiness.get("sir_vendor"))
+            else:
+                partial_report_possible = bool(readiness.get("sir_found"))
+
+            projection = project_completeness_from_readiness(
+                raycon_scenario_found=raycon_present,
+            )
+            pending_paths: list[str] = []
+            for paths in projection.get("pending_reasons", {}).values():
+                pending_paths.extend(paths)
+            pending_set = set(pending_paths)
+            # ``would_be_filled_now`` is the complement of pending paths
+            # within the modeled token space (today: RayCon paths). When
+            # more pending axes are added, extend the modeled space here.
+            modeled_paths = set(raycon_token_paths())
+            would_be_filled_now = sorted(modeled_paths - pending_set)
+            would_be_pending = sorted(pending_set)
+
+            return {
+                "status": "success",
+                "site": site_title,
+                "ready_for_full_report": ready_for_full_report,
+                "partial_report_possible": partial_report_possible,
+                "vendor_gate_enabled": vendor_gate_enabled,
+                "blocking": blocking,
+                "would_be_filled_now": would_be_filled_now,
+                "would_be_pending": would_be_pending,
+                "projected_completeness": projection,
+                "pending_reason_labels": {
+                    reason: REASON_DISPLAY_LABELS.get(reason, reason)
+                    for reason in projection.get("pending_reasons", {})
+                },
+                "drive_folder_url": drive_folder_url,
+            }
+        except Exception as e:
+            logger.error("diagnose_site_readiness failed: %s", e)
+            return {
+                "status": "error",
+                "error": "diagnose_site_readiness failed",
+                "message": str(e),
+                "site": site_name,
             }
 
     return await asyncio.to_thread(_work)
