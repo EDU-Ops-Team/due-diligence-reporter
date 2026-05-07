@@ -810,6 +810,82 @@ class TestDDReportRepublish:
         assert out["dd_report_republish"] == "failed"
         assert "Anthropic 500" in out["reason"]
 
+    @patch("scripts.raycon_followup.extract_timeline_confidence_from_record")
+    @patch("scripts.raycon_followup.extract_school_feasibility_from_record")
+    @patch("scripts.raycon_followup.process_site_pipeline")
+    @patch("scripts.raycon_followup._find_existing_dd_report")
+    def test_republish_forwards_p1_and_feasibility_fields(
+        self,
+        mock_find_dd,
+        mock_pipeline,
+        mock_feasibility,
+        mock_timeline,
+    ):
+        """Regression for #82: republish must thread p1/feasibility/timeline/
+        wrike_created_at into ``process_site_pipeline`` so the regenerated DD
+        Report email still CC's the P1 owner and the dashboard publish keeps
+        the W74/W81 ratings + Wrike createdDate.
+
+        Covers two paths:
+          1. all fields present on site_summary → all forwarded.
+          2. fields missing on site_summary → forwarded as None (no crash).
+        """
+        mock_find_dd.return_value = {"id": "dd1", "name": "Alpha Keller DD Report"}
+        result_obj = MagicMock()
+        result_obj.status = "report_created"
+        result_obj.doc_url = "https://docs.google.com/document/d/dd1"
+        mock_pipeline.return_value = result_obj
+        mock_feasibility.return_value = "high"
+        mock_timeline.return_value = "medium"
+
+        gc = MagicMock()
+        full_site = {
+            **_site(),
+            "p1_assignee_email": "owner@example.com",
+            "p1_assignee_name": "Alex Owner",
+            "created_date": "2026-01-15T12:00:00Z",
+            "custom_fields": [{"id": "f1", "value": "high"}],
+        }
+        _republish_dd_report_if_present(
+            gc,
+            full_site,
+            "rc_run_abc",
+            settings=self._settings(),
+            system_prompt="prompt",
+            shared_cache={},
+            republish_state={},
+            dry_run=False,
+        )
+
+        kwargs = mock_pipeline.call_args.kwargs
+        assert kwargs.get("force_regenerate") is True
+        assert kwargs.get("p1_email") == "owner@example.com"
+        assert kwargs.get("p1_name") == "Alex Owner"
+        assert kwargs.get("school_feasibility") == "high"
+        assert kwargs.get("timeline_confidence") == "medium"
+        assert kwargs.get("wrike_created_at") == "2026-01-15T12:00:00Z"
+
+        # Graceful-default path: site_summary missing the optional fields.
+        mock_pipeline.reset_mock()
+        mock_feasibility.return_value = None
+        mock_timeline.return_value = None
+        _republish_dd_report_if_present(
+            gc,
+            _site(),  # no p1_*, no created_date, no custom_fields
+            "rc_run_def",
+            settings=self._settings(),
+            system_prompt="prompt",
+            shared_cache={},
+            republish_state={},
+            dry_run=False,
+        )
+        kwargs = mock_pipeline.call_args.kwargs
+        assert kwargs.get("p1_email") is None
+        assert kwargs.get("p1_name") is None
+        assert kwargs.get("school_feasibility") is None
+        assert kwargs.get("timeline_confidence") is None
+        assert kwargs.get("wrike_created_at") is None
+
     @patch("scripts.raycon_followup.save_skill_report")
     @patch("scripts.raycon_followup._find_published_doc")
     @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
