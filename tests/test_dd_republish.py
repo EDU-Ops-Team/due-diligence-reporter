@@ -22,13 +22,17 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import json
+
 from due_diligence_reporter.dd_republish import (
     DD_REPUBLISH_FORCE_AFTER,
     REASON_BUILDING_INSPECTION,
     REASON_RAYCON,
     REASON_VENDOR_SIR,
     RepublishOutcome,
+    load_state,
     maybe_republish_dd_report,
+    save_state,
 )
 
 
@@ -396,3 +400,288 @@ class TestEdgeCases:
         assert d["pipeline_status"] == "report_created"
         assert d["doc_url"] == "https://docs/abc"
         assert d["site_id"] == "site-123"
+
+
+# ---------------------------------------------------------------------------
+# Legacy state migration (PR #88 → follow-up)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadRepublishStateMigration:
+    """One-shot migration from the pre-Rec.3 ``.raycon_dd_republish_state.json``
+    (keyed ``site_id:run_id``) into the shared ``.dd_republish_state.json``
+    (keyed ``site_id:reason:fingerprint``).
+
+    Lives in ``dd_republish.load_state`` so both raycon_followup and
+    scan_inbox pick it up — otherwise scan_inbox would silently skip
+    the migration and lose dedup on the cutover run.
+    """
+
+    def test_legacy_present_new_absent_keys_rewritten(self, tmp_path):
+        legacy = tmp_path / ".raycon_dd_republish_state.json"
+        new = tmp_path / ".dd_republish_state.json"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "site-123:rc_run_abc": "2026-05-05T10:00:00+00:00",
+                    "site-456:rc_run_def": "2026-05-06T10:00:00+00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = load_state(new, legacy_path=legacy)
+
+        assert state == {
+            "site-123:raycon_scenario:rc_run_abc": "2026-05-05T10:00:00+00:00",
+            "site-456:raycon_scenario:rc_run_def": "2026-05-06T10:00:00+00:00",
+        }
+
+    def test_both_present_new_wins_on_conflict(self, tmp_path):
+        """If the new file already has the migrated key, don't clobber it
+        with the legacy timestamp — the new file is post-migration truth.
+        """
+        legacy = tmp_path / ".raycon_dd_republish_state.json"
+        new = tmp_path / ".dd_republish_state.json"
+        legacy.write_text(
+            json.dumps({"site-123:rc_run_abc": "2026-01-01T00:00:00+00:00"}),
+            encoding="utf-8",
+        )
+        new.write_text(
+            json.dumps(
+                {
+                    "site-123:raycon_scenario:rc_run_abc": "2026-05-05T10:00:00+00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = load_state(new, legacy_path=legacy)
+
+        assert (
+            state["site-123:raycon_scenario:rc_run_abc"]
+            == "2026-05-05T10:00:00+00:00"
+        )
+
+    def test_legacy_malformed_json_fails_closed(self, tmp_path):
+        """Malformed legacy file → treated as no prior state, no crash."""
+        legacy = tmp_path / ".raycon_dd_republish_state.json"
+        new = tmp_path / ".dd_republish_state.json"
+        legacy.write_text("{not valid json", encoding="utf-8")
+
+        state = load_state(new, legacy_path=legacy)
+
+        assert state == {}
+
+    def test_legacy_left_in_place_after_migration(self, tmp_path):
+        """Migration overlays the legacy file; we never delete it.
+
+        Subsequent runs no-op once the new file has been written with
+        the migrated keys (asserted by the new-wins test above). This
+        test pins the actual behavior so future refactors that add a
+        delete are caught here.
+        """
+        legacy = tmp_path / ".raycon_dd_republish_state.json"
+        new = tmp_path / ".dd_republish_state.json"
+        legacy.write_text(
+            json.dumps({"site-123:rc_run_abc": "2026-05-05T10:00:00+00:00"}),
+            encoding="utf-8",
+        )
+
+        load_state(new, legacy_path=legacy)
+
+        assert legacy.exists()
+        assert json.loads(legacy.read_text(encoding="utf-8")) == {
+            "site-123:rc_run_abc": "2026-05-05T10:00:00+00:00"
+        }
+
+    def test_legacy_absent_returns_new_state_only(self, tmp_path):
+        legacy = tmp_path / ".raycon_dd_republish_state.json"
+        new = tmp_path / ".dd_republish_state.json"
+        new.write_text(
+            json.dumps(
+                {"site-1:vendor_sir:f1:2026-05-05T10:00:00Z": "2026-05-05T11:00:00Z"}
+            ),
+            encoding="utf-8",
+        )
+
+        state = load_state(new, legacy_path=legacy)
+
+        assert state == {
+            "site-1:vendor_sir:f1:2026-05-05T10:00:00Z": "2026-05-05T11:00:00Z"
+        }
+
+    def test_legacy_skips_malformed_keys(self, tmp_path):
+        """Legacy entries without a ':' separator are skipped, not crashed."""
+        legacy = tmp_path / ".raycon_dd_republish_state.json"
+        new = tmp_path / ".dd_republish_state.json"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "no_colon_key": "2026-05-05T10:00:00+00:00",
+                    "site-1:rc_ok": "2026-05-05T11:00:00+00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = load_state(new, legacy_path=legacy)
+
+        assert "site-1:raycon_scenario:rc_ok" in state
+        assert all(":" in k for k in state)
+
+
+# ---------------------------------------------------------------------------
+# save_state — atomic write
+# ---------------------------------------------------------------------------
+
+
+class TestSaveStateAtomic:
+    def test_save_then_load_roundtrip(self, tmp_path):
+        path = tmp_path / ".dd_republish_state.json"
+        payload = {
+            "site-1:vendor_sir:f1:2026-05-05T10:00:00Z": "2026-05-05T11:00:00Z",
+            "site-2:raycon_scenario:rc_xyz": "2026-05-05T12:00:00Z",
+        }
+        save_state(payload, path)
+        # Read back via load_state with no legacy file present.
+        loaded = load_state(path, legacy_path=tmp_path / ".no_such_legacy.json")
+        assert loaded == payload
+
+    def test_save_does_not_leave_tmp_files(self, tmp_path):
+        path = tmp_path / ".dd_republish_state.json"
+        save_state({"k": "v"}, path)
+        # Atomic write → temp file should be renamed away. Only the
+        # final state file should remain in the directory.
+        leftovers = [
+            p.name for p in tmp_path.iterdir() if p.name != path.name
+        ]
+        assert leftovers == [], f"unexpected leftovers: {leftovers}"
+
+    def test_save_overwrites_existing(self, tmp_path):
+        path = tmp_path / ".dd_republish_state.json"
+        path.write_text(json.dumps({"old": "v"}), encoding="utf-8")
+        save_state({"new": "v2"}, path)
+        assert json.loads(path.read_text(encoding="utf-8")) == {"new": "v2"}
+
+    def test_save_to_nested_directory_creates_parents(self, tmp_path):
+        path = tmp_path / "nested" / "subdir" / ".dd_republish_state.json"
+        save_state({"k": "v"}, path)
+        assert path.exists()
+        assert json.loads(path.read_text(encoding="utf-8")) == {"k": "v"}
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 regression — RayCon fingerprint includes _drive_modified_time
+# ---------------------------------------------------------------------------
+
+
+class TestRayConCompositeFingerprint:
+    """When RayCon recomputes the same ``run_id`` but writes fresh content
+    (different ``_drive_modified_time``), the helper must republish — not
+    silently skip for up to 12h. The fingerprint plumbed by
+    ``_republish_dd_report_if_present`` is composite
+    (``run_id:drive_modified_time``) so a content change always changes
+    the dedup key.
+    """
+
+    def test_same_run_id_different_modified_time_republishes(self):
+        from scripts.raycon_followup import _republish_dd_report_if_present
+
+        runner = MagicMock()
+        runner.return_value = MagicMock(
+            status="report_created", doc_url="https://docs/x"
+        )
+
+        # Patch the pipeline + finder via the dd_republish helper so we
+        # don't touch real Drive.
+        from unittest.mock import patch
+
+        existing = {"id": "dd1", "name": "Alpha Keller DD Report"}
+        # Pre-seed state as if a prior run with the same run_id but an
+        # older modifiedTime fingerprint had completed 1 hour ago — well
+        # inside the 12h force-after window. Without the modifiedTime
+        # suffix this would be a "deduped" no-op.
+        recent = (
+            datetime.now(timezone.utc) - timedelta(hours=1)
+        ).isoformat()
+        state = {
+            "site-123:raycon_scenario:rc_run_abc:2026-05-05T10:00:00Z": recent,
+        }
+
+        with patch(
+            "scripts.raycon_followup._find_existing_dd_report",
+            return_value=existing,
+        ), patch(
+            "scripts.raycon_followup.process_site_pipeline", runner
+        ):
+            out = _republish_dd_report_if_present(
+                MagicMock(),
+                _site(),
+                "rc_run_abc",
+                settings=MagicMock(),
+                system_prompt="prompt",
+                shared_cache={},
+                republish_state=state,
+                dry_run=False,
+                drive_modified_time="2026-05-05T20:00:00Z",  # newer content
+            )
+
+        assert out["dd_report_republish"] == "republished", out
+        runner.assert_called_once()
+        # New composite key recorded; old one still present (not relevant).
+        assert (
+            "site-123:raycon_scenario:rc_run_abc:2026-05-05T20:00:00Z" in state
+        )
+
+    def test_unknown_run_id_fallback_includes_modified_time(self):
+        """The ``unknown@<date>`` fallback (when run_id is empty) must
+        also include the modifiedTime so we don't dedup all empty-run-id
+        events on a given day. Review finding #10.
+        """
+        from scripts.raycon_followup import _republish_dd_report_if_present
+        from unittest.mock import patch
+
+        runner = MagicMock(
+            return_value=MagicMock(
+                status="report_created", doc_url="https://docs/x"
+            )
+        )
+        existing = {"id": "dd1", "name": "Alpha Keller DD Report"}
+        state: dict = {}
+
+        with patch(
+            "scripts.raycon_followup._find_existing_dd_report",
+            return_value=existing,
+        ), patch(
+            "scripts.raycon_followup.process_site_pipeline", runner
+        ):
+            # First arrival — empty run_id, modifiedTime A.
+            _republish_dd_report_if_present(
+                MagicMock(),
+                _site(),
+                "",
+                settings=MagicMock(),
+                system_prompt="prompt",
+                shared_cache={},
+                republish_state=state,
+                dry_run=False,
+                drive_modified_time="2026-05-05T10:00:00Z",
+            )
+            # Second arrival — still empty run_id, but newer modifiedTime.
+            # Must republish (different fingerprint), not dedup.
+            _republish_dd_report_if_present(
+                MagicMock(),
+                _site(),
+                "",
+                settings=MagicMock(),
+                system_prompt="prompt",
+                shared_cache={},
+                republish_state=state,
+                dry_run=False,
+                drive_modified_time="2026-05-05T20:00:00Z",
+            )
+
+        assert runner.call_count == 2
+        # Two distinct keys recorded — one per arrival.
+        assert len(state) == 2

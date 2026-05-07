@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -76,6 +78,16 @@ SUPPORTED_REASONS = frozenset(
 # place to look at observability state.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DD_REPUBLISH_STATE_PATH = _PROJECT_ROOT / ".dd_republish_state.json"
+
+# Pre-Rec.3 path: the old RayCon-only file at
+# ``.raycon_dd_republish_state.json`` keyed on ``site_id:run_id``.
+# ``load_state`` migrates entries from this file into the shared
+# ``site_id:reason:fingerprint`` shape on first read so RayCon dedup
+# survives the cutover. The legacy file is left in place; subsequent
+# runs no-op once the new file holds the migrated keys.
+LEGACY_DD_REPUBLISH_STATE_PATH = (
+    _PROJECT_ROOT / ".raycon_dd_republish_state.json"
+)
 
 # Force-republish window: regenerate at least once per N hours for the
 # same ``(site_id, reason, fingerprint)`` triple if conditions still
@@ -133,28 +145,91 @@ class RepublishOutcome:
 # ---------------------------------------------------------------------------
 
 
-def load_state(path: Path = DD_REPUBLISH_STATE_PATH) -> dict[str, str]:
+def load_state(
+    path: Path = DD_REPUBLISH_STATE_PATH,
+    *,
+    legacy_path: Path = LEGACY_DD_REPUBLISH_STATE_PATH,
+) -> dict[str, str]:
     """Load the ``{state_key: last_republish_iso}`` dedup map.
 
     Returns ``{}`` on missing file or any read/parse error so a corrupt
     state file never blocks a republish.
+
+    Also runs the one-shot legacy migration: pre-Rec.3 the file lived
+    at ``.raycon_dd_republish_state.json`` and was keyed
+    ``site_id:run_id``. We rewrite each legacy entry into the new
+    ``site_id:raycon_scenario:run_id`` shape, but only when the new
+    state doesn't already have the key (new wins on conflict). Lives
+    here (in the shared loader) so both ``raycon_followup`` and
+    ``scan_inbox`` get the migration; otherwise scan_inbox would
+    silently drop the legacy state.
     """
+    state: dict[str, str] = {}
     try:
-        if not path.exists():
-            return {}
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return {k: str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                state = {k: str(v) for k, v in data.items()}
     except Exception as e:
         logger.warning("Failed to read DD republish state at %s: %s", path, e)
-        return {}
+        state = {}
+
+    # Legacy migration. Fail-closed: malformed legacy file → ignored,
+    # not crash. We never delete the legacy file; once the new file
+    # holds the migrated keys, this branch becomes a no-op overlay.
+    try:
+        if legacy_path.exists():
+            legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+            if isinstance(legacy, dict):
+                for old_key, ts in legacy.items():
+                    if not isinstance(old_key, str) or ":" not in old_key:
+                        continue
+                    site_id, run_id = old_key.split(":", 1)
+                    new_key = f"{site_id}:{REASON_RAYCON}:{run_id}"
+                    state.setdefault(new_key, str(ts))
+    except Exception as e:
+        logger.warning(
+            "Failed to migrate legacy DD republish state at %s: %s",
+            legacy_path,
+            e,
+        )
+    return state
 
 
 def save_state(state: dict[str, str], path: Path = DD_REPUBLISH_STATE_PATH) -> None:
-    """Persist the dedup map. Best-effort; logs but does not raise."""
+    """Persist the dedup map atomically.
+
+    Writes to a sibling tempfile in the same directory then ``os.replace``
+    onto the target path so concurrent readers never see a half-written
+    file. Tempfile lives in the same directory to keep ``os.replace``
+    atomic on a single filesystem. Best-effort; logs but does not raise.
+    """
     try:
-        path.write_text(
-            json.dumps(state, sort_keys=True, indent=2), encoding="utf-8"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(state, sort_keys=True, indent=2)
+        # delete=False so we control the rename; we explicitly clean up
+        # on failure. Using NamedTemporaryFile so the temp name is
+        # collision-safe across racing writers.
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=path.name + ".",
+            suffix=".tmp",
+            delete=False,
         )
+        try:
+            tmp.write(payload)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp.close()
+            os.replace(tmp.name, path)
+        except Exception:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+            raise
     except Exception as e:
         logger.warning("Failed to write DD republish state at %s: %s", path, e)
 
