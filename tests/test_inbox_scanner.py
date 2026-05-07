@@ -1310,3 +1310,303 @@ class TestDocArrivalFolderPing:
         mock_ping.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# Rec. 3 — vendor SIR / Building Inspection arrival fires DD republish
+# ---------------------------------------------------------------------------
+
+
+class TestDDRepublishCallbackWiring:
+    """When a vendor SIR or Building Inspection lands, the inbox scanner
+    must invoke the supplied ``dd_republish_callback`` with the right
+    fingerprint so the shared helper can decide whether to regenerate
+    the DD Report.
+
+    These tests assert the wiring (callback invoked at all, with the
+    right ``reason`` and ``fingerprint``); the helper's republish-vs-skip
+    decision is exercised end-to-end in ``tests/test_dd_republish.py``.
+    """
+
+    def _common_mocks(self, doc_type: str, filename: str):
+        """Set up the standard process_email mocks for a vendor doc upload."""
+        extract = MagicMock(
+            message_id=f"msg_{doc_type}",
+            subject=filename,
+            sender="vendor@external.com",
+            effective_sender="vendor@external.com",
+            body_snippet="",
+            attachments=[
+                {
+                    "filename": filename,
+                    "attachment_id": f"att_{doc_type}",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        return extract
+
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_sir_arrival_fires_callback_with_vendor_sir_reason(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_ping,
+        mock_resolve_m1,
+        mock_build_summary,
+    ):
+        mock_extract.return_value = self._common_mocks(
+            "sir", "Alpha Keller SIR.pdf"
+        )
+        mock_classify.return_value = ("sir", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "M1")
+        mock_ping.return_value = {"status": "accepted"}
+        mock_build_summary.return_value = {
+            "id": "site-1",
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+        }
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"pdf"
+        gc.upload_file_to_folder.return_value = {
+            "id": "sir_drive_id",
+            "webViewLink": "https://drive.google.com/file/d/sir_drive_id",
+            "modifiedTime": "2026-05-05T10:00:00Z",
+        }
+
+        site_records = [
+            {"id": "site-1", "title": "Alpha Keller", "customFields": []}
+        ]
+        callback = MagicMock(return_value={"dd_report_republish": "republish"})
+
+        result = process_email(
+            gc,
+            "msg_sir",
+            MagicMock(),
+            "label_123",
+            "review_123",
+            site_records=site_records,
+            dd_republish_callback=callback,
+        )
+
+        assert len(result["uploaded"]) == 1
+        callback.assert_called_once()
+        kwargs = callback.call_args.kwargs
+        assert kwargs["reason"] == "vendor_sir"
+        # Fingerprint is "{drive_file_id}:{modifiedTime}".
+        assert kwargs["fingerprint"] == "sir_drive_id:2026-05-05T10:00:00Z"
+        assert kwargs["site_summary"]["title"] == "Alpha Keller"
+
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_building_inspection_arrival_fires_callback_with_bi_reason(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_ping,
+        mock_resolve_m1,
+        mock_build_summary,
+    ):
+        mock_extract.return_value = self._common_mocks(
+            "building_inspection",
+            "Alpha Keller Building Inspection Report.pdf",
+        )
+        mock_classify.return_value = ("building_inspection", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "M1")
+        mock_ping.return_value = {"status": "accepted"}
+        mock_build_summary.return_value = {
+            "id": "site-1",
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+        }
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"pdf"
+        gc.upload_file_to_folder.return_value = {
+            "id": "bi_drive_id",
+            "webViewLink": "https://drive.google.com/file/d/bi_drive_id",
+            "modifiedTime": "2026-05-06T14:00:00Z",
+        }
+
+        site_records = [
+            {"id": "site-1", "title": "Alpha Keller", "customFields": []}
+        ]
+        callback = MagicMock(return_value={"dd_report_republish": "republish"})
+
+        result = process_email(
+            gc,
+            "msg_bi",
+            MagicMock(),
+            "label_123",
+            "review_123",
+            site_records=site_records,
+            dd_republish_callback=callback,
+        )
+
+        assert len(result["uploaded"]) == 1
+        callback.assert_called_once()
+        kwargs = callback.call_args.kwargs
+        assert kwargs["reason"] == "building_inspection"
+        assert kwargs["fingerprint"] == "bi_drive_id:2026-05-06T14:00:00Z"
+
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_isp_arrival_does_not_fire_callback(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_ping,
+        mock_resolve_m1,
+        mock_build_summary,
+    ):
+        """ISP is not an authoritative DD input — no republish on arrival."""
+        mock_extract.return_value = self._common_mocks(
+            "isp", "Alpha Keller ISP.pdf"
+        )
+        mock_classify.return_value = ("isp", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "M1")
+        mock_ping.return_value = {"status": "accepted"}
+        mock_build_summary.return_value = {
+            "id": "site-1",
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+        }
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"pdf"
+        gc.upload_file_to_folder.return_value = {
+            "id": "isp_drive_id",
+            "webViewLink": "https://drive.google.com/file/d/isp_drive_id",
+            "modifiedTime": "2026-05-05T10:00:00Z",
+        }
+        site_records = [
+            {"id": "site-1", "title": "Alpha Keller", "customFields": []}
+        ]
+        callback = MagicMock()
+        process_email(
+            gc,
+            "msg_isp",
+            MagicMock(),
+            "label_123",
+            "review_123",
+            site_records=site_records,
+            dd_republish_callback=callback,
+        )
+        callback.assert_not_called()
+
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_sir_arrival_with_no_callback_is_noop(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_ping,
+        mock_resolve_m1,
+        mock_build_summary,
+    ):
+        """No callback supplied → upload still succeeds, no republish field."""
+        mock_extract.return_value = self._common_mocks(
+            "sir", "Alpha Keller SIR.pdf"
+        )
+        mock_classify.return_value = ("sir", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "M1")
+        mock_ping.return_value = {"status": "accepted"}
+        mock_build_summary.return_value = {
+            "id": "site-1",
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+        }
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"pdf"
+        gc.upload_file_to_folder.return_value = {
+            "id": "sir_drive_id",
+            "modifiedTime": "2026-05-05T10:00:00Z",
+        }
+
+        result = process_email(
+            gc,
+            "msg_sir",
+            MagicMock(),
+            "label_123",
+            "review_123",
+            site_records=[
+                {"id": "site-1", "title": "Alpha Keller", "customFields": []}
+            ],
+            dd_republish_callback=None,
+        )
+        assert len(result["uploaded"]) == 1
+        assert "dd_report_republish" not in result["uploaded"][0]
+
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_callback_exception_does_not_break_upload(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_ping,
+        mock_resolve_m1,
+        mock_build_summary,
+    ):
+        """Callback raising → upload still recorded, failure surfaced."""
+        mock_extract.return_value = self._common_mocks(
+            "sir", "Alpha Keller SIR.pdf"
+        )
+        mock_classify.return_value = ("sir", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "M1")
+        mock_ping.return_value = {"status": "accepted"}
+        mock_build_summary.return_value = {
+            "id": "site-1",
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+        }
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"pdf"
+        gc.upload_file_to_folder.return_value = {
+            "id": "sir_drive_id",
+            "modifiedTime": "2026-05-05T10:00:00Z",
+        }
+        callback = MagicMock(side_effect=RuntimeError("pipeline blew up"))
+
+        result = process_email(
+            gc,
+            "msg_sir",
+            MagicMock(),
+            "label_123",
+            "review_123",
+            site_records=[
+                {"id": "site-1", "title": "Alpha Keller", "customFields": []}
+            ],
+            dd_republish_callback=callback,
+        )
+        assert len(result["uploaded"]) == 1
+        republish = result["uploaded"][0].get("dd_report_republish") or {}
+        assert republish.get("status") == "failed"
+        assert "pipeline blew up" in republish.get("error", "")
+
+

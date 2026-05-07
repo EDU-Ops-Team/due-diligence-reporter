@@ -224,6 +224,64 @@ def _run_doc_arrival_folder_ping(
     }
 
 
+# Map of inbox doc_type → shared-helper reason code. Keep this narrow:
+# ISP and Block Plan do NOT trigger a DD Report republish. ISP is not an
+# authoritative DD input for the report content; Block Plan triggers the
+# RayCon job dispatch which (when RayCon answers) routes through the
+# scripts/raycon_followup.py republish hook instead.
+_INBOX_DOC_TYPE_TO_REPUBLISH_REASON = {
+    "sir": "vendor_sir",
+    "building_inspection": "building_inspection",
+}
+
+
+def _maybe_fire_dd_republish(
+    *,
+    callback: Any,
+    gc: GoogleClient,
+    site_summary: dict[str, Any],
+    doc_type: str,
+    drive_file: dict[str, Any],
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Fire the shared DD Report republish callback for a vendor doc arrival.
+
+    Builds the content fingerprint from the Drive file's
+    ``id:modifiedTime`` so a re-upload of the same SIR (same Drive file
+    id, refreshed modifiedTime) re-fires the republish, while a polled
+    re-walk of the same file ID + same modifiedTime is a no-op.
+
+    Failures inside the callback are swallowed and surfaced into the
+    returned dict so the inbox scan never breaks on a flaky republish.
+    """
+    reason = _INBOX_DOC_TYPE_TO_REPUBLISH_REASON.get(doc_type)
+    if not reason:
+        return {"status": "skipped", "reason": f"doc_type {doc_type} not authoritative"}
+
+    file_id = str(drive_file.get("id", "")).strip()
+    modified_time = str(drive_file.get("modifiedTime", "")).strip()
+    if not file_id:
+        return {"status": "skipped", "reason": "missing drive file id"}
+    fingerprint = f"{file_id}:{modified_time}" if modified_time else file_id
+
+    try:
+        return callback(
+            gc=gc,
+            site_summary=site_summary,
+            reason=reason,
+            fingerprint=fingerprint,
+            dry_run=dry_run,
+        )
+    except Exception as e:
+        logger.error(
+            "DD Report republish callback raised for site=%s doc_type=%s: %s",
+            site_summary.get("title"),
+            doc_type,
+            e,
+        )
+        return {"status": "failed", "error": str(e)}
+
+
 def _run_block_plan_downstream(
     gc: GoogleClient,
     *,
@@ -368,8 +426,21 @@ def scan_inbox(
     settings: Settings,
     *,
     dry_run: bool = False,
+    dd_republish_callback: Any = None,
 ) -> dict[str, Any]:
     """Top-level orchestrator: scan Gmail, classify, upload, mark processed.
+
+    ``dd_republish_callback`` (Rec. 3): when supplied, fires after each
+    classified vendor SIR or Building Inspection upload to republish the
+    DD Report if one already exists for the matched site. Signature:
+
+        callback(*, gc, site_summary, reason, fingerprint, dry_run) -> dict
+
+    The callback is responsible for loading the agent system prompt and
+    Drive shared-folder cache lazily so the cost is only paid when at
+    least one authoritative arrival actually fires republish. Failures
+    inside the callback are caught here and surfaced into the per-upload
+    row as ``dd_report_republish: failed``; they never break the scan.
 
     Returns a summary dict with counts and details.
     """
@@ -423,6 +494,7 @@ def scan_inbox(
                 site_records=site_records,
                 dry_run=dry_run,
                 internal_skip_label_id=internal_skip_label_id,
+                dd_republish_callback=dd_republish_callback,
             )
             if email_result.get("internal_skipped"):
                 results["internal_skipped"] += 1
@@ -476,8 +548,16 @@ def process_email(
     site_records: list[dict[str, Any]] | None = None,
     internal_skip_label_id: str | None = None,
     dry_run: bool = False,
+    dd_republish_callback: Any = None,
 ) -> dict[str, Any]:
     """Process a single email: classify attachments by filename, upload, mark done.
+
+    ``dd_republish_callback`` (Rec. 3): see :func:`scan_inbox` docstring.
+    Forwarded to the per-upload arrival path so vendor SIR + Building
+    Inspection arrivals on a site that already has a DD Report trigger a
+    republish. ``None`` (the default) means "don't fire republish" — the
+    legacy first-generation path keeps owning the case where no DD
+    Report exists yet.
 
     Returns a dict with keys: uploaded, skipped, low_confidence, errors, marked.
     """
@@ -729,6 +809,29 @@ def process_email(
                     drive_file=drive_file,
                 )
                 uploaded[-1]["raycon_folder_ping"] = folder_ping
+
+                # Rec. 3 — generalized event-driven DD Report republish.
+                # When a vendor SIR or Building Inspection lands on a
+                # site that already has a DD Report, fire the shared
+                # republish hook so the report picks up the new
+                # authoritative input. RayCon arrivals continue to be
+                # handled by scripts/raycon_followup.py since they fire
+                # only when the scenario JSON is published, not when the
+                # Block Plan is filed here.
+                if (
+                    dd_republish_callback is not None
+                    and doc_type in ("sir", "building_inspection")
+                ):
+                    republish_result = _maybe_fire_dd_republish(
+                        callback=dd_republish_callback,
+                        gc=gc,
+                        site_summary=site_summary,
+                        doc_type=doc_type,
+                        drive_file=drive_file,
+                        dry_run=dry_run,
+                    )
+                    if republish_result:
+                        uploaded[-1]["dd_report_republish"] = republish_result
 
             if doc_type == "block_plan" and drive_file is not None:
                 block_plan_content = extract_text_from_pdf_bytes(file_bytes)
