@@ -156,6 +156,57 @@ class TestContentTier:
             # is_vendor should be False
             assert v.is_vendor is False
 
+    def test_classifier_internal_raise_fails_closed(self):
+        """When classify_provenance itself raises, fall through to a verdict
+        with ``provenance_classification_failed=True`` and ``is_vendor=False``.
+
+        This is the Tulsa-class failure mode (Rec. 6): an exception in the
+        classifier used to default ``is_vendor=True`` and let AI-generated
+        SIRs through the vendor gate. The fix flips the default to False
+        so the gate fails closed on classifier errors.
+        """
+        with patch(
+            "due_diligence_reporter.provenance._classify_provenance_inner",
+            side_effect=RuntimeError("OpenAI client blew up"),
+        ):
+            v = classify_provenance(
+                {"name": "Vendor SIR.pdf", "id": "abc"}, gc=None
+            )
+
+        assert v.provenance_classification_failed is True
+        assert v.is_vendor is False
+        assert v.tier == "error"
+        assert "RuntimeError" in v.reason
+
+    def test_classifier_raise_helper_returns_false(self):
+        """``is_vendor_sourced`` must surface the closed-gate default."""
+        with patch(
+            "due_diligence_reporter.provenance._classify_provenance_inner",
+            side_effect=ValueError("malformed input"),
+        ):
+            assert (
+                is_vendor_sourced({"name": "Vendor SIR.pdf", "id": "x"}, gc=None)
+                is False
+            )
+
+    def test_failed_flag_default_false_for_normal_verdicts(self):
+        """The new flag stays False on every normal classification path."""
+        # Filename hit
+        v = classify_provenance(
+            {"name": "addr_2026-04-29_SIR.docx", "id": "abc"}, gc=None
+        )
+        assert v.provenance_classification_failed is False
+
+        # doc_type short-circuit
+        v = classify_provenance(
+            {"name": "x.docx", "id": "x"}, gc=None, doc_type="dd_report"
+        )
+        assert v.provenance_classification_failed is False
+
+        # bad input → unknown verdict, but classifier did NOT raise
+        v = classify_provenance(None, gc=None)  # type: ignore[arg-type]
+        assert v.provenance_classification_failed is False
+
     def test_cache_hit(self):
         cache_blob = (
             '{"abc": {"modifiedTime": "t1", "label": "vendor", '

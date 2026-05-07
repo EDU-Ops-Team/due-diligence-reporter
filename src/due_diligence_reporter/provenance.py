@@ -89,11 +89,22 @@ class ProvenanceVerdict:
 
     label: str  # "vendor" | "ai_generated" | "unknown"
     confidence: float
-    tier: str  # "filename" | "content" | "cached" | "trivial"
+    tier: str  # "filename" | "content" | "cached" | "trivial" | "error"
     reason: str = ""
+    # Set True only when classify_provenance itself raised and we fell
+    # through to the safe default. Lets callers distinguish "classifier
+    # said this isn't vendor" from "classifier crashed and we don't
+    # actually know" — the latter must NOT open the vendor gate.
+    provenance_classification_failed: bool = False
 
     @property
     def is_vendor(self) -> bool:
+        # On classifier error we deliberately return False (not vendor) so
+        # AI-generated SIRs cannot slip past the vendor gate when the
+        # classifier itself crashes. This is the Tulsa-class failure mode
+        # that the recommendations doc (Rec. 6) calls out.
+        if self.provenance_classification_failed:
+            return False
         # Default to vendor on UNKNOWN — better to surface a doc the gate
         # then rejects on completeness than to silently hide a real vendor doc.
         return self.label != _AI
@@ -241,8 +252,45 @@ def classify_provenance(
             the doc_type is exclusively AI-produced (e.g. ``dd_report``),
             short-circuit before any I/O.
 
-    Returns a ``ProvenanceVerdict``.
+    Returns a ``ProvenanceVerdict``. On any internal exception, returns a
+    verdict with ``provenance_classification_failed=True`` and
+    ``is_vendor=False`` so the vendor gate fails closed instead of letting
+    AI-generated SIRs through (Rec. 6).
     """
+    try:
+        return _classify_provenance_inner(
+            file_info, gc, m1_folder_id=m1_folder_id, doc_type=doc_type
+        )
+    except Exception as e:
+        name = ""
+        try:
+            if isinstance(file_info, dict):
+                name = str(file_info.get("name", ""))
+        except Exception:
+            name = ""
+        logger.error(
+            "Provenance classification failed for %s (%s): %s",
+            name or "<unknown>",
+            type(e).__name__,
+            e,
+        )
+        return ProvenanceVerdict(
+            label=_UNKNOWN,
+            confidence=0.0,
+            tier="error",
+            reason=f"classifier raised {type(e).__name__}: {e}"[:200],
+            provenance_classification_failed=True,
+        )
+
+
+def _classify_provenance_inner(
+    file_info: dict[str, Any],
+    gc: Any | None = None,
+    *,
+    m1_folder_id: str | None = None,
+    doc_type: str | None = None,
+) -> ProvenanceVerdict:
+    """Real classify_provenance body. Wrapped by ``classify_provenance``."""
     if not isinstance(file_info, dict):
         return ProvenanceVerdict(_UNKNOWN, 0.0, "trivial", "no file_info")
 
