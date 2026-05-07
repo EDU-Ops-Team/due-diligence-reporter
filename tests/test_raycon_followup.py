@@ -17,6 +17,7 @@ from scripts.raycon_followup import (
     _dispatch_raycon_job,
     _filter_dedup_alerts,
     _process_site,
+    _republish_dd_report_if_present,
 )
 
 
@@ -684,6 +685,287 @@ class TestFilterDedupAlerts:
 
         assert len(fresh) == 1
         assert new_state["Alpha Keller"] == now.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Event-driven DD Report republish (Rec. 1)
+# ---------------------------------------------------------------------------
+
+
+class TestDDReportRepublish:
+    """Verifies the new ``_republish_dd_report_if_present`` helper and its
+    wiring inside ``_process_site`` after a successful RayCon Scenario Doc
+    publish.
+    """
+
+    def _settings(self) -> MagicMock:
+        s = MagicMock()
+        s.google_chat_webhook_url = ""
+        return s
+
+    @patch("scripts.raycon_followup.process_site_pipeline")
+    @patch("scripts.raycon_followup._find_existing_dd_report")
+    def test_existing_dd_report_triggers_force_regenerate(
+        self, mock_find_dd, mock_pipeline
+    ):
+        """Existing DD Report → ``process_site_pipeline(force_regenerate=True)``."""
+        mock_find_dd.return_value = {
+            "id": "dd1",
+            "name": "Alpha Keller DD Report - 2026-05-01",
+        }
+        result_obj = MagicMock()
+        result_obj.status = "report_created"
+        result_obj.doc_url = "https://docs.google.com/document/d/dd1"
+        mock_pipeline.return_value = result_obj
+
+        gc = MagicMock()
+        republish_state: dict = {}
+        out = _republish_dd_report_if_present(
+            gc,
+            _site(),
+            "rc_run_abc",
+            settings=self._settings(),
+            system_prompt="prompt",
+            shared_cache={},
+            republish_state=republish_state,
+            dry_run=False,
+        )
+
+        assert out["dd_report_republish"] == "republished"
+        assert out["raycon_run_id"] == "rc_run_abc"
+        # State updated for dedup on the next cron tick.
+        assert republish_state.get("site-123:rc_run_abc")
+        mock_pipeline.assert_called_once()
+        kwargs = mock_pipeline.call_args.kwargs
+        assert kwargs.get("force_regenerate") is True
+
+    @patch("scripts.raycon_followup.process_site_pipeline")
+    @patch("scripts.raycon_followup._find_existing_dd_report")
+    def test_no_existing_dd_report_is_noop(self, mock_find_dd, mock_pipeline):
+        """No existing DD Report → no pipeline call, marker set to skipped."""
+        mock_find_dd.return_value = None
+
+        gc = MagicMock()
+        out = _republish_dd_report_if_present(
+            gc,
+            _site(),
+            "rc_run_abc",
+            settings=self._settings(),
+            system_prompt="prompt",
+            shared_cache={},
+            republish_state={},
+            dry_run=False,
+        )
+
+        assert out["dd_report_republish"] == "skipped_no_existing_report"
+        mock_pipeline.assert_not_called()
+
+    @patch("scripts.raycon_followup.process_site_pipeline")
+    @patch("scripts.raycon_followup._find_existing_dd_report")
+    def test_already_deduped_run_is_noop(self, mock_find_dd, mock_pipeline):
+        """Same (site_id, raycon_run_id) within force_after window → no-op."""
+        mock_find_dd.return_value = {
+            "id": "dd1",
+            "name": "Alpha Keller DD Report - 2026-05-01",
+        }
+        recent = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        republish_state = {"site-123:rc_run_abc": recent}
+
+        gc = MagicMock()
+        out = _republish_dd_report_if_present(
+            gc,
+            _site(),
+            "rc_run_abc",
+            settings=self._settings(),
+            system_prompt="prompt",
+            shared_cache={},
+            republish_state=republish_state,
+            dry_run=False,
+        )
+
+        assert out["dd_report_republish"] == "deduped"
+        mock_pipeline.assert_not_called()
+        # State unchanged.
+        assert republish_state["site-123:rc_run_abc"] == recent
+
+    @patch("scripts.raycon_followup.process_site_pipeline")
+    @patch("scripts.raycon_followup._find_existing_dd_report")
+    def test_pipeline_raise_is_caught(self, mock_find_dd, mock_pipeline):
+        """``process_site_pipeline`` exception → 'failed' marker, no crash."""
+        mock_find_dd.return_value = {"id": "dd1", "name": "Alpha Keller DD Report"}
+        mock_pipeline.side_effect = RuntimeError("Anthropic 500")
+
+        gc = MagicMock()
+        out = _republish_dd_report_if_present(
+            gc,
+            _site(),
+            "rc_run_abc",
+            settings=self._settings(),
+            system_prompt="prompt",
+            shared_cache={},
+            republish_state={},
+            dry_run=False,
+        )
+
+        assert out["dd_report_republish"] == "failed"
+        assert "Anthropic 500" in out["reason"]
+
+    @patch("scripts.raycon_followup.save_skill_report")
+    @patch("scripts.raycon_followup._find_published_doc")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_skip_dd_republish_flag_suppresses_callback(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_find_doc,
+        mock_save,
+    ):
+        """``skip_dd_republish=True`` → callback is never invoked even after
+        a successful RayCon Scenario Doc publish.
+        """
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "completed",
+            "raycon_run_id": "rc_happy",
+            "analysis": {
+                "fastest_open": {"grand_total": 10, "timeline_weeks": 4},
+                "max_capacity": {"grand_total": 20, "timeline_weeks": 8},
+            },
+            "validation": {"passed": True, "errors": []},
+            "_drive_modified_time": "2026-05-05T20:00:00Z",
+        }
+        mock_find_doc.return_value = None
+
+        async def _fake_save(**_kwargs):
+            return {"status": "success", "doc_url": "https://docs/x"}
+
+        mock_save.side_effect = _fake_save
+
+        callback = MagicMock()
+        gc = MagicMock()
+        row = _process_site(
+            gc,
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            skip_dd_republish=True,
+            dd_republish_callback=callback,
+        )
+
+        assert row.get("published") is True
+        callback.assert_not_called()
+        # No republish marker leaks into the row.
+        assert "dd_report_republish" not in row
+
+    @patch("scripts.raycon_followup.save_skill_report")
+    @patch("scripts.raycon_followup._find_published_doc")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_callback_invoked_after_successful_publish(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_find_doc,
+        mock_save,
+    ):
+        """Successful RayCon Scenario Doc publish → callback fires once,
+        result merged into the per-site row, raycon_run_id forwarded.
+        """
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "completed",
+            "raycon_run_id": "rc_happy_xyz",
+            "analysis": {
+                "fastest_open": {"grand_total": 10, "timeline_weeks": 4},
+                "max_capacity": {"grand_total": 20, "timeline_weeks": 8},
+            },
+            "validation": {"passed": True, "errors": []},
+            "_drive_modified_time": "2026-05-05T20:00:00Z",
+        }
+        mock_find_doc.return_value = None
+
+        async def _fake_save(**_kwargs):
+            return {"status": "success", "doc_url": "https://docs/x"}
+
+        mock_save.side_effect = _fake_save
+
+        callback = MagicMock(
+            return_value={"dd_report_republish": "republished", "raycon_run_id": "rc_happy_xyz"}
+        )
+        gc = MagicMock()
+        row = _process_site(
+            gc,
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dd_republish_callback=callback,
+        )
+
+        assert row.get("published") is True
+        assert row.get("dd_report_republish") == "republished"
+        callback.assert_called_once()
+        assert callback.call_args.kwargs["raycon_run_id"] == "rc_happy_xyz"
+
+    @patch("scripts.raycon_followup.save_skill_report")
+    @patch("scripts.raycon_followup._find_published_doc")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_callback_exception_does_not_break_publish(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_find_doc,
+        mock_save,
+    ):
+        """Callback raising → row still reports published=True; failure
+        marker captured. The RayCon Scenario Doc publish has already
+        succeeded by the time we get here, and a republish failure must
+        not undo that.
+        """
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "completed",
+            "raycon_run_id": "rc_happy",
+            "analysis": {
+                "fastest_open": {"grand_total": 10, "timeline_weeks": 4},
+                "max_capacity": {"grand_total": 20, "timeline_weeks": 8},
+            },
+            "validation": {"passed": True, "errors": []},
+            "_drive_modified_time": "2026-05-05T20:00:00Z",
+        }
+        mock_find_doc.return_value = None
+
+        async def _fake_save(**_kwargs):
+            return {"status": "success", "doc_url": "https://docs/x"}
+
+        mock_save.side_effect = _fake_save
+
+        callback = MagicMock(side_effect=RuntimeError("pipeline blew up"))
+        gc = MagicMock()
+        row = _process_site(
+            gc,
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dd_republish_callback=callback,
+        )
+
+        assert row.get("published") is True
+        assert row.get("dd_report_republish") == "failed"
+        assert "pipeline blew up" in row.get("reason", "")
 
 
 # ---------------------------------------------------------------------------

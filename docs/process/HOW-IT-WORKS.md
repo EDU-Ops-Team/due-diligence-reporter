@@ -12,7 +12,7 @@ The Due Diligence Reporter is an AI agent powered by Claude that generates Site 
 
 1. **Interactive** â€” A human gives it a site name in chat via MCP Hive. The agent gathers data, runs analytical skills, and produces an executive-ready Google Doc.
 2. **Event-Driven (Inbox Scan â€” every 15 min)** â€” A scheduled script scans the `edu.ops@trilogy.com` inbox for new SIR, Building Inspection, and ISP PDFs, classifies them by filename using a three-tier classifier (regex â†’ GPT-4o-mini), and uploads to the correct shared Drive folder.
-3. **Daily Sweep (Safety Net â€” 9 AM)** â€” A scheduled script scans all Wrike Site Records in active DD stages. When a site has all three required documents (SIR, ISP, Building Inspection) and no existing report, it triggers full report generation. This catches anything the 15-min scan missed.
+3. **Daily Sweep (Safety Net â€” 9 AM)** â€” A scheduled script scans all Wrike Site Records in active DD stages. When a site has the required documents (SIR + Building Inspection; ISP is informational only) and no existing report, it triggers full report generation. This catches anything the 15-min scan missed.
 
 The agent gathers facts. It does not make recommendations. The decision belongs to the leadership team.
 
@@ -190,7 +190,7 @@ For each unique site that received an upload:
   1. Look up Wrike record â†’ get Drive folder URL â†’ build match terms
   2. Refresh shared folder cache (picks up just-uploaded files)
   3. Run process_site_pipeline():
-     a. Check readiness (SIR + ISP + Inspection present?)
+     a. Check readiness (SIR + Inspection present? ISP is informational only)
      b. If missing docs â†’ post Google Chat alert with checklist
      c. If report exists â†’ skip
      d. If ready â†’ trigger Claude agent loop â†’ check completeness â†’ email
@@ -238,8 +238,13 @@ Only escalates when the previous tier returns unknown/low confidence. Falls back
 A report is only generated when all three conditions are met:
 
 ```
-ready_for_report = sir_found AND isp_found AND inspection_found AND NOT report_exists
+ready_for_report = sir_found AND inspection_found AND NOT report_exists
 ```
+
+ISP is no longer a gating input. It still gets routed to Drive by the
+inbox scanner, classifier, and folder pings to RayCon, and `isp_found`
+is still surfaced in the readiness payload as informational — but
+report generation no longer waits on it.
 
 ---
 
@@ -428,7 +433,7 @@ Sites in later stages (FTO in progress, FTO signed, operational) are skipped.
 
 ```
 For each Wrike Site Record in active stages with a Drive folder:
-  1. Check readiness (SIR + ISP + Inspection present, no report exists)
+  1. Check readiness (SIR + Inspection present, no report exists; ISP is informational only)
   2. If missing docs -> post Google Chat alert listing what's missing
   3. If report exists -> skip
   4. If ready -> run Claude agent loop:
