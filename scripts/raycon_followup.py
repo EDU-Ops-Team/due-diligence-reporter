@@ -225,36 +225,13 @@ def _load_republish_state(
 ) -> dict[str, str]:
     """Load the shared DD republish dedup map.
 
-    Migrates legacy keys from the pre-Rec.3 ``.raycon_dd_republish_state.json``
-    (shape ``site_id:run_id``) into the new ``site_id:reason:fingerprint``
-    shape on first read. The new file wins on conflict; legacy entries are
-    only used to seed dedup on the first run after deploy.
+    Delegates to ``dd_republish.load_state``, which now owns the
+    one-shot legacy migration so both raycon_followup and scan_inbox
+    pick it up. Kept as a thin wrapper so existing tests that patch
+    ``scripts.raycon_followup._load_republish_state`` still observe
+    the call.
     """
-    state = _load_dd_republish_state_shared(path)
-
-    # One-shot migration: read the legacy file (if any) and rewrite each
-    # entry into the new key shape, but only when the new state doesn't
-    # already have an equivalent entry. We cannot delete the legacy file
-    # safely here (no write permissions in test sandboxes), so we just
-    # overlay it. Subsequent runs no-op once writes have been persisted to
-    # the new path because state already contains the migrated keys.
-    try:
-        if legacy_path.exists():
-            legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
-            if isinstance(legacy, dict):
-                for old_key, ts in legacy.items():
-                    # Old key is "{site_id}:{run_id}". New key adds the
-                    # ``raycon_scenario`` reason in the middle.
-                    if not isinstance(old_key, str) or ":" not in old_key:
-                        continue
-                    site_id, run_id = old_key.split(":", 1)
-                    new_key = f"{site_id}:{REASON_RAYCON}:{run_id}"
-                    state.setdefault(new_key, str(ts))
-    except Exception as e:
-        logger.warning(
-            "Failed to migrate legacy DD republish state at %s: %s", legacy_path, e
-        )
-    return state
+    return _load_dd_republish_state_shared(path, legacy_path=legacy_path)
 
 
 def _save_republish_state(
@@ -485,6 +462,7 @@ def _republish_dd_report_if_present(
     shared_cache: dict[str, list[dict[str, Any]]],
     republish_state: dict[str, str],
     dry_run: bool,
+    drive_modified_time: str = "",
     now: datetime | None = None,
     force_after: timedelta = DD_REPUBLISH_FORCE_AFTER,
 ) -> dict[str, Any]:
@@ -504,10 +482,15 @@ def _republish_dd_report_if_present(
     """
     now = now or datetime.now(timezone.utc)
 
-    # Synthesize a stable fingerprint when RayCon doesn't supply a
-    # raycon_run_id, mirroring pre-refactor behavior so the same
-    # scenario JSON polled repeatedly within the day stays deduped.
-    run_key = raycon_run_id.strip() or f"unknown@{now.date().isoformat()}"
+    # Composite fingerprint mirrors the SIR/BI shape (file_id:modifiedTime).
+    # If RayCon recomputes the same run_id but writes fresh content (new
+    # _drive_modified_time), the modifiedTime suffix changes and we
+    # republish; otherwise dedup holds. Without this suffix a real content
+    # change gets silently skipped for up to DD_REPUBLISH_FORCE_AFTER.
+    raycon_run_id = raycon_run_id.strip()
+    drive_modified_time = (drive_modified_time or "").strip()
+    base_key = raycon_run_id or f"unknown@{now.date().isoformat()}"
+    run_key = f"{base_key}:{drive_modified_time}" if drive_modified_time else base_key
 
     site_id = str(site_summary.get("id", "")).strip()
     site_name = str(site_summary.get("title", "")).strip() or "(unnamed)"
@@ -545,12 +528,14 @@ def _republish_dd_report_if_present(
 
     # Translate the helper's decision strings back to the legacy strings
     # raycon_followup callers (and tests) expect. The ``raycon_run_id``
-    # field is preserved on every row so on-call grepping by run still
-    # works after the refactor.
+    # field on the row is the bare run id (without the modifiedTime
+    # suffix) so on-call grepping by run still works after the
+    # composite-fingerprint fix.
+    legacy_run_id = base_key
     if outcome.decision == "republish":
         return {
             "dd_report_republish": "republished",
-            "raycon_run_id": run_key,
+            "raycon_run_id": legacy_run_id,
             "pipeline_status": outcome.pipeline_status,
             "doc_url": outcome.doc_url,
         }
@@ -559,7 +544,7 @@ def _republish_dd_report_if_present(
     if outcome.decision == "skip_no_diff":
         return {
             "dd_report_republish": "deduped",
-            "raycon_run_id": run_key,
+            "raycon_run_id": legacy_run_id,
             "last_republish": outcome.last_republish or None,
         }
     if outcome.decision == "skip_dry_run":
@@ -568,7 +553,7 @@ def _republish_dd_report_if_present(
         )
         return {
             "dd_report_republish": "would_republish",
-            "raycon_run_id": run_key,
+            "raycon_run_id": legacy_run_id,
             "existing_dd_report_id": (existing or {}).get("id"),
         }
     if outcome.decision == "failed":
@@ -747,10 +732,14 @@ def _process_site(
                 )
                 or scenario.get("raycon_run_id", "")
             ).strip()
+            drive_modified_time = str(
+                scenario.get("_drive_modified_time", "")
+            ).strip()
             republish_result = dd_republish_callback(
                 gc=gc,
                 site_summary=site_summary,
                 raycon_run_id=raycon_run_id,
+                drive_modified_time=drive_modified_time,
                 dry_run=dry_run,
             )
         except Exception as e:
@@ -843,6 +832,7 @@ def main(argv: list[str] | None = None) -> int:
         site_summary: dict[str, Any],
         raycon_run_id: str,
         dry_run: bool,
+        drive_modified_time: str = "",
     ) -> dict[str, Any]:
         nonlocal _shared_cache, _system_prompt
         if _system_prompt is None:
@@ -867,6 +857,7 @@ def main(argv: list[str] | None = None) -> int:
             shared_cache=_shared_cache,
             republish_state=republish_state,
             dry_run=dry_run,
+            drive_modified_time=drive_modified_time,
         )
 
     results: list[dict[str, Any]] = []

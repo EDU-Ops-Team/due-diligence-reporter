@@ -51,6 +51,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Restore DD republish dedup state
+        # Persists .dd_republish_state.json across cron ticks so the 12h
+        # DD_REPUBLISH_FORCE_AFTER window is honored. Without this the
+        # state file is born empty every run and dedup degrades to
+        # intra-run only.
+        #
+        # Save key includes ${{ github.run_id }} so each run writes a
+        # fresh cache entry (actions/cache only writes when the exact
+        # key is new); restore-keys falls back to the latest entry that
+        # matches the prefix, giving us cross-run continuity without
+        # ever overwriting a key in place.
+        id: restore-dd-republish-state
+        uses: actions/cache/restore@v4
+        with:
+          path: .dd_republish_state.json
+          key: dd-republish-state-${{ github.workflow }}-${{ github.run_id }}
+          restore-keys: |
+            dd-republish-state-${{ github.workflow }}-
+            dd-republish-state-
+
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -154,6 +174,17 @@ jobs:
             ARGS+=(--alert-after-minutes "$INPUT_ALERT_AFTER_MINUTES")
           fi
           uv run python scripts/raycon_followup.py "${ARGS[@]}"
+
+      - name: Save DD republish dedup state
+        # Always run so we persist state even when the script step
+        # exits non-zero — partial dedup beats no dedup. The save key
+        # is run-id-scoped so we never collide with an existing entry;
+        # the next run picks us up via the restore-keys prefix fallback.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .dd_republish_state.json
+          key: dd-republish-state-${{ github.workflow }}-${{ github.run_id }}
 
       - name: Done
         run: echo "RayCon follow-up completed"
