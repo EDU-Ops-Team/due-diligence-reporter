@@ -3234,8 +3234,12 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
       ``last_dispatch`` (most recent ``/v1/jobs`` POST timestamp from the
       dispatch state file written by ``scripts/raycon_followup.py``), and
       ``minutes_since`` (integer minutes since that dispatch).
-    * ``ready_for_full_report`` — true iff every entry in ``blocking`` is
-      ``present``.
+    * ``ready_for_full_report`` — mirrors ``_missing_required_docs``
+      exactly. Under ``VENDOR_GATE_ENABLED=1`` this requires vendor SIR,
+      vendor BI, and RayCon scenario to all be present; under
+      ``VENDOR_GATE_ENABLED=0`` only SIR + BI presence is required and
+      RayCon absence does NOT block readiness (``blocking[]`` still
+      reports its actual status, but it's diagnostic-only).
     * ``partial_report_possible`` — true iff the floor for "we have
       something to write about" is met (vendor SIR present, or — with the
       legacy gate — bare SIR presence). A partial report is possible even
@@ -3244,6 +3248,11 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
       report would fill or leave pending if it ran right now.
     * ``vendor_gate_enabled`` — which view (vendor-strict vs. legacy) is
       being reported.
+    * ``m1_folder_missing`` — true when the per-site ``M1`` Drive
+      subfolder hasn't been created yet (the inbox scanner creates it
+      on first upload). When true, ``drive_folder_url`` is ``null`` and
+      the vendor / RayCon slots will all surface as missing/pending —
+      no folder is created, since this tool is strictly read-only.
 
     Use this BEFORE ``create_dd_report`` to decide whether to run now
     (accept partial) or wait.
@@ -3271,6 +3280,7 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
         # Local imports to avoid pulling anthropic et al. into the
         # top-level server import path.
         from .report_pipeline import (
+            _missing_required_docs,
             _vendor_gate_enabled,
             check_site_readiness_direct,
             list_shared_folders_once,
@@ -3306,6 +3316,11 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
             match_terms = _build_site_match_terms(site_title, address)
             shared_cache = list_shared_folders_once(gc)
 
+            # ``read_only=True`` propagates two suppressions through the
+            # readiness check: it skips the ``M1`` folder creation in
+            # ``_resolve_m1_folder`` and skips the provenance cache write
+            # in ``classify_provenance``. Both side effects would otherwise
+            # break the "strictly read-only" contract.
             readiness = check_site_readiness_direct(
                 gc,
                 drive_folder_url,
@@ -3313,17 +3328,21 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
                 shared_cache,
                 site_title=site_title,
                 site_address=address,
+                read_only=True,
             )
 
-            # Resolve M1 to find the Block Plan file ID and its
-            # modifiedTime. The Block Plan ID is the lookup key into the
-            # dispatch state map; its modifiedTime is the proxy for
-            # ``last_dispatch`` if the dispatch state file is missing
-            # (e.g. the cron has never run on this checkout).
+            # Resolve M1 (read-only — never create) to find the Block
+            # Plan file ID and its modifiedTime. The Block Plan ID is
+            # the lookup key into the dispatch state map; its
+            # modifiedTime is the proxy for ``last_dispatch`` if the
+            # dispatch state file is missing (e.g. the cron has never
+            # run on this checkout).
             block_plan_file_id: str | None = None
             block_plan_modified: str | None = None
             try:
-                m1_folder_id, _ = _resolve_m1_folder(gc, drive_folder_url)
+                m1_folder_id, _ = _resolve_m1_folder(
+                    gc, drive_folder_url, create_if_missing=False
+                )
             except Exception as e:
                 logger.warning(
                     "diagnose_site_readiness: M1 resolve failed for '%s': %s",
@@ -3331,6 +3350,9 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
                     e,
                 )
                 m1_folder_id = None
+
+            m1_folder_missing = m1_folder_id is None
+
             if m1_folder_id:
                 try:
                     m1_docs = _list_m1_documents_by_type(gc, m1_folder_id)
@@ -3393,9 +3415,13 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
                 raycon_minutes_since=minutes_since,
             )
 
-            ready_for_full_report = all(
-                entry["status"] == "present" for entry in blocking
-            )
+            # ``ready_for_full_report`` mirrors ``_missing_required_docs``
+            # exactly. Under the legacy gate (VENDOR_GATE_ENABLED=0) this
+            # means RayCon and vendor provenance do NOT block readiness —
+            # ``blocking[]`` still reports their actual status so the
+            # caller sees the full diagnostic view, but they don't pull
+            # ``ready_for_full_report`` to False.
+            ready_for_full_report = not _missing_required_docs(readiness)
 
             # ``partial_report_possible`` floor: vendor SIR present (with
             # the gate on) or any SIR present (legacy). Mirrors what
@@ -3425,6 +3451,7 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
                 "ready_for_full_report": ready_for_full_report,
                 "partial_report_possible": partial_report_possible,
                 "vendor_gate_enabled": vendor_gate_enabled,
+                "m1_folder_missing": m1_folder_missing,
                 "blocking": blocking,
                 "would_be_filled_now": would_be_filled_now,
                 "would_be_pending": would_be_pending,
@@ -3433,7 +3460,7 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
                     reason: REASON_DISPLAY_LABELS.get(reason, reason)
                     for reason in projection.get("pending_reasons", {})
                 },
-                "drive_folder_url": drive_folder_url,
+                "drive_folder_url": None if m1_folder_missing else drive_folder_url,
             }
         except Exception as e:
             logger.error("diagnose_site_readiness failed: %s", e)

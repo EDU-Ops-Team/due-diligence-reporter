@@ -343,8 +343,16 @@ def check_site_readiness_direct(
     *,
     site_title: str | None = None,
     site_address: str | None = None,
+    read_only: bool = False,
 ) -> dict[str, Any]:
-    """Check site document readiness directly without going through MCP."""
+    """Check site document readiness directly without going through MCP.
+
+    Pass ``read_only=True`` from read-only callers (e.g. the diagnose
+    tool) to suppress two write side effects: creating the per-site M1
+    folder when it's missing and writing the provenance cache to Drive
+    on a Tier 2 miss. Defaults to ``False`` to preserve existing
+    cron-path behavior for ``check_site_readiness`` / ``create_dd_report``.
+    """
     folder_id = extract_folder_id_from_url(drive_folder_url)
     if not folder_id:
         return {
@@ -406,7 +414,9 @@ def check_site_readiness_direct(
     # CDS overlays into the M1 folder. Run a per-file provenance check (cheap
     # filename heuristic + cached LLM content fallback) so the readiness gate
     # only opens on *vendor-sourced* SIR + BI.
-    m1_folder_id, _ = _resolve_m1_folder(gc, drive_folder_url)
+    m1_folder_id, _ = _resolve_m1_folder(
+        gc, drive_folder_url, create_if_missing=not read_only
+    )
 
     def _vendor_check(doc_type: str) -> bool:
         f = files_by_type.get(doc_type)
@@ -414,7 +424,11 @@ def check_site_readiness_direct(
             return False
         try:
             verdict = classify_provenance(
-                f, gc, m1_folder_id=m1_folder_id, doc_type=doc_type
+                f,
+                gc,
+                m1_folder_id=m1_folder_id,
+                doc_type=doc_type,
+                read_only=read_only,
             )
         except Exception as e:  # pragma: no cover
             logger.warning(

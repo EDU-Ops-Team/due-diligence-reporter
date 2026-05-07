@@ -349,22 +349,20 @@ def test_vendor_gate_disabled_reports_legacy_view(tmp_path, monkeypatch):
     _vendor_gate_off(monkeypatch)
     _no_dispatch_state(tmp_path, monkeypatch)
 
-    # SIR found but NOT vendor-classified. Under the gate this would be
-    # missing; with the gate off, the file's mere presence satisfies SIR.
+    # SIR + BI present (legacy gate satisfied) but NOT vendor-classified
+    # AND RayCon scenario MISSING. Under the legacy gate
+    # ``_missing_required_docs`` only requires SIR + BI presence, so
+    # ``ready_for_full_report`` must be True even though the diagnostic
+    # ``blocking[]`` view still surfaces RayCon as pending and the
+    # vendor entries as ``present`` (legacy semantics: bare presence).
     patchers = _patch_common(
         readiness=_readiness(
             sir_found=True,
             sir_vendor=False,
             inspection_found=True,
             inspection_vendor=False,
-            raycon_scenario_found=True,
+            raycon_scenario_found=False,
         ),
-        m1_docs={
-            "raycon_scenario_json": {
-                "id": "rs-1",
-                "modifiedTime": "2026-05-07T13:30:00Z",
-            },
-        },
     )
     _enter_all(patchers)
     try:
@@ -374,15 +372,277 @@ def test_vendor_gate_disabled_reports_legacy_view(tmp_path, monkeypatch):
 
     assert result["vendor_gate_enabled"] is False
     statuses = {b["doc"]: b["status"] for b in result["blocking"]}
-    # All three slots are satisfied under the legacy gate even though the
-    # AI-only SIR/BI would be rejected by the vendor gate.
+    # Under the legacy gate, ``vendor_sir`` / ``building_inspection`` slots
+    # report bare presence, and RayCon is reported as pending — but
+    # ``ready_for_full_report`` still flips True (Fix 3: mirror
+    # ``_missing_required_docs`` exactly).
     assert statuses == {
         "vendor_sir": "present",
         "building_inspection": "present",
-        "raycon_scenario": "present",
+        "raycon_scenario": "pending",
     }
     assert result["ready_for_full_report"] is True
     assert result["partial_report_possible"] is True
+
+
+# ---------------------------------------------------------------------------
+# 7. Fix 1 — diagnose path must not create the M1 folder when absent.
+# ---------------------------------------------------------------------------
+
+
+def test_diagnose_does_not_create_m1_folder(tmp_path, monkeypatch):
+    """Diagnose against a site with no M1 folder must NOT call create_folder.
+
+    Verifies (a) ``gc.create_folder`` is never invoked, (b) the response
+    surfaces ``m1_folder_missing: True`` and ``drive_folder_url: None``,
+    (c) other fields populate gracefully (vendor_gate_enabled, blocking
+    showing all three docs missing/pending, partial_report_possible False).
+    """
+    _vendor_gate_on(monkeypatch)
+    _no_dispatch_state(tmp_path, monkeypatch)
+
+    fake_gc = MagicMock()
+    fake_gc.list_subfolders.return_value = []  # no M1 subfolder anywhere
+
+    # Use the *real* ``_resolve_m1_folder`` to confirm Fix 1's
+    # ``create_if_missing=False`` propagates from the diagnose path.
+    patchers = [
+        patch(
+            "due_diligence_reporter.server.find_site_record",
+            return_value=_record(),
+        ),
+        patch(
+            "due_diligence_reporter.server.build_site_summary",
+            return_value=_summary(),
+        ),
+        patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=fake_gc,
+        ),
+        patch(
+            "due_diligence_reporter.server._build_site_match_terms",
+            return_value=[SITE_TITLE],
+        ),
+        patch(
+            "due_diligence_reporter.report_pipeline.list_shared_folders_once",
+            return_value={},
+        ),
+        patch(
+            "due_diligence_reporter.report_pipeline.check_site_readiness_direct",
+            return_value=_readiness(
+                sir_found=False,
+                sir_vendor=False,
+                inspection_found=False,
+                inspection_vendor=False,
+                raycon_scenario_found=False,
+            ),
+        ),
+    ]
+    _enter_all(patchers)
+    try:
+        result = _run()
+    finally:
+        _stop_all(patchers)
+
+    # Fix 1: no folder creation.
+    fake_gc.create_folder.assert_not_called()
+
+    assert result["status"] == "success"
+    assert result["m1_folder_missing"] is True
+    assert result["drive_folder_url"] is None
+    assert result["vendor_gate_enabled"] is True
+    assert result["partial_report_possible"] is False
+    assert result["ready_for_full_report"] is False
+
+    statuses = {b["doc"]: b["status"] for b in result["blocking"]}
+    assert statuses == {
+        "vendor_sir": "missing",
+        "building_inspection": "missing",
+        "raycon_scenario": "pending",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8. Fix 2 — diagnose path must not write the provenance cache.
+# ---------------------------------------------------------------------------
+
+
+def test_diagnose_does_not_write_provenance_cache(tmp_path, monkeypatch):
+    """Tier 2 provenance miss in the diagnose path must not call ``_save_cache``.
+
+    We exercise the *real* ``check_site_readiness_direct`` (not mocked)
+    so the ``read_only=True`` flag actually flows through to
+    ``classify_provenance``. The fake GoogleClient pretends to find an
+    SIR file whose filename does NOT match the AI heuristic and whose
+    bytes don't disambiguate, forcing the default-to-vendor Tier 2 path
+    that would normally write the cache.
+    """
+    _vendor_gate_on(monkeypatch)
+    _no_dispatch_state(tmp_path, monkeypatch)
+
+    sir_file = {
+        "id": "sir-1",
+        "name": "Vendor SIR Update.pdf",  # does NOT match AI filename heuristic
+        "modifiedTime": "2026-05-07T10:00:00Z",
+    }
+
+    fake_gc = MagicMock()
+    fake_gc.list_subfolders.return_value = [
+        {
+            "id": "m1-folder-id",
+            "name": "M1",
+            "webViewLink": "https://drive.google.com/drive/folders/m1",
+        }
+    ]
+    # Recursive listing returns no docs at the site root (so shared cache /
+    # M1 are the only sources). Provenance check still runs on the SIR.
+    fake_gc.list_files_recursive.return_value = []
+    fake_gc.list_files_in_folder.return_value = []
+    # Tier 2 would download bytes — return a vague PDF blob that lands
+    # on default-to-vendor.
+    fake_gc.download_file_bytes.return_value = b"%PDF-1.4 some vendor doc"
+
+    # Force the SIR into the readiness pipeline via the shared-folder cache
+    # fallback path. The simplest way to drive ``classify_provenance``
+    # through Tier 2 is to patch it directly and assert ``read_only=True``
+    # is forwarded — the cache is only written when ``read_only`` is False.
+    save_cache_calls: list[tuple] = []
+    classify_call_kwargs: list[dict] = []
+
+    def spy_classify_provenance(*args, **kwargs):
+        classify_call_kwargs.append(dict(kwargs))
+        # Return a vendor verdict so readiness fields populate normally.
+        from due_diligence_reporter.provenance import ProvenanceVerdict
+        return ProvenanceVerdict(
+            label="vendor", confidence=0.9, tier="content", reason="spy"
+        )
+
+    def spy_save_cache(*args, **kwargs):
+        save_cache_calls.append((args, kwargs))
+
+    patchers = [
+        patch(
+            "due_diligence_reporter.server.find_site_record",
+            return_value=_record(),
+        ),
+        patch(
+            "due_diligence_reporter.server.build_site_summary",
+            return_value=_summary(),
+        ),
+        patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=fake_gc,
+        ),
+        patch(
+            "due_diligence_reporter.server._build_site_match_terms",
+            return_value=[SITE_TITLE],
+        ),
+        patch(
+            "due_diligence_reporter.server._list_m1_documents_by_type",
+            return_value={},
+        ),
+        patch(
+            "due_diligence_reporter.report_pipeline.list_shared_folders_once",
+            return_value={"sir": [sir_file]},
+        ),
+        # Patch the classifier so we can capture kwargs (specifically
+        # ``read_only``). This is the symbol referenced by
+        # ``check_site_readiness_direct``.
+        patch(
+            "due_diligence_reporter.report_pipeline.classify_provenance",
+            side_effect=spy_classify_provenance,
+        ),
+        # Patch ``_save_cache`` to verify it's NEVER invoked from the
+        # diagnose path. This belt-and-braces check guards against any
+        # future code path that reintroduces a cache write.
+        patch(
+            "due_diligence_reporter.provenance._save_cache",
+            side_effect=spy_save_cache,
+        ),
+        # Make ``match_site_in_shared_cache`` actually return our SIR
+        # so the readiness pipeline runs the provenance check on it.
+        patch(
+            "due_diligence_reporter.report_pipeline.match_site_in_shared_cache",
+            return_value={"sir": sir_file},
+        ),
+    ]
+    _enter_all(patchers)
+    try:
+        result = _run()
+    finally:
+        _stop_all(patchers)
+
+    # Fix 2 core assertion: cache write never happened.
+    assert save_cache_calls == [], (
+        f"_save_cache must not be called from the diagnose path; "
+        f"got {len(save_cache_calls)} call(s)"
+    )
+    # And the classifier was invoked with read_only=True.
+    assert any(
+        kw.get("read_only") is True for kw in classify_call_kwargs
+    ), (
+        "classify_provenance must be called with read_only=True from the "
+        f"diagnose path; saw kwargs: {classify_call_kwargs}"
+    )
+    # Sanity: response is still a success envelope.
+    assert result["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# 9. Fix 3 — gate-off + RayCon missing + vendor docs missing →
+#    ready_for_full_report mirrors _missing_required_docs (i.e. True if
+#    SIR + BI present), and blocking[] still surfaces all three docs.
+# ---------------------------------------------------------------------------
+
+
+def test_gate_off_raycon_missing_vendor_missing_ready_true(tmp_path, monkeypatch):
+    """Gate-off, RayCon missing, vendor docs missing → ready=True.
+
+    Under VENDOR_GATE_ENABLED=0, ``_missing_required_docs`` only
+    requires SIR + BI presence. The diagnose tool's
+    ``ready_for_full_report`` must mirror that exactly even though
+    ``blocking[]`` reports vendor SIR/BI/RayCon with their actual
+    statuses (so the agent sees the truth).
+    """
+    _vendor_gate_off(monkeypatch)
+    _no_dispatch_state(tmp_path, monkeypatch)
+
+    patchers = _patch_common(
+        readiness=_readiness(
+            sir_found=True,
+            sir_vendor=False,         # vendor missing
+            inspection_found=True,
+            inspection_vendor=False,  # vendor missing
+            raycon_scenario_found=False,  # RayCon missing
+        ),
+    )
+    _enter_all(patchers)
+    try:
+        result = _run()
+    finally:
+        _stop_all(patchers)
+
+    # ``_missing_required_docs`` under gate-off only checks SIR + BI
+    # bare presence — both are present here, so ready_for_full_report
+    # must be True even with RayCon missing and vendor classification
+    # absent.
+    assert result["vendor_gate_enabled"] is False
+    assert result["ready_for_full_report"] is True
+    assert result["partial_report_possible"] is True
+
+    # ``blocking[]`` must still surface all three docs honestly so the
+    # caller can see the real picture.
+    statuses = {b["doc"]: b["status"] for b in result["blocking"]}
+    assert statuses == {
+        "vendor_sir": "present",       # legacy view: bare presence
+        "building_inspection": "present",
+        "raycon_scenario": "pending",  # actual status, even though
+                                       # not blocking under gate-off
+    }
+    raycon_entry = next(
+        b for b in result["blocking"] if b["doc"] == "raycon_scenario"
+    )
+    assert raycon_entry["block_plan_present"] is False
 
 
 # ---------------------------------------------------------------------------

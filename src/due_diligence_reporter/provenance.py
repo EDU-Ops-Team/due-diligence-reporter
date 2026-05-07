@@ -238,6 +238,7 @@ def classify_provenance(
     *,
     m1_folder_id: str | None = None,
     doc_type: str | None = None,
+    read_only: bool = False,
 ) -> ProvenanceVerdict:
     """Classify a Drive file as vendor- or AI-sourced.
 
@@ -251,6 +252,10 @@ def classify_provenance(
         doc_type: optional pre-computed classifier result. When passed and
             the doc_type is exclusively AI-produced (e.g. ``dd_report``),
             short-circuit before any I/O.
+        read_only: when True, never write the provenance cache back to
+            Drive even on a Tier 2 miss. Used by read-only callers (e.g.
+            the diagnose tool). The cache is still *read* — only the
+            ``_save_cache`` side effect is suppressed.
 
     Returns a ``ProvenanceVerdict``. On any internal exception, returns a
     verdict with ``provenance_classification_failed=True`` and
@@ -259,7 +264,11 @@ def classify_provenance(
     """
     try:
         return _classify_provenance_inner(
-            file_info, gc, m1_folder_id=m1_folder_id, doc_type=doc_type
+            file_info,
+            gc,
+            m1_folder_id=m1_folder_id,
+            doc_type=doc_type,
+            read_only=read_only,
         )
     except Exception as e:
         name = ""
@@ -289,6 +298,7 @@ def _classify_provenance_inner(
     *,
     m1_folder_id: str | None = None,
     doc_type: str | None = None,
+    read_only: bool = False,
 ) -> ProvenanceVerdict:
     """Real classify_provenance body. Wrapped by ``classify_provenance``."""
     if not isinstance(file_info, dict):
@@ -350,8 +360,8 @@ def _classify_provenance_inner(
     if verdict.label == _UNKNOWN:
         verdict = ProvenanceVerdict(_VENDOR, 0.5, verdict.tier, "default-to-vendor")
 
-    # Persist.
-    if gc and m1_folder_id and file_id:
+    # Persist. Skipped for read-only callers (e.g. the diagnose tool).
+    if gc and m1_folder_id and file_id and not read_only:
         cache[file_id] = {
             "modifiedTime": modified,
             "label": verdict.label,
