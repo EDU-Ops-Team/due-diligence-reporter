@@ -11,6 +11,7 @@ import logging
 import re
 from typing import Any
 
+from .completeness import REASON_DISPLAY_LABELS
 from .report_schema import LINK_DISPLAY_LABELS, LINK_TOKENS
 
 logger = logging.getLogger(__name__)
@@ -686,23 +687,12 @@ def _reference_type_label(token: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-# Local copy of the human-readable labels for pending reasons. Keeping a
-# small private map here (rather than importing from completeness.py)
-# avoids a layering dependency from the renderer onto the metadata
-# module — the doc builder should not depend on completeness logic. The
-# completeness module owns the canonical map; this is the rendering
-# fallback used when a key is unrecognized.
-_BANNER_REASON_LABELS: dict[str, str] = {
-    "raycon_scenario_pending": "RayCon cost & capacity",
-}
-
-
 def _format_pending_reason_label(reason_key: str) -> str:
     """Map a ``pending_reasons`` key to the human-readable label used
     in the banner ``Missing:`` line. Falls back to the raw key when no
     label is registered, so a freshly-added reason still surfaces
     visibly rather than silently dropping out of the banner."""
-    return _BANNER_REASON_LABELS.get(reason_key, reason_key)
+    return REASON_DISPLAY_LABELS.get(reason_key, reason_key)
 
 
 def format_partial_banner_text(
@@ -732,7 +722,7 @@ def format_partial_banner_text(
 
     reasons = completeness.get("pending_reasons") or {}
     if isinstance(reasons, dict) and reasons:
-        labels = [_format_pending_reason_label(key) for key in reasons.keys()]
+        labels = [_format_pending_reason_label(key) for key in sorted(reasons.keys())]
     else:
         labels = ["pending data"]
     missing_str = ", ".join(labels)

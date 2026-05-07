@@ -47,11 +47,12 @@ def raycon_token_paths() -> list[str]:
     """Return the canonical list of token paths sourced from RayCon.
 
     These are the tokens that go pending when ``raycon_scenario.json``
-    has not yet landed.
+    has not yet landed. Per ``report_schema.TOKEN_SOURCES``, capacity
+    summary tokens are sourced from the Capacity Brainlift (the agent),
+    not RayCon, so they're excluded here.
     """
     paths: list[str] = []
     for scenario in ("fastest_open", "max_capacity"):
-        paths.append(f"exec.{scenario}_capacity")
         paths.append(f"exec.{scenario}_capex")
         paths.append(f"exec.{scenario}_open_date")
         for row_key, _ in RAYCON_BREAKDOWN_ROWS:
@@ -133,9 +134,14 @@ def compute_completeness_block(replacements: dict[str, str]) -> dict[str, Any]:
     for reason in pending_by_reason:
         pending_by_reason[reason].sort()
 
+    pending_reasons_sorted = {
+        reason: pending_by_reason[reason]
+        for reason in sorted(pending_by_reason)
+    }
+
     auto_republish_on = sorted({
         REASON_TRIGGER_FILES[reason]
-        for reason in pending_by_reason
+        for reason in pending_reasons_sorted
         if reason in REASON_TRIGGER_FILES
     })
 
@@ -145,7 +151,7 @@ def compute_completeness_block(replacements: dict[str, str]) -> dict[str, Any]:
         "stage": stage,
         "filled_token_count": filled,
         "pending_token_count": pending,
-        "pending_reasons": pending_by_reason,
+        "pending_reasons": pending_reasons_sorted,
         "auto_republish_on": auto_republish_on,
     }
 
@@ -164,9 +170,14 @@ def project_completeness_from_readiness(
     reasons are added to ``REASON_TRIGGER_FILES``, extend this function
     to take their availability flags too.
     """
-    pending_reasons: dict[str, list[str]] = {}
+    pending_reasons_unsorted: dict[str, list[str]] = {}
     if not raycon_scenario_found:
-        pending_reasons[RAYCON_PENDING_REASON] = sorted(_RAYCON_TOKEN_PATHS)
+        pending_reasons_unsorted[RAYCON_PENDING_REASON] = sorted(_RAYCON_TOKEN_PATHS)
+
+    pending_reasons = {
+        reason: pending_reasons_unsorted[reason]
+        for reason in sorted(pending_reasons_unsorted)
+    }
 
     auto_republish_on = sorted({
         REASON_TRIGGER_FILES[reason]
