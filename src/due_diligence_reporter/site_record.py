@@ -204,6 +204,11 @@ class SiteRecord:
     sources: SourceLinks = field(default_factory=SourceLinks)
     acquisition_conditions: str = ""
     tradeoffs_and_deficiencies: str = ""
+    # Partial-on-purpose metadata. ``completeness`` carries the
+    # ``stage`` ("partial" / "complete"), pending-token counts, and
+    # ``auto_republish_on`` triggers so the dashboard can render
+    # "waiting on RayCon" rows without re-deriving from the doc.
+    report_metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_replacements(
@@ -218,6 +223,7 @@ class SiteRecord:
         classification_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
         rebl_resolution: ReblResolution | None = None,
         wrike_created_at: str = "",
+        completeness: dict[str, Any] | None = None,
     ) -> SiteRecord:
         """Build a SiteRecord from normalized DD replacements."""
 
@@ -267,6 +273,10 @@ class SiteRecord:
             url=g("sources.rebl_link"),
         )
 
+        report_metadata: dict[str, Any] = {}
+        if completeness is not None:
+            report_metadata["completeness"] = dict(completeness)
+
         return cls(
             slug=site_slug(site_name, suffix=slug_suffix),
             site_name=site_name.strip(),
@@ -291,6 +301,7 @@ class SiteRecord:
             sources=sources,
             acquisition_conditions=acquisition_conditions,
             tradeoffs_and_deficiencies=tradeoffs,
+            report_metadata=report_metadata,
         )
 
     def to_dict(self) -> dict[str, Any]:

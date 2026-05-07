@@ -682,6 +682,117 @@ def _reference_type_label(token: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Partial-on-purpose banner
+# ---------------------------------------------------------------------------
+
+
+# Local copy of the human-readable labels for pending reasons. Keeping a
+# small private map here (rather than importing from completeness.py)
+# avoids a layering dependency from the renderer onto the metadata
+# module — the doc builder should not depend on completeness logic. The
+# completeness module owns the canonical map; this is the rendering
+# fallback used when a key is unrecognized.
+_BANNER_REASON_LABELS: dict[str, str] = {
+    "raycon_scenario_pending": "RayCon cost & capacity",
+}
+
+
+def _format_pending_reason_label(reason_key: str) -> str:
+    """Map a ``pending_reasons`` key to the human-readable label used
+    in the banner ``Missing:`` line. Falls back to the raw key when no
+    label is registered, so a freshly-added reason still surfaces
+    visibly rather than silently dropping out of the banner."""
+    return _BANNER_REASON_LABELS.get(reason_key, reason_key)
+
+
+def format_partial_banner_text(
+    completeness: dict[str, Any] | None,
+    *,
+    block_plan_submitted_display: str | None = None,
+) -> str:
+    """Render the partial-banner text for ``completeness``.
+
+    Returns an empty string when the report is not partial (banner
+    must not render). When partial:
+
+    - Line 1: ``PARTIAL REPORT -- pending data``
+    - Line 2: ``Missing: <reason labels joined by ', '>`` plus the
+      Block Plan submitted timestamp when available, or
+      ``(Block Plan submitted at unknown time)`` when not.
+    - Line 3: ``This report will republish automatically when the
+      scenario lands.``
+
+    The reason labels are derived from ``pending_reasons.keys()`` so
+    new reasons surface in the banner without code changes here.
+    """
+    if not isinstance(completeness, dict):
+        return ""
+    if completeness.get("stage") != "partial":
+        return ""
+
+    reasons = completeness.get("pending_reasons") or {}
+    if isinstance(reasons, dict) and reasons:
+        labels = [_format_pending_reason_label(key) for key in reasons.keys()]
+    else:
+        labels = ["pending data"]
+    missing_str = ", ".join(labels)
+
+    if block_plan_submitted_display and block_plan_submitted_display.strip():
+        timestamp_clause = f"(Block Plan submitted {block_plan_submitted_display.strip()})"
+    else:
+        timestamp_clause = "(Block Plan submitted at unknown time)"
+
+    return (
+        "PARTIAL REPORT -- pending data\n"
+        f"Missing: {missing_str} {timestamp_clause}.\n"
+        "This report will republish automatically when the scenario lands.\n"
+    )
+
+
+def _insert_partial_banner(
+    b: _DocBuilder,
+    completeness: dict[str, Any] | None,
+) -> None:
+    """Insert the partial-on-purpose banner at the current builder index.
+
+    No-op when ``completeness`` is missing, ``stage != "partial"``, or
+    when the banner text resolves to empty. Styling matches the rest
+    of the executive header: bold first line, normal weight on the
+    follow-up lines, with a light-blue background so it reads as a
+    callout rather than body copy.
+    """
+    block_plan_submitted_display = None
+    if isinstance(completeness, dict):
+        block_plan_submitted_display = completeness.get("block_plan_submitted_display")
+
+    text = format_partial_banner_text(
+        completeness,
+        block_plan_submitted_display=block_plan_submitted_display,
+    )
+    if not text:
+        return
+
+    lines = text.split("\n")
+    headline = lines[0] + "\n"
+    body = "\n".join(line for line in lines[1:] if line) + "\n"
+
+    h_start, h_end = b.insert_text(headline)
+    b.style_text(
+        h_start, h_end - 1,
+        bold=True, font_size=11, font_family="Arial",
+        foreground_color=_DARK_BLUE,
+    )
+    b.style_paragraph(h_start, h_end, alignment="CENTER")
+
+    body_start, body_end = b.insert_text(body)
+    b.style_text(
+        body_start, body_end - 1,
+        bold=False, font_size=10, font_family="Arial",
+    )
+    b.style_paragraph(body_start, body_end, alignment="CENTER")
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -692,6 +803,7 @@ def build_dd_report_doc(
     doc_id: str,
     replacements: dict[str, str],
     site_title: str,
+    completeness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct the full DD report document structure in a blank Google Doc.
 
@@ -711,6 +823,11 @@ def build_dd_report_doc(
         doc_id: The ID of the blank document to populate.
         replacements: Normalized token→value mapping.
         site_title: The site name for the report title.
+        completeness: Optional ``report_metadata.completeness`` block. When
+            ``stage == "partial"`` the renderer prepends a banner that
+            calls out the missing data and the trigger file the report
+            is waiting on. When ``stage == "complete"`` (or
+            ``completeness`` is None) the banner is omitted entirely.
 
     Returns:
         A dict summarizing the build: hyperlinks_applied, etc.
@@ -734,6 +851,12 @@ def build_dd_report_doc(
         foreground_color=_DARK_BLUE,
     )
     b.style_paragraph(title_start, title_end, alignment="CENTER")
+
+    # Partial-on-purpose banner: appears between the title and the
+    # header table when ``completeness.stage == "partial"``. Reports
+    # are in-house, so we render unconditionally — no separate
+    # internal/external paths.
+    _insert_partial_banner(b, completeness)
 
     # Empty line before header table
     b.insert_text("\n")
