@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -26,6 +26,10 @@ from .classifier import (
 )
 from .classifier import (
     classify_document_type as _classify_document_type,
+)
+from .completeness import (
+    compute_completeness_block,
+    project_completeness_from_readiness,
 )
 from .config import get_settings
 from .dashboard_publish import publish_site_record
@@ -2208,6 +2212,64 @@ async def get_permit_history(
 
 
 
+def _attach_block_plan_submitted_timestamp(
+    *,
+    gc: GoogleClient,
+    drive_folder_url: str,
+    completeness: dict[str, Any],
+) -> None:
+    """Look up the Block Plan ``modifiedTime`` from the site's M1 folder
+    and attach it to ``completeness`` so the V3 banner can name the
+    submission timestamp.
+
+    No-op when ``completeness.stage != "partial"`` (banner won't
+    render), when the M1 folder can't be resolved, or when no Block
+    Plan has been filed yet. All failures are logged and swallowed —
+    the banner falls back to "Block Plan submitted at unknown time"
+    rather than blocking the report.
+    """
+    if completeness.get("stage") != "partial":
+        return
+    if not drive_folder_url:
+        return
+    try:
+        m1_folder_id, _ = _resolve_m1_folder(gc, drive_folder_url)
+    except Exception as e:
+        logger.warning("Block Plan timestamp lookup: M1 resolve failed: %s", e)
+        return
+    if not m1_folder_id:
+        return
+    try:
+        m1_docs = _list_m1_documents_by_type(gc, m1_folder_id)
+    except Exception as e:
+        logger.warning("Block Plan timestamp lookup: M1 list failed: %s", e)
+        return
+    block_plan = m1_docs.get("block_plan")
+    if not block_plan:
+        return
+    iso = str(block_plan.get("modifiedTime") or "").strip()
+    if not iso:
+        return
+    completeness["block_plan_submitted_at"] = iso
+    completeness["block_plan_submitted_display"] = _format_block_plan_submitted_display(iso)
+
+
+def _format_block_plan_submitted_display(iso_ts: str) -> str:
+    """Format an ISO-8601 ``modifiedTime`` into the banner phrasing
+    ``YYYY-MM-DD HH:MM UTC``. Falls back to the raw string when the
+    timestamp can't be parsed."""
+    from datetime import datetime as _dt
+
+    candidate = iso_ts.strip()
+    if candidate.endswith("Z"):
+        candidate = candidate[:-1] + "+00:00"
+    try:
+        parsed = _dt.fromisoformat(candidate)
+    except ValueError:
+        return iso_ts
+    return parsed.strftime("%Y-%m-%d %H:%M UTC")
+
+
 def _normalize_report_replacements(
     report_data: dict[str, Any],
     site_name: str,
@@ -2494,6 +2556,7 @@ def _build_report_trace_data(
     hyperlink_trace: dict[str, Any],
     token_evidence: dict[str, str] | None,
     rebl_resolution: ReblResolution,
+    completeness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the report trace payload persisted beside the DD report."""
     evidence = token_evidence or {}
@@ -2524,6 +2587,7 @@ def _build_report_trace_data(
         "hyperlinks": hyperlink_trace,
         "rebl": rebl_resolution.to_dict(),
         **({"supplemental_evidence": supplemental_evidence} if supplemental_evidence else {}),
+        **({"report_metadata": {"completeness": completeness}} if completeness else {}),
     }
 
 
@@ -2729,6 +2793,23 @@ async def create_dd_report(
             if unmatched:
                 logger.warning("Unmatched agent keys (no template token): %s", unmatched)
 
+            # Compute the partial-on-purpose completeness metadata. Done
+            # before the doc builder runs so the renderer can prepend
+            # the "PARTIAL REPORT" banner when stage == "partial".
+            completeness = compute_completeness_block(replacements)
+            _attach_block_plan_submitted_timestamp(
+                gc=gc,
+                drive_folder_url=drive_folder_url,
+                completeness=completeness,
+            )
+            logger.info(
+                "Completeness: stage=%s filled=%d pending=%d auto_republish_on=%s",
+                completeness.get("stage"),
+                completeness.get("filled_token_count", 0),
+                completeness.get("pending_token_count", 0),
+                completeness.get("auto_republish_on"),
+            )
+
             # Build the document structure programmatically
             builder_result = build_dd_report_doc(
                 docs_service=gc.docs_service,
@@ -2736,6 +2817,7 @@ async def create_dd_report(
                 doc_id=doc_id,
                 replacements=replacements,
                 site_title=site_name.strip(),
+                completeness=completeness,
             )
 
             hyperlink_trace = {
@@ -2768,6 +2850,7 @@ async def create_dd_report(
                 hyperlink_trace=hyperlink_trace,
                 token_evidence=token_evidence,
                 rebl_resolution=rebl_resolution,
+                completeness=completeness,
             )
             try:
                 _upload_report_trace(
@@ -2798,6 +2881,7 @@ async def create_dd_report(
                     dd_report_url=doc_url or "",
                     rebl_resolution=rebl_resolution,
                     wrike_created_at=replacements.get("meta.wrike_created_at", ""),
+                    completeness=completeness,
                 )
                 dashboard_payload = publish_site_record(
                     gc=gc,
@@ -2823,6 +2907,7 @@ async def create_dd_report(
                 "unfilled_template_tokens": len(unfilled),
                 "hyperlinks_applied": hyperlink_trace["applied"],
                 "normalized_report_data": replacements,
+                "report_metadata": {"completeness": completeness},
                 "message": f"DD report built: {doc_url}",
             }
             if dashboard_payload is not None:
@@ -2915,6 +3000,34 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
             inspection_found = files_by_type["building_inspection"] is not None
             report_exists = files_by_type["dd_report"] is not None
 
+            # Probe M1 for raycon_scenario.json so the projected
+            # completeness block tells callers whether a report
+            # generated *right now* would be partial-on-purpose.
+            raycon_scenario_found = False
+            try:
+                m1_folder_id, _ = _resolve_m1_folder(gc, drive_folder_url)
+            except Exception as e:
+                logger.warning(
+                    "check_site_readiness: M1 resolve failed for '%s': %s",
+                    site_title,
+                    e,
+                )
+                m1_folder_id = None
+            if m1_folder_id:
+                try:
+                    m1_docs = _list_m1_documents_by_type(gc, m1_folder_id)
+                    raycon_scenario_found = m1_docs.get("raycon_scenario_json") is not None
+                except Exception as e:
+                    logger.warning(
+                        "check_site_readiness: M1 list failed for '%s': %s",
+                        site_title,
+                        e,
+                    )
+
+            projected_completeness = project_completeness_from_readiness(
+                raycon_scenario_found=raycon_scenario_found,
+            )
+
             missing_docs: list[str] = []
             if not sir_found:
                 missing_docs.append("sir")
@@ -2935,18 +3048,26 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
                 "isp_found": isp_found,
                 "inspection_found": inspection_found,
                 "report_exists": report_exists,
+                "raycon_scenario_found": raycon_scenario_found,
                 "missing_docs": missing_docs,
                 "ready_for_report": ready_for_report,
                 "files": files_by_type,
                 "drive_folder_url": drive_folder_url,
+                "report_metadata": {"completeness": projected_completeness},
                 "message": "\n".join([
                     f"Site '{site_title}' document readiness:",
                     f"  SIR: {'found - ' + (files_by_type.get('sir') or {}).get('name', '') if sir_found else 'not found'}",
                     f"  Building Inspection: {'found - ' + (files_by_type.get('building_inspection') or {}).get('name', '') if inspection_found else 'not found'}",
                     f"  DD Report: {'exists - ' + (files_by_type.get('dd_report') or {}).get('name', '') if report_exists else 'not yet created'}",
+                    f"  RayCon scenario: {'found' if raycon_scenario_found else 'not yet posted'}",
                     "",
                     "Ready for report generation." if ready_for_report else (
                         "Not ready - " + ", ".join(missing_docs) + " missing." if missing_docs else "Report already exists."
+                    ),
+                    (
+                        f"Projected report stage: {projected_completeness['stage']} "
+                        f"(pending tokens: {projected_completeness['pending_token_count']}, "
+                        f"auto-republish on: {', '.join(projected_completeness['auto_republish_on']) or '-'})."
                     ),
                 ]),
             }

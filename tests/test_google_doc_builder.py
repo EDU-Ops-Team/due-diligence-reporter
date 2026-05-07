@@ -622,6 +622,84 @@ class TestBuildDdReportDocRequestStructure:
 
         assert inserted_text.index("Source Quality Notes\n") < inserted_text.index("Lease Conditions\n")
 
+    def test_partial_banner_emitted_when_completeness_partial(self) -> None:
+        """build_dd_report_doc emits the PARTIAL REPORT banner when stage='partial'."""
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {"meta.site_name": "Test", "meta.report_date": "04/14/2026"}
+        completeness = {
+            "stage": "partial",
+            "filled_token_count": 0,
+            "pending_token_count": 30,
+            "pending_reasons": {"raycon_scenario_pending": ["exec.fastest_open_capacity"]},
+            "auto_republish_on": ["raycon_scenario.json"],
+            "block_plan_submitted_display": "2026-05-07 13:42 UTC",
+        }
+
+        build_dd_report_doc(
+            docs_svc, drive_svc, "doc123", repl, "Test",
+            completeness=completeness,
+        )
+
+        inserted_text = "\n".join(
+            request["insertText"]["text"]
+            for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list
+            for request in call_args.kwargs["body"]["requests"]
+            if "insertText" in request
+        )
+
+        assert "PARTIAL REPORT" in inserted_text
+        assert "RayCon cost & capacity" in inserted_text
+        assert "Block Plan submitted 2026-05-07 13:42 UTC" in inserted_text
+        # Banner sits above the title's header table
+        assert inserted_text.index("PARTIAL REPORT") < inserted_text.index("Executive Summary")
+
+    def test_partial_banner_omitted_when_completeness_complete(self) -> None:
+        """No banner when stage='complete' — the republish path naturally
+        removes the banner when raycon_scenario.json arrives."""
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {"meta.site_name": "Test", "meta.report_date": "04/14/2026"}
+        completeness = {
+            "stage": "complete",
+            "filled_token_count": 30,
+            "pending_token_count": 0,
+            "pending_reasons": {},
+            "auto_republish_on": [],
+        }
+
+        build_dd_report_doc(
+            docs_svc, drive_svc, "doc123", repl, "Test",
+            completeness=completeness,
+        )
+
+        inserted_text = "\n".join(
+            request["insertText"]["text"]
+            for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list
+            for request in call_args.kwargs["body"]["requests"]
+            if "insertText" in request
+        )
+
+        assert "PARTIAL REPORT" not in inserted_text
+
+    def test_partial_banner_omitted_when_completeness_none(self) -> None:
+        """Backwards compatibility: callers that don't pass completeness
+        get the legacy (no banner) rendering."""
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {"meta.site_name": "Test", "meta.report_date": "04/14/2026"}
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        inserted_text = "\n".join(
+            request["insertText"]["text"]
+            for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list
+            for request in call_args.kwargs["body"]["requests"]
+            if "insertText" in request
+        )
+
+        assert "PARTIAL REPORT" not in inserted_text
+
     def test_direct_answer_renders_before_buildout_analysis(self) -> None:
         docs_svc = _make_mock_docs_service()
         drive_svc = MagicMock()
