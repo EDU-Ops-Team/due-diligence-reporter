@@ -39,6 +39,11 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(_project_root / ".env")
 
 from due_diligence_reporter.config import get_settings  # noqa: E402
+from due_diligence_reporter.dd_republish import (  # noqa: E402
+    load_state as _load_dd_republish_state,
+    maybe_republish_dd_report,
+    save_state as _save_dd_republish_state,
+)
 from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.inbox_scanner import (  # noqa: E402
     build_scan_summary,
@@ -144,8 +149,72 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     except Exception as e:
         logger.error("Wrike lookup failed; continuing with inbox scan only: %s", e)
 
+    # ── Rec. 3: event-driven DD Report republish callback ───────────────────
+    # When a vendor SIR or Building Inspection lands on a site that
+    # already has a DD Report, regenerate the report on top of it so
+    # the new authoritative input is reflected. We share state with
+    # the RayCon-followup republish via ``.dd_republish_state.json`` so
+    # all three authoritative-doc arrival paths dedup against one store.
+    #
+    # The callback is lazy: it only loads the agent system prompt and
+    # the Drive shared-folder cache when at least one SIR/BI actually
+    # arrives. A scan that produces no authoritative arrivals pays
+    # nothing.
+    _shared_cache: dict[str, list[dict[str, Any]]] | None = None
+    _system_prompt: str | None = None
+    _republish_state = _load_dd_republish_state()
+
+    def _dd_republish_callback(
+        *,
+        gc: GoogleClient,
+        site_summary: dict[str, Any],
+        reason: str,
+        fingerprint: str,
+        dry_run: bool,
+    ) -> dict[str, Any]:
+        nonlocal _shared_cache, _system_prompt
+        if _system_prompt is None:
+            prompt_path = _project_root / "docs" / "prompts" / "prompt_v3.md"
+            if not prompt_path.exists():
+                logger.error(
+                    "DD Report republish: system prompt missing at %s", prompt_path
+                )
+                return {"status": "failed", "error": f"prompt missing at {prompt_path}"}
+            _system_prompt = prompt_path.read_text(encoding="utf-8")
+        if _shared_cache is None:
+            _shared_cache = list_shared_folders_once(gc)
+        outcome = maybe_republish_dd_report(
+            gc,
+            site_summary=site_summary,
+            reason=reason,
+            content_fingerprint=fingerprint,
+            settings=settings,
+            system_prompt=_system_prompt,
+            shared_cache=_shared_cache,
+            republish_state=_republish_state,
+            dry_run=dry_run,
+            # Inject the script-local pipeline reference so future
+            # mocking parity matches the raycon_followup pattern.
+            pipeline_runner=process_site_pipeline,
+        )
+        return outcome.as_dict()
+
     # ── Phase 1: Inbox scan ──────────────────────────────────────────────────
-    results = scan_inbox(gc, site_records, settings, dry_run=dry_run)
+    results = scan_inbox(
+        gc,
+        site_records,
+        settings,
+        dry_run=dry_run,
+        dd_republish_callback=_dd_republish_callback,
+    )
+
+    # Persist republish dedup state once after the scan (mirrors how
+    # raycon_followup.py persists state at end-of-run rather than
+    # per-site, so a partial-run failure still records progress). Only
+    # write when there are entries to avoid leaving an empty {} file at
+    # repo root for runs that never fired the callback.
+    if not dry_run and _republish_state:
+        _save_dd_republish_state(_republish_state)
 
     # Build summary
     summary = build_scan_summary(results)

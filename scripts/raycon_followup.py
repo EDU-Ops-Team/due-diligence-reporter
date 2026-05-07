@@ -61,8 +61,15 @@ load_dotenv(_project_root / ".env")
 
 import requests  # noqa: E402
 
-from due_diligence_reporter.classifier import classify_document_type  # noqa: E402
 from due_diligence_reporter.config import get_settings  # noqa: E402
+from due_diligence_reporter.dd_republish import (  # noqa: E402
+    DD_REPUBLISH_STATE_PATH,
+    REASON_RAYCON,
+    find_existing_dd_report,
+    load_state as _load_dd_republish_state_shared,
+    maybe_republish_dd_report,
+    save_state as _save_dd_republish_state_shared,
+)
 from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.m1_lookup import _resolve_m1_folder  # noqa: E402
 from due_diligence_reporter.raycon_client import (  # noqa: E402
@@ -78,15 +85,12 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
 )
 from due_diligence_reporter.server import save_skill_report  # noqa: E402
 from due_diligence_reporter.utils import (  # noqa: E402
-    build_site_match_terms,
     extract_folder_id_from_url,
 )
 from due_diligence_reporter.wrike import (  # noqa: E402
     _get_active_status_ids,
     _get_all_site_records,
     build_site_summary,
-    extract_school_feasibility_from_record,
-    extract_timeline_confidence_from_record,
     filter_active_site_records,
     load_wrike_config,
 )
@@ -143,10 +147,16 @@ DISPATCH_DEDUP_PATH = _project_root / ".raycon_dispatch_state.json"
 
 # Persisted map of {f"{site_id}:{raycon_run_id}": ISO timestamp} so the
 # event-driven DD Report republish (Rec. 1) doesn't re-run the full
-# pipeline twice for the same RayCon scenario. A scenario that lacks a
-# raycon_run_id falls back to a synthetic key derived from the JSON's
-# Drive ``modifiedTime`` so we still dedup at run granularity.
-DD_REPUBLISH_DEDUP_PATH = _project_root / ".raycon_dd_republish_state.json"
+# pipeline twice for the same RayCon scenario.
+#
+# Pre-Rec.3, this file lived at ``.raycon_dd_republish_state.json`` and
+# was keyed only on ``site_id:run_id``. Post-Rec.3 the canonical state
+# file is the shared ``.dd_republish_state.json`` (see ``dd_republish``)
+# keyed on ``site_id:reason:fingerprint`` so vendor SIR + Building
+# Inspection arrivals dedup against the same store. The legacy path is
+# read once at startup for migration and never written again.
+LEGACY_DD_REPUBLISH_DEDUP_PATH = _project_root / ".raycon_dd_republish_state.json"
+DD_REPUBLISH_DEDUP_PATH = DD_REPUBLISH_STATE_PATH
 
 # Force-republish window: regenerate at least once per N hours for the same
 # (site, raycon_run_id) pair if conditions still hold. Mirrors the
@@ -210,26 +220,48 @@ def _save_dispatch_state(
 
 def _load_republish_state(
     path: Path = DD_REPUBLISH_DEDUP_PATH,
+    *,
+    legacy_path: Path = LEGACY_DD_REPUBLISH_DEDUP_PATH,
 ) -> dict[str, str]:
-    """Load the {f'{site_id}:{run_id}': last_republish_iso} dedup map."""
+    """Load the shared DD republish dedup map.
+
+    Migrates legacy keys from the pre-Rec.3 ``.raycon_dd_republish_state.json``
+    (shape ``site_id:run_id``) into the new ``site_id:reason:fingerprint``
+    shape on first read. The new file wins on conflict; legacy entries are
+    only used to seed dedup on the first run after deploy.
+    """
+    state = _load_dd_republish_state_shared(path)
+
+    # One-shot migration: read the legacy file (if any) and rewrite each
+    # entry into the new key shape, but only when the new state doesn't
+    # already have an equivalent entry. We cannot delete the legacy file
+    # safely here (no write permissions in test sandboxes), so we just
+    # overlay it. Subsequent runs no-op once writes have been persisted to
+    # the new path because state already contains the migrated keys.
     try:
-        if not path.exists():
-            return {}
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return {k: str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+        if legacy_path.exists():
+            legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+            if isinstance(legacy, dict):
+                for old_key, ts in legacy.items():
+                    # Old key is "{site_id}:{run_id}". New key adds the
+                    # ``raycon_scenario`` reason in the middle.
+                    if not isinstance(old_key, str) or ":" not in old_key:
+                        continue
+                    site_id, run_id = old_key.split(":", 1)
+                    new_key = f"{site_id}:{REASON_RAYCON}:{run_id}"
+                    state.setdefault(new_key, str(ts))
     except Exception as e:
-        logger.warning("Failed to read DD republish dedup state at %s: %s", path, e)
-        return {}
+        logger.warning(
+            "Failed to migrate legacy DD republish state at %s: %s", legacy_path, e
+        )
+    return state
 
 
 def _save_republish_state(
     state: dict[str, str], path: Path = DD_REPUBLISH_DEDUP_PATH
 ) -> None:
     """Persist the DD republish dedup map. Best-effort; logs but does not raise."""
-    try:
-        path.write_text(json.dumps(state, sort_keys=True, indent=2), encoding="utf-8")
-    except Exception as e:
-        logger.warning("Failed to write DD republish dedup state at %s: %s", path, e)
+    _save_dd_republish_state_shared(state, path)
 
 
 def _filter_dedup_alerts(
@@ -434,31 +466,13 @@ def _dispatch_raycon_job(
 def _find_existing_dd_report(
     gc: GoogleClient, site_folder_id: str
 ) -> dict[str, Any] | None:
-    """Return the most recently modified DD Report Doc in the site folder, or None.
+    """Return the most recently modified DD Report Doc in the site folder.
 
-    DD Reports live at the site-folder root (not M1) and are named like
-    ``<site> DD Report - YYYY-MM-DD``. We classify by filename via the
-    shared classifier so we accept any historical naming scheme that
-    ``classify_document_type`` flags as ``dd_report``.
+    Thin wrapper over ``dd_republish.find_existing_dd_report``. Kept here
+    so existing tests that patch ``scripts.raycon_followup._find_existing_dd_report``
+    continue to work.
     """
-    candidate: dict[str, Any] | None = None
-    try:
-        files = gc.list_files_in_folder(site_folder_id)
-    except Exception as e:
-        logger.warning(
-            "Could not list site folder %s while looking for existing DD Report: %s",
-            site_folder_id,
-            e,
-        )
-        return None
-    for f in files:
-        if classify_document_type(str(f.get("name", ""))) != "dd_report":
-            continue
-        if candidate is None or str(f.get("modifiedTime", "")) > str(
-            candidate.get("modifiedTime", "")
-        ):
-            candidate = f
-    return candidate
+    return find_existing_dd_report(gc, site_folder_id)
 
 
 def _republish_dd_report_if_present(
@@ -476,120 +490,92 @@ def _republish_dd_report_if_present(
 ) -> dict[str, Any]:
     """Regenerate the DD Report on top of an existing one when RayCon answers.
 
-    Closes the gap where a partial DD Report (generated before RayCon
-    responded) stayed partial forever. Behaviors:
-
-    * No existing DD Report → no-op (the daily/inbox path will create it
-      the first time vendor inputs land).
-    * Existing DD Report + same ``(site_id, raycon_run_id)`` already
-      republished within ``force_after`` → no-op.
-    * Existing DD Report + this is a fresh ``(site_id, raycon_run_id)`` →
-      call ``process_site_pipeline(force_regenerate=True)``.
+    Thin RayCon-flavored wrapper over
+    :func:`due_diligence_reporter.dd_republish.maybe_republish_dd_report`
+    (Rec. 3). Preserves the legacy decision strings the existing tests
+    and on-call runbooks rely on (``republished``, ``deduped``, etc.)
+    while delegating the actual idempotence + pipeline call to the
+    shared helper so vendor SIR + Building Inspection arrivals dedup
+    against the same store.
 
     Failures here MUST NOT crash the caller — the RayCon Scenario Doc
     publish has already succeeded by the time we get here, and a
     republish error should not undo that.
     """
     now = now or datetime.now(timezone.utc)
-    site_name = str(site_summary.get("title", "")).strip() or "(unnamed)"
+
+    # Synthesize a stable fingerprint when RayCon doesn't supply a
+    # raycon_run_id, mirroring pre-refactor behavior so the same
+    # scenario JSON polled repeatedly within the day stays deduped.
+    run_key = raycon_run_id.strip() or f"unknown@{now.date().isoformat()}"
+
     site_id = str(site_summary.get("id", "")).strip()
+    site_name = str(site_summary.get("title", "")).strip() or "(unnamed)"
     drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
 
+    # Pre-rec3 "skipped_no_drive_folder" / "skipped_bad_drive_url"
+    # branches surfaced as distinct decision strings; the shared helper
+    # collapses them into ``skip_bad_input``. Map back to the legacy
+    # strings so existing dashboards / log greps don't break.
     if not drive_folder_url:
         return {"dd_report_republish": "skipped_no_drive_folder"}
-
-    site_folder_id = extract_folder_id_from_url(drive_folder_url) or ""
-    if not site_folder_id:
+    if not extract_folder_id_from_url(drive_folder_url):
         return {"dd_report_republish": "skipped_bad_drive_url"}
 
-    existing = _find_existing_dd_report(gc, site_folder_id)
-    if existing is None:
-        logger.info(
-            "DD Report republish skipped for site=%s — no existing report; "
-            "daily/inbox path will create it.",
-            site_name,
-        )
-        return {"dd_report_republish": "skipped_no_existing_report"}
+    outcome = maybe_republish_dd_report(
+        gc,
+        site_summary=site_summary,
+        reason=REASON_RAYCON,
+        content_fingerprint=run_key,
+        settings=settings,
+        system_prompt=system_prompt,
+        shared_cache=shared_cache,
+        republish_state=republish_state,
+        dry_run=dry_run,
+        now=now,
+        force_after=force_after,
+        existing_report_finder=_find_existing_dd_report,
+        # Plumb the module-level ``process_site_pipeline`` reference so
+        # tests that patch ``scripts.raycon_followup.process_site_pipeline``
+        # still observe the call. Without this, the helper imports the
+        # symbol directly from ``due_diligence_reporter.report_pipeline``
+        # and bypasses the patch.
+        pipeline_runner=process_site_pipeline,
+    )
 
-    # Dedup key: synthesize a stable run identifier when RayCon doesn't
-    # supply one so we still get per-run dedup rather than per-poll.
-    run_key = raycon_run_id.strip() or f"unknown@{now.date().isoformat()}"
-    state_key = f"{site_id or site_name}:{run_key}"
-    last_iso = republish_state.get(state_key)
-    last_dt = _parse_iso(last_iso) if last_iso else None
-    if last_dt is not None and (now - last_dt) < force_after:
-        logger.info(
-            "DD Report republish deduped for site=%s run=%s (last %s ago)",
-            site_name,
-            run_key,
-            now - last_dt,
-        )
+    # Translate the helper's decision strings back to the legacy strings
+    # raycon_followup callers (and tests) expect. The ``raycon_run_id``
+    # field is preserved on every row so on-call grepping by run still
+    # works after the refactor.
+    if outcome.decision == "republish":
+        return {
+            "dd_report_republish": "republished",
+            "raycon_run_id": run_key,
+            "pipeline_status": outcome.pipeline_status,
+            "doc_url": outcome.doc_url,
+        }
+    if outcome.decision == "skip_no_prior_report":
+        return {"dd_report_republish": "skipped_no_existing_report"}
+    if outcome.decision == "skip_no_diff":
         return {
             "dd_report_republish": "deduped",
             "raycon_run_id": run_key,
-            "last_republish": last_iso,
+            "last_republish": outcome.last_republish or None,
         }
-
-    if dry_run:
+    if outcome.decision == "skip_dry_run":
+        existing = _find_existing_dd_report(
+            gc, extract_folder_id_from_url(drive_folder_url) or ""
+        )
         return {
             "dd_report_republish": "would_republish",
             "raycon_run_id": run_key,
-            "existing_dd_report_id": existing.get("id"),
+            "existing_dd_report_id": (existing or {}).get("id"),
         }
-
-    site_address = str(site_summary.get("address", "")).strip() or None
-    match_terms = build_site_match_terms(site_name, site_address)
-    # Thread the same Wrike-derived fields the daily/inbox callers pass —
-    # otherwise the regenerated DD Report email loses the P1 CC and the
-    # dashboard publish loses the W74/W81 ratings + Wrike createdDate.
-    record_for_extract = {"customFields": site_summary.get("custom_fields", [])}
-    try:
-        result = process_site_pipeline(
-            gc,
-            site_name,
-            drive_folder_url,
-            match_terms,
-            shared_cache,
-            system_prompt,
-            settings,
-            p1_email=site_summary.get("p1_assignee_email"),
-            site_address=site_address,
-            p1_name=site_summary.get("p1_assignee_name"),
-            school_feasibility=extract_school_feasibility_from_record(
-                record_for_extract
-            ),
-            timeline_confidence=extract_timeline_confidence_from_record(
-                record_for_extract
-            ),
-            wrike_created_at=site_summary.get("created_date") or None,
-            force_regenerate=True,
-        )
-    except Exception as e:
-        logger.error(
-            "DD Report republish failed for site=%s run=%s: %s",
-            site_name,
-            run_key,
-            e,
-        )
-        return {"dd_report_republish": "failed", "reason": str(e)}
-
-    # Record the attempt regardless of result.status so a permanently
-    # waiting_on_docs site doesn't re-enter the pipeline on every cron
-    # tick. A future scenario JSON (different run_id) will get a fresh
-    # state_key and try again.
-    republish_state[state_key] = now.isoformat()
-    logger.info(
-        "DD Report republish for site=%s run=%s status=%s",
-        site_name,
-        run_key,
-        result.status,
-    )
-    return {
-        "dd_report_republish": "republished",
-        "raycon_run_id": run_key,
-        "pipeline_status": result.status,
-        "doc_url": getattr(result, "doc_url", "") or "",
-    }
+    if outcome.decision == "failed":
+        return {"dd_report_republish": "failed", "reason": outcome.error}
+    # skip_bad_input fallback (e.g. unknown reason — shouldn't happen
+    # since we hard-code REASON_RAYCON above).
+    return {"dd_report_republish": outcome.decision, "reason": outcome.error}
 
 
 def _process_site(

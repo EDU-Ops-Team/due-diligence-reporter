@@ -734,7 +734,7 @@ class TestDDReportRepublish:
         assert out["dd_report_republish"] == "republished"
         assert out["raycon_run_id"] == "rc_run_abc"
         # State updated for dedup on the next cron tick.
-        assert republish_state.get("site-123:rc_run_abc")
+        assert republish_state.get("site-123:raycon_scenario:rc_run_abc")
         mock_pipeline.assert_called_once()
         kwargs = mock_pipeline.call_args.kwargs
         assert kwargs.get("force_regenerate") is True
@@ -769,7 +769,7 @@ class TestDDReportRepublish:
             "name": "Alpha Keller DD Report - 2026-05-01",
         }
         recent = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-        republish_state = {"site-123:rc_run_abc": recent}
+        republish_state = {"site-123:raycon_scenario:rc_run_abc": recent}
 
         gc = MagicMock()
         out = _republish_dd_report_if_present(
@@ -786,7 +786,7 @@ class TestDDReportRepublish:
         assert out["dd_report_republish"] == "deduped"
         mock_pipeline.assert_not_called()
         # State unchanged.
-        assert republish_state["site-123:rc_run_abc"] == recent
+        assert republish_state["site-123:raycon_scenario:rc_run_abc"] == recent
 
     @patch("scripts.raycon_followup.process_site_pipeline")
     @patch("scripts.raycon_followup._find_existing_dd_report")
@@ -810,8 +810,8 @@ class TestDDReportRepublish:
         assert out["dd_report_republish"] == "failed"
         assert "Anthropic 500" in out["reason"]
 
-    @patch("scripts.raycon_followup.extract_timeline_confidence_from_record")
-    @patch("scripts.raycon_followup.extract_school_feasibility_from_record")
+    @patch("due_diligence_reporter.dd_republish.extract_timeline_confidence_from_record")
+    @patch("due_diligence_reporter.dd_republish.extract_school_feasibility_from_record")
     @patch("scripts.raycon_followup.process_site_pipeline")
     @patch("scripts.raycon_followup._find_existing_dd_report")
     def test_republish_forwards_p1_and_feasibility_fields(
