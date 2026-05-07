@@ -85,6 +85,8 @@ from due_diligence_reporter.wrike import (  # noqa: E402
     _get_active_status_ids,
     _get_all_site_records,
     build_site_summary,
+    extract_school_feasibility_from_record,
+    extract_timeline_confidence_from_record,
     filter_active_site_records,
     load_wrike_config,
 )
@@ -537,6 +539,10 @@ def _republish_dd_report_if_present(
 
     site_address = str(site_summary.get("address", "")).strip() or None
     match_terms = build_site_match_terms(site_name, site_address)
+    # Thread the same Wrike-derived fields the daily/inbox callers pass —
+    # otherwise the regenerated DD Report email loses the P1 CC and the
+    # dashboard publish loses the W74/W81 ratings + Wrike createdDate.
+    record_for_extract = {"customFields": site_summary.get("custom_fields", [])}
     try:
         result = process_site_pipeline(
             gc,
@@ -546,7 +552,16 @@ def _republish_dd_report_if_present(
             shared_cache,
             system_prompt,
             settings,
+            p1_email=site_summary.get("p1_assignee_email"),
             site_address=site_address,
+            p1_name=site_summary.get("p1_assignee_name"),
+            school_feasibility=extract_school_feasibility_from_record(
+                record_for_extract
+            ),
+            timeline_confidence=extract_timeline_confidence_from_record(
+                record_for_extract
+            ),
+            wrike_created_at=site_summary.get("created_date") or None,
             force_regenerate=True,
         )
     except Exception as e:
