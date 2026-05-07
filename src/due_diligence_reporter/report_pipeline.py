@@ -973,8 +973,14 @@ def _notify_source_read_issues(
 def _resolve_readiness_result(
     site_title: str,
     readiness: dict[str, Any],
+    *,
+    force_regenerate: bool = False,
 ) -> PipelineResult | None:
-    """Convert readiness payload into an early pipeline result when applicable."""
+    """Convert readiness payload into an early pipeline result when applicable.
+
+    ``force_regenerate=True`` bypasses ONLY the ``report_exists`` short-circuit;
+    error and missing-docs gates still apply.
+    """
     readiness_error = _get_payload_error(readiness)
     if readiness_error:
         logger.error("Readiness check failed for '%s': %s", site_title, readiness_error)
@@ -989,8 +995,14 @@ def _resolve_readiness_result(
         )
 
     if readiness.get("report_exists", False):
-        logger.info("'%s' - report already exists, skipping", site_title)
-        return PipelineResult(site_title=site_title, status="report_exists")
+        if force_regenerate:
+            logger.info(
+                "force_regenerate=True — bypassing report_exists check for site=%s",
+                site_title,
+            )
+        else:
+            logger.info("'%s' - report already exists, skipping", site_title)
+            return PipelineResult(site_title=site_title, status="report_exists")
 
     return None
 
@@ -1190,6 +1202,12 @@ def process_site_pipeline(
     # dashboard so the Portfolio "Date Created" column reflects when the
     # site itself was added in Wrike, not when the DD report was generated.
     wrike_created_at: str | None = None,
+    # When True, bypass the ``report_exists`` short-circuit so a fresh
+    # report is generated on top of an existing DD Report Doc. Used by the
+    # event-driven republish path (raycon_followup) when authoritative
+    # inputs (e.g. raycon_scenario.json) have just landed. All other gates
+    # — vendor gate, missing required docs — still apply.
+    force_regenerate: bool = False,
 ) -> PipelineResult:
     """Full single-site pipeline: readiness -> report generation -> completeness -> email.
 
@@ -1208,7 +1226,9 @@ def process_site_pipeline(
         logger.error("Failed to check readiness for '%s': %s", site_title, e)
         return PipelineResult(site_title=site_title, status="error", error=str(e))
 
-    readiness_result = _resolve_readiness_result(site_title, readiness)
+    readiness_result = _resolve_readiness_result(
+        site_title, readiness, force_regenerate=force_regenerate
+    )
     if readiness_result is not None:
         return readiness_result
 

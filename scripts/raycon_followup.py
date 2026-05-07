@@ -61,6 +61,7 @@ load_dotenv(_project_root / ".env")
 
 import requests  # noqa: E402
 
+from due_diligence_reporter.classifier import classify_document_type  # noqa: E402
 from due_diligence_reporter.config import get_settings  # noqa: E402
 from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.m1_lookup import _resolve_m1_folder  # noqa: E402
@@ -71,7 +72,15 @@ from due_diligence_reporter.raycon_client import (  # noqa: E402
     raycon_scenario_to_report_fields,
     read_raycon_scenario_from_m1,
 )
+from due_diligence_reporter.report_pipeline import (  # noqa: E402
+    list_shared_folders_once,
+    process_site_pipeline,
+)
 from due_diligence_reporter.server import save_skill_report  # noqa: E402
+from due_diligence_reporter.utils import (  # noqa: E402
+    build_site_match_terms,
+    extract_folder_id_from_url,
+)
 from due_diligence_reporter.wrike import (  # noqa: E402
     _get_active_status_ids,
     _get_all_site_records,
@@ -130,6 +139,18 @@ ALERT_DEDUP_WINDOW = timedelta(hours=24)
 # so a duplicate dispatch is at worst a no-op on their side.
 DISPATCH_DEDUP_PATH = _project_root / ".raycon_dispatch_state.json"
 
+# Persisted map of {f"{site_id}:{raycon_run_id}": ISO timestamp} so the
+# event-driven DD Report republish (Rec. 1) doesn't re-run the full
+# pipeline twice for the same RayCon scenario. A scenario that lacks a
+# raycon_run_id falls back to a synthetic key derived from the JSON's
+# Drive ``modifiedTime`` so we still dedup at run granularity.
+DD_REPUBLISH_DEDUP_PATH = _project_root / ".raycon_dd_republish_state.json"
+
+# Force-republish window: regenerate at least once per N hours for the same
+# (site, raycon_run_id) pair if conditions still hold. Mirrors the
+# ``--redispatch-after-minutes`` shape used by the safety-net dispatcher.
+DD_REPUBLISH_FORCE_AFTER = timedelta(hours=12)
+
 
 # ---------------------------------------------------------------------------
 
@@ -183,6 +204,30 @@ def _save_dispatch_state(
         path.write_text(json.dumps(state, sort_keys=True, indent=2), encoding="utf-8")
     except Exception as e:
         logger.warning("Failed to write dispatch dedup state at %s: %s", path, e)
+
+
+def _load_republish_state(
+    path: Path = DD_REPUBLISH_DEDUP_PATH,
+) -> dict[str, str]:
+    """Load the {f'{site_id}:{run_id}': last_republish_iso} dedup map."""
+    try:
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {k: str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning("Failed to read DD republish dedup state at %s: %s", path, e)
+        return {}
+
+
+def _save_republish_state(
+    state: dict[str, str], path: Path = DD_REPUBLISH_DEDUP_PATH
+) -> None:
+    """Persist the DD republish dedup map. Best-effort; logs but does not raise."""
+    try:
+        path.write_text(json.dumps(state, sort_keys=True, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning("Failed to write DD republish dedup state at %s: %s", path, e)
 
 
 def _filter_dedup_alerts(
@@ -384,6 +429,154 @@ def _dispatch_raycon_job(
     }
 
 
+def _find_existing_dd_report(
+    gc: GoogleClient, site_folder_id: str
+) -> dict[str, Any] | None:
+    """Return the most recently modified DD Report Doc in the site folder, or None.
+
+    DD Reports live at the site-folder root (not M1) and are named like
+    ``<site> DD Report - YYYY-MM-DD``. We classify by filename via the
+    shared classifier so we accept any historical naming scheme that
+    ``classify_document_type`` flags as ``dd_report``.
+    """
+    candidate: dict[str, Any] | None = None
+    try:
+        files = gc.list_files_in_folder(site_folder_id)
+    except Exception as e:
+        logger.warning(
+            "Could not list site folder %s while looking for existing DD Report: %s",
+            site_folder_id,
+            e,
+        )
+        return None
+    for f in files:
+        if classify_document_type(str(f.get("name", ""))) != "dd_report":
+            continue
+        if candidate is None or str(f.get("modifiedTime", "")) > str(
+            candidate.get("modifiedTime", "")
+        ):
+            candidate = f
+    return candidate
+
+
+def _republish_dd_report_if_present(
+    gc: GoogleClient,
+    site_summary: dict[str, Any],
+    raycon_run_id: str,
+    *,
+    settings: Any,
+    system_prompt: str,
+    shared_cache: dict[str, list[dict[str, Any]]],
+    republish_state: dict[str, str],
+    dry_run: bool,
+    now: datetime | None = None,
+    force_after: timedelta = DD_REPUBLISH_FORCE_AFTER,
+) -> dict[str, Any]:
+    """Regenerate the DD Report on top of an existing one when RayCon answers.
+
+    Closes the gap where a partial DD Report (generated before RayCon
+    responded) stayed partial forever. Behaviors:
+
+    * No existing DD Report → no-op (the daily/inbox path will create it
+      the first time vendor inputs land).
+    * Existing DD Report + same ``(site_id, raycon_run_id)`` already
+      republished within ``force_after`` → no-op.
+    * Existing DD Report + this is a fresh ``(site_id, raycon_run_id)`` →
+      call ``process_site_pipeline(force_regenerate=True)``.
+
+    Failures here MUST NOT crash the caller — the RayCon Scenario Doc
+    publish has already succeeded by the time we get here, and a
+    republish error should not undo that.
+    """
+    now = now or datetime.now(timezone.utc)
+    site_name = str(site_summary.get("title", "")).strip() or "(unnamed)"
+    site_id = str(site_summary.get("id", "")).strip()
+    drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
+
+    if not drive_folder_url:
+        return {"dd_report_republish": "skipped_no_drive_folder"}
+
+    site_folder_id = extract_folder_id_from_url(drive_folder_url) or ""
+    if not site_folder_id:
+        return {"dd_report_republish": "skipped_bad_drive_url"}
+
+    existing = _find_existing_dd_report(gc, site_folder_id)
+    if existing is None:
+        logger.info(
+            "DD Report republish skipped for site=%s — no existing report; "
+            "daily/inbox path will create it.",
+            site_name,
+        )
+        return {"dd_report_republish": "skipped_no_existing_report"}
+
+    # Dedup key: synthesize a stable run identifier when RayCon doesn't
+    # supply one so we still get per-run dedup rather than per-poll.
+    run_key = raycon_run_id.strip() or f"unknown@{now.date().isoformat()}"
+    state_key = f"{site_id or site_name}:{run_key}"
+    last_iso = republish_state.get(state_key)
+    last_dt = _parse_iso(last_iso) if last_iso else None
+    if last_dt is not None and (now - last_dt) < force_after:
+        logger.info(
+            "DD Report republish deduped for site=%s run=%s (last %s ago)",
+            site_name,
+            run_key,
+            now - last_dt,
+        )
+        return {
+            "dd_report_republish": "deduped",
+            "raycon_run_id": run_key,
+            "last_republish": last_iso,
+        }
+
+    if dry_run:
+        return {
+            "dd_report_republish": "would_republish",
+            "raycon_run_id": run_key,
+            "existing_dd_report_id": existing.get("id"),
+        }
+
+    site_address = str(site_summary.get("address", "")).strip() or None
+    match_terms = build_site_match_terms(site_name, site_address)
+    try:
+        result = process_site_pipeline(
+            gc,
+            site_name,
+            drive_folder_url,
+            match_terms,
+            shared_cache,
+            system_prompt,
+            settings,
+            site_address=site_address,
+            force_regenerate=True,
+        )
+    except Exception as e:
+        logger.error(
+            "DD Report republish failed for site=%s run=%s: %s",
+            site_name,
+            run_key,
+            e,
+        )
+        return {"dd_report_republish": "failed", "reason": str(e)}
+
+    # Record the attempt regardless of result.status so a permanently
+    # waiting_on_docs site doesn't re-enter the pipeline on every cron
+    # tick. A future scenario JSON (different run_id) will get a fresh
+    # state_key and try again.
+    republish_state[state_key] = now.isoformat()
+    logger.info(
+        "DD Report republish for site=%s run=%s status=%s",
+        site_name,
+        run_key,
+        result.status,
+    )
+    return {
+        "dd_report_republish": "republished",
+        "raycon_run_id": run_key,
+        "pipeline_status": result.status,
+        "doc_url": getattr(result, "doc_url", "") or "",
+    }
+
+
 def _process_site(
     gc: GoogleClient,
     site_summary: dict[str, Any],
@@ -392,6 +585,8 @@ def _process_site(
     alert_after: timedelta,
     dispatch_state: dict[str, dict[str, Any]] | None = None,
     redispatch_after: timedelta = timedelta(minutes=30),
+    skip_dd_republish: bool = False,
+    dd_republish_callback: Any = None,
 ) -> dict[str, Any]:
     """Return a per-site result row for the run summary.
 
@@ -532,11 +727,42 @@ def _process_site(
     )
     if result.get("status") != "success":
         return {"site": site_name, "error": str(result.get("message", "publish failed"))}
-    return {
+
+    row: dict[str, Any] = {
         "site": site_name,
         "published": True,
         "doc_url": result.get("doc_url"),
     }
+
+    # Event-driven DD Report republish (Rec. 1). Fires AFTER the RayCon
+    # Scenario Doc publish has succeeded, so any failure here cannot
+    # undo that. Wrapped in a guard so an exception in the helper never
+    # crashes _process_site.
+    if not skip_dd_republish and dd_republish_callback is not None:
+        try:
+            raycon_run_id = str(
+                payload.get("report_data_fields", {}).get(
+                    "exec.raycon_run_id", ""
+                )
+                or scenario.get("raycon_run_id", "")
+            ).strip()
+            republish_result = dd_republish_callback(
+                gc=gc,
+                site_summary=site_summary,
+                raycon_run_id=raycon_run_id,
+                dry_run=dry_run,
+            )
+        except Exception as e:
+            logger.error(
+                "DD Report republish callback raised for site=%s: %s",
+                site_name,
+                e,
+            )
+            republish_result = {"dd_report_republish": "failed", "reason": str(e)}
+        if republish_result:
+            row.update(republish_result)
+
+    return row
 
 
 def _parse_iso(s: str) -> datetime | None:
@@ -572,6 +798,15 @@ def main(argv: list[str] | None = None) -> int:
             "at least one re-fire before the stuck-site alert triggers."
         ),
     )
+    parser.add_argument(
+        "--skip-dd-republish",
+        action="store_true",
+        help=(
+            "Disable the event-driven DD Report republish that fires when a "
+            "RayCon Scenario Doc is published. Emergency override; default "
+            "behavior is to republish."
+        ),
+    )
     args = parser.parse_args(argv)
 
     settings = get_settings()
@@ -593,6 +828,45 @@ def main(argv: list[str] | None = None) -> int:
     redispatch_after = timedelta(minutes=args.redispatch_after_minutes)
 
     dispatch_state = _load_dispatch_state()
+    republish_state = _load_republish_state()
+
+    # Build the DD Report republish callback once per run so the agent
+    # system prompt + shared-folder cache (both expensive to compute) are
+    # only paid for when at least one scenario actually publishes.
+    _shared_cache: dict[str, list[dict[str, Any]]] | None = None
+    _system_prompt: str | None = None
+
+    def _dd_republish_callback(
+        *,
+        gc: GoogleClient,
+        site_summary: dict[str, Any],
+        raycon_run_id: str,
+        dry_run: bool,
+    ) -> dict[str, Any]:
+        nonlocal _shared_cache, _system_prompt
+        if _system_prompt is None:
+            prompt_path = _project_root / "docs" / "prompts" / "prompt_v3.md"
+            if not prompt_path.exists():
+                logger.error(
+                    "DD Report republish: system prompt missing at %s", prompt_path
+                )
+                return {
+                    "dd_report_republish": "failed",
+                    "reason": f"system prompt missing at {prompt_path}",
+                }
+            _system_prompt = prompt_path.read_text(encoding="utf-8")
+        if _shared_cache is None:
+            _shared_cache = list_shared_folders_once(gc)
+        return _republish_dd_report_if_present(
+            gc,
+            site_summary,
+            raycon_run_id,
+            settings=settings,
+            system_prompt=_system_prompt,
+            shared_cache=_shared_cache,
+            republish_state=republish_state,
+            dry_run=dry_run,
+        )
 
     results: list[dict[str, Any]] = []
     for site_summary in summaries:
@@ -604,6 +878,8 @@ def main(argv: list[str] | None = None) -> int:
                 alert_after=alert_after,
                 dispatch_state=dispatch_state,
                 redispatch_after=redispatch_after,
+                skip_dd_republish=args.skip_dd_republish,
+                dd_republish_callback=_dd_republish_callback,
             )
         except Exception as e:
             logger.exception("Unhandled error for site '%s'", site_summary.get("title"))
@@ -615,6 +891,7 @@ def main(argv: list[str] | None = None) -> int:
     # processed) so partial-run state still gets saved on the next run.
     if not args.dry_run:
         _save_dispatch_state(dispatch_state)
+        _save_republish_state(republish_state)
 
     published = [r for r in results if r.get("published")]
     dispatched = [r for r in results if r.get("dispatched")]

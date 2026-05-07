@@ -159,6 +159,66 @@ class TestProcessSitePipeline:
     @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_force_regenerate_bypasses_report_exists(
+        self, mock_readiness, mock_agent, mock_completeness
+    ):
+        """``force_regenerate=True`` runs the agent even when a DD Report exists."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": False,
+            "inspection_found": True,
+            "report_exists": True,  # would normally short-circuit
+        }
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc456",
+            "doc_url": "https://docs.google.com/document/d/doc456",
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+
+        gc = MagicMock()
+        result = process_site_pipeline(
+            gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"], {}, "system prompt", _make_settings(),
+            force_regenerate=True,
+        )
+
+        assert result.status == "report_created"
+        assert result.doc_id == "doc456"
+        mock_agent.assert_called_once()
+
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_force_regenerate_still_blocks_on_missing_docs(
+        self, mock_readiness, mock_agent
+    ):
+        """``force_regenerate=True`` does not bypass the missing-docs gate."""
+        mock_readiness.return_value = {
+            "sir_found": False,
+            "isp_found": False,
+            "inspection_found": False,
+            "report_exists": True,
+        }
+
+        gc = MagicMock()
+        result = process_site_pipeline(
+            gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"], {}, "system prompt", _make_settings(),
+            force_regenerate=True,
+        )
+
+        # Missing-docs gate fires before the (bypassed) report_exists check.
+        assert result.status == "waiting_on_docs"
+        assert "SIR" in result.missing_docs
+        mock_agent.assert_not_called()
+
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
     def test_all_present_generates_report(self, mock_readiness, mock_agent, mock_completeness):
         """Triggers agent and returns report_created when all docs present."""
         mock_readiness.return_value = {
