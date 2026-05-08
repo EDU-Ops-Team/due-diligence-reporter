@@ -36,16 +36,15 @@ jobs:
         # Persists .dd_republish_state.json across cron ticks so the 12h
         # DD_REPUBLISH_FORCE_AFTER window is honored. Save key is
         # run-id-scoped so each run writes a fresh entry; restore-keys
-        # falls back to the latest entry that matches the prefix.
-        # Workflow-scoped key so inbox-scan doesn't trample
-        # raycon-followup's cache (and vice versa).
+        # falls back to the latest entry that matches the prefix. The
+        # cache is shared across workflows on purpose so inbox-scan and
+        # raycon-followup see each other's dedup state.
         id: restore-dd-republish-state
         uses: actions/cache/restore@v4
         with:
           path: .dd_republish_state.json
-          key: dd-republish-state-${{ github.workflow }}-${{ github.run_id }}
+          key: dd-republish-state-${{ github.run_id }}
           restore-keys: |
-            dd-republish-state-${{ github.workflow }}-
             dd-republish-state-
 
       - name: Install uv
@@ -185,7 +184,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .dd_republish_state.json
-          key: dd-republish-state-${{ github.workflow }}-${{ github.run_id }}
+          key: dd-republish-state-${{ github.run_id }}
 
       - name: Done
         run: echo "Inbox scan completed"

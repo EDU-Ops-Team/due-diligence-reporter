@@ -63,9 +63,14 @@ on:
         required: false
         type: string
       status:
-        description: 'RayCon job status: succeeded | failed | validation_failed (callback observability only)'
+        description: 'RayCon job status (callback observability only)'
         required: false
-        type: string
+        type: choice
+        default: 'succeeded'
+        options:
+          - succeeded
+          - failed
+          - partial
 
 concurrency:
   group: raycon-followup
@@ -99,9 +104,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .dd_republish_state.json
-          key: dd-republish-state-${{ github.workflow }}-${{ github.run_id }}
+          key: dd-republish-state-${{ github.run_id }}
           restore-keys: |
-            dd-republish-state-${{ github.workflow }}-
             dd-republish-state-
 
       - name: Install uv
@@ -235,7 +239,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .dd_republish_state.json
-          key: dd-republish-state-${{ github.workflow }}-${{ github.run_id }}
+          key: dd-republish-state-${{ github.run_id }}
 
       - name: Done
         run: echo "RayCon follow-up completed"

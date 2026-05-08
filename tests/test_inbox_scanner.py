@@ -1607,6 +1607,123 @@ class TestDDRepublishCallbackWiring:
         assert len(result["uploaded"]) == 1
         republish = result["uploaded"][0].get("dd_report_republish") or {}
         assert republish.get("status") == "failed"
-        assert "pipeline blew up" in republish.get("error", "")
+        # `reason` is the normalized envelope key (Fix 2).
+        assert "pipeline blew up" in republish.get("reason", "")
 
 
+
+
+# ---------------------------------------------------------------------------
+# _maybe_fire_dd_republish envelope shape (Fix 2)
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeFireDDRepublishEnvelopeShapes:
+    """All four return paths share the normalized DDRepublishResult shape."""
+
+    REQUIRED_KEYS = {"status", "reason"}
+    VALID_STATUSES = {"skipped", "fired", "failed"}
+
+    def _drive_file(self, **overrides):
+        base = {"id": "fid", "modifiedTime": "2026-05-08T10:00:00Z"}
+        base.update(overrides)
+        return base
+
+    def test_skipped_unrecognized_doc_type(self):
+        from due_diligence_reporter.inbox_scanner import _maybe_fire_dd_republish
+
+        result = _maybe_fire_dd_republish(
+            callback=MagicMock(),
+            gc=MagicMock(),
+            site_summary={"title": "S"},
+            doc_type="dashboard_aggregate",
+            drive_file=self._drive_file(),
+            dry_run=False,
+        )
+        assert self.REQUIRED_KEYS <= set(result.keys())
+        assert result["status"] == "skipped"
+        assert result["status"] in self.VALID_STATUSES
+
+    def test_skipped_missing_drive_file_id(self):
+        from due_diligence_reporter.inbox_scanner import _maybe_fire_dd_republish
+
+        result = _maybe_fire_dd_republish(
+            callback=MagicMock(),
+            gc=MagicMock(),
+            site_summary={"title": "S"},
+            doc_type="sir",
+            drive_file={"id": "", "modifiedTime": "t"},
+            dry_run=False,
+        )
+        assert self.REQUIRED_KEYS <= set(result.keys())
+        assert result["status"] == "skipped"
+
+    @patch("due_diligence_reporter.provenance.is_vendor_sourced", return_value=True)
+    def test_fired_callback_keys_preserved(self, _vendor):
+        from due_diligence_reporter.inbox_scanner import _maybe_fire_dd_republish
+
+        callback = MagicMock(
+            return_value={
+                "dd_report_republish": "republish",
+                "republish_reason": "vendor_sir",
+                "doc_url": "https://docs.google.com/x",
+            }
+        )
+        result = _maybe_fire_dd_republish(
+            callback=callback,
+            gc=MagicMock(),
+            site_summary={"title": "S"},
+            doc_type="sir",
+            drive_file=self._drive_file(),
+            dry_run=False,
+        )
+        assert self.REQUIRED_KEYS <= set(result.keys())
+        assert result["status"] == "fired"
+        # Callback fields must survive the wrap.
+        assert result.get("dd_report_republish") == "republish"
+        assert result.get("republish_reason") == "vendor_sir"
+        assert result.get("doc_url") == "https://docs.google.com/x"
+
+    @patch("due_diligence_reporter.provenance.is_vendor_sourced", return_value=True)
+    def test_failed_callback_normalized(self, _vendor):
+        from due_diligence_reporter.inbox_scanner import _maybe_fire_dd_republish
+
+        callback = MagicMock(side_effect=RuntimeError("kaboom"))
+        result = _maybe_fire_dd_republish(
+            callback=callback,
+            gc=MagicMock(),
+            site_summary={"title": "S"},
+            doc_type="sir",
+            drive_file=self._drive_file(),
+            dry_run=False,
+        )
+        assert self.REQUIRED_KEYS <= set(result.keys())
+        assert result["status"] == "failed"
+        assert "kaboom" in result["reason"]
+
+
+# ---------------------------------------------------------------------------
+# Provenance gate inside _maybe_fire_dd_republish (Fix 5)
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeFireDDRepublishProvenanceGate:
+    """AI-named files must be skipped before the callback fires."""
+
+    @patch("due_diligence_reporter.provenance.is_vendor_sourced", return_value=False)
+    def test_skips_ai_named(self, mock_is_vendor):
+        from due_diligence_reporter.inbox_scanner import _maybe_fire_dd_republish
+
+        callback = MagicMock()
+        result = _maybe_fire_dd_republish(
+            callback=callback,
+            gc=MagicMock(),
+            site_summary={"title": "S"},
+            doc_type="sir",
+            drive_file={"id": "fid", "modifiedTime": "t"},
+            dry_run=False,
+            m1_folder_id="m1_folder",
+        )
+        assert result == {"status": "skipped", "reason": "ai_named_skipped"}
+        callback.assert_not_called()
+        mock_is_vendor.assert_called_once()

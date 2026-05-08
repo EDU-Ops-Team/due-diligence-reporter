@@ -685,3 +685,39 @@ class TestRayConCompositeFingerprint:
         assert runner.call_count == 2
         # Two distinct keys recorded — one per arrival.
         assert len(state) == 2
+
+
+# ---------------------------------------------------------------------------
+# Legacy fingerprint migration dedup (Fix 9)
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyFingerprintMigrationDedup:
+    """A migrated legacy entry (`{site}:raycon_scenario:{run_id}`) must
+    dedup against incoming live keys (`{site}:raycon_scenario:{run_id}:{drive_modified_time}`).
+
+    Pre-Rec.3, RayCon dedup keyed on `{site}:{run_id}`. ``load_state``
+    rewrites those into `{site}:raycon_scenario:{run_id}` (no drive
+    modified time suffix). Live callers now build a longer fingerprint;
+    without the prefix-match in ``maybe_republish_dd_report``, the
+    one-shot republish would re-fire after the cutover. This test
+    locks in the prefix-match behavior.
+    """
+
+    def test_legacy_entry_dedups_against_live_composite_key(self):
+        runner = _pipeline_runner_factory()
+        # Recent enough to be inside the force_after window.
+        recent = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        # Migrated legacy key — no `:drive_modified_time` suffix.
+        legacy_state = {"site-123:raycon_scenario:rc_run_abc": recent}
+
+        # Live caller's fingerprint includes drive_modified_time.
+        outcome = _call_helper(
+            reason=REASON_RAYCON,
+            fingerprint="rc_run_abc:2026-05-08T10:00:00Z",
+            state=legacy_state,
+            runner=runner,
+        )
+
+        assert outcome.decision == "skip_no_diff"
+        runner.assert_not_called()

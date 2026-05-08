@@ -381,10 +381,20 @@ def is_vendor_sourced(
     *,
     m1_folder_id: str | None = None,
     doc_type: str | None = None,
+    read_only: bool = False,
 ) -> bool:
-    """Return True iff the file is vendor-sourced (or unknown — see policy)."""
+    """Return True iff the file is vendor-sourced (or unknown — see policy).
+
+    ``read_only`` propagates through to :func:`classify_provenance` so
+    callers in observability/diagnostic contexts can probe provenance
+    without mutating the on-disk cache.
+    """
     return classify_provenance(
-        file_info, gc, m1_folder_id=m1_folder_id, doc_type=doc_type
+        file_info,
+        gc,
+        m1_folder_id=m1_folder_id,
+        doc_type=doc_type,
+        read_only=read_only,
     ).is_vendor
 
 
