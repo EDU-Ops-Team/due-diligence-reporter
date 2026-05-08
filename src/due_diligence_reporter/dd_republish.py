@@ -196,40 +196,47 @@ def load_state(
     return state
 
 
-def save_state(state: dict[str, str], path: Path = DD_REPUBLISH_STATE_PATH) -> None:
-    """Persist the dedup map atomically.
+def atomic_write_json(path: Path, data: Any) -> None:
+    """Atomically write *data* as pretty JSON to *path*.
 
     Writes to a sibling tempfile in the same directory then ``os.replace``
     onto the target path so concurrent readers never see a half-written
     file. Tempfile lives in the same directory to keep ``os.replace``
-    atomic on a single filesystem. Best-effort; logs but does not raise.
+    atomic on a single filesystem. Raises on failure — callers decide
+    whether to swallow or propagate.
+
+    Shared utility used by both ``save_state`` (this module) and
+    ``_save_failure_state`` (report_pipeline) so any state file written
+    at repo root has the same crash-safety guarantees.
     """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(data, sort_keys=True, indent=2)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=str(path.parent),
+        prefix=path.name + ".",
+        suffix=".tmp",
+        delete=False,
+    )
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(state, sort_keys=True, indent=2)
-        # delete=False so we control the rename; we explicitly clean up
-        # on failure. Using NamedTemporaryFile so the temp name is
-        # collision-safe across racing writers.
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=str(path.parent),
-            prefix=path.name + ".",
-            suffix=".tmp",
-            delete=False,
-        )
+        tmp.write(payload)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp.close()
+        os.replace(tmp.name, path)
+    except Exception:
         try:
-            tmp.write(payload)
-            tmp.flush()
-            os.fsync(tmp.fileno())
-            tmp.close()
-            os.replace(tmp.name, path)
-        except Exception:
-            try:
-                os.unlink(tmp.name)
-            except OSError:
-                pass
-            raise
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
+
+
+def save_state(state: dict[str, str], path: Path = DD_REPUBLISH_STATE_PATH) -> None:
+    """Persist the dedup map atomically. Best-effort; logs but does not raise."""
+    try:
+        atomic_write_json(path, state)
     except Exception as e:
         logger.warning("Failed to write DD republish state at %s: %s", path, e)
 
@@ -429,6 +436,24 @@ def maybe_republish_dd_report(
     # that don't plumb id (no live caller does today, but keep safe).
     state_key = _state_key(site_id or site_name, reason, fingerprint)
     last_iso = republish_state.get(state_key)
+    if last_iso is None and reason == REASON_RAYCON:
+        # Legacy migration compat. Pre-Rec.3 the RayCon path keyed on
+        # `{site}:raycon_scenario:{run_id}` (no drive_modified_time
+        # suffix). load_state preserves those keys verbatim, but live
+        # callers now build a fingerprint like
+        # `{run_id}:{drive_modified_time}`. The drive_modified_time
+        # is ISO 8601 and contains colons of its own, so we can't
+        # rpartition on `:`. Instead we strip the trailing
+        # `:{drive_modified_time}` chunk by splitting on the run_id
+        # boundary and check whether the legacy-shaped key exists.
+        # Only applied for the RayCon reason — SIR/BI never had a
+        # legacy keying scheme to migrate from.
+        run_id_only_fingerprint = fingerprint.split(":", 1)[0]
+        if run_id_only_fingerprint and run_id_only_fingerprint != fingerprint:
+            legacy_state_key = _state_key(
+                site_id or site_name, reason, run_id_only_fingerprint
+            )
+            last_iso = republish_state.get(legacy_state_key)
     last_dt = _parse_iso(last_iso) if last_iso else None
     if not force and last_dt is not None and (now - last_dt) < force_after:
         logger.info(
@@ -490,13 +515,12 @@ def maybe_republish_dd_report(
             force_regenerate=True,
         )
     except Exception as e:
-        logger.error(
-            "DD republish failed: reason=%s site_id=%s site=%s fingerprint=%s err=%s",
+        logger.exception(
+            "DD republish failed: reason=%s site_id=%s site=%s fingerprint=%s",
             reason,
             site_id or "?",
             site_name,
             fingerprint,
-            e,
         )
         return RepublishOutcome(
             decision="failed",

@@ -1105,8 +1105,10 @@ def _load_failure_state(path: Path) -> dict[str, dict[str, Any]]:
 
 def _save_failure_state(state: dict[str, dict[str, Any]], path: Path) -> None:
     """Persist a best-effort failure-state map. Logs but does not raise."""
+    from .dd_republish import atomic_write_json
+
     try:
-        path.write_text(json.dumps(state, sort_keys=True, indent=2), encoding="utf-8")
+        atomic_write_json(path, state)
     except Exception as e:
         logger.warning("Failed to write failure state at %s: %s", path, e)
 

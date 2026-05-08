@@ -207,6 +207,42 @@ class TestContentTier:
         v = classify_provenance(None, gc=None)  # type: ignore[arg-type]
         assert v.provenance_classification_failed is False
 
+    def test_is_vendor_sourced_read_only_propagated(self):
+        """``read_only=True`` must suppress the cache write side effect."""
+        from due_diligence_reporter import provenance as prov
+
+        upload_calls: list[dict] = []
+
+        class FakeGC:
+            def list_files_in_folder(self, _id):
+                return []  # no existing cache file
+
+            def download_file_bytes(self, _id):
+                # Returning bytes triggers the Tier-2 path.
+                return b"Some vendor content"
+
+            def upload_file_to_folder(self, **kw):
+                upload_calls.append(kw)
+                return {"id": "cache"}
+
+        # Force a cacheable verdict (vendor, non-error tier) so the only
+        # reason _save_cache wouldn't be called is read_only=True.
+        with patch(
+            "due_diligence_reporter.provenance._classify_by_content"
+        ) as mock_content:
+            mock_content.return_value = prov.ProvenanceVerdict(
+                "vendor", 0.9, "content", "letterhead"
+            )
+            assert prov.is_vendor_sourced(
+                {"name": "Vendor.pdf", "id": "abc", "modifiedTime": "t1"},
+                gc=FakeGC(),
+                m1_folder_id="m1",
+                read_only=True,
+            )
+        assert upload_calls == [], (
+            "read_only=True must NOT write the provenance cache back to Drive"
+        )
+
     def test_cache_hit(self):
         cache_blob = (
             '{"abc": {"modifiedTime": "t1", "label": "vendor", '

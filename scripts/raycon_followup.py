@@ -121,6 +121,37 @@ BLOCK_PLAN_PFP_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+_CALLBACK_INPUT_RE = re.compile(r"^[A-Za-z0-9_:\-]+$")
+
+
+def _validate_callback_input(
+    name: str,
+    value: str | None,
+    *,
+    max_len: int = 64,
+    pattern: re.Pattern[str] = _CALLBACK_INPUT_RE,
+) -> str | None:
+    """Reject malformed RayCon callback inputs (workflow_dispatch surface).
+
+    Returns the value unchanged when valid, ``None`` when malformed (or
+    when the input was already None/empty). Drops malformed values
+    silently — the cron safety net always re-runs, so a rejected
+    callback degrades to "next scheduled run picks it up" rather than
+    a script-killing crash.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if len(value) > max_len or not pattern.fullmatch(value):
+        logger.warning(
+            "Rejecting malformed %s callback input (len=%d)", name, len(value)
+        )
+        return None
+    return value
+
+
 def _filename_matches_block_plan(name: str) -> bool:
     """Return True if ``name`` (already lowercased) looks like a Block Plan.
 
@@ -743,10 +774,9 @@ def _process_site(
                 dry_run=dry_run,
             )
         except Exception as e:
-            logger.error(
-                "DD Report republish callback raised for site=%s: %s",
+            logger.exception(
+                "DD Report republish callback raised for site=%s",
                 site_name,
-                e,
             )
             republish_result = {"dd_report_republish": "failed", "reason": str(e)}
         if republish_result:
@@ -824,6 +854,17 @@ def main(argv: list[str] | None = None) -> int:
         help="RayCon job status (succeeded|failed|validation_failed) — observability only.",
     )
     args = parser.parse_args(argv)
+
+    # Reject malformed callback inputs (charset + length cap) before they
+    # reach logging or downstream filters. The workflow_dispatch surface
+    # is HTTP-reachable via the GitHub PAT path, so RayCon-side bugs (or
+    # a stale token's misuse) shouldn't be able to wedge log
+    # ingestion or smuggle log-injection sequences through.
+    args.site_id = _validate_callback_input("site_id", args.site_id)
+    args.run_id = _validate_callback_input("run_id", args.run_id)
+    args.raycon_status = _validate_callback_input(
+        "status", args.raycon_status, max_len=32
+    )
 
     if args.site_id or args.run_id or args.raycon_status:
         logger.info(

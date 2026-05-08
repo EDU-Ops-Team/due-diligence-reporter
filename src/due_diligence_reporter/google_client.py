@@ -419,6 +419,26 @@ class GoogleClient:
             logger.error("Failed to make file %s public: %s", file_id, error)
             raise RuntimeError(f"Failed to set public permission: {error}") from error
 
+    def rename_file(self, file_id: str, new_name: str) -> None:
+        """Rename a Drive file (or Doc) in place.
+
+        Used by the DD Report cross-day path: when ``force_regenerate=True``
+        finds yesterday's report Doc, we rename it to today's date and
+        overwrite its body in place rather than creating a duplicate Doc.
+        """
+        try:
+            _google_api_execute(
+                self.drive_service.files().update(
+                    fileId=file_id,
+                    body={"name": new_name},
+                    fields="id, name",
+                    supportsAllDrives=True,
+                )
+            )
+        except HttpError as error:
+            logger.error("Failed to rename file %s -> %s: %s", file_id, new_name, error)
+            raise RuntimeError(f"Failed to rename file: {error}") from error
+
     def get_document(self, document_id: str) -> dict[str, Any]:
         """Retrieve the full Google Docs document structure (body, lists, etc.).
 

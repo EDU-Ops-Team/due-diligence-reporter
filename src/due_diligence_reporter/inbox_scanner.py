@@ -13,7 +13,25 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, TypedDict
+
+try:
+    from typing import NotRequired  # Python 3.11+
+except ImportError:  # pragma: no cover - 3.10 fallback
+    from typing_extensions import NotRequired  # type: ignore[no-redef]
+
+
+class DDRepublishResult(TypedDict, total=False):
+    """Normalized envelope returned by :func:`_maybe_fire_dd_republish`.
+
+    Every code path returns this shape so callers can branch on
+    ``status`` without keying on ``KeyError``-prone optional fields.
+    """
+
+    status: str  # "skipped" | "fired" | "failed"
+    reason: str
+    dd_report_republish: NotRequired[str]
+    republish_reason: NotRequired[str]
 
 from .classifier import classify_document
 from .config import Settings
@@ -243,7 +261,8 @@ def _maybe_fire_dd_republish(
     doc_type: str,
     drive_file: dict[str, Any],
     dry_run: bool,
-) -> dict[str, Any]:
+    m1_folder_id: str | None = None,
+) -> DDRepublishResult:
     """Fire the shared DD Report republish callback for a vendor doc arrival.
 
     Builds the content fingerprint from the Drive file's
@@ -253,19 +272,41 @@ def _maybe_fire_dd_republish(
 
     Failures inside the callback are swallowed and surfaced into the
     returned dict so the inbox scan never breaks on a flaky republish.
+
+    All four return paths share the :class:`DDRepublishResult` envelope
+    shape (``status`` + ``reason`` + optional callback fields) so
+    callers can branch on ``status`` without keying on optional fields.
     """
+    from .provenance import is_vendor_sourced  # local import to avoid cycles
+
     reason = _INBOX_DOC_TYPE_TO_REPUBLISH_REASON.get(doc_type)
     if not reason:
-        return {"status": "skipped", "reason": f"doc_type {doc_type} not authoritative"}
+        return {
+            "status": "skipped",
+            "reason": f"doc_type {doc_type} not authoritative",
+        }
 
     file_id = str(drive_file.get("id", "")).strip()
     modified_time = str(drive_file.get("modifiedTime", "")).strip()
     if not file_id:
         return {"status": "skipped", "reason": "missing drive file id"}
+
+    # Provenance gate: only republish for vendor-sourced files. AI-named
+    # uploads (Greg's "I'll just rename it" path) bypass the vendor
+    # gate elsewhere but should never trigger a DD republish, since
+    # they aren't trusted authoritative inputs.
+    if not is_vendor_sourced(
+        drive_file,
+        gc=gc,
+        m1_folder_id=m1_folder_id,
+        doc_type=doc_type,
+    ):
+        return {"status": "skipped", "reason": "ai_named_skipped"}
+
     fingerprint = f"{file_id}:{modified_time}" if modified_time else file_id
 
     try:
-        return callback(
+        result = callback(
             gc=gc,
             site_summary=site_summary,
             reason=reason,
@@ -273,13 +314,20 @@ def _maybe_fire_dd_republish(
             dry_run=dry_run,
         )
     except Exception as e:
-        logger.error(
-            "DD Report republish callback raised for site=%s doc_type=%s: %s",
+        logger.exception(
+            "DD Report republish callback raised for site=%s doc_type=%s",
             site_summary.get("title"),
             doc_type,
-            e,
         )
-        return {"status": "failed", "error": str(e)}
+        return {"status": "failed", "reason": str(e)}
+
+    # Preserve every key the callback returned (dd_report_republish,
+    # republish_reason, site_id, content_fingerprint, doc_url, etc.)
+    # while normalizing status/reason on top.
+    fired: DDRepublishResult = {"status": "fired", "reason": "ok"}
+    if isinstance(result, dict):
+        fired.update(result)  # type: ignore[typeddict-item]
+    return fired
 
 
 def _run_block_plan_downstream(
@@ -829,6 +877,7 @@ def process_email(
                         doc_type=doc_type,
                         drive_file=drive_file,
                         dry_run=dry_run,
+                        m1_folder_id=target_folder_id,
                     )
                     if republish_result:
                         uploaded[-1]["dd_report_republish"] = republish_result

@@ -2405,19 +2405,33 @@ def _find_existing_report_doc(
     gc: GoogleClient,
     *,
     folder_id: str,
-    doc_name: str,
+    site_name: str,
 ) -> dict[str, Any] | None:
-    """Return an existing same-name DD report in the site folder, if present."""
+    """Return an existing DD report Doc for *site_name* in the folder.
+
+    Matches by prefix ``"{site_name} DD Report - "`` so the cross-day
+    ``force_regenerate=True`` path can find yesterday's Doc and rename
+    it to today's date in place, rather than creating a duplicate Doc
+    per day. Returns the most recently modified match if multiple
+    exist (a one-off cleanup we accept for legacy folders).
+    """
     try:
         files = gc.list_files_in_folder(folder_id)
     except Exception as e:
         logger.warning("Could not list folder %s while checking for existing report: %s", folder_id, e)
         return None
 
+    prefix = f"{site_name.strip()} DD Report - "
+    candidate: dict[str, Any] | None = None
     for file_info in files:
-        if file_info.get("name") == doc_name:
-            return file_info
-    return None
+        name = str(file_info.get("name", ""))
+        if not name.startswith(prefix):
+            continue
+        if candidate is None or str(file_info.get("modifiedTime", "")) > str(
+            candidate.get("modifiedTime", "")
+        ):
+            candidate = file_info
+    return candidate
 
 
 def _fill_scenario_placeholders(
@@ -2759,7 +2773,9 @@ async def create_dd_report(
     def _work() -> dict[str, Any]:
         try:
             gc = _make_google_client()
-            existing_doc = _find_existing_report_doc(gc, folder_id=folder_id, doc_name=doc_name)
+            existing_doc = _find_existing_report_doc(
+                gc, folder_id=folder_id, site_name=site_name
+            )
             doc_id: str | None = None
             doc_url: str | None = None
             if existing_doc:
@@ -2768,6 +2784,22 @@ async def create_dd_report(
                     raise RuntimeError(f"Existing DD report is missing a valid document ID: {doc_name}")
                 doc_id = existing_doc_id
                 doc_url = existing_doc.get("webViewLink")
+                old_name = str(existing_doc.get("name", "")).strip()
+                if old_name and old_name != doc_name:
+                    # Cross-day regenerate: same site, different report-date suffix.
+                    # Rename in place so we never accumulate one Doc per day.
+                    logger.info(
+                        "Renaming existing DD Doc from %s to %s", old_name, doc_name
+                    )
+                    try:
+                        gc.rename_file(doc_id, doc_name)
+                    except Exception as rename_err:  # noqa: BLE001
+                        logger.warning(
+                            "Failed to rename DD Doc %s -> %s; continuing with stale name: %s",
+                            old_name,
+                            doc_name,
+                            rename_err,
+                        )
                 logger.info("Existing DD report found, rebuilding in place: %s (id=%s)", doc_name, doc_id)
                 _clear_document_body(gc, doc_id=doc_id)
             else:
