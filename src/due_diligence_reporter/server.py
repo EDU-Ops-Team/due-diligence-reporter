@@ -51,6 +51,7 @@ from .report_schema import (
     normalize_report_data,
 )
 from .retry import retry_config
+from .site_matching import SiteResolution, resolve_site
 from .site_record import SiteRecord
 from .utils import (
     build_hyperlink_requests,
@@ -65,11 +66,16 @@ from .utils import (
 )
 from .utils import build_site_match_terms as _build_site_match_terms
 from .wrike import (
+    _get_all_site_records,
+    _looks_like_permalink,
+    _looks_like_wrike_id,
     build_site_summary,
     classify_comment_to_section,
+    enrich_custom_fields_with_names,
     extract_p1_from_record,
     find_site_record,
     get_record_comments,
+    load_wrike_config,
 )
 
 logging.basicConfig(
@@ -103,6 +109,90 @@ MIN_SITE_MATCH_SCORE = 20
 
 _READ_CONTEXT_BY_FILE_ID: dict[str, dict[str, str]] = {}
 _REBL_RESOLUTION_CACHE: dict[str, ReblResolution] = {}
+
+
+def _resolve_site_for_tool(site_name_or_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Resolve a site query and return ``(record, error_payload)``.
+
+    Returns ``(record, None)`` on a confident match and ``(None, payload)``
+    when the resolver returns ``ambiguous`` or ``not_found``. The payload is
+    the user-facing dict the MCP tool should bubble up to the caller so the
+    user can pick a candidate or refine the query. Payload contract:
+
+    - ``status`` is ``"ambiguous"`` or ``"not_found"``.
+    - ``candidates`` (ambiguous) / ``did_you_mean`` (not_found): list of
+      ``{id, title, address, score}`` entries.
+    - ``message`` instructs the user to reply with a Wrike ID, permalink,
+      or a more specific name.
+
+    The happy-path lookup goes through ``find_site_record`` so existing test
+    suites that patch that symbol stay green; only when it returns ``None``
+    do we re-run the resolver to harvest disambiguation candidates.
+    """
+    query = (site_name_or_id or "").strip()
+
+    record = find_site_record(site_name_or_id=site_name_or_id)
+    if record is not None:
+        return record, None
+
+    # No confident match — re-run the resolver against the name path to
+    # surface candidates / did-you-mean entries to the user.
+    if _looks_like_wrike_id(query) or _looks_like_permalink(query):
+        return None, {
+            "status": "not_found",
+            "error": "No site found",
+            "message": (
+                f"Could not resolve '{query}' to a Wrike Site Record. "
+                "Verify the ID/permalink or paste the site name to fuzzy-match."
+            ),
+            "query": query,
+            "did_you_mean": [],
+            "reason": "ID/permalink lookup failed",
+        }
+
+    try:
+        cfg = load_wrike_config()
+        all_records = _get_all_site_records(cfg=cfg)
+    except Exception as e:
+        logger.warning("Could not load Wrike records for disambiguation: %s", e)
+        return None, {
+            "status": "not_found",
+            "error": "No site found",
+            "message": f"Could not find a Wrike Site Record matching '{query}'.",
+            "query": query,
+            "did_you_mean": [],
+            "reason": str(e),
+        }
+
+    resolution: SiteResolution = resolve_site(query, site_records=all_records)
+
+    if resolution.status == "matched" and resolution.match is not None:
+        return enrich_custom_fields_with_names(resolution.match), None
+
+    if resolution.status == "ambiguous":
+        return None, {
+            "status": "ambiguous",
+            "error": "Multiple sites match",
+            "message": (
+                f"{len(resolution.candidates)} sites match '{resolution.query}'. "
+                "Reply with the Wrike ID, the permalink, or a more specific name."
+            ),
+            "query": resolution.query,
+            "candidates": [c.to_dict() for c in resolution.candidates],
+            "reason": resolution.reason,
+        }
+
+    return None, {
+        "status": "not_found",
+        "error": "No site found",
+        "message": (
+            f"No site matched '{resolution.query}'. Closest near-matches below — "
+            "refine the name or paste the Wrike ID/permalink."
+        ),
+        "query": resolution.query,
+        "did_you_mean": [c.to_dict() for c in resolution.candidates],
+        "reason": resolution.reason,
+    }
 
 CAN_WE_SECTION_DELIMITER = "Education Regulatory Approval:"
 V3_CAN_WE_HEADING = "Can this school be open in time for the current school year (8/12 or 9/8)?"
@@ -973,19 +1063,16 @@ async def get_site_record(site_name_or_id: str) -> dict[str, Any]:
 
     def _work() -> dict[str, Any]:
         try:
-            record = find_site_record(site_name_or_id=site_name_or_id)
+            record, error_payload = _resolve_site_for_tool(site_name_or_id)
+            if error_payload is not None:
+                logger.info(
+                    "get_site_record disambiguation: status=%s query=%r",
+                    error_payload.get("status"),
+                    site_name_or_id,
+                )
+                return error_payload
 
-            if not record:
-                logger.warning("No Site Record found for: %s", site_name_or_id)
-                return {
-                    "status": "error",
-                    "error": "Site record not found",
-                    "message": (
-                        f"Could not find a Wrike Site Record matching '{site_name_or_id}'. "
-                        "Try using the exact site name, a Wrike ID, or a Wrike permalink."
-                    ),
-                }
-
+            assert record is not None  # narrows for type-checker; guarded above
             summary = build_site_summary(record)
             logger.info(
                 "Found Site Record: %s (id=%s, stage=%s)",
@@ -1059,6 +1146,18 @@ async def list_drive_documents(
 
     def _work() -> dict[str, Any]:
         try:
+            shared_folder_files: list[dict[str, Any]] = []
+            address: str | None = None
+            if site_name.strip():
+                # Resolve up front so an ambiguous name short-circuits before
+                # any Drive listing — cheaper to fail fast and let the user pick.
+                record, error_payload = _resolve_site_for_tool(site_name)
+                if error_payload is not None:
+                    return error_payload
+                if record is not None:
+                    summary = build_site_summary(record)
+                    address = summary.get("address")
+
             gc = _make_google_client()
 
             all_site_files_raw = gc.list_files_recursive(folder_id, max_depth=2)
@@ -1068,13 +1167,7 @@ async def list_drive_documents(
                 len(site_files), folder_id,
             )
 
-            shared_folder_files: list[dict[str, Any]] = []
-            address: str | None = None
             if site_name.strip():
-                record = find_site_record(site_name_or_id=site_name)
-                if record:
-                    summary = build_site_summary(record)
-                    address = summary.get("address")
                 match_terms = _build_site_match_terms(site_name.strip(), address)
                 shared_docs = _find_site_docs_in_shared_folders(
                     gc, match_terms,
@@ -2977,13 +3070,10 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
 
     def _work() -> dict[str, Any]:
         try:
-            record = find_site_record(site_name_or_id=site_name_or_id)
-            if not record:
-                return {
-                    "status": "error",
-                    "error": "Site record not found",
-                    "message": f"Could not find a Wrike Site Record matching '{site_name_or_id}'.",
-                }
+            record, error_payload = _resolve_site_for_tool(site_name_or_id)
+            if error_payload is not None:
+                return error_payload
+            assert record is not None
 
             summary = build_site_summary(record)
             site_title = summary.get("title", site_name_or_id)
@@ -3319,16 +3409,11 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
         )
 
         try:
-            record = find_site_record(site_name_or_id=site_name)
-            if not record:
-                return {
-                    "status": "error",
-                    "error": "Site record not found",
-                    "message": (
-                        f"Could not find a Wrike Site Record matching '{site_name}'."
-                    ),
-                    "site": site_name,
-                }
+            record, error_payload = _resolve_site_for_tool(site_name)
+            if error_payload is not None:
+                error_payload["site"] = site_name
+                return error_payload
+            assert record is not None
 
             summary = build_site_summary(record)
             site_title = summary.get("title", site_name)
@@ -3662,13 +3747,10 @@ async def get_site_comments(site_name_or_id: str) -> dict[str, Any]:
 
     def _work() -> dict[str, Any]:
         try:
-            record = find_site_record(site_name_or_id=site_name_or_id)
-            if not record:
-                return {
-                    "status": "error",
-                    "error": "Site record not found",
-                    "message": f"Could not find a Wrike Site Record matching '{site_name_or_id}'.",
-                }
+            record, error_payload = _resolve_site_for_tool(site_name_or_id)
+            if error_payload is not None:
+                return error_payload
+            assert record is not None
 
             record_id = record.get("id")
             if not record_id:

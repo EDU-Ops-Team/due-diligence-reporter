@@ -329,7 +329,8 @@ def test_unknown_site_returns_graceful_error(tmp_path, monkeypatch):
     with patch("due_diligence_reporter.server.find_site_record", return_value=None):
         result = asyncio.run(server.diagnose_site_readiness("Nonexistent Site"))
 
-    assert result["status"] == "error"
+    # New disambiguation payload: status is "not_found" with did_you_mean hints.
+    assert result["status"] == "not_found"
     assert "could not find" in result["message"].lower()
     assert result["site"] == "Nonexistent Site"
 

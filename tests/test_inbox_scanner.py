@@ -1727,3 +1727,108 @@ class TestMaybeFireDDRepublishProvenanceGate:
         assert result == {"status": "skipped", "reason": "ai_named_skipped"}
         callback.assert_not_called()
         mock_is_vendor.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy-fallback auto-match policy in _match_attachment_to_site
+# ---------------------------------------------------------------------------
+
+
+class TestMatchAttachmentToSiteFuzzyFallback:
+    """Verify resolve_site fallback respects INBOX_AUTO_MATCH_SCORE / _LEAD."""
+
+    @staticmethod
+    def _meta(subject: str = "irrelevant subject") -> EmailMetadata:
+        return EmailMetadata(
+            message_id="msg_1",
+            subject=subject,
+            sender="sender@example.com",
+            body_snippet="",
+            label_ids=[],
+            attachments=[],
+        )
+
+    @staticmethod
+    def _records() -> list[dict]:
+        # Two ordinary records; deterministic pre-filter scores 0 by default.
+        return [
+            {"id": "S1", "title": "Foo", "customFields": []},
+            {"id": "S2", "title": "Bar", "customFields": []},
+        ]
+
+    @patch("due_diligence_reporter.inbox_scanner._site_match_score", return_value=0)
+    @patch("due_diligence_reporter.inbox_scanner.resolve_site")
+    def test_auto_match_fires_on_high_score_high_lead(self, mock_resolve, _mock_score):
+        from due_diligence_reporter.inbox_scanner import _match_attachment_to_site
+        from due_diligence_reporter.site_matching import ScoredCandidate, SiteResolution
+
+        records = self._records()
+        mock_resolve.return_value = SiteResolution(
+            status="matched",
+            query="x",
+            match=records[0],
+            candidates=[
+                ScoredCandidate(id="S1", title="Foo", address="", score=95.0),
+                ScoredCandidate(id="S2", title="Bar", address="", score=83.0),
+            ],
+            reason="leading",
+        )
+        result = _match_attachment_to_site("file.pdf", self._meta(), records)
+        assert result is records[0]
+
+    @patch("due_diligence_reporter.inbox_scanner._site_match_score", return_value=0)
+    @patch("due_diligence_reporter.inbox_scanner.resolve_site")
+    def test_auto_match_skips_on_borderline_score(self, mock_resolve, _mock_score):
+        from due_diligence_reporter.inbox_scanner import _match_attachment_to_site
+        from due_diligence_reporter.site_matching import ScoredCandidate, SiteResolution
+
+        records = self._records()
+        mock_resolve.return_value = SiteResolution(
+            status="matched",
+            query="x",
+            match=records[0],
+            candidates=[
+                ScoredCandidate(id="S1", title="Foo", address="", score=88.0),
+                ScoredCandidate(id="S2", title="Bar", address="", score=70.0),
+            ],
+            reason="below INBOX_AUTO_MATCH_SCORE",
+        )
+        assert _match_attachment_to_site("file.pdf", self._meta(), records) is None
+
+    @patch("due_diligence_reporter.inbox_scanner._site_match_score", return_value=0)
+    @patch("due_diligence_reporter.inbox_scanner.resolve_site")
+    def test_auto_match_skips_on_close_lead(self, mock_resolve, _mock_score):
+        from due_diligence_reporter.inbox_scanner import _match_attachment_to_site
+        from due_diligence_reporter.site_matching import ScoredCandidate, SiteResolution
+
+        records = self._records()
+        mock_resolve.return_value = SiteResolution(
+            status="matched",
+            query="x",
+            match=records[0],
+            candidates=[
+                ScoredCandidate(id="S1", title="Foo", address="", score=95.0),
+                ScoredCandidate(id="S2", title="Bar", address="", score=91.0),
+            ],
+            reason="close lead",
+        )
+        assert _match_attachment_to_site("file.pdf", self._meta(), records) is None
+
+    @patch("due_diligence_reporter.inbox_scanner._site_match_score", return_value=0)
+    @patch("due_diligence_reporter.inbox_scanner.resolve_site")
+    def test_auto_match_skips_on_ambiguous(self, mock_resolve, _mock_score):
+        from due_diligence_reporter.inbox_scanner import _match_attachment_to_site
+        from due_diligence_reporter.site_matching import ScoredCandidate, SiteResolution
+
+        records = self._records()
+        mock_resolve.return_value = SiteResolution(
+            status="ambiguous",
+            query="x",
+            candidates=[
+                ScoredCandidate(id="S1", title="Foo", address="", score=95.0),
+                ScoredCandidate(id="S2", title="Bar", address="", score=94.0),
+            ],
+            reason="ambiguous",
+        )
+        assert _match_attachment_to_site("file.pdf", self._meta(), records) is None
+
