@@ -18,7 +18,7 @@ from typing import Any, TypedDict
 try:
     from typing import NotRequired  # Python 3.11+
 except ImportError:  # pragma: no cover - 3.10 fallback
-    from typing_extensions import NotRequired  # type: ignore[no-redef]
+    from typing import NotRequired  # type: ignore[no-redef]
 
 
 class DDRepublishResult(TypedDict, total=False):
@@ -38,9 +38,13 @@ from .config import Settings
 from .dashboard_readiness import edits_from_uploads, mark_readiness_complete
 from .google_client import GoogleClient
 from .m1_lookup import (
-    M1_RECOGNIZED_DOC_TYPES,
     _list_m1_documents_by_type,
     _resolve_m1_folder,
+)
+from .site_matching import (
+    INBOX_AUTO_MATCH_LEAD,
+    INBOX_AUTO_MATCH_SCORE,
+    resolve_site,
 )
 from .utils import (
     escape_html_text,
@@ -48,7 +52,7 @@ from .utils import (
     extract_text_from_pdf_bytes,
     send_email,
 )
-from .wrike import _match_site_with_llm, build_site_summary, extract_address_from_record
+from .wrike import build_site_summary, extract_address_from_record
 
 # Regex to extract the bare email from a From header like "Display Name <user@domain.com>"
 _EMAIL_RE = re.compile(r"<([^>]+)>")
@@ -1022,7 +1026,29 @@ def _match_attachment_to_site(
     query = f"{filename} {metadata.subject}".strip()
     if not query:
         return None
-    return _match_site_with_llm(query=query, site_records=site_records)
+
+    resolution = resolve_site(query, site_records=site_records)
+    top_score = resolution.candidates[0].score if resolution.candidates else 0.0
+    second_score = resolution.candidates[1].score if len(resolution.candidates) > 1 else 0.0
+    lead = top_score - second_score
+
+    if (
+        resolution.status == "matched"
+        and resolution.match is not None
+        and top_score >= INBOX_AUTO_MATCH_SCORE
+        and lead >= INBOX_AUTO_MATCH_LEAD
+    ):
+        return resolution.match
+
+    logger.warning(
+        "inbox_scanner: skipping auto-match for query=%r status=%s top_score=%s lead=%s reason=%s",
+        query,
+        resolution.status,
+        top_score,
+        lead,
+        resolution.reason,
+    )
+    return None
 
 
 def _extract_email_metadata(gc: GoogleClient, message_id: str) -> EmailMetadata:

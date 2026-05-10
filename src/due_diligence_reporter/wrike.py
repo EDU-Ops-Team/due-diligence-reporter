@@ -730,7 +730,13 @@ def _get_all_site_records(*, cfg: WrikeConfig) -> list[dict[str, Any]]:
 def _match_site_with_llm(
     *, query: str, site_records: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
-    """Use LLM to match the provided query to the best Site Record by name or address."""
+    """Use LLM to match the provided query to the best Site Record by name or address.
+
+    Used as the LLM tiebreaker by ``site_matching.resolve_site`` when the top two
+    fuzzy-scored candidates are within ``AMBIGUOUS_GAP`` points. Do not call
+    directly from new code — use ``resolve_site`` instead, which surfaces
+    ambiguity and disambiguation candidates to the caller.
+    """
     if not site_records:
         logger.warning("No site records to match against")
         return None
@@ -820,16 +826,21 @@ def _looks_like_permalink(value: str) -> bool:
 def find_site_record(
     *, site_name_or_id: str, cfg: WrikeConfig | None = None
 ) -> dict[str, Any] | None:
-    """
-    Find a Site Record by name or ID.
+    """Find a Site Record by name or ID.
 
     - If it looks like a Wrike ID: fetch directly.
     - If it looks like a permalink: resolve then fetch.
-    - Otherwise: search all Site Records and use LLM to find the best match.
+    - Otherwise: delegate to ``site_matching.resolve_site`` and return the
+      record only when its status is ``"matched"``.
 
-    Returns the Site Record dict enriched with human-readable custom field names,
-    or None if not found.
+    Returns the Site Record dict enriched with human-readable custom field
+    names, or ``None`` if not found / ambiguous. Compatibility wrapper —
+    new code should call ``site_matching.resolve_site`` directly to surface
+    ambiguity and disambiguation candidates to the user.
     """
+    # Local import keeps this module importable even before site_matching loads.
+    from .site_matching import resolve_site
+
     if cfg is None:
         cfg = load_wrike_config()
 
@@ -855,20 +866,27 @@ def find_site_record(
             logger.error("Permalink lookup failed: %s", e)
             return None
 
-    # Name / fuzzy search
+    # Name / fuzzy search via the canonical resolver.
     logger.info("Searching for Site Record by name: %s", query)
     all_records = _get_all_site_records(cfg=cfg)
-    matched = _match_site_with_llm(query=query, site_records=all_records)
+    resolution = resolve_site(query, site_records=all_records)
 
-    if matched:
+    if resolution.status == "matched" and resolution.match is not None:
+        matched = resolution.match
         logger.info(
-            "Found matching Site Record: %s (%s)",
+            "Found matching Site Record: %s (%s) — %s",
             matched.get("title"),
             matched.get("id"),
+            resolution.reason,
         )
         return enrich_custom_fields_with_names(matched)
 
-    logger.warning("No matching Site Record found for: %s", query)
+    logger.warning(
+        "No matching Site Record found for %r (status=%s, reason=%s)",
+        query,
+        resolution.status,
+        resolution.reason,
+    )
     return None
 
 

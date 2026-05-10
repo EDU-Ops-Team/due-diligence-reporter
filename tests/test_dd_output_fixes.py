@@ -412,12 +412,18 @@ class TestListDriveDocumentsFiltering:
             {"id": "lease", "name": "Lease Draft.pdf"},
         ]
 
+        # Provide a confident match so the new disambiguation pre-flight in
+        # ``list_drive_documents`` short-circuits cleanly. The legacy contract
+        # — return success and continue listing files — is preserved.
         with patch(
             "due_diligence_reporter.server._make_google_client",
             return_value=gc,
         ), patch(
             "due_diligence_reporter.server.find_site_record",
-            return_value=None,
+            return_value={"id": "wrike-1", "title": "Alpha Keller"},
+        ), patch(
+            "due_diligence_reporter.server.build_site_summary",
+            return_value={"title": "Alpha Keller", "address": "123 Main St"},
         ), patch(
             "due_diligence_reporter.server._find_site_docs_in_shared_folders",
             return_value={
