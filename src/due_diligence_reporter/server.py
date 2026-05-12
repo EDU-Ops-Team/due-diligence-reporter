@@ -33,7 +33,7 @@ from .completeness import (
     project_completeness_from_readiness,
     raycon_token_paths,
 )
-from .config import get_settings
+from .config import get_settings, shovels_status
 from .dashboard_publish import publish_site_record
 from .google_client import GoogleClient
 from .google_doc_builder import SOURCE_QUALITY_NOTES_KEY, build_dd_report_doc
@@ -1992,6 +1992,44 @@ async def apply_opening_plan_skill(
 # Shovels.ai permit history helpers
 # ---------------------------------------------------------------------------
 
+# Canonical gap labels for downstream report generation. Shovels failures
+# must not crash the DD report run — the prompt v3 spec (Step 5.5) tells the
+# agent to store these strings in token_evidence["shovels.permit_history"]
+# and proceed. Keep these stable so reports that reference them keep parsing.
+SHOVELS_GAP_LABEL_NOT_CONFIGURED = (
+    "[Not found — Shovels.ai API key not configured; permit history unavailable]"
+)
+SHOVELS_GAP_LABEL_NOT_FOUND = (
+    "[Not found — Shovels.ai did not match this address; permit history unavailable]"
+)
+SHOVELS_GAP_LABEL_API_ERROR = (
+    "[Not found — Shovels.ai API error; permit history unavailable]"
+)
+
+
+def _shovels_error_response(message: str, *, gap_label: str = SHOVELS_GAP_LABEL_API_ERROR) -> dict[str, Any]:
+    """Build a non-crashing error response for Shovels failures.
+
+    Always carries:
+      * ``status="error"`` so callers can branch.
+      * ``gap_label`` — the verbatim string downstream report generation
+        should store in ``token_evidence["shovels.permit_history"]``.
+      * empty ``risk_flags`` and ``report_data_fields`` so report merging
+        code that unconditionally indexes those keys keeps working.
+    """
+    return {
+        "status": "error",
+        "error": "Shovels API error",
+        "message": message,
+        "gap_label": gap_label,
+        "risk_flags": [],
+        "report_data_fields": {
+            "exec.acquisition_conditions": "",
+            "exec.tradeoffs_and_deficiencies": "",
+        },
+    }
+
+
 @retry(**retry_config())  # type: ignore[untyped-decorator]
 def _call_shovels_search(api_key: str, base_url: str, address: str) -> dict[str, Any] | None:
     """Search for an address and return the first result dict, or None if not found."""
@@ -2178,15 +2216,33 @@ async def get_permit_history(
     logger.info("Tool called: get_permit_history — address=%s", address)
 
     settings = get_settings()
-    api_key = settings.shovels_api_key
+    status_info = shovels_status(settings)
     base_url = settings.shovels_api_base_url
 
-    if not api_key:
+    if not status_info["configured"]:
+        # Preflight failure. Never raise — emit the structured gap label so
+        # downstream report generation can store it in token_evidence and
+        # proceed. ``reason`` is safe to log (missing / placeholder /
+        # whitespace_only); the raw key is never included.
+        logger.warning(
+            "Shovels.ai is not configured (reason=%s); returning gap label for address=%s",
+            status_info["reason"],
+            address,
+        )
         return {
             "status": "error",
             "error": "Configuration error",
-            "message": "SHOVELS_API_KEY is not configured",
+            "message": f"SHOVELS_API_KEY is not configured (reason={status_info['reason']})",
+            "gap_label": SHOVELS_GAP_LABEL_NOT_CONFIGURED,
+            "risk_flags": [],
+            "report_data_fields": {
+                "exec.acquisition_conditions": "",
+                "exec.tradeoffs_and_deficiencies": "",
+            },
+            "shovels_status": status_info,
         }
+
+    api_key = settings.shovels_api_key.strip()
 
     def _work() -> dict[str, Any]:
         # Step A — resolve address to geo_id
@@ -2194,10 +2250,10 @@ async def get_permit_history(
             search_result = _call_shovels_search(api_key, base_url, address)
         except requests.HTTPError as e:
             logger.error("Shovels address search HTTP error: %s", e)
-            return {"status": "error", "error": "Shovels API error", "message": str(e)}
+            return _shovels_error_response(str(e))
         except Exception as e:
             logger.error("Shovels address search failed: %s", e)
-            return {"status": "error", "error": "Shovels API error", "message": str(e)}
+            return _shovels_error_response(str(e))
 
         if search_result is None:
             logger.info("Shovels.ai: address not found in coverage — %s", address)
@@ -2210,9 +2266,8 @@ async def get_permit_history(
                     "exec.acquisition_conditions": "",
                     "exec.tradeoffs_and_deficiencies": "",
                 },
-                "message": (
-                    "[Not found — Shovels.ai did not match this address; permit history unavailable]"
-                ),
+                "gap_label": SHOVELS_GAP_LABEL_NOT_FOUND,
+                "message": SHOVELS_GAP_LABEL_NOT_FOUND,
             }
 
         geo_id = search_result.get("geo_id", "")
@@ -2223,7 +2278,15 @@ async def get_permit_history(
             metrics = _call_shovels_metrics(api_key, base_url, geo_id)
         except Exception as e:
             logger.error("Shovels metrics call failed: %s", e)
-            return {"status": "error", "error": "Shovels API error", "message": str(e)}
+            return _shovels_error_response(str(e))
+
+        # Defense against malformed upstream responses. The metrics endpoint
+        # has historically returned non-dict payloads under partial outages;
+        # treat that the same as an API error so callers can rely on the
+        # ``metrics.get(...)`` calls below.
+        if not isinstance(metrics, dict):
+            logger.error("Shovels metrics returned non-dict payload: %r", type(metrics).__name__)
+            return _shovels_error_response("malformed metrics response")
 
         # Step C — get permit history (last 10 years, up to 50 permits)
         today = datetime.now()
@@ -2233,7 +2296,11 @@ async def get_permit_history(
             permits = _call_shovels_permits(api_key, base_url, geo_id, from_date, to_date)
         except Exception as e:
             logger.error("Shovels permits call failed: %s", e)
-            return {"status": "error", "error": "Shovels API error", "message": str(e)}
+            return _shovels_error_response(str(e))
+
+        if not isinstance(permits, list):
+            logger.error("Shovels permits returned non-list payload: %r", type(permits).__name__)
+            return _shovels_error_response("malformed permits response")
 
         # Extract property attributes from the first permit that carries them
         property_attributes: dict[str, Any] = {}
@@ -2279,7 +2346,15 @@ async def get_permit_history(
             ),
         }
 
-    result = await asyncio.to_thread(_work)
+    try:
+        result = await asyncio.to_thread(_work)
+    except Exception as e:
+        # Final safety net. ``_work`` already catches per-call exceptions and
+        # returns structured error dicts, so reaching here implies a logic
+        # bug or environment failure (e.g. thread pool exhausted). Still
+        # never crash the DD report run.
+        logger.exception("Shovels.ai permit history failed unexpectedly: %s", e)
+        return _shovels_error_response(str(e))
 
     # Auto-publish to Drive if address was found and site context provided
     if (
