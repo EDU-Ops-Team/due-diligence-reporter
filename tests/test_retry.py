@@ -406,12 +406,18 @@ class TestWrikeGetRetry:
 
 
 # ---------------------------------------------------------------------------
-# Shovels retry integration test
+# Shovels retry integration test (DEPRECATED — legacy helper)
+#
+# The Shovels integration is no longer in normal DDR scope; the
+# ``get_permit_history`` MCP tool is unregistered by default. This test
+# still exercises the retry wiring on the legacy ``_call_shovels_search``
+# helper so a future refactor of the retry config can't silently break
+# the opt-in path (DDR_ENABLE_SHOVELS=true) without a test failure.
 # ---------------------------------------------------------------------------
 
 
 class TestShovelsRetry:
-    """Test that Shovels API calls retry on transient errors."""
+    """Test that the legacy Shovels API helper retries on transient errors."""
 
     @patch("due_diligence_reporter.server.requests.get")
     def test_shovels_search_retries_on_timeout(self, mock_get: MagicMock) -> None:

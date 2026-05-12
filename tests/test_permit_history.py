@@ -1,7 +1,23 @@
-﻿"""Unit tests for Shovels.ai permit history helpers and trace integration."""
+﻿"""Unit tests for the (DEPRECATED) Shovels.ai permit history helpers and
+trace integration.
+
+The Shovels integration has been moved upstream to the AI SIR /
+source-evidence build; DDR no longer initiates live Shovels API calls
+during report generation. The helper functions remain in the source
+tree for legacy callers and are still unit-tested here so future
+refactors don't silently break the code path. The MCP-tool exposure is
+asserted to be disabled by default in
+``test_get_permit_history_not_registered_by_default``.
+
+The supplemental_evidence trace tests at the bottom of this file
+verify that upstream-supplied ``shovels.permit_history`` evidence still
+flows into the trace report when the SIR builder writes it into the
+token bag.
+"""
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,6 +31,7 @@ from due_diligence_reporter.server import (
     _call_shovels_permits,
     _call_shovels_search,
     _format_permit_report_fields,
+    mcp,
 )
 
 API_KEY = "test-key"
@@ -282,4 +299,121 @@ def test_trace_supplemental_evidence_template_keys_not_duplicated():
     trace = _build_report_trace_data(**_minimal_trace_args(token_evidence=evidence))
     assert first_token not in trace.get("supplemental_evidence", {})
     assert "shovels.permit_history" in trace["supplemental_evidence"]
+
+
+# ---------------------------------------------------------------------------
+# Shovels is out of normal DDR scope — these are the load-bearing assertions
+# for the upstream-only direction. The Shovels integration now runs in the
+# AI SIR / source-evidence build; DDR must not initiate live Shovels API
+# calls during report generation, and the legacy MCP tool must not be
+# advertised by default. Upstream-supplied ``permit_history.risk_flags``
+# must still flow into ``dd_risk_flags[]`` so SIR evidence keeps surfacing.
+# ---------------------------------------------------------------------------
+
+
+def _list_mcp_tool_names() -> set[str]:
+    """Return the set of tool names currently registered on the DDR MCP server."""
+    return {t.name for t in asyncio.run(mcp.list_tools())}
+
+
+class TestShovelsOutOfDdrScope:
+    """Shovels.ai is upstream-only; assert it is not part of normal DDR scope."""
+
+    def test_get_permit_history_not_registered_by_default(self) -> None:
+        # DDR_ENABLE_SHOVELS defaults to False, so the legacy tool must
+        # not appear in the MCP tool list the agent sees.
+        names = _list_mcp_tool_names()
+        assert "get_permit_history" not in names, (
+            "get_permit_history must not be advertised as an MCP tool by default; "
+            "the Shovels integration now runs upstream in the AI SIR build."
+        )
+
+    def test_other_ddr_tools_still_registered(self) -> None:
+        # Sanity-check that disabling Shovels didn't accidentally drop
+        # other DDR tools — the agent still needs the core toolset.
+        names = _list_mcp_tool_names()
+        assert "create_dd_report" in names
+        assert "list_drive_documents" in names
+
+    def test_upstream_permit_history_risk_flags_still_ingested(self) -> None:
+        # When the upstream SIR / source-evidence build supplies
+        # ``permit_history.risk_flags`` in the report's token bag, the
+        # canonical risk-flag derivation must still pick them up and
+        # surface them on ``dd_risk_flags[]``. This is the contract that
+        # lets DDR keep consuming upstream permit evidence even though
+        # it no longer calls Shovels itself.
+        from due_diligence_reporter.risk_flags import derive_risk_flags
+
+        report_data = {
+            "permit_history.risk_flags": [
+                {
+                    "flag_type": "OPEN_PERMIT",
+                    "severity": "acquisition_condition",
+                    "description": "1 open permit — resolve before lease execution",
+                    "evidence": "Shovels metrics: permit_active_count=1",
+                },
+                {
+                    "flag_type": "DEFERRED_MAINTENANCE",
+                    "severity": "risk_note",
+                    "description": "No permit activity in last 10 years",
+                    "evidence": "Shovels metrics: permit_count=0",
+                },
+                {
+                    "flag_type": "HVAC_PERMIT",
+                    "severity": "info",
+                    "description": "HVAC permit on file",
+                    "evidence": "",
+                },
+            ],
+        }
+        flags = derive_risk_flags(report_data)
+        sources = {f["source"] for f in flags}
+        severities = {f["severity"] for f in flags}
+        assert "permit_history" in sources
+        # acquisition_condition -> high, risk_note -> medium, info -> omitted.
+        # Both upstream entries dedup onto (ahj_history, permit_history) so
+        # only the higher-severity one survives, but the merged summary
+        # carries both descriptions.
+        assert "high" in severities
+        assert all(f["severity"] != "info" for f in flags)
+        assert all(f["category"] == "ahj_history" for f in flags if f["source"] == "permit_history")
+        merged_summary = next(f["summary"] for f in flags if f["source"] == "permit_history")
+        assert "open permit" in merged_summary.lower()
+        assert "no permit activity" in merged_summary.lower()
+
+    def test_upstream_shovels_supplemental_evidence_still_flows_to_trace(self) -> None:
+        # If the upstream SIR builder stores ``shovels.permit_history``
+        # in ``token_evidence``, DDR's trace report must continue to
+        # surface it in ``supplemental_evidence`` so reviewers can see
+        # the raw upstream payload that drove the flags.
+        evidence = {"shovels.permit_history": '{"permit_count": 5, "risk_flags": []}'}
+        trace = _build_report_trace_data(**_minimal_trace_args(token_evidence=evidence))
+        assert "shovels.permit_history" in trace["supplemental_evidence"]
+
+
+class TestLegacyShovelsToolOptIn:
+    """The legacy ``get_permit_history`` MCP tool remains opt-in for callers
+    that have not yet migrated. Toggling ``DDR_ENABLE_SHOVELS=true`` should
+    restore the tool registration."""
+
+    def test_function_still_importable_for_legacy_callers(self) -> None:
+        # The Python function itself stays in the module so direct
+        # callers (scripts, legacy tests) keep working.
+        from due_diligence_reporter import server
+
+        assert callable(server.get_permit_history)
+
+    def test_missing_api_key_returns_configuration_error(self) -> None:
+        # When invoked directly without an API key, the legacy function
+        # short-circuits with a configuration error rather than
+        # attempting a live call. This guards against accidental live
+        # traffic if a legacy caller invokes it without DDR_ENABLE_SHOVELS.
+        from due_diligence_reporter import server
+
+        with patch.object(server, "get_settings") as mock_settings:
+            mock_settings.return_value.shovels_api_key = ""
+            mock_settings.return_value.shovels_api_base_url = "https://api.shovels.ai/v2"
+            result = asyncio.run(server.get_permit_history("123 Main St"))
+        assert result["status"] == "error"
+        assert "SHOVELS_API_KEY" in result["message"]
 
