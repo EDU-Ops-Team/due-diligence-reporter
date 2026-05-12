@@ -88,7 +88,9 @@ jobs:
           SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
           ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
           BUILDING_INSPECTION_FOLDER_ID: ${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}
-          SHOVELS_API_KEY: ${{ secrets.SHOVELS_API_KEY }}
+          # SHOVELS_API_KEY intentionally omitted — Shovels integration
+          # runs upstream (AI SIR / source-evidence build); DDR no
+          # longer initiates live Shovels API calls.
           DASHBOARD_PUBLISH_SECRET: ${{ secrets.DASHBOARD_PUBLISH_SECRET }}
           INBOX_SCANNER_TOKEN: ${{ secrets.INBOX_SCANNER_TOKEN }}
           RAYCON_WEBHOOK_SECRET: ${{ secrets.RAYCON_WEBHOOK_SECRET }}
@@ -107,7 +109,6 @@ jobs:
           echo "SIR_NOTIFICATION_RECIPIENTS=${SIR_NOTIFICATION_RECIPIENTS}" >> .env
           echo "CDS_NOTIFICATION_RECIPIENTS=${CDS_NOTIFICATION_RECIPIENTS}" >> .env
           echo "GLOBAL_EMAIL_CC=${GLOBAL_EMAIL_CC}" >> .env
-          echo "SHOVELS_API_KEY=${SHOVELS_API_KEY}" >> .env
 
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env

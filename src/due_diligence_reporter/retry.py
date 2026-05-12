@@ -1,7 +1,7 @@
 """Shared retry utilities for external API calls.
 
 Provides a standard retry configuration using ``tenacity`` for all outbound
-HTTP requests (Wrike, RayCon, Shovels.ai, OpenAI, Google APIs).
+HTTP requests (Wrike, RayCon, OpenAI, Google APIs).
 Retries on transient errors: connection errors, timeouts, and HTTP 429/5xx.
 
 For 429 (rate limit) errors, the retry logic parses the ``Retry-After`` header
