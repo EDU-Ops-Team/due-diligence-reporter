@@ -5,14 +5,33 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Load environment variables from .env file at project root
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+# Resolve the canonical .env path (repo root, two levels up from this file).
+# Loaded two ways:
+#   1. ``load_dotenv(...)`` so plain ``os.getenv`` calls anywhere in the
+#      codebase pick up the same values.
+#   2. ``model_config.env_file`` so pydantic-settings reads .env directly
+#      even if a caller imports ``Settings`` before ``load_dotenv`` runs
+#      (e.g. test harnesses, scripts that change cwd).
+_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
+load_dotenv(_ENV_PATH)
 
 
 class Settings(BaseSettings):
     """Application settings."""
+
+    # Belt-and-suspenders: read the same .env file pydantic-settings does
+    # not depend on load_dotenv side effects. ``case_sensitive=False`` lets
+    # field ``shovels_api_key`` pick up ``SHOVELS_API_KEY`` regardless of
+    # casing in CI or shell exports. ``extra="ignore"`` keeps unrelated env
+    # vars from breaking instantiation when .env carries unrelated keys.
+    model_config = SettingsConfigDict(
+        env_file=str(_ENV_PATH),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
     # Google Cloud Configuration
     google_client_config: str = Field(
@@ -332,3 +351,43 @@ def get_settings() -> Settings:
             f"GOOGLE_CLIENT_CONFIG: {os.getenv('GOOGLE_CLIENT_CONFIG')}, "
             f"GOOGLE_TOKEN_FILE: {os.getenv('GOOGLE_TOKEN_FILE')}"
         ) from e
+
+
+# Placeholder values that the .env.example template ships with. Treat these
+# as "not configured" so a freshly-copied .env doesn't look configured but
+# fails at the API edge with a 401.
+_SHOVELS_PLACEHOLDER_VALUES = frozenset({
+    "your_shovels_api_key_here",
+    "your-shovels-api-key-here",
+    "changeme",
+    "todo",
+    "xxx",
+})
+
+
+def shovels_status(settings: Settings | None = None) -> dict[str, object]:
+    """Preflight status of the Shovels.ai integration.
+
+    Returns a dict suitable for surfacing in logs, the trace report, or a
+    startup diagnostic. Never includes the raw key — only whether it is
+    configured and why we think so. Safe to log.
+
+    Shape::
+
+        {
+            "configured": bool,
+            "reason": "ok" | "missing" | "placeholder" | "whitespace_only",
+            "base_url": "https://api.shovels.ai/v2",
+        }
+    """
+    s = settings if settings is not None else get_settings()
+    raw = s.shovels_api_key or ""
+    stripped = raw.strip()
+    if not stripped:
+        # Distinguish "env var unset" from "set to whitespace" so an operator
+        # who pasted a tab/newline into .env gets a useful hint.
+        reason = "whitespace_only" if raw else "missing"
+        return {"configured": False, "reason": reason, "base_url": s.shovels_api_base_url}
+    if stripped.lower() in _SHOVELS_PLACEHOLDER_VALUES:
+        return {"configured": False, "reason": "placeholder", "base_url": s.shovels_api_base_url}
+    return {"configured": True, "reason": "ok", "base_url": s.shovels_api_base_url}
