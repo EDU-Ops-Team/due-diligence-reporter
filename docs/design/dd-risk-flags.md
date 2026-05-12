@@ -97,7 +97,7 @@ The severity rules are deterministic and per-source (see below). The reporter ne
 
 Locked enum of 4 values, matching the four upstream archetypes:
 
-- `permit_history` — comes from the permit-history subsystem's own `risk_flags` array
+- `permit_history` — comes from the upstream AI SIR / source-evidence build, which writes a `permit_history.risk_flags` array into the report's token bag. DDR does not initiate live Shovels API calls during report generation; the integration was relocated upstream so permit signals are available at SIR time rather than at DD time.
 - `e_occupancy` — comes from the IBC Group E analysis (the q2 report section)
 - `school_approval` — comes from the school-approval subsystem's zone derivation
 - `sir_risk_watch` — comes from the free-text "Risk Watch" section of the SIR

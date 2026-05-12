@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
 
 from due_diligence_reporter.retry import (
-    MAX_ATTEMPTS,
     _RETRY_AFTER_MAX_SECONDS,
+    MAX_ATTEMPTS,
     _is_retryable_http_error,
     _parse_retry_after_seconds,
     _rate_limit_aware_wait,
@@ -170,10 +171,8 @@ class TestParseRetryAfterSeconds:
 
     def test_parses_google_api_retry_after_timestamp(self) -> None:
         """Google API style: 'Retry after 2026-04-15T22:48:00.602Z'"""
-        from datetime import datetime, timedelta, timezone
-
         # Create a fake error with a timestamp ~15 minutes in the future
-        future = datetime.now(timezone.utc) + timedelta(minutes=15)
+        future = datetime.now(UTC) + timedelta(minutes=15)
         ts = future.strftime("%Y-%m-%dT%H:%M:%S.000Z")
         exc = Exception(
             f'<HttpError 429 when requesting https://gmail.googleapis.com/... '
@@ -358,9 +357,7 @@ class TestRateLimitAwareWaitCap:
         caller from a multi-decade sleep. If this regresses, change
         retry.py:_rate_limit_aware_wait or _parse_retry_after_seconds."""
         # 30 minutes in the future = 1800s + 5s buffer = 1805s, > 1200s cap.
-        from datetime import datetime, timedelta, timezone
-
-        future = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime(
+        future = (datetime.now(UTC) + timedelta(minutes=30)).strftime(
             "%Y-%m-%dT%H:%M:%S.%fZ"
         )
         exc = Exception(f"429 Too Many Requests. Retry after {future}")
@@ -406,12 +403,18 @@ class TestWrikeGetRetry:
 
 
 # ---------------------------------------------------------------------------
-# Shovels retry integration test
+# Shovels retry integration test (DEPRECATED — legacy helper)
+#
+# The Shovels integration is no longer in normal DDR scope; the
+# ``get_permit_history`` MCP tool is unregistered by default. This test
+# still exercises the retry wiring on the legacy ``_call_shovels_search``
+# helper so a future refactor of the retry config can't silently break
+# the opt-in path (DDR_ENABLE_SHOVELS=true) without a test failure.
 # ---------------------------------------------------------------------------
 
 
 class TestShovelsRetry:
-    """Test that Shovels API calls retry on transient errors."""
+    """Test that the legacy Shovels API helper retries on transient errors."""
 
     @patch("due_diligence_reporter.server.requests.get")
     def test_shovels_search_retries_on_timeout(self, mock_get: MagicMock) -> None:

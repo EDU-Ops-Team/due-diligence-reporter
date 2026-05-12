@@ -172,7 +172,6 @@ In `exec.citations_block` and inside `token_evidence`, refer to source documents
 | `E-Occupancy Report` | `e_occupancy_report` |
 | `School Approval Report` | `school_approval_report` |
 | `Wrike comment <MM/DD>` | `Wrike task ID 123456` |
-| `Shovels.ai` | `shovels.permit_history` |
 | `RayCon Scenario` | `raycon_scenario.json`, run_id |
 
 When two citations come from the same document, cite the section: `SIR Flag Page`, `SIR Planning & Zoning`, `Building Inspection 1.7`, `Building Inspection Deficiency Chart`.
@@ -446,39 +445,17 @@ Three cases:
 
 **DO NOT call `apply_e_occupancy_skill` or `apply_school_approval_skill`** -- these assessments are read from pre-existing documents in the site's Drive folder (see Step 4). The agent does not run these skills during DD report generation.
 
-### Step 5.5 -- Retrieve permit history (Shovels.ai)
+### Step 5.5 -- Permit history (upstream, do not call)
 
-Call `get_permit_history(address, site_name=<site_name>, drive_folder_url=<drive_folder_url>)` using the full property address from the Wrike site record. **Always pass `site_name` and `drive_folder_url`.**
+**Do not call `get_permit_history` or any Shovels.ai endpoint.** The Shovels integration has been moved upstream to the AI SIR / source-evidence build, which now produces permit history risk flags and gap labels at SIR generation time. DDR consumes those signals only — it does not initiate live Shovels API calls during report generation.
 
-**Never skip this step.** The SIR reflects what the broker disclosed; Shovels.ai reflects what was actually filed with the jurisdiction. They are independent signals.
+When upstream evidence is present in the token bag, the report pipeline will automatically ingest it:
 
-**When `coverage == "found"`:**
+- `permit_history.risk_flags` (list of `{flag_type, severity, description, evidence}`) flows into `dd_risk_flags[]` via `risk_flags.derive_risk_flags` (`acquisition_condition` → high, `risk_note` → medium, `info` → omitted).
+- Any pre-formatted permit bullets written into `exec.acquisition_conditions` / `exec.tradeoffs_and_deficiencies` by the SIR builder pass through unchanged.
+- Any `shovels.permit_history` evidence string the SIR builder stores in `token_evidence` appears in the trace report's `supplemental_evidence` section.
 
-1. Merge `report_data_fields["exec.acquisition_conditions"]` bullets into your `exec.acquisition_conditions` content -- do not overwrite the full field with only permit data.
-2. Merge `report_data_fields["exec.tradeoffs_and_deficiencies"]` bullets into your `exec.tradeoffs_and_deficiencies` content.
-3. Add permit metrics to `token_evidence` for `exec.tradeoffs_and_deficiencies`: `"Shovels.ai: {permit_count} permits (10-yr window), {permit_active_count} active, avg inspection pass rate {avg_inspection_pass_rate:.0%}"`
-4. Cross-reference `info`-severity flags with building inspection findings:
-   - `HVAC_PERMIT` present + inspection confirms recent system â†’ note corroboration in evidence
-   - No `HVAC_PERMIT` + inspection shows aged HVAC â†’ strengthen the deferred-maintenance risk note
-   - Apply the same logic for `ROOF_PERMIT` and `ELECTRICAL_PERMIT`
-5. Store the full Shovels result in `token_evidence` under the key `"shovels.permit_history"` so it appears verbatim in the trace report:
-   ```
-   token_evidence["shovels.permit_history"] = json.dumps({
-       "normalized_address": ...,
-       "metrics": ...,
-       "property_attributes": ...,
-       "risk_flags": ...,
-       "permits": ...,   # full list
-   })
-   ```
-
-**When `coverage == "not_found"`:**
-
-Store `token_evidence["shovels.permit_history"] = message` (the gap label string). Do not add the gap label to the report fields themselves.
-
-**When `status == "error"`:**
-
-Store `token_evidence["shovels.permit_history"] = "[Not found -- Shovels.ai API error; permit history unavailable]"` and proceed.
+If the upstream evidence is absent, leave the permit-history bullets out of the executive summary entirely. Do not attempt to backfill them from the DDR side.
 
 ### Executive Summary Format
 
@@ -513,8 +490,7 @@ Before calling `create_dd_report`, explicitly populate `exec.tradeoffs_and_defic
 
 Check each of these in order:
 1. **Building Inspection** -- Overall Feasibility / Conversion Risk level; non-functional or undersized HVAC; fire alarm aged and requiring full replacement; shared building systems with confirmed capacity shortfall; structural deficiencies (active leaks, foundation cracking)
-2. **SIR** -- Sequential permit blockers (State Fire Marshal must precede City permit); zoning variance/CUP with uncertain outcome; traffic study or pre-app required before permit can be filed
-3. **Shovels.ai** -- Deferred maintenance signal (no permits in 10 years); open permits that create title/close risk; demolition permits indicating prior major structural work
+2. **SIR** -- Sequential permit blockers (State Fire Marshal must precede City permit); zoning variance/CUP with uncertain outcome; traffic study or pre-app required before permit can be filed; permit-history signals when surfaced upstream (deferred maintenance, open permits, prior demolition)
 
 Write each confirmed finding as a bullet citing its source document and the exact language that triggered the flag. Include Alpha-specific fit issues when supported by the source documents, such as no dedicated outdoor play space or no practical nearby greenspace. If no qualifying findings exist after reviewing all sources, set `exec.tradeoffs_and_deficiencies` to `""` (empty -- do not invent items). Do not leave `exec.tradeoffs_and_deficiencies` unpopulated by default.
 

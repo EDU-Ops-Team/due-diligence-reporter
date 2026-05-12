@@ -134,20 +134,37 @@ class Settings(BaseSettings):
         ),
     )
 
-    # Shovels.ai permit history API
-    #
-    # SHOVELS_API_KEY is optional. The integration is best-effort: when the
-    # key is missing or Shovels returns an error, the DD report still
-    # generates with a sourced gap label in place of permit history.
-    # See ``shovels_status()`` for the preflight check used by the
-    # ``get_permit_history`` tool and any future startup diagnostics.
+    # Shovels.ai permit history API — DEPRECATED for DDR.
+    # The Shovels integration has been moved upstream to the AI SIR /
+    # source-evidence build, which now supplies pre-computed permit
+    # history risk flags via the ``permit_history.risk_flags`` token.
+    # DDR no longer initiates live Shovels API calls during report
+    # generation. The helpers and ``get_permit_history`` tool remain in
+    # the codebase for legacy callers but are not advertised as MCP
+    # tools unless ``DDR_ENABLE_SHOVELS`` is explicitly enabled.
+    ddr_enable_shovels: bool = Field(
+        False,
+        description=(
+            "Legacy escape hatch. When True, the deprecated "
+            "get_permit_history MCP tool is registered so legacy "
+            "callers can still invoke it. Default False — DDR does not "
+            "call Shovels during normal report generation."
+        ),
+    )
     shovels_api_key: str = Field(
         "",
-        description="Shovels.ai API key for permit history lookups (optional)",
+        description=(
+            "DEPRECATED for DDR. Only used by the legacy "
+            "get_permit_history helper when DDR_ENABLE_SHOVELS=true. "
+            "Permit history evidence is built upstream now."
+        ),
     )
     shovels_api_base_url: str = Field(
         "https://api.shovels.ai/v2",
-        description="Base URL for the Shovels.ai API",
+        description=(
+            "DEPRECATED for DDR. Base URL for the legacy Shovels.ai "
+            "client; only used when DDR_ENABLE_SHOVELS=true."
+        ),
     )
     rebl_base_url: str = Field(
         "https://rebl3.vercel.app",

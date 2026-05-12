@@ -1989,7 +1989,21 @@ async def apply_opening_plan_skill(
 
 
 # ---------------------------------------------------------------------------
-# Shovels.ai permit history helpers
+# Shovels.ai permit history helpers — DEPRECATED for DDR.
+#
+# The Shovels integration runs upstream now (AI SIR / source-evidence
+# build), which supplies pre-computed permit history risk flags to DDR
+# via the ``permit_history.risk_flags`` token in ``report_data``.
+#
+# DDR no longer calls Shovels during normal report generation. The
+# helpers and ``get_permit_history`` function below stay in the source
+# tree for legacy callers and existing unit tests, but the MCP tool is
+# only registered when ``DDR_ENABLE_SHOVELS=true`` (default False).
+#
+# Do not add new callers. To consume permit history evidence in a DD
+# report, populate ``report_data["permit_history.risk_flags"]`` from
+# the upstream SIR/source-evidence build; ``risk_flags.derive_risk_flags``
+# will ingest it into ``dd_risk_flags[]`` automatically.
 # ---------------------------------------------------------------------------
 
 # Canonical gap labels for downstream report generation. Shovels failures
@@ -2189,23 +2203,24 @@ def _format_permit_report_fields(risk_flags: list[dict[str, Any]]) -> dict[str, 
     }
 
 
-@mcp.tool()
 async def get_permit_history(
     address: str,
     site_name: str = "",
     drive_folder_url: str = "",
 ) -> dict[str, Any]:
-    """Fetch permit history for a property from Shovels.ai and identify DD risk flags.
+    """DEPRECATED — legacy Shovels.ai permit history fetch. Not part of DDR scope.
 
-    Calls the Shovels.ai API to retrieve permit counts, inspection quality metrics,
-    and full permit history for a property address. Analyzes the history for
-    acquisition condition triggers and risk signals.
+    Permit history evidence is now produced upstream by the AI SIR /
+    source-evidence build, which writes ``permit_history.risk_flags``
+    into the report_data token bag. DDR ingests that token directly via
+    ``risk_flags.derive_risk_flags`` and does not initiate live Shovels
+    API calls during report generation.
 
-    If site_name and drive_folder_url are provided, the full assessment is
-    automatically saved as a Google Doc in the site's Drive folder.
+    This function is retained for legacy callers and is only exposed as
+    an MCP tool when ``DDR_ENABLE_SHOVELS=true``. Default is disabled.
 
     Args:
-        address: Full property address (e.g., "345 Peachtree St NE, Atlanta, GA 30308").
+        address: Full property address.
         site_name: Site name — pass to auto-publish the assessment as a Google Doc.
         drive_folder_url: Site Drive folder URL — pass to auto-publish.
 
@@ -2380,6 +2395,21 @@ async def get_permit_history(
 
     return result
 
+
+# Legacy MCP tool registration — opt-in only.
+#
+# get_permit_history is NOT advertised as an MCP tool by default. The
+# Shovels integration moved upstream to the AI SIR / source-evidence
+# build; DDR consumes the resulting ``permit_history.risk_flags`` token
+# rather than calling Shovels itself. Setting DDR_ENABLE_SHOVELS=true
+# restores the legacy MCP registration for callers that haven't
+# migrated yet.
+if get_settings().ddr_enable_shovels:
+    logger.warning(
+        "DDR_ENABLE_SHOVELS=true — registering deprecated get_permit_history "
+        "MCP tool. Permit history should come from upstream SIR evidence."
+    )
+    mcp.tool()(get_permit_history)
 
 
 def _attach_block_plan_submitted_timestamp(
