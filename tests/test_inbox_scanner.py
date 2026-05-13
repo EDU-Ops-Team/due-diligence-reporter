@@ -1,4 +1,4 @@
-﻿"""Tests for the inbox scanner module."""
+"""Tests for the inbox scanner module."""
 
 from __future__ import annotations
 
@@ -95,7 +95,9 @@ class TestClassification:
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="Some text",
-            attachments=[{"filename": "notes.pdf", "attachment_id": "a1", "mime_type": "application/pdf"}],
+            attachments=[
+                {"filename": "notes.pdf", "attachment_id": "a1", "mime_type": "application/pdf"}
+            ],
         )
         mock_classify.return_value = ("unknown", 0.0)
 
@@ -114,7 +116,9 @@ class TestClassification:
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="",
-            attachments=[{"filename": "report.pdf", "attachment_id": "a2", "mime_type": "application/pdf"}],
+            attachments=[
+                {"filename": "report.pdf", "attachment_id": "a2", "mime_type": "application/pdf"}
+            ],
         )
         mock_classify.return_value = ("sir", 0.5)  # below AUTO_FILE_CONFIDENCE
 
@@ -132,6 +136,72 @@ class TestClassification:
 
     @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner.classify_by_content_llm")
+    @patch("due_diligence_reporter.inbox_scanner.extract_text_from_pdf_bytes")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_vague_filename_uses_pdf_content_fallback(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_extract_pdf,
+        mock_content_classify,
+        mock_resolve_m1,
+        mock_build_summary,
+    ):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_content_1",
+            subject="Alpha Keller due diligence packet",
+            sender="vendor@example.com",
+            effective_sender="vendor@example.com",
+            body_snippet="",
+            attachments=[
+                {
+                    "filename": "report.pdf",
+                    "attachment_id": "content1",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        mock_classify.return_value = ("unknown", 0.0)
+        mock_extract_pdf.return_value = "Site Investigation Report for Alpha Keller"
+        mock_content_classify.return_value = ("sir", 0.92)
+        mock_resolve_m1.return_value = ("m1_folder_id", "https://drive/folders/m1")
+        mock_build_summary.return_value = {
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site123",
+        }
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"%PDF-vague"
+        gc.upload_file_to_folder.return_value = {
+            "id": "sir_id",
+            "webViewLink": "https://drive.google.com/file/d/sir_id",
+        }
+
+        result = process_email(
+            gc,
+            "msg_content_1",
+            MagicMock(),
+            "label_123",
+            "review_123",
+            site_records=[{"id": "IEKELLER", "title": "Alpha Keller", "customFields": []}],
+        )
+
+        assert len(result["uploaded"]) == 1
+        assert result["uploaded"][0]["doc_type"] == "sir"
+        assert result["uploaded"][0]["site_title"] == "Alpha Keller"
+        gc.gmail_get_attachment.assert_called_once_with("msg_content_1", "content1")
+        gc.upload_file_to_folder.assert_called_once_with(
+            folder_id="m1_folder_id",
+            file_name=result["uploaded"][0]["drive_filename"],
+            file_bytes=b"%PDF-vague",
+        )
+
+    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
     def test_upload_failure_is_returned_as_error(
@@ -143,7 +213,13 @@ class TestClassification:
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="",
-            attachments=[{"filename": "Alpha Keller SIR.pdf", "attachment_id": "a3", "mime_type": "application/pdf"}],
+            attachments=[
+                {
+                    "filename": "Alpha Keller SIR.pdf",
+                    "attachment_id": "a3",
+                    "mime_type": "application/pdf",
+                }
+            ],
         )
         mock_classify.return_value = ("sir", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
@@ -189,7 +265,13 @@ class TestClassification:
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="",
-            attachments=[{"filename": "Alpha Keller SIR.pdf", "attachment_id": "sir1", "mime_type": "application/pdf"}],
+            attachments=[
+                {
+                    "filename": "Alpha Keller SIR.pdf",
+                    "attachment_id": "sir1",
+                    "mime_type": "application/pdf",
+                }
+            ],
         )
         mock_classify.return_value = ("sir", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
@@ -202,12 +284,19 @@ class TestClassification:
         gc = MagicMock()
         gc.file_exists_in_folder.return_value = False
         gc.gmail_get_attachment.return_value = b"pdf"
-        gc.upload_file_to_folder.return_value = {"id": "sir_id", "webViewLink": "https://drive.google.com/file/d/sir_id"}
+        gc.upload_file_to_folder.return_value = {
+            "id": "sir_id",
+            "webViewLink": "https://drive.google.com/file/d/sir_id",
+        }
 
         site_records = [{"id": "IEKELLER", "title": "Alpha Keller", "customFields": []}]
 
         result = process_email(
-            gc, "msg_sir_m1", MagicMock(), "label_123", "review_123",
+            gc,
+            "msg_sir_m1",
+            MagicMock(),
+            "label_123",
+            "review_123",
             site_records=site_records,
         )
 
@@ -236,7 +325,13 @@ class TestClassification:
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="",
-            attachments=[{"filename": "Alpha Keller Building Inspection Report.pdf", "attachment_id": "bi1", "mime_type": "application/pdf"}],
+            attachments=[
+                {
+                    "filename": "Alpha Keller Building Inspection Report.pdf",
+                    "attachment_id": "bi1",
+                    "mime_type": "application/pdf",
+                }
+            ],
         )
         mock_classify.return_value = ("building_inspection", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
@@ -249,12 +344,19 @@ class TestClassification:
         gc = MagicMock()
         gc.file_exists_in_folder.return_value = False
         gc.gmail_get_attachment.return_value = b"pdf"
-        gc.upload_file_to_folder.return_value = {"id": "bi_id", "webViewLink": "https://drive.google.com/file/d/bi_id"}
+        gc.upload_file_to_folder.return_value = {
+            "id": "bi_id",
+            "webViewLink": "https://drive.google.com/file/d/bi_id",
+        }
 
         site_records = [{"id": "IEKELLER", "title": "Alpha Keller", "customFields": []}]
 
         result = process_email(
-            gc, "msg_bi_m1", MagicMock(), "label_123", "review_123",
+            gc,
+            "msg_bi_m1",
+            MagicMock(),
+            "label_123",
+            "review_123",
             site_records=site_records,
         )
 
@@ -278,7 +380,13 @@ class TestClassification:
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="",
-            attachments=[{"filename": "Random SIR.pdf", "attachment_id": "u1", "mime_type": "application/pdf"}],
+            attachments=[
+                {
+                    "filename": "Random SIR.pdf",
+                    "attachment_id": "u1",
+                    "mime_type": "application/pdf",
+                }
+            ],
         )
         mock_classify.return_value = ("sir", 0.95)
 
@@ -306,7 +414,13 @@ class TestClassification:
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="",
-            attachments=[{"filename": "Alpha Keller SIR.pdf", "attachment_id": "nd1", "mime_type": "application/pdf"}],
+            attachments=[
+                {
+                    "filename": "Alpha Keller SIR.pdf",
+                    "attachment_id": "nd1",
+                    "mime_type": "application/pdf",
+                }
+            ],
         )
         mock_classify.return_value = ("sir", 0.95)
         # Site exists in Wrike but has no drive_folder_url — the upstream gap
@@ -316,7 +430,11 @@ class TestClassification:
         gc = MagicMock()
         site_records = [{"id": "IEKELLER", "title": "Alpha Keller", "customFields": []}]
         result = process_email(
-            gc, "msg_no_drive", MagicMock(), "label_123", "review_123",
+            gc,
+            "msg_no_drive",
+            MagicMock(),
+            "label_123",
+            "review_123",
             site_records=site_records,
         )
 
@@ -338,7 +456,13 @@ class TestClassification:
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="",
-            attachments=[{"filename": "Alpha Keller Block Plan.pdf", "attachment_id": "bp1", "mime_type": "application/pdf"}],
+            attachments=[
+                {
+                    "filename": "Alpha Keller Block Plan.pdf",
+                    "attachment_id": "bp1",
+                    "mime_type": "application/pdf",
+                }
+            ],
         )
         mock_classify.return_value = ("block_plan", 0.95)
 
@@ -371,14 +495,26 @@ class TestClassification:
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="",
-            attachments=[{"filename": "Alpha Keller Block Plan.pdf", "attachment_id": "bp2", "mime_type": "application/pdf"}],
+            attachments=[
+                {
+                    "filename": "Alpha Keller Block Plan.pdf",
+                    "attachment_id": "bp2",
+                    "mime_type": "application/pdf",
+                }
+            ],
         )
         mock_classify.return_value = ("block_plan", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
         mock_extract_pdf.return_value = "block plan text"
         mock_downstream.return_value = [
-            {"doc_type": "capacity_brainlift_report", "doc_url": "https://docs.google.com/document/d/cap"},
-            {"doc_type": "raycon_scenario_report", "doc_url": "https://docs.google.com/document/d/ray"},
+            {
+                "doc_type": "capacity_brainlift_report",
+                "doc_url": "https://docs.google.com/document/d/cap",
+            },
+            {
+                "doc_type": "raycon_scenario_report",
+                "doc_url": "https://docs.google.com/document/d/ray",
+            },
         ]
         mock_build_summary.return_value = {
             "title": "Alpha Keller",
@@ -390,7 +526,10 @@ class TestClassification:
         gc = MagicMock()
         gc.file_exists_in_folder.return_value = False
         gc.gmail_get_attachment.return_value = b"pdf"
-        gc.upload_file_to_folder.return_value = {"id": "block123", "webViewLink": "https://drive.google.com/file/d/block123"}
+        gc.upload_file_to_folder.return_value = {
+            "id": "block123",
+            "webViewLink": "https://drive.google.com/file/d/block123",
+        }
 
         site_records = [{"id": "IEBLOCK123", "title": "Alpha Keller", "customFields": []}]
 
@@ -439,7 +578,13 @@ class TestClassification:
             effective_sender="test@example.com",
             body_snippet="",
             label_ids=[],
-            attachments=[{"filename": "Alpha Keller Block Plan.pdf", "attachment_id": "bp3", "mime_type": "application/pdf"}],
+            attachments=[
+                {
+                    "filename": "Alpha Keller Block Plan.pdf",
+                    "attachment_id": "bp3",
+                    "mime_type": "application/pdf",
+                }
+            ],
         )
         mock_classify.return_value = ("block_plan", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
@@ -497,17 +642,33 @@ class TestClassification:
             effective_sender="test@example.com",
             body_snippet="",
             label_ids=[],
-            attachments=[{"filename": "Alpha Keller Block Plan.pdf", "attachment_id": "bp4", "mime_type": "application/pdf"}],
+            attachments=[
+                {
+                    "filename": "Alpha Keller Block Plan.pdf",
+                    "attachment_id": "bp4",
+                    "mime_type": "application/pdf",
+                }
+            ],
         )
         mock_classify.return_value = ("block_plan", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
         mock_extract_pdf.return_value = "block plan text"
         mock_list_docs.return_value = {
-            "block_plan": {"id": "block123", "name": "Apr 22 2026 - Alpha Keller Block Plan.pdf", "webViewLink": "https://drive.google.com/file/d/block123"},
+            "block_plan": {
+                "id": "block123",
+                "name": "Apr 22 2026 - Alpha Keller Block Plan.pdf",
+                "webViewLink": "https://drive.google.com/file/d/block123",
+            },
         }
         mock_downstream.return_value = [
-            {"doc_type": "capacity_brainlift_report", "doc_url": "https://docs.google.com/document/d/cap"},
-            {"doc_type": "raycon_scenario_report", "doc_url": "https://docs.google.com/document/d/ray"},
+            {
+                "doc_type": "capacity_brainlift_report",
+                "doc_url": "https://docs.google.com/document/d/cap",
+            },
+            {
+                "doc_type": "raycon_scenario_report",
+                "doc_url": "https://docs.google.com/document/d/ray",
+            },
         ]
         mock_build_summary.return_value = {
             "title": "Alpha Keller",
@@ -563,7 +724,13 @@ class TestClassification:
             effective_sender="test@example.com",
             body_snippet="",
             label_ids=[],
-            attachments=[{"filename": "Alpha Keller Block Plan.pdf", "attachment_id": "bp5", "mime_type": "application/pdf"}],
+            attachments=[
+                {
+                    "filename": "Alpha Keller Block Plan.pdf",
+                    "attachment_id": "bp5",
+                    "mime_type": "application/pdf",
+                }
+            ],
         )
         mock_classify.return_value = ("block_plan", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
@@ -580,7 +747,10 @@ class TestClassification:
         gc = MagicMock()
         gc.file_exists_in_folder.return_value = False
         gc.gmail_get_attachment.return_value = b"pdf"
-        gc.upload_file_to_folder.return_value = {"id": "block123", "webViewLink": "https://drive.google.com/file/d/block123"}
+        gc.upload_file_to_folder.return_value = {
+            "id": "block123",
+            "webViewLink": "https://drive.google.com/file/d/block123",
+        }
 
         site_records = [{"id": "IEBLOCK123", "title": "Alpha Keller", "customFields": []}]
 
@@ -693,15 +863,27 @@ class TestWalkParts:
 
 
 class TestIdempotency:
-    """Emails with the DD-Processed label should not be re-processed."""
+    """Inbox search must not hide new attachments in previously labeled threads."""
 
-    def test_gmail_search_query_excludes_processed_label(self):
-        """The scan query must exclude already-labeled messages."""
-        from due_diligence_reporter.config import Settings
+    def test_scan_query_does_not_exclude_processed_threads(self):
+        """A processed kickoff thread can later receive a vendor SIR reply."""
+        gc = MagicMock()
+        gc.gmail_get_or_create_label.side_effect = ["processed", "review", "internal"]
+        gc.gmail_search.return_value = []
 
-        settings = Settings()
-        query = f"{settings.inbox_scan_query} -label:{settings.inbox_processed_label}"
-        assert "-label:DD-Processed" in query
+        settings = MagicMock()
+        settings.inbox_scan_query = "in:inbox has:attachment filename:pdf"
+        settings.inbox_processed_label = "DD-Processed"
+        settings.inbox_manual_review_label = "DD-Manual-Review"
+        settings.inbox_internal_skip_label = "DD-Internal-Skipped"
+        settings.inbox_scan_max_results = 50
+
+        scan_inbox(gc, [], settings)
+
+        gc.gmail_search.assert_called_once_with(
+            "in:inbox has:attachment filename:pdf",
+            max_results=50,
+        )
 
     def test_gmail_search_query_covers_forums_category(self):
         """The default scan query must cover CATEGORY_FORUMS so Google Group-routed
@@ -723,9 +905,7 @@ class TestIdempotency:
         settings = Settings()
         q = settings.inbox_scan_query
         positive_form = "category:forums" in q
-        negative_form = (
-            "-category:promotions" in q and "-category:social" in q
-        )
+        negative_form = "-category:promotions" in q and "-category:social" in q
         assert positive_form or negative_form, (
             f"default inbox_scan_query does not cover CATEGORY_FORUMS: {q!r}"
         )
@@ -749,12 +929,8 @@ class TestIdempotency:
 
         settings = Settings()
         q = settings.inbox_scan_query
-        assert "to:edu.ops" not in q, (
-            f"inbox_scan_query must not self-reference to:edu.ops: {q!r}"
-        )
-        assert "cc:edu.ops" not in q, (
-            f"inbox_scan_query must not self-reference cc:edu.ops: {q!r}"
-        )
+        assert "to:edu.ops" not in q, f"inbox_scan_query must not self-reference to:edu.ops: {q!r}"
+        assert "cc:edu.ops" not in q, f"inbox_scan_query must not self-reference cc:edu.ops: {q!r}"
         assert "in:inbox" in q, (
             f"inbox_scan_query must use in:inbox to scope to received mail: {q!r}"
         )
@@ -770,9 +946,7 @@ class TestIdempotency:
 
         settings = Settings()
         q = settings.inbox_scan_query
-        assert "pdf" in q, (
-            f"inbox_scan_query must include pdf attachments: {q!r}"
-        )
+        assert "pdf" in q, f"inbox_scan_query must include pdf attachments: {q!r}"
 
 
 class TestEffectiveSender:
@@ -846,9 +1020,7 @@ class TestEffectiveSender:
 
     @patch("due_diligence_reporter.inbox_scanner._mark_email_processed")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
-    def test_internal_skip_applies_internal_label_not_processed(
-        self, mock_extract, mock_mark
-    ):
+    def test_internal_skip_applies_internal_label_not_processed(self, mock_extract, mock_mark):
         """Internal-skip path must apply DD-Internal-Skipped, NOT DD-Processed.
 
         Keeping the label distinct from DD-Processed means future heuristic
@@ -889,9 +1061,7 @@ class TestEffectiveSender:
 
     @patch("due_diligence_reporter.inbox_scanner._mark_email_processed")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
-    def test_internal_skip_falls_back_to_processed_label_if_unset(
-        self, mock_extract, mock_mark
-    ):
+    def test_internal_skip_falls_back_to_processed_label_if_unset(self, mock_extract, mock_mark):
         """Backward-compat: legacy callers that don't pass
         internal_skip_label_id should still get a label applied (the
         processed label, since they pre-date the new label).
@@ -934,7 +1104,9 @@ class TestEffectiveSender:
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="Some text",
-            attachments=[{"filename": "notes.pdf", "attachment_id": "a1", "mime_type": "application/pdf"}],
+            attachments=[
+                {"filename": "notes.pdf", "attachment_id": "a1", "mime_type": "application/pdf"}
+            ],
         )
         mock_classify.return_value = ("unknown", 0.0)
 
@@ -958,7 +1130,13 @@ class TestEffectiveSender:
             sender="test@example.com",
             effective_sender="test@example.com",
             body_snippet="",
-            attachments=[{"filename": "Alpha Keller SIR.pdf", "attachment_id": "a4", "mime_type": "application/pdf"}],
+            attachments=[
+                {
+                    "filename": "Alpha Keller SIR.pdf",
+                    "attachment_id": "a4",
+                    "mime_type": "application/pdf",
+                }
+            ],
         )
         mock_classify.return_value = ("sir", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
@@ -971,7 +1149,10 @@ class TestEffectiveSender:
         gc = MagicMock()
         gc.file_exists_in_folder.return_value = False
         gc.gmail_get_attachment.return_value = b"pdf"
-        gc.upload_file_to_folder.return_value = {"id": "file123", "webViewLink": "https://drive/file123"}
+        gc.upload_file_to_folder.return_value = {
+            "id": "file123",
+            "webViewLink": "https://drive/file123",
+        }
 
         site_records = [{"id": "IEABCD123", "title": "Alpha Keller", "customFields": []}]
 
@@ -1198,9 +1379,7 @@ class TestDocArrivalFolderPing:
 
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.raycon_client.post_raycon_folder_ping")
-    def test_ping_fires_for_sir_upload(
-        self, mock_ping, mock_resolve_m1
-    ):
+    def test_ping_fires_for_sir_upload(self, mock_ping, mock_resolve_m1):
         mock_resolve_m1.return_value = ("m1-folder-id", "M1")
         mock_ping.return_value = {"status": "accepted"}
         gc = MagicMock()
@@ -1226,9 +1405,7 @@ class TestDocArrivalFolderPing:
 
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.raycon_client.post_raycon_folder_ping")
-    def test_ping_fires_for_each_doc_type(
-        self, mock_ping, mock_resolve_m1
-    ):
+    def test_ping_fires_for_each_doc_type(self, mock_ping, mock_resolve_m1):
         mock_resolve_m1.return_value = ("m1-folder-id", "M1")
         mock_ping.return_value = {"status": "accepted"}
         gc = MagicMock()
@@ -1264,9 +1441,7 @@ class TestDocArrivalFolderPing:
 
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.raycon_client.post_raycon_folder_ping")
-    def test_ping_skipped_when_site_summary_incomplete(
-        self, mock_ping, mock_resolve_m1
-    ):
+    def test_ping_skipped_when_site_summary_incomplete(self, mock_ping, mock_resolve_m1):
         """Missing site_id / address / drive_folder_url → graceful skip,
         not an error. Inbox classifier already gated on these earlier."""
         gc = MagicMock()
@@ -1288,9 +1463,7 @@ class TestDocArrivalFolderPing:
 
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.raycon_client.post_raycon_folder_ping")
-    def test_ping_skipped_when_m1_folder_unresolvable(
-        self, mock_ping, mock_resolve_m1
-    ):
+    def test_ping_skipped_when_m1_folder_unresolvable(self, mock_ping, mock_resolve_m1):
         mock_resolve_m1.return_value = (None, None)
         gc = MagicMock()
         result = _run_doc_arrival_folder_ping(
@@ -1305,9 +1478,7 @@ class TestDocArrivalFolderPing:
 
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.raycon_client.post_raycon_folder_ping")
-    def test_ping_returns_error_when_m1_resolution_raises(
-        self, mock_ping, mock_resolve_m1
-    ):
+    def test_ping_returns_error_when_m1_resolution_raises(self, mock_ping, mock_resolve_m1):
         mock_resolve_m1.side_effect = RuntimeError("Drive 401")
         gc = MagicMock()
         result = _run_doc_arrival_folder_ping(
@@ -1368,9 +1539,7 @@ class TestDDRepublishCallbackWiring:
         mock_resolve_m1,
         mock_build_summary,
     ):
-        mock_extract.return_value = self._common_mocks(
-            "sir", "Alpha Keller SIR.pdf"
-        )
+        mock_extract.return_value = self._common_mocks("sir", "Alpha Keller SIR.pdf")
         mock_classify.return_value = ("sir", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "M1")
         mock_ping.return_value = {"status": "accepted"}
@@ -1390,9 +1559,7 @@ class TestDDRepublishCallbackWiring:
             "modifiedTime": "2026-05-05T10:00:00Z",
         }
 
-        site_records = [
-            {"id": "site-1", "title": "Alpha Keller", "customFields": []}
-        ]
+        site_records = [{"id": "site-1", "title": "Alpha Keller", "customFields": []}]
         callback = MagicMock(return_value={"dd_report_republish": "republish"})
 
         result = process_email(
@@ -1449,9 +1616,7 @@ class TestDDRepublishCallbackWiring:
             "modifiedTime": "2026-05-06T14:00:00Z",
         }
 
-        site_records = [
-            {"id": "site-1", "title": "Alpha Keller", "customFields": []}
-        ]
+        site_records = [{"id": "site-1", "title": "Alpha Keller", "customFields": []}]
         callback = MagicMock(return_value={"dd_report_republish": "republish"})
 
         result = process_email(
@@ -1484,9 +1649,7 @@ class TestDDRepublishCallbackWiring:
         mock_build_summary,
     ):
         """ISP is not an authoritative DD input — no republish on arrival."""
-        mock_extract.return_value = self._common_mocks(
-            "isp", "Alpha Keller ISP.pdf"
-        )
+        mock_extract.return_value = self._common_mocks("isp", "Alpha Keller ISP.pdf")
         mock_classify.return_value = ("isp", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "M1")
         mock_ping.return_value = {"status": "accepted"}
@@ -1505,9 +1668,7 @@ class TestDDRepublishCallbackWiring:
             "webViewLink": "https://drive.google.com/file/d/isp_drive_id",
             "modifiedTime": "2026-05-05T10:00:00Z",
         }
-        site_records = [
-            {"id": "site-1", "title": "Alpha Keller", "customFields": []}
-        ]
+        site_records = [{"id": "site-1", "title": "Alpha Keller", "customFields": []}]
         callback = MagicMock()
         process_email(
             gc,
@@ -1534,9 +1695,7 @@ class TestDDRepublishCallbackWiring:
         mock_build_summary,
     ):
         """No callback supplied → upload still succeeds, no republish field."""
-        mock_extract.return_value = self._common_mocks(
-            "sir", "Alpha Keller SIR.pdf"
-        )
+        mock_extract.return_value = self._common_mocks("sir", "Alpha Keller SIR.pdf")
         mock_classify.return_value = ("sir", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "M1")
         mock_ping.return_value = {"status": "accepted"}
@@ -1560,9 +1719,7 @@ class TestDDRepublishCallbackWiring:
             MagicMock(),
             "label_123",
             "review_123",
-            site_records=[
-                {"id": "site-1", "title": "Alpha Keller", "customFields": []}
-            ],
+            site_records=[{"id": "site-1", "title": "Alpha Keller", "customFields": []}],
             dd_republish_callback=None,
         )
         assert len(result["uploaded"]) == 1
@@ -1582,9 +1739,7 @@ class TestDDRepublishCallbackWiring:
         mock_build_summary,
     ):
         """Callback raising → upload still recorded, failure surfaced."""
-        mock_extract.return_value = self._common_mocks(
-            "sir", "Alpha Keller SIR.pdf"
-        )
+        mock_extract.return_value = self._common_mocks("sir", "Alpha Keller SIR.pdf")
         mock_classify.return_value = ("sir", 0.95)
         mock_resolve_m1.return_value = ("m1_folder_id", "M1")
         mock_ping.return_value = {"status": "accepted"}
@@ -1610,9 +1765,7 @@ class TestDDRepublishCallbackWiring:
             MagicMock(),
             "label_123",
             "review_123",
-            site_records=[
-                {"id": "site-1", "title": "Alpha Keller", "customFields": []}
-            ],
+            site_records=[{"id": "site-1", "title": "Alpha Keller", "customFields": []}],
             dd_republish_callback=callback,
         )
         assert len(result["uploaded"]) == 1
@@ -1620,8 +1773,6 @@ class TestDDRepublishCallbackWiring:
         assert republish.get("status") == "failed"
         # `reason` is the normalized envelope key (Fix 2).
         assert "pipeline blew up" in republish.get("reason", "")
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -1842,4 +1993,3 @@ class TestMatchAttachmentToSiteFuzzyFallback:
             reason="ambiguous",
         )
         assert _match_attachment_to_site("file.pdf", self._meta(), records) is None
-

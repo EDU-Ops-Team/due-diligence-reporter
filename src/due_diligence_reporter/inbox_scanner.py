@@ -15,20 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, NotRequired, TypedDict
 
-
-class DDRepublishResult(TypedDict, total=False):
-    """Normalized envelope returned by :func:`_maybe_fire_dd_republish`.
-
-    Every code path returns this shape so callers can branch on
-    ``status`` without keying on ``KeyError``-prone optional fields.
-    """
-
-    status: str  # "skipped" | "fired" | "failed"
-    reason: str
-    dd_report_republish: NotRequired[str]
-    republish_reason: NotRequired[str]
-
-from .classifier import classify_document
+from .classifier import classify_by_content_llm, classify_document
 from .config import Settings
 from .dashboard_readiness import edits_from_uploads, mark_readiness_complete
 from .google_client import GoogleClient
@@ -48,6 +35,20 @@ from .utils import (
     send_email,
 )
 from .wrike import build_site_summary, extract_address_from_record
+
+
+class DDRepublishResult(TypedDict, total=False):
+    """Normalized envelope returned by :func:`_maybe_fire_dd_republish`.
+
+    Every code path returns this shape so callers can branch on
+    ``status`` without keying on ``KeyError``-prone optional fields.
+    """
+
+    status: str  # "skipped" | "fired" | "failed"
+    reason: str
+    dd_report_republish: NotRequired[str]
+    republish_reason: NotRequired[str]
+
 
 # Regex to extract the bare email from a From header like "Display Name <user@domain.com>"
 _EMAIL_RE = re.compile(r"<([^>]+)>")
@@ -466,12 +467,50 @@ def _is_internal_sender(sender: str, settings: Settings) -> bool:
 
     # Check domain
     domains = [
-        d.strip().lower()
-        for d in settings.inbox_internal_sender_domains.split(",")
-        if d.strip()
+        d.strip().lower() for d in settings.inbox_internal_sender_domains.split(",") if d.strip()
     ]
     _, _, domain = email.rpartition("@")
     return domain in domains
+
+
+def _classify_inbox_attachment(
+    gc: GoogleClient,
+    message_id: str,
+    attachment: dict[str, Any],
+) -> tuple[str, float, bytes | None]:
+    """Classify an inbox PDF, using first-page text when the filename is weak."""
+    filename = attachment["filename"]
+    doc_type, confidence = classify_document(filename)
+    if doc_type in SUPPORTED_DOC_TYPES and confidence >= AUTO_FILE_CONFIDENCE:
+        return doc_type, confidence, None
+    if not filename.lower().endswith(".pdf"):
+        return doc_type, confidence, None
+
+    try:
+        file_bytes = _get_attachment_bytes(gc, message_id, attachment)
+        text = extract_text_from_pdf_bytes(file_bytes)
+    except Exception as e:
+        logger.warning("Inbox PDF content classification failed for '%s': %s", filename, e)
+        return doc_type, confidence, None
+
+    if not text.strip():
+        return doc_type, confidence, file_bytes
+
+    content_doc_type, content_confidence = classify_by_content_llm(
+        text[:3000],
+        filename,
+    )
+    if content_confidence > confidence:
+        logger.info(
+            "Inbox content classified '%s' as %s (%.2f), replacing filename result %s (%.2f)",
+            filename,
+            content_doc_type,
+            content_confidence,
+            doc_type,
+            confidence,
+        )
+        return content_doc_type, content_confidence, file_bytes
+    return doc_type, confidence, file_bytes
 
 
 def scan_inbox(
@@ -510,17 +549,12 @@ def scan_inbox(
     #   real DD deliveries (recoverable by clearing this one label).
     label_id = gc.gmail_get_or_create_label(settings.inbox_processed_label)
     review_label_id = gc.gmail_get_or_create_label(settings.inbox_manual_review_label)
-    internal_skip_label_id = gc.gmail_get_or_create_label(
-        settings.inbox_internal_skip_label
-    )
+    internal_skip_label_id = gc.gmail_get_or_create_label(settings.inbox_internal_skip_label)
 
-    # Exclude already-labeled messages from search (both completed and internal-
-    # skipped, so we don't re-scan them every run).
-    query = (
-        f"{settings.inbox_scan_query}"
-        f" -label:{settings.inbox_processed_label}"
-        f" -label:{settings.inbox_internal_skip_label}"
-    )
+    # Do not exclude DD-Processed here. Gmail labels are thread-visible in
+    # search, so a processed kickoff thread can hide a later vendor reply with
+    # a new SIR PDF. Idempotency is handled downstream by Drive file existence.
+    query = settings.inbox_scan_query
     logger.info("Inbox scan query (resolved): %s", query)
     messages = gc.gmail_search(query, max_results=settings.inbox_scan_max_results)
     logger.info("Found %d unprocessed emails", len(messages))
@@ -661,16 +695,22 @@ def process_email(
             "No PDF attachments were extracted from email '%s' despite matching scan query",
             metadata.subject,
         )
-        errors.append({
-            "message_id": message_id,
-            "error": "No PDF attachments detected in Gmail payload",
-            "email_subject": metadata.subject,
-        })
+        errors.append(
+            {
+                "message_id": message_id,
+                "error": "No PDF attachments detected in Gmail payload",
+                "email_subject": metadata.subject,
+            }
+        )
         review_needed = True
 
     for att in metadata.attachments:
         filename = att["filename"]
-        doc_type, confidence = classify_document(filename)
+        doc_type, confidence, file_bytes = _classify_inbox_attachment(
+            gc,
+            message_id,
+            att,
+        )
         matched_record = _match_attachment_to_site(filename, metadata, site_records)
         site_title = matched_record.get("title") if matched_record else None
         matched_site_id = matched_record.get("id") if matched_record else None
@@ -694,13 +734,15 @@ def process_email(
                 confidence,
                 filename,
             )
-            low_confidence.append({
-                "filename": filename,
-                "doc_type": doc_type,
-                "confidence": confidence,
-                "email_subject": metadata.subject,
-                "site_title": site_title,
-            })
+            low_confidence.append(
+                {
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "confidence": confidence,
+                    "email_subject": metadata.subject,
+                    "site_title": site_title,
+                }
+            )
             skipped += 1
             review_needed = True
             continue
@@ -711,13 +753,15 @@ def process_email(
                 doc_type,
                 filename,
             )
-            low_confidence.append({
-                "filename": filename,
-                "doc_type": doc_type,
-                "confidence": confidence,
-                "email_subject": metadata.subject,
-                "site_title": site_title,
-            })
+            low_confidence.append(
+                {
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "confidence": confidence,
+                    "email_subject": metadata.subject,
+                    "site_title": site_title,
+                }
+            )
             skipped += 1
             review_needed = True
             continue
@@ -729,34 +773,40 @@ def process_email(
         # configured only so the migration script can read from them.
         drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
         if not drive_folder_url:
-            errors.append({
-                "message_id": message_id,
-                "filename": filename,
-                "doc_type": doc_type,
-                "error": "Matched site has no Google Drive folder URL",
-            })
+            errors.append(
+                {
+                    "message_id": message_id,
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "error": "Matched site has no Google Drive folder URL",
+                }
+            )
             all_succeeded = False
             review_needed = True
             continue
         try:
             target_folder_id, _target_folder_url = _resolve_m1_folder(gc, drive_folder_url)
         except Exception as e:
-            errors.append({
-                "message_id": message_id,
-                "filename": filename,
-                "doc_type": doc_type,
-                "error": f"Failed to resolve M1 folder: {e}",
-            })
+            errors.append(
+                {
+                    "message_id": message_id,
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "error": f"Failed to resolve M1 folder: {e}",
+                }
+            )
             all_succeeded = False
             review_needed = True
             continue
         if not target_folder_id:
-            errors.append({
-                "message_id": message_id,
-                "filename": filename,
-                "doc_type": doc_type,
-                "error": "Could not resolve M1 folder ID",
-            })
+            errors.append(
+                {
+                    "message_id": message_id,
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "error": "Could not resolve M1 folder ID",
+                }
+            )
             all_succeeded = False
             review_needed = True
             continue
@@ -773,16 +823,20 @@ def process_email(
         site_address = str(site_summary.get("address", "")).strip()
 
         if dry_run:
-            logger.info("[DRY RUN] Would upload '%s' to folder %s", drive_filename, target_folder_id)
-            uploaded.append({
-                "original_filename": filename,
-                "drive_filename": drive_filename,
-                "doc_type": doc_type,
-                "site_title": site_title,
-                "site_address": site_address,
-                "matched_site_id": matched_site_id,
-                "dry_run": True,
-            })
+            logger.info(
+                "[DRY RUN] Would upload '%s' to folder %s", drive_filename, target_folder_id
+            )
+            uploaded.append(
+                {
+                    "original_filename": filename,
+                    "drive_filename": drive_filename,
+                    "doc_type": doc_type,
+                    "site_title": site_title,
+                    "site_address": site_address,
+                    "matched_site_id": matched_site_id,
+                    "dry_run": True,
+                }
+            )
             continue
 
         drive_file: dict[str, Any] | None = None
@@ -807,48 +861,55 @@ def process_email(
                 drive_filename,
             )
             if drive_file is None:
-                errors.append({
-                    "message_id": message_id,
-                    "filename": filename,
-                    "doc_type": doc_type,
-                    "error": "Existing Block Plan PDF could not be found in M1",
-                })
+                errors.append(
+                    {
+                        "message_id": message_id,
+                        "filename": filename,
+                        "doc_type": doc_type,
+                        "error": "Existing Block Plan PDF could not be found in M1",
+                    }
+                )
                 all_succeeded = False
                 review_needed = True
                 keep_unprocessed = True
                 continue
 
         try:
-            file_bytes = _get_attachment_bytes(gc, message_id, att)
+            if file_bytes is None:
+                file_bytes = _get_attachment_bytes(gc, message_id, att)
             if not rerun_existing_block_plan:
                 drive_file = gc.upload_file_to_folder(
                     folder_id=target_folder_id,
                     file_name=drive_filename,
                     file_bytes=file_bytes,
                 )
-                uploaded.append({
-                    "original_filename": filename,
-                    "drive_filename": drive_filename,
-                    "doc_type": doc_type,
-                    "site_title": site_title,
-                    "site_address": site_address,
-                    "matched_site_id": matched_site_id,
-                    "drive_file_id": drive_file.get("id"),
-                    "drive_link": drive_file.get("webViewLink"),
-                })
+                uploaded.append(
+                    {
+                        "original_filename": filename,
+                        "drive_filename": drive_filename,
+                        "doc_type": doc_type,
+                        "site_title": site_title,
+                        "site_address": site_address,
+                        "matched_site_id": matched_site_id,
+                        "drive_file_id": drive_file.get("id"),
+                        "drive_link": drive_file.get("webViewLink"),
+                    }
+                )
                 logger.info("Uploaded '%s' -> '%s'", filename, drive_filename)
             elif drive_file is not None:
-                uploaded.append({
-                    "original_filename": filename,
-                    "drive_filename": drive_filename,
-                    "doc_type": doc_type,
-                    "site_title": site_title,
-                    "site_address": site_address,
-                    "matched_site_id": matched_site_id,
-                    "drive_file_id": drive_file.get("id"),
-                    "drive_link": drive_file.get("webViewLink"),
-                    "retry_existing_upload": True,
-                })
+                uploaded.append(
+                    {
+                        "original_filename": filename,
+                        "drive_filename": drive_filename,
+                        "doc_type": doc_type,
+                        "site_title": site_title,
+                        "site_address": site_address,
+                        "matched_site_id": matched_site_id,
+                        "drive_file_id": drive_file.get("id"),
+                        "drive_link": drive_file.get("webViewLink"),
+                        "retry_existing_upload": True,
+                    }
+                )
 
             # Per-doc folder ping: tell RayCon a new doc landed so it can
             # walk the folder and decide if the document set is complete
@@ -872,10 +933,7 @@ def process_email(
                 # handled by scripts/raycon_followup.py since they fire
                 # only when the scenario JSON is published, not when the
                 # Block Plan is filed here.
-                if (
-                    dd_republish_callback is not None
-                    and doc_type in ("sir", "building_inspection")
-                ):
+                if dd_republish_callback is not None and doc_type in ("sir", "building_inspection"):
                     republish_result = _maybe_fire_dd_republish(
                         callback=dd_republish_callback,
                         gc=gc,
@@ -910,12 +968,14 @@ def process_email(
                     uploaded[-1]["derived_documents"] = derived_docs
         except Exception as e:
             logger.error("Upload failed for '%s': %s", filename, e)
-            errors.append({
-                "message_id": message_id,
-                "filename": filename,
-                "doc_type": doc_type,
-                "error": str(e),
-            })
+            errors.append(
+                {
+                    "message_id": message_id,
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "error": str(e),
+                }
+            )
             all_succeeded = False
             review_needed = True
             if doc_type == "block_plan" and drive_file is not None:
@@ -1107,12 +1167,14 @@ def _walk_parts(part: dict[str, Any], attachments: list[dict[str, Any]]) -> None
     is_pdf = mime_type == "application/pdf" or filename.lower().endswith(".pdf")
 
     if filename and is_pdf and (attachment_id or body_data):
-        attachments.append({
-            "filename": filename,
-            "attachment_id": attachment_id,
-            "body_data": body_data,
-            "mime_type": mime_type,
-        })
+        attachments.append(
+            {
+                "filename": filename,
+                "attachment_id": attachment_id,
+                "body_data": body_data,
+                "mime_type": mime_type,
+            }
+        )
 
     for sub_part in part.get("parts", []):
         _walk_parts(sub_part, attachments)
