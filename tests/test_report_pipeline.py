@@ -438,6 +438,7 @@ class TestProcessSitePipeline:
 
         assert result.status == "report_incomplete"
         assert result.doc_id == "doc123"
+        assert result.error == "Report NOT ready to send. 1 raw template token(s)."
         # The HTTP publish must fire on the incomplete branch.
         mock_publish.assert_called_once()
         kwargs = mock_publish.call_args.kwargs
@@ -449,6 +450,83 @@ class TestProcessSitePipeline:
         positional = mock_publish.call_args.args
         assert positional[0] == "Alpha Keller"
         assert positional[1] == trace.final_report_data
+
+    @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
+    @patch("due_diligence_reporter.report_pipeline._save_pipeline_trace")
+    @patch("due_diligence_reporter.report_pipeline.publish_to_dashboard")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_vendor_gate_alert_uses_completeness_summary(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+        mock_publish,
+        mock_save_trace,
+        mock_chat,
+        monkeypatch,
+    ):
+        """Vendor-gate alerts should explain the real completeness failure.
+
+        A report can fail completeness with zero unresolved {{...}} tokens
+        when raw template tokens leak or the Can-We-Open answer is invalid.
+        """
+        monkeypatch.setenv("VENDOR_GATE_ENABLED", "1")
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "sir_vendor": True,
+            "isp_found": False,
+            "inspection_found": True,
+            "inspection_vendor": True,
+            "raycon_scenario_found": True,
+            "report_exists": False,
+        }
+        mock_save_trace.return_value = "https://drive.google.com/trace"
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+            "trace": ReportTrace(
+                site_name="Alpha Tulsa 421 E 11th St",
+                started_at="2026-05-13T15:53:12+00:00",
+                events=[],
+                final_report_data={"exec.c_answer": "Yes"},
+            ),
+        }
+
+        async def fake_completeness(doc_id):
+            return {
+                "ready_to_send": False,
+                "unresolved_token_count": 0,
+                "unresolved_tokens": [],
+                "raw_template_token_count": 1,
+                "raw_template_tokens": ["INSERT_ANSWER"],
+                "pending_section_count": 0,
+                "summary": "Report NOT ready to send. 1 raw template token(s).",
+            }
+
+        mock_completeness.side_effect = fake_completeness
+        mock_publish.return_value = True
+        settings = _make_settings()
+        settings.google_chat_webhook_url = "https://chat.example/webhook"
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Tulsa 421 E 11th St",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Tulsa 421 E 11th St"],
+            {},
+            "system prompt",
+            settings,
+        )
+
+        assert result.status == "report_incomplete"
+        mock_chat.assert_called()
+        messages = [call.args[1] for call in mock_chat.call_args_list]
+        vendor_message = next(m for m in messages if "Human Intervention Needed" in m)
+        assert "Reason: Report NOT ready to send. 1 raw template token(s)." in vendor_message
+        assert "0 tokens unresolved" not in vendor_message
 
     @patch("due_diligence_reporter.report_pipeline.publish_to_dashboard")
     @patch("due_diligence_reporter.server.check_report_completeness")

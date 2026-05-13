@@ -1216,6 +1216,7 @@ def _check_generated_report(
         doc_id=doc_id,
         doc_url=doc_url,
         unresolved_tokens=completeness.get("unresolved_tokens", []),
+        error=str(completeness.get("summary") or completeness.get("message") or ""),
     )
 
 
@@ -1385,15 +1386,16 @@ def process_site_pipeline(
             _vendor_gate_enabled()
             and completeness_result.status == "report_incomplete"
         ):
+            failure_reason = completeness_result.error or (
+                "Report generated but "
+                f"{len(completeness_result.unresolved_tokens)} tokens "
+                "unresolved"
+            )
             _notify_vendor_gate_extraction_failure(
                 settings.google_chat_webhook_url,
                 site_title,
                 drive_folder_url=drive_folder_url,
-                failure_reason=(
-                    "Report generated but "
-                    f"{len(completeness_result.unresolved_tokens)} tokens "
-                    "unresolved"
-                ),
+                failure_reason=failure_reason,
                 trace_url=trace_url or "",
             )
         # Publish partial data to the dashboard with dd_status="in_progress"
@@ -1575,11 +1577,18 @@ def post_pipeline_result(
     elif result.status == "report_incomplete":
         count = len(result.unresolved_tokens)
         tokens = ", ".join(result.unresolved_tokens[:10])
-        msg = (
-            f"DD Report for {result.site_title} has {count} unfilled placeholder(s).\n"
-            f"Tokens: {tokens}\n"
-            f"Report: {result.doc_url or '(no URL)'}"
-        )
+        if result.error:
+            msg = (
+                f"DD Report for {result.site_title} is incomplete.\n"
+                f"Reason: {result.error}\n"
+                f"Report: {result.doc_url or '(no URL)'}"
+            )
+        else:
+            msg = (
+                f"DD Report for {result.site_title} has {count} unfilled placeholder(s).\n"
+                f"Tokens: {tokens}\n"
+                f"Report: {result.doc_url or '(no URL)'}"
+            )
 
     elif result.status == "generation_failed":
         msg = (
