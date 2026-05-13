@@ -24,6 +24,7 @@ env/
 .gcp-saved-tokens.json
 credentials/
 oauth_response.json
+.raycon_*_state.json
 
 # Claude Code
 .claude/

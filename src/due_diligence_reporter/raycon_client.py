@@ -34,7 +34,7 @@ import hmac
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 import requests
 from tenacity import retry
@@ -51,6 +51,22 @@ logger = logging.getLogger("[raycon_client]")
 # idempotency key — RayCon overwrites on re-run rather than appending
 # a timestamp so we don't accumulate duplicates.
 RAYCON_SCENARIO_FILENAME = "raycon_scenario.json"
+RAYCON_JOB_ACCEPTED_STATUS_CODE = 202
+RAYCON_IN_PROGRESS_STATUSES: frozenset[str] = frozenset({"queued", "running"})
+RAYCON_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"completed", "validation_failed", "failed"}
+)
+RAYCON_ACCEPTED_RESPONSE_FIELDS: frozenset[str] = frozenset(
+    {
+        "status",
+        "job_id",
+        "raycon_run_id",
+        "idempotency_key",
+        "retry_after_seconds",
+        "status_url",
+        "cached",
+    }
+)
 
 # Schema version DDR understands. Mismatches are logged loudly and the
 # payload is rejected so we don't silently mis-map fields.
@@ -153,6 +169,74 @@ def _unwrap_html_anchor(value: str) -> str:
     if match:
         return match.group(1).replace("&amp;", "&")
     return value
+
+
+def _raise_for_unexpected_raycon_status(
+    *,
+    response: requests.Response,
+    site_name: str,
+    block_plan_file_id: str,
+) -> None:
+    """Raise when RayCon job dispatch does not return the async 202 contract."""
+    if response.status_code == RAYCON_JOB_ACCEPTED_STATUS_CODE:
+        return
+    body_text = (response.text or "").strip()
+    logger.error(
+        "RayCon job dispatch returned unexpected status: site=%s "
+        "block_plan_file_id=%s status=%s body=%s",
+        site_name,
+        block_plan_file_id,
+        response.status_code,
+        body_text[:2000],
+    )
+    raise requests.HTTPError(
+        "RayCon job dispatch expected 202 Accepted, got "
+        f"{response.status_code} | RayCon response body: {body_text[:2000]}",
+        response=response,
+    )
+
+
+def _parse_raycon_accepted_response(response: requests.Response) -> dict[str, Any]:
+    """Parse and validate RayCon's 202 Accepted job metadata body."""
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RayConSchemaError("RayCon 202 response must include JSON metadata") from exc
+    if not isinstance(data, dict):
+        raise RayConSchemaError("RayCon 202 response must be a JSON object")
+    missing = sorted(RAYCON_ACCEPTED_RESPONSE_FIELDS.difference(data))
+    if missing:
+        raise RayConSchemaError(
+            "RayCon 202 response missing required field(s): " + ", ".join(missing)
+        )
+    return data
+
+
+@retry(**retry_config())  # type: ignore[untyped-decorator]
+def get_raycon_job_status(status_url: str) -> dict[str, Any]:
+    """Fetch a signed RayCon job status URL without logging the sensitive URL."""
+    if not status_url:
+        raise ValueError("get_raycon_job_status requires status_url")
+    response = requests.get(status_url, timeout=60)
+    if response.status_code >= 400:
+        body_text = (response.text or "").strip()
+        logger.error(
+            "RayCon job status poll failed: status=%s body=%s",
+            response.status_code,
+            body_text[:2000],
+        )
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            raise requests.HTTPError(
+                f"{exc} | RayCon status response body: {body_text[:2000]}",
+                response=response,
+                request=getattr(exc, "request", None),
+            ) from exc
+    data = response.json()
+    if not isinstance(data, dict):
+        raise RayConSchemaError("RayCon status response must be a JSON object")
+    return data
 
 
 @retry(**retry_config())  # type: ignore[untyped-decorator]
@@ -311,12 +395,12 @@ def post_raycon_job(
                 response=response,
                 request=getattr(exc, "request", None),
             ) from exc
-    try:
-        return response.json()
-    except ValueError:
-        # RayCon is allowed to return an empty body on success; preserve
-        # observability without breaking the caller.
-        return {"status": "accepted"}
+    _raise_for_unexpected_raycon_status(
+        response=response,
+        site_name=site_name,
+        block_plan_file_id=block_plan_file_id,
+    )
+    return _parse_raycon_accepted_response(response)
 
 
 @retry(**retry_config())  # type: ignore[untyped-decorator]
@@ -439,7 +523,7 @@ def post_raycon_folder_ping(
                 request=getattr(exc, "request", None),
             ) from exc
     try:
-        return response.json()
+        return cast(dict[str, Any], response.json())
     except ValueError:
         return {"status": "accepted"}
 
@@ -509,10 +593,27 @@ def read_raycon_scenario_from_m1(
 # ---------------------------------------------------------------------------
 
 
-def _format_currency(value: float | int | None) -> str:
+def _coerce_number(value: Any) -> float | None:
+    """Return a numeric value, preserving explicit zero and rejecting absence."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_currency(value: float | int) -> str:
     """Format a numeric amount as ``$1,234`` (whole-dollar)."""
-    amount = float(value or 0)
-    return f"${round(amount):,}"
+    return f"${round(float(value)):,}"
+
+
+def _format_optional_currency(value: Any) -> str:
+    """Format a RayCon amount, returning blank when the field is absent."""
+    amount = _coerce_number(value)
+    if amount is None:
+        return ""
+    return _format_currency(amount)
 
 
 def _weeks_to_open_date(weeks: Any, now: datetime | None = None) -> str:
@@ -532,7 +633,9 @@ def _scenario_breakdown(
     suffix: str,
 ) -> dict[str, str]:
     """Build the 12 ``exec.cost_<bucket>_<suffix>`` rows for a scenario."""
-    bucket_totals: dict[str, float] = {row_key: 0.0 for row_key, _ in RAYCON_BREAKDOWN_ROWS}
+    bucket_totals: dict[str, float | None] = {
+        row_key: None for row_key, _ in RAYCON_BREAKDOWN_ROWS
+    }
     for cat in scenario.get("categories", []) or []:
         if not isinstance(cat, dict):
             continue
@@ -546,20 +649,21 @@ def _scenario_breakdown(
                 suffix,
             )
             bucket = "other_hard_costs"
-        try:
-            bucket_totals[bucket] += float(cat.get("subtotal", 0) or 0)
-        except (TypeError, ValueError):
+        subtotal = _coerce_number(cat.get("subtotal"))
+        if subtotal is None:
             continue
+        bucket_totals[bucket] = (bucket_totals[bucket] or 0.0) + subtotal
 
-    bucket_totals["soft_costs"] = float(scenario.get("soft_costs", 0) or 0)
-    bucket_totals["gc_fee"] = float(scenario.get("gc_fee", 0) or 0)
-    bucket_totals["contingency"] = float(scenario.get("contingency", 0) or 0)
-    bucket_totals["grand_total"] = float(scenario.get("grand_total", 0) or 0)
-    if not bucket_totals["furniture"]:
-        bucket_totals["furniture"] = float(scenario.get("furniture", 0) or 0)
+    for key in ("soft_costs", "gc_fee", "contingency", "grand_total"):
+        if key in scenario:
+            bucket_totals[key] = _coerce_number(scenario.get(key))
+    if bucket_totals["furniture"] is None and "furniture" in scenario:
+        bucket_totals["furniture"] = _coerce_number(scenario.get("furniture"))
 
     return {
-        f"exec.cost_{row_key}_{suffix}": _format_currency(bucket_totals[row_key])
+        f"exec.cost_{row_key}_{suffix}": _format_optional_currency(
+            bucket_totals[row_key]
+        )
         for row_key, _ in RAYCON_BREAKDOWN_ROWS
     }
 
@@ -732,13 +836,17 @@ def raycon_scenario_to_report_fields(payload: dict[str, Any]) -> dict[str, str]:
         )
         return fields
 
-    fields["exec.fastest_open_capex"] = _format_currency(fastest.get("grand_total"))
+    fields["exec.fastest_open_capex"] = _format_optional_currency(
+        fastest.get("grand_total")
+    )
     fields["exec.fastest_open_open_date"] = _weeks_to_open_date(
         fastest.get("timeline_weeks")
     )
     fields.update(_scenario_breakdown(fastest, "fastest_open"))
 
-    fields["exec.max_capacity_capex"] = _format_currency(max_cap.get("grand_total"))
+    fields["exec.max_capacity_capex"] = _format_optional_currency(
+        max_cap.get("grand_total")
+    )
     fields["exec.max_capacity_open_date"] = _weeks_to_open_date(
         max_cap.get("timeline_weeks")
     )

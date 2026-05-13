@@ -13,12 +13,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, TypedDict
-
-try:
-    from typing import NotRequired  # Python 3.11+
-except ImportError:  # pragma: no cover - 3.10 fallback
-    from typing import NotRequired  # type: ignore[no-redef]
+from typing import Any, NotRequired, TypedDict
 
 
 class DDRepublishResult(TypedDict, total=False):
@@ -341,7 +336,7 @@ def _run_block_plan_downstream(
     block_plan_content: str,  # noqa: ARG001 — retained for caller compatibility
     block_plan_url: str,
     block_plan_file_id: str,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Hand the Block Plan off to RayCon's async ``/v1/jobs`` endpoint.
 
     Pre-cutover (April 2026) this function ran Capacity Brainlift +
@@ -414,11 +409,13 @@ def _run_block_plan_downstream(
         block_plan_url=block_plan_url,
         total_building_sf=total_building_sf,
     )
-    raycon_run_id = str(response.get("raycon_run_id", "")).strip()
+    raycon_run_id = str(response.get("raycon_run_id", "") or "").strip()
+    job_id = str(response.get("job_id", "")).strip()
     logger.info(
-        "RayCon job dispatched for site=%s block_plan_file_id=%s run_id=%s",
+        "RayCon job dispatched for site=%s block_plan_file_id=%s job_id=%s run_id=%s",
         site_name,
         block_plan_file_id,
+        job_id or "(unknown)",
         raycon_run_id or "(unknown)",
     )
 
@@ -426,7 +423,12 @@ def _run_block_plan_downstream(
         {
             "doc_type": "raycon_scenario_request",
             "block_plan_file_id": block_plan_file_id,
+            "job_id": job_id,
+            "idempotency_key": str(response.get("idempotency_key", "") or "").strip(),
             "raycon_run_id": raycon_run_id,
+            "retry_after_seconds": str(response.get("retry_after_seconds", "") or ""),
+            "status_url_present": bool(response.get("status_url")),
+            "cached": str(response.get("cached", "") or ""),
             "status": str(response.get("status", "accepted")),
         }
     ]
@@ -888,14 +890,24 @@ def process_email(
 
             if doc_type == "block_plan" and drive_file is not None:
                 block_plan_content = extract_text_from_pdf_bytes(file_bytes)
-                derived_docs = _run_block_plan_downstream(
-                    gc,
-                    site_summary=site_summary,
-                    block_plan_content=block_plan_content,
-                    block_plan_url=str(drive_file.get("webViewLink", "")),
-                    block_plan_file_id=str(drive_file.get("id", "")),
-                )
-                uploaded[-1]["derived_documents"] = derived_docs
+                try:
+                    derived_docs = _run_block_plan_downstream(
+                        gc,
+                        site_summary=site_summary,
+                        block_plan_content=block_plan_content,
+                        block_plan_url=str(drive_file.get("webViewLink", "")),
+                        block_plan_file_id=str(drive_file.get("id", "")),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "RayCon Block Plan dispatch failed after upload for '%s': %s",
+                        filename,
+                        e,
+                    )
+                    uploaded[-1]["raycon_dispatch_error"] = str(e)
+                    uploaded[-1]["raycon_dispatch_status"] = "dispatch_failed"
+                else:
+                    uploaded[-1]["derived_documents"] = derived_docs
         except Exception as e:
             logger.error("Upload failed for '%s': %s", filename, e)
             errors.append({

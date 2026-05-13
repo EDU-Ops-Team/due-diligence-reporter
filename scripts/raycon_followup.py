@@ -73,7 +73,10 @@ from due_diligence_reporter.dd_republish import (  # noqa: E402
 from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.m1_lookup import _resolve_m1_folder  # noqa: E402
 from due_diligence_reporter.raycon_client import (  # noqa: E402
+    RAYCON_IN_PROGRESS_STATUSES,
+    RAYCON_TERMINAL_STATUSES,
     RayConSchemaError,
+    get_raycon_job_status,
     post_raycon_job,
     raycon_payload_failed,
     raycon_scenario_to_report_fields,
@@ -445,12 +448,16 @@ def _dispatch_raycon_job(
         )
         return {"dispatch_error": f"post_raycon_job failed: {e}"}
 
-    raycon_run_id = str(response.get("raycon_run_id", "")).strip()
+    raycon_run_id = str(response.get("raycon_run_id", "") or "").strip()
+    job_id = str(response.get("job_id", "")).strip()
+    status_url = str(response.get("status_url", "")).strip()
     status = str(response.get("status", "accepted"))
     logger.info(
-        "RayCon safety-net dispatch for site=%s block_plan_file_id=%s run_id=%s status=%s",
+        "RayCon safety-net dispatch for site=%s block_plan_file_id=%s "
+        "job_id=%s run_id=%s status=%s",
         site_name,
         block_plan_file_id,
+        job_id or "(unknown)",
         raycon_run_id or "(unknown)",
         status,
     )
@@ -460,15 +467,56 @@ def _dispatch_raycon_job(
         "site": site_name,
         "last_dispatch": now.isoformat(),
         "count": prior_count + 1,
+        "job_id": job_id or None,
         "raycon_run_id": raycon_run_id or None,
+        "status_url": status_url or None,
         "status": status,
+        "raycon_job": response,
     }
     return {
         "dispatched": True,
+        "job_id": job_id,
         "raycon_run_id": raycon_run_id,
+        "status_url_present": bool(status_url),
         "status": status,
         "block_plan_file_id": block_plan_file_id,
     }
+
+
+def _poll_dispatch_state_status(
+    block_plan_file_id: str,
+    dispatch_state: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Poll a prior RayCon job status URL and merge non-sensitive metadata."""
+    prior = dispatch_state.get(block_plan_file_id)
+    if not prior:
+        return {}
+    status_url = str(prior.get("status_url", "") or "").strip()
+    if not status_url:
+        return {}
+    try:
+        status_response = get_raycon_job_status(status_url)
+    except Exception as e:
+        prior["status_poll_error"] = str(e)
+        return {"status_poll_error": str(e)}
+
+    status = str(status_response.get("status", "") or "").strip().lower()
+    if status:
+        prior["status"] = status
+    for key in (
+        "job_id",
+        "raycon_run_id",
+        "idempotency_key",
+        "retry_after_seconds",
+        "result_filename",
+        "drive_action",
+    ):
+        if key in status_response:
+            prior[key] = status_response.get(key)
+    drive_file = status_response.get("drive_file")
+    if isinstance(drive_file, dict):
+        prior["drive_file_id"] = drive_file.get("id")
+    return {"status": status, "status_response": status_response}
 
 
 def _find_existing_dd_report(
@@ -523,8 +571,6 @@ def _republish_dd_report_if_present(
     base_key = raycon_run_id or f"unknown@{now.date().isoformat()}"
     run_key = f"{base_key}:{drive_modified_time}" if drive_modified_time else base_key
 
-    site_id = str(site_summary.get("id", "")).strip()
-    site_name = str(site_summary.get("title", "")).strip() or "(unnamed)"
     drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
 
     # Pre-rec3 "skipped_no_drive_folder" / "skipped_bad_drive_url"
@@ -642,6 +688,35 @@ def _process_site(
         is_stuck = (
             bp_modified is not None and (now - bp_modified) > alert_after
         )
+        block_plan_file_id = str(block_plan.get("id", "")).strip()
+        status_result: dict[str, Any] = {}
+        if dispatch_state is not None and block_plan_file_id:
+            status_result = _poll_dispatch_state_status(
+                block_plan_file_id,
+                dispatch_state,
+            )
+        status = str(status_result.get("status", "") or "").strip().lower()
+        if status in RAYCON_TERMINAL_STATUSES and status != "completed":
+            return {
+                "site": site_name,
+                "alert": f"raycon job terminal status: {status}",
+                "block_plan_file_id": block_plan_file_id,
+            }
+        if status == "completed":
+            return {
+                "site": site_name,
+                "alert": "raycon completed but raycon_scenario.json is not visible in M1",
+                "block_plan_file_id": block_plan_file_id,
+            }
+        if status in RAYCON_IN_PROGRESS_STATUSES:
+            row = {
+                "site": site_name,
+                "skipped": f"raycon job {status}",
+                "block_plan_file_id": block_plan_file_id,
+            }
+            if is_stuck:
+                row["alert"] = f"raycon job still {status} after {alert_after}"
+            return row
 
         # Safety-net dispatch: try to (re-)fire RayCon for this Block Plan
         # before we decide whether to alert. If RayCon is just slow, this
@@ -664,8 +739,10 @@ def _process_site(
             row = {
                 "site": site_name,
                 "dispatched": True,
+                "job_id": dispatch_result.get("job_id"),
                 "raycon_run_id": dispatch_result.get("raycon_run_id"),
                 "status": dispatch_result.get("status"),
+                "status_url_present": dispatch_result.get("status_url_present"),
                 "block_plan_file_id": dispatch_result.get("block_plan_file_id"),
             }
             if bp_modified is not None:
