@@ -7,11 +7,8 @@ Google client, Wrike, and ``save_skill_report``.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from scripts.raycon_followup import (
     _dispatch_raycon_job,
@@ -386,8 +383,13 @@ class TestSafetyNetDispatch:
         mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
         mock_read_scenario.return_value = None
         mock_post.return_value = {
-            "raycon_run_id": "run-abc",
-            "status": "accepted",
+            "status": "queued",
+            "job_id": "job-abc",
+            "raycon_run_id": None,
+            "idempotency_key": "block_plan|site-123|bp_file_1",
+            "retry_after_seconds": 30,
+            "status_url": "https://raycon.test/v1/jobs/status/job-abc?token=opaque",
+            "cached": False,
         }
 
         dispatch_state: dict = {}
@@ -402,13 +404,17 @@ class TestSafetyNetDispatch:
         )
 
         assert row.get("dispatched") is True
-        assert row.get("raycon_run_id") == "run-abc"
-        assert row.get("status") == "accepted"
+        assert row.get("job_id") == "job-abc"
+        assert row.get("raycon_run_id") == ""
+        assert row.get("status") == "queued"
+        assert row.get("status_url_present") is True
         assert row.get("block_plan_file_id") == "bp_file_1"
         # State updated for future runs.
         assert "bp_file_1" in dispatch_state
         assert dispatch_state["bp_file_1"]["count"] == 1
-        assert dispatch_state["bp_file_1"]["raycon_run_id"] == "run-abc"
+        assert dispatch_state["bp_file_1"]["job_id"] == "job-abc"
+        assert dispatch_state["bp_file_1"]["raycon_run_id"] is None
+        assert dispatch_state["bp_file_1"]["status_url"].endswith("token=opaque")
 
         # post_raycon_job called with the right kwargs.
         mock_post.assert_called_once()
@@ -419,6 +425,84 @@ class TestSafetyNetDispatch:
         assert kwargs["m1_folder_id"] == "m1_folder_id"
         assert kwargs["block_plan_file_id"] == "bp_file_1"
         assert kwargs["total_building_sf"] == 8500
+
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.get_raycon_job_status")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_existing_status_url_is_polled_before_redispatch(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_status,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = None
+        mock_status.return_value = {"status": "running", "job_id": "job-abc"}
+        dispatch_state = {
+            "bp_file_1": {
+                "status_url": "https://raycon.test/v1/jobs/status/job-abc?token=opaque"
+            }
+        }
+
+        row = _process_site(
+            MagicMock(),
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row["skipped"] == "raycon job running"
+        assert dispatch_state["bp_file_1"]["status"] == "running"
+        assert dispatch_state["bp_file_1"]["job_id"] == "job-abc"
+        mock_status.assert_called_once()
+        mock_post.assert_not_called()
+
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.get_raycon_job_status")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_terminal_validation_failed_status_alerts_without_redispatch(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_status,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = None
+        mock_status.return_value = {
+            "status": "validation_failed",
+            "job_id": "job-abc",
+            "validation": {"passed": False},
+        }
+        dispatch_state = {
+            "bp_file_1": {
+                "status_url": "https://raycon.test/v1/jobs/status/job-abc?token=opaque"
+            }
+        }
+
+        row = _process_site(
+            MagicMock(),
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row["alert"] == "raycon job terminal status: validation_failed"
+        assert dispatch_state["bp_file_1"]["status"] == "validation_failed"
+        mock_post.assert_not_called()
 
     @patch("scripts.raycon_followup.post_raycon_job")
     @patch("scripts.raycon_followup._find_published_doc")

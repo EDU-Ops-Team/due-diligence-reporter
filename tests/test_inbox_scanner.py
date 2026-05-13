@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -546,7 +546,7 @@ class TestClassification:
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
-    def test_block_plan_downstream_failure_stays_unprocessed_and_notifies_owner(
+    def test_block_plan_downstream_failure_is_non_fatal_to_upload(
         self,
         mock_extract,
         mock_classify,
@@ -594,13 +594,15 @@ class TestClassification:
         )
 
         assert result["marked"] is True
-        assert len(result["errors"]) == 1
+        assert result["errors"] == []
+        assert result["uploaded"][0]["raycon_dispatch_error"] == "RayCon failed"
+        assert result["uploaded"][0]["raycon_dispatch_status"] == "dispatch_failed"
         gc.gmail_modify_labels.assert_called_once_with(
             "msg_block_fail",
-            add_labels=["review_123"],
-            remove_labels=[],
+            add_labels=["label_123"],
+            remove_labels=["UNREAD", "review_123"],
         )
-        mock_notify.assert_called_once()
+        mock_notify.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1057,8 +1059,13 @@ class TestBlockPlanDownstream:
         mock_resolve_m1,
     ):
         mock_post.return_value = {
-            "status": "accepted",
+            "status": "queued",
+            "job_id": "job-abc-123",
             "raycon_run_id": "run-abc-123",
+            "idempotency_key": "block_plan|IEBLOCK123|block123",
+            "retry_after_seconds": 30,
+            "status_url": "https://raycon.test/v1/jobs/status/job-abc-123?token=opaque",
+            "cached": False,
             "queued_at": "2026-04-30T13:45:00Z",
         }
         mock_resolve_m1.return_value = ("m1-folder-id", "M1")
@@ -1083,8 +1090,12 @@ class TestBlockPlanDownstream:
         assert len(result) == 1
         record = result[0]
         assert record["doc_type"] == "raycon_scenario_request"
+        assert record["job_id"] == "job-abc-123"
         assert record["raycon_run_id"] == "run-abc-123"
-        assert record["status"] == "accepted"
+        assert record["idempotency_key"] == "block_plan|IEBLOCK123|block123"
+        assert record["retry_after_seconds"] == "30"
+        assert record["status_url_present"] is True
+        assert record["status"] == "queued"
         assert record["block_plan_file_id"] == "block123"
 
         kwargs = mock_post.call_args.kwargs

@@ -17,6 +17,7 @@ from due_diligence_reporter.raycon_client import (
     _compute_hmac_signature,
     _normalize_drive_folder_url,
     _unwrap_html_anchor,
+    get_raycon_job_status,
     post_raycon_folder_ping,
     post_raycon_job,
     raycon_payload_failed,
@@ -114,6 +115,20 @@ def _ok_response(status_code: int = 202, body: dict | None = None):
     return resp
 
 
+def _accepted_job_response(status_code: int = 202, **overrides: object):
+    body = {
+        "status": "queued",
+        "job_id": "job-123",
+        "raycon_run_id": None,
+        "idempotency_key": "block_plan|S-123|bp-123",
+        "retry_after_seconds": 30,
+        "status_url": "https://raycon.test/v1/jobs/status/job-123?token=opaque",
+        "cached": False,
+    }
+    body.update(overrides)
+    return _ok_response(status_code=status_code, body=body)
+
+
 class TestPostRayConJob:
     """The POST contract is the only place DDR can break RayCon, so guard it.
 
@@ -133,7 +148,7 @@ class TestPostRayConJob:
         return settings
 
     def test_happy_path_sends_all_spec_fields_and_hmac(self) -> None:
-        response = _ok_response()
+        response = _accepted_job_response()
         with patch(
             "due_diligence_reporter.raycon_client.get_settings",
             return_value=self._fake_settings(),
@@ -143,7 +158,15 @@ class TestPostRayConJob:
         ) as mock_post:
             result = post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
 
-        assert result == {"status": "accepted"}
+        assert result == {
+            "status": "queued",
+            "job_id": "job-123",
+            "raycon_run_id": None,
+            "idempotency_key": "block_plan|S-123|bp-123",
+            "retry_after_seconds": 30,
+            "status_url": "https://raycon.test/v1/jobs/status/job-123?token=opaque",
+            "cached": False,
+        }
         assert mock_post.call_count == 1
         kwargs = mock_post.call_args.kwargs
 
@@ -184,7 +207,7 @@ class TestPostRayConJob:
             return_value=settings,
         ), patch(
             "due_diligence_reporter.raycon_client.requests.post",
-            return_value=_ok_response(),
+            return_value=_accepted_job_response(),
         ) as mock_post:
             post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
         headers = mock_post.call_args.kwargs["headers"]
@@ -201,11 +224,11 @@ class TestPostRayConJob:
             return_value=settings,
         ), patch(
             "due_diligence_reporter.raycon_client.requests.post",
-            return_value=_ok_response(),
+            return_value=_accepted_job_response(),
         ) as mock_post:
             result = post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
 
-        assert result == {"status": "accepted"}
+        assert result["status"] == "queued"
         kwargs = mock_post.call_args.kwargs
         # Body still sent as raw bytes with the full 11-field payload.
         body = json.loads(kwargs["data"].decode("utf-8"))
@@ -234,7 +257,7 @@ class TestPostRayConJob:
             return_value=self._fake_settings(),
         ), patch(
             "due_diligence_reporter.raycon_client.requests.post",
-            return_value=_ok_response(),
+            return_value=_accepted_job_response(),
         ) as mock_post:
             post_raycon_job(**_REQUIRED_KW)
         body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
@@ -261,7 +284,7 @@ class TestPostRayConJob:
             return_value=self._fake_settings(),
         ), patch(
             "due_diligence_reporter.raycon_client.requests.post",
-            return_value=_ok_response(),
+            return_value=_accepted_job_response(),
         ) as mock_post:
             post_raycon_job(total_building_sf=0, **_REQUIRED_KW)
         body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
@@ -273,7 +296,7 @@ class TestPostRayConJob:
             return_value=self._fake_settings(),
         ), patch(
             "due_diligence_reporter.raycon_client.requests.post",
-            return_value=_ok_response(),
+            return_value=_accepted_job_response(),
         ) as mock_post:
             post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
         body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
@@ -298,7 +321,7 @@ class TestPostRayConJob:
             return_value=self._fake_settings(),
         ), patch(
             "due_diligence_reporter.raycon_client.requests.post",
-            return_value=_ok_response(),
+            return_value=_accepted_job_response(),
         ) as mock_post:
             post_raycon_job(total_building_sf=8400, **kw)
         body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
@@ -319,7 +342,7 @@ class TestPostRayConJob:
             return_value=self._fake_settings(),
         ), patch(
             "due_diligence_reporter.raycon_client.requests.post",
-            return_value=_ok_response(),
+            return_value=_accepted_job_response(),
         ) as mock_post:
             post_raycon_job(total_building_sf=8400, **kw)
         body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
@@ -341,7 +364,7 @@ class TestPostRayConJob:
             return_value=self._fake_settings(),
         ), patch(
             "due_diligence_reporter.raycon_client.requests.post",
-            return_value=_ok_response(),
+            return_value=_accepted_job_response(),
         ) as mock_post:
             with pytest.raises(ValueError, match="Google Folder custom field in Wrike"):
                 post_raycon_job(total_building_sf=8400, **kw)
@@ -395,7 +418,7 @@ class TestPostRayConJob:
             return_value=self._fake_settings(),
         ), patch(
             "due_diligence_reporter.raycon_client.requests.post",
-            return_value=_ok_response(),
+            return_value=_accepted_job_response(),
         ) as mock_post:
             post_raycon_job(total_building_sf=1000, **_REQUIRED_KW)
         kwargs = mock_post.call_args.kwargs
@@ -409,7 +432,7 @@ class TestPostRayConJob:
         flaky.status_code = 503
         flaky.text = ""
         flaky.raise_for_status.side_effect = requests.HTTPError(response=flaky)
-        ok = _ok_response()
+        ok = _accepted_job_response()
         with patch(
             "due_diligence_reporter.raycon_client.get_settings",
             return_value=self._fake_settings(),
@@ -418,10 +441,36 @@ class TestPostRayConJob:
             side_effect=[flaky, ok],
         ) as mock_post:
             result = post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
-        assert result == {"status": "accepted"}
+        assert result["status"] == "queued"
         assert mock_post.call_count == 2
 
-    def test_empty_body_returns_default_status(self) -> None:
+    def test_retries_on_connection_error_then_succeeds(self) -> None:
+        ok = _accepted_job_response()
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            side_effect=[requests.ConnectionError("network down"), ok],
+        ) as mock_post:
+            result = post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
+        assert result["status"] == "queued"
+        assert mock_post.call_count == 2
+
+    def test_non_202_success_status_raises(self) -> None:
+        response = _ok_response(status_code=200, body={"status": "accepted"})
+        response.text = '{"status":"accepted"}'
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=response,
+        ):
+            with pytest.raises(requests.HTTPError, match="expected 202 Accepted"):
+                post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
+
+    def test_empty_202_body_raises_schema_error(self) -> None:
         response = MagicMock()
         response.status_code = 202
         response.raise_for_status.return_value = None
@@ -433,8 +482,45 @@ class TestPostRayConJob:
             "due_diligence_reporter.raycon_client.requests.post",
             return_value=response,
         ):
-            result = post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
-        assert result == {"status": "accepted"}
+            with pytest.raises(RayConSchemaError, match="must include JSON metadata"):
+                post_raycon_job(total_building_sf=8400, **_REQUIRED_KW)
+
+
+class TestGetRayConJobStatus:
+    def test_gets_signed_status_url_without_auth_headers(self) -> None:
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "status": "completed",
+            "job_id": "job-123",
+            "raycon_run_id": "rc-123",
+            "result_filename": "raycon_scenario.json",
+            "drive_file": {"id": "drive-json-123"},
+        }
+        with patch(
+            "due_diligence_reporter.raycon_client.requests.get",
+            return_value=response,
+        ) as mock_get:
+            result = get_raycon_job_status(
+                "https://raycon.test/v1/jobs/status/job-123?token=opaque"
+            )
+
+        assert result["status"] == "completed"
+        mock_get.assert_called_once_with(
+            "https://raycon.test/v1/jobs/status/job-123?token=opaque",
+            timeout=60,
+        )
+
+    def test_non_object_status_response_raises_schema_error(self) -> None:
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = []
+        with patch(
+            "due_diligence_reporter.raycon_client.requests.get",
+            return_value=response,
+        ):
+            with pytest.raises(RayConSchemaError, match="JSON object"):
+                get_raycon_job_status("https://raycon.test/status?token=opaque")
 
 
 # ---------------------------------------------------------------------------
@@ -807,18 +893,17 @@ class TestRayConScenarioToReportFields:
         fields = raycon_scenario_to_report_fields(payload)
         assert fields["exec.cost_other_hard_costs_fastest_open"] == "$7,777"
 
-    def test_missing_scenarios_return_blank_or_zero_fields(self) -> None:
-        # Empty scenario dicts ({}) still produce $0 values via _format_currency
-        # and blank dates (timeline_weeks <= 0). All keys must still exist so
-        # downstream placeholder substitution doesn't crash.
+    def test_missing_scenarios_return_blank_fields(self) -> None:
+        # Empty scenario dicts mean RayCon has not returned usable scenario
+        # values yet. Keep fields blank so placeholders can show pending data.
         fields = raycon_scenario_to_report_fields({"schema_version": "1.0"})
-        assert fields["exec.fastest_open_capex"] == "$0"
-        assert fields["exec.max_capacity_capex"] == "$0"
+        assert fields["exec.fastest_open_capex"] == ""
+        assert fields["exec.max_capacity_capex"] == ""
         assert fields["exec.fastest_open_open_date"] == ""
         assert fields["exec.max_capacity_open_date"] == ""
         for row_key, _label in RAYCON_BREAKDOWN_ROWS:
-            assert f"exec.cost_{row_key}_fastest_open" in fields
-            assert f"exec.cost_{row_key}_max_capacity" in fields
+            assert fields[f"exec.cost_{row_key}_fastest_open"] == ""
+            assert fields[f"exec.cost_{row_key}_max_capacity"] == ""
 
     def test_non_dict_scenarios_return_blank_fields(self) -> None:
         # When RayCon explicitly sends a non-dict (e.g. null), the else branch
@@ -828,8 +913,23 @@ class TestRayConScenarioToReportFields:
         )
         # None falls through `payload.get(...) or {}` to {} which IS a dict,
         # so verify the actual behavior: empty dict path → $0, blank date.
-        assert fields["exec.fastest_open_capex"] == "$0"
+        assert fields["exec.fastest_open_capex"] == ""
         assert fields["exec.fastest_open_open_date"] == ""
+
+    def test_explicit_zero_cost_remains_zero(self) -> None:
+        fields = raycon_scenario_to_report_fields(
+            {
+                "schema_version": "1.0",
+                "fastest_open": {
+                    "grand_total": 0,
+                    "categories": [{"category": "Demolition", "subtotal": 0}],
+                },
+                "max_capacity": {"grand_total": 0},
+            }
+        )
+        assert fields["exec.fastest_open_capex"] == "$0"
+        assert fields["exec.cost_demolition_fastest_open"] == "$0"
+        assert fields["exec.max_capacity_capex"] == "$0"
 
 
 # ---------------------------------------------------------------------------
