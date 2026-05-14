@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     # RayCon async hand-off (inbox scanner pings RayCon when a Block Plan
     # lands; RayCon writes raycon_scenario.json into the site's M1 folder).
     raycon_jobs_url: str = Field(
-        "https://raycon-api-dkxp2hji2q-uc.a.run.app/v1/jobs",
+        "https://raycon-api-738625530258.us-central1.run.app/v1/jobs",
         description="Endpoint that accepts RayCon scenario job requests.",
     )
     raycon_api_key: str = Field(

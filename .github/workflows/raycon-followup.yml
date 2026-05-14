@@ -108,6 +108,20 @@ jobs:
           restore-keys: |
             dd-republish-state-
 
+      - name: Restore RayCon runtime state
+        # Persists dispatch and alert dedup state across cron ticks.
+        # Without this, failed-scenario retries and Chat alert suppression
+        # reset on every clean Actions checkout.
+        id: restore-raycon-runtime-state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .raycon_dispatch_state.json
+            .raycon_followup_alerts.json
+          key: raycon-runtime-state-${{ github.run_id }}
+          restore-keys: |
+            raycon-runtime-state-
+
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -240,6 +254,17 @@ jobs:
         with:
           path: .dd_republish_state.json
           key: dd-republish-state-${{ github.run_id }}
+
+      - name: Save RayCon runtime state
+        # Always run so recovery dispatches and alert suppression survive
+        # the next scheduled checkout.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .raycon_dispatch_state.json
+            .raycon_followup_alerts.json
+          key: raycon-runtime-state-${{ github.run_id }}
 
       - name: Done
         run: echo "RayCon follow-up completed"

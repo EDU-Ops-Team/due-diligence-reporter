@@ -7,7 +7,7 @@ Google client, Wrike, and ``save_skill_report``.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from scripts.raycon_followup import (
@@ -16,7 +16,6 @@ from scripts.raycon_followup import (
     _process_site,
     _republish_dd_report_if_present,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -35,7 +34,7 @@ def _site(title: str = "Alpha Keller") -> dict:
 
 def _block_plan(modified_minutes_ago: int = 5) -> dict:
     """Fake Drive file dict for a Block Plan PDF."""
-    when = datetime.now(timezone.utc) - timedelta(minutes=modified_minutes_ago)
+    when = datetime.now(UTC) - timedelta(minutes=modified_minutes_ago)
     return {
         "id": "bp_file_1",
         "name": "Block Plan v3.pdf",
@@ -49,7 +48,7 @@ def _scenario_payload(json_modified: str | None = None) -> dict:
         "site_id": "S1",
         "scenarios": [{"name": "fastest_open"}],
         "_drive_modified_time": json_modified
-        or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
 
 
@@ -79,7 +78,7 @@ class TestProcessSite:
 
         # Pre-populate dispatch state so we suppress this run's dispatch and
         # exercise the original alert path.
-        recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        recent = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
         dispatch_state = {
             "bp_file_1": {"last_dispatch": recent, "count": 1, "site": "Alpha Keller"}
         }
@@ -263,6 +262,104 @@ class TestFailedScenarioAlerts:
         # Critical: no Doc published for a failed run.
         mock_save.assert_not_called()
         assert "published" not in row
+
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.save_skill_report")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_failed_status_dispatches_recovery_when_state_is_available(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_save,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "failed",
+            "raycon_run_id": "rc_old",
+            "validation": {
+                "passed": False,
+                "errors": [
+                    "Real estate spreadsheet did not resolve a usable microschool tier"
+                ],
+            },
+            "_drive_modified_time": "2026-05-05T21:18:26Z",
+        }
+        mock_post.return_value = {
+            "status": "queued",
+            "job_id": "job-retry",
+            "raycon_run_id": None,
+            "idempotency_key": "block_plan|site-123|bp_file_1",
+            "retry_after_seconds": 30,
+            "status_url": "https://raycon.test/v1/jobs/status/job-retry?token=opaque",
+            "cached": False,
+        }
+
+        dispatch_state: dict = {}
+        row = _process_site(
+            MagicMock(),
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row["dispatched"] is True
+        assert row["dispatch_reason"] == "failed_scenario_retry"
+        assert "microschool tier" in row["previous_failure"]
+        assert row["job_id"] == "job-retry"
+        assert dispatch_state["bp_file_1"]["job_id"] == "job-retry"
+        mock_post.assert_called_once()
+        mock_save.assert_not_called()
+
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_failed_status_respects_recent_recovery_dispatch(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "failed",
+            "raycon_run_id": "rc_old",
+            "validation": {"passed": False, "errors": ["no_address_match"]},
+            "_drive_modified_time": "2026-05-05T21:18:26Z",
+        }
+        recent = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+        dispatch_state = {
+            "bp_file_1": {
+                "last_dispatch": recent,
+                "count": 1,
+                "site": "Alpha Keller",
+                "raycon_run_id": "rc_retry",
+            }
+        }
+
+        row = _process_site(
+            MagicMock(),
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert "raycon run failed" in row["alert"]
+        assert row["dispatch_skipped"] == "recently dispatched"
+        mock_post.assert_not_called()
 
     @patch("scripts.raycon_followup.save_skill_report")
     @patch("scripts.raycon_followup._find_published_doc")
@@ -561,7 +658,7 @@ class TestSafetyNetDispatch:
         mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
         mock_read_scenario.return_value = None
 
-        recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        recent = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
         dispatch_state = {
             "bp_file_1": {
                 "last_dispatch": recent,
@@ -610,7 +707,7 @@ class TestSafetyNetDispatch:
             "status": "accepted",
         }
 
-        old = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+        old = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
         dispatch_state = {
             "bp_file_1": {
                 "last_dispatch": old,
@@ -736,7 +833,7 @@ class TestSafetyNetDispatch:
 
 class TestFilterDedupAlerts:
     def test_first_alert_passes_through_and_state_updated(self):
-        now = datetime(2026, 4, 30, 15, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 4, 30, 15, 0, tzinfo=UTC)
         alerts = [{"site": "Alpha Keller", "alert": "no scenario after 1:00:00"}]
 
         fresh, new_state = _filter_dedup_alerts(alerts, {}, now=now)
@@ -746,7 +843,7 @@ class TestFilterDedupAlerts:
         assert new_state["Alpha Keller"] == now.isoformat()
 
     def test_recent_alert_is_suppressed(self):
-        now = datetime(2026, 4, 30, 15, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 4, 30, 15, 0, tzinfo=UTC)
         recent = (now - timedelta(hours=2)).isoformat()
         alerts = [{"site": "Alpha Keller", "alert": "stuck"}]
 
@@ -759,7 +856,7 @@ class TestFilterDedupAlerts:
         assert new_state["Alpha Keller"] == recent
 
     def test_old_alert_outside_window_passes_through(self):
-        now = datetime(2026, 4, 30, 15, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 4, 30, 15, 0, tzinfo=UTC)
         old = (now - timedelta(hours=25)).isoformat()
         alerts = [{"site": "Alpha Keller", "alert": "stuck"}]
 
@@ -852,7 +949,7 @@ class TestDDReportRepublish:
             "id": "dd1",
             "name": "Alpha Keller DD Report - 2026-05-01",
         }
-        recent = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        recent = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         republish_state = {"site-123:raycon_scenario:rc_run_abc": recent}
 
         gc = MagicMock()
