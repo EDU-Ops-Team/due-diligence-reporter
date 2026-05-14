@@ -48,7 +48,7 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -66,8 +66,12 @@ from due_diligence_reporter.dd_republish import (  # noqa: E402
     DD_REPUBLISH_STATE_PATH,
     REASON_RAYCON,
     find_existing_dd_report,
-    load_state as _load_dd_republish_state_shared,
     maybe_republish_dd_report,
+)
+from due_diligence_reporter.dd_republish import (  # noqa: E402
+    load_state as _load_dd_republish_state_shared,
+)
+from due_diligence_reporter.dd_republish import (  # noqa: E402
     save_state as _save_dd_republish_state_shared,
 )
 from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
@@ -287,7 +291,7 @@ def _filter_dedup_alerts(
     The updated state records ``now`` as the last-alert time for every site we
     are about to notify on, so the next run within the window is suppressed.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     fresh: list[dict[str, Any]] = []
     new_state = dict(state)
     for row in alerts:
@@ -367,7 +371,7 @@ def _dispatch_raycon_job(
     dispatch so the caller can persist the updated map at the end of the
     run. On error or skip, ``dispatch_state`` is left untouched.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     site_name = str(site_summary.get("title", "")).strip() or "(unnamed)"
     block_plan_file_id = str(block_plan.get("id", "")).strip()
     block_plan_url = str(
@@ -519,6 +523,112 @@ def _poll_dispatch_state_status(
     return {"status": status, "status_response": status_response}
 
 
+def _failed_scenario_base_row(
+    site_name: str,
+    scenario: dict[str, Any],
+    report_fields: dict[str, str],
+) -> dict[str, Any]:
+    reason = report_fields.get("exec.raycon_failure_reason", "") or "unspecified"
+    return {
+        "site": site_name,
+        "alert": f"raycon run failed: {reason}",
+        "raycon_status": report_fields.get("exec.raycon_status", ""),
+        "raycon_run_id": report_fields.get("exec.raycon_run_id", ""),
+        "json_modified": scenario.get("_drive_modified_time", ""),
+    }
+
+
+def _failed_scenario_dispatch_row(
+    site_name: str,
+    reason: str,
+    dispatch_result: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "site": site_name,
+        "dispatched": True,
+        "dispatch_reason": "failed_scenario_retry",
+        "previous_failure": reason,
+        "job_id": dispatch_result.get("job_id"),
+        "raycon_run_id": dispatch_result.get("raycon_run_id"),
+        "status": dispatch_result.get("status"),
+        "status_url_present": dispatch_result.get("status_url_present"),
+        "block_plan_file_id": dispatch_result.get("block_plan_file_id"),
+    }
+
+
+def _failed_scenario_status_row(
+    site_name: str,
+    block_plan_file_id: str,
+    base_row: dict[str, Any],
+    status: str,
+) -> dict[str, Any] | None:
+    if status in RAYCON_IN_PROGRESS_STATUSES:
+        return {
+            "site": site_name,
+            "skipped": f"raycon recovery job {status}",
+            "block_plan_file_id": block_plan_file_id,
+            "raycon_run_id": base_row["raycon_run_id"],
+            "json_modified": base_row["json_modified"],
+        }
+    if status == "completed":
+        return {
+            **base_row,
+            "alert": (
+                "raycon recovery completed but failed raycon_scenario.json "
+                "is still visible in M1"
+            ),
+            "block_plan_file_id": block_plan_file_id,
+        }
+    return None
+
+
+def _handle_failed_scenario(
+    site_summary: dict[str, Any],
+    site_name: str,
+    block_plan: dict[str, Any],
+    m1_folder_id: str,
+    scenario: dict[str, Any],
+    report_fields: dict[str, str],
+    *,
+    dispatch_state: dict[str, dict[str, Any]] | None,
+    dry_run: bool,
+    redispatch_after: timedelta,
+) -> dict[str, Any]:
+    base_row = _failed_scenario_base_row(site_name, scenario, report_fields)
+    reason = base_row["alert"].removeprefix("raycon run failed: ")
+    block_plan_file_id = str(block_plan.get("id", "")).strip()
+    if dispatch_state is None or not block_plan_file_id:
+        return base_row
+
+    status_result = _poll_dispatch_state_status(block_plan_file_id, dispatch_state)
+    status = str(status_result.get("status", "") or "").strip().lower()
+    status_row = _failed_scenario_status_row(
+        site_name, block_plan_file_id, base_row, status
+    )
+    if status_row is not None:
+        return status_row
+
+    dispatch_result = _dispatch_raycon_job(
+        site_summary,
+        block_plan,
+        m1_folder_id,
+        dispatch_state,
+        dry_run=dry_run,
+        redispatch_after=redispatch_after,
+    )
+    if dispatch_result.get("dispatched"):
+        return _failed_scenario_dispatch_row(site_name, reason, dispatch_result)
+    if dispatch_result.get("dispatch_error"):
+        return {
+            "site": site_name,
+            "error": f"raycon failed-scenario retry: {dispatch_result['dispatch_error']}",
+            "previous_failure": reason,
+        }
+    if dispatch_result.get("dispatch_skipped"):
+        base_row["dispatch_skipped"] = dispatch_result.get("dispatch_skipped")
+    return base_row
+
+
 def _find_existing_dd_report(
     gc: GoogleClient, site_folder_id: str
 ) -> dict[str, Any] | None:
@@ -559,7 +669,7 @@ def _republish_dd_report_if_present(
     publish has already succeeded by the time we get here, and a
     republish error should not undo that.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
 
     # Composite fingerprint mirrors the SIR/BI shape (file_id:modifiedTime).
     # If RayCon recomputes the same run_id but writes fresh content (new
@@ -683,7 +793,7 @@ def _process_site(
         return {"site": site_name, "error": f"schema error: {e}"}
 
     if scenario is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         bp_modified = _parse_iso(str(block_plan.get("modifiedTime", "")))
         is_stuck = (
             bp_modified is not None and (now - bp_modified) > alert_after
@@ -781,14 +891,17 @@ def _process_site(
     # so EDU Ops sees it in Chat and we don't pollute the site's M1 folder.
     if raycon_payload_failed(scenario):
         report_fields = raycon_scenario_to_report_fields(scenario)
-        reason = report_fields.get("exec.raycon_failure_reason", "") or "unspecified"
-        return {
-            "site": site_name,
-            "alert": f"raycon run failed: {reason}",
-            "raycon_status": report_fields.get("exec.raycon_status", ""),
-            "raycon_run_id": report_fields.get("exec.raycon_run_id", ""),
-            "json_modified": scenario.get("_drive_modified_time", ""),
-        }
+        return _handle_failed_scenario(
+            site_summary,
+            site_name,
+            block_plan,
+            m1_folder_id,
+            scenario,
+            report_fields,
+            dispatch_state=dispatch_state,
+            dry_run=dry_run,
+            redispatch_after=redispatch_after,
+        )
 
     # Scenario JSON is here and the run succeeded — publish the report
     # Doc if missing or stale.
