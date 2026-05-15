@@ -33,6 +33,7 @@ flowchart TD
     subgraph Pipeline["B. Shared DD report pipeline"]
         P0["Call process_site_pipeline()"]
         P1["Readiness check:<br/>match shared-folder source docs by site terms<br/>scan site folder recursively for AI-generated artifacts only"]
+        P1A["Record SIR learning-review state:<br/>AI SIR vs CDS/vendor SIR candidate<br/>non-blocking manifest step"]
         P2{"Required docs present?<br/>Current gate = SIR + Building Inspection"}
         P3["Status: waiting_on_docs<br/>post Google Chat result"]
         P4{"DD report already exists?"}
@@ -88,7 +89,7 @@ flowchart TD
     A3 --> D2["Select one site<br/>load prompt and build match terms"]
     D2 --> P0
 
-    P0 --> P1 --> P2
+    P0 --> P1 --> P1A --> P2
     P2 -- No --> P3
     P2 -- Yes --> P4
     P4 -- Yes --> P5
@@ -114,7 +115,7 @@ flowchart TD
     classDef alert fill:#fbe8e8,stroke:#a02d2d,color:#531616;
 
     class A1,A2,A3 trigger;
-    class I1,I6,I7,I13,I14,I15,I16,I17,I18,I20,D1,D2,P0,P1,P6,P7,P9,P10,P11,P13,P15,P17,P19,P20,P23,P24 process;
+    class I1,I6,I7,I13,I14,I15,I16,I17,I18,I20,D1,D2,P0,P1,P1A,P6,P7,P9,P10,P11,P13,P15,P17,P19,P20,P23,P24 process;
     class I2,I4,I8,I10,I12,I19,P2,P4,P8,P12,P14,P18,P21 decision;
     class I3,I9,I21,P5,P25 output;
     class I5,I11,P3,P16,P22 alert;

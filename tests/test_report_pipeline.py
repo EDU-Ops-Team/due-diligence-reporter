@@ -141,6 +141,10 @@ class TestProcessSitePipeline:
         assert result.status == "waiting_on_docs"
         assert "Building Inspection" in result.missing_docs
         assert "SIR" not in result.missing_docs
+        readiness_step = next(step for step in result.steps if step.step == "readiness.check")
+        assert readiness_step.status == "blocked"
+        assert result.failed_step == "readiness.check"
+        assert result.quality_score is not None
 
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
     def test_report_exists(self, mock_readiness):
@@ -159,6 +163,38 @@ class TestProcessSitePipeline:
         )
 
         assert result.status == "report_exists"
+
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_records_sir_learning_review_candidate(self, mock_readiness):
+        """Readiness metadata creates a non-blocking SIR learning step."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": False,
+            "inspection_found": True,
+            "report_exists": True,
+            "sir_learning_review": {
+                "status": "ready_for_review",
+                "reason": "AI SIR and CDS/vendor SIR are both present",
+                "ai_sir": {"name": "ai.docx", "file_id": "ai"},
+                "cds_sir": {"name": "cds.pdf", "file_id": "cds"},
+            },
+        }
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+        )
+
+        assert result.status == "report_exists"
+        assert result.sir_review_status == "ready_for_review"
+        review_step = next(step for step in result.steps if step.step == "sir.learning_review")
+        assert review_step.status == "succeeded"
+        assert review_step.artifacts[0].metadata["cds_sir"]["file_id"] == "cds"
 
     @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
@@ -277,6 +313,10 @@ class TestProcessSitePipeline:
 
         assert result.status == "generation_failed"
         assert result.error == "ANTHROPIC_API_KEY not set"
+        assert result.run_id
+        assert result.failed_step == "report.generate"
+        assert result.quality_score is not None
+        assert any(step.step == "report.generate" for step in result.steps)
 
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
     def test_readiness_error(self, mock_readiness):
@@ -291,6 +331,7 @@ class TestProcessSitePipeline:
 
         assert result.status == "error"
         assert "Drive API error" in result.error
+        assert result.failed_step == "readiness.check"
 
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
     def test_readiness_payload_error(self, mock_readiness):
@@ -373,6 +414,7 @@ class TestProcessSitePipeline:
         assert result.status == "error"
         assert result.doc_id == "doc123"
         assert "export broke" in (result.error or "")
+        assert result.failed_step == "report.validate"
 
     @patch("due_diligence_reporter.report_pipeline.publish_to_dashboard")
     @patch("due_diligence_reporter.server.check_report_completeness")
@@ -439,6 +481,8 @@ class TestProcessSitePipeline:
         assert result.status == "report_incomplete"
         assert result.doc_id == "doc123"
         assert result.error == "Report NOT ready to send. 1 raw template token(s)."
+        assert result.failed_step == "report.validate"
+        assert result.quality_score is not None
         # The HTTP publish must fire on the incomplete branch.
         mock_publish.assert_called_once()
         kwargs = mock_publish.call_args.kwargs
@@ -573,6 +617,9 @@ class TestProcessSitePipeline:
         )
 
         assert result.status == "report_created"
+        assert result.run_id
+        assert result.failed_step is None
+        assert result.quality_band in {"green", "yellow", "orange", "red"}
         mock_publish.assert_called_once()
         # The success path leaves dd_status unset so the publisher's
         # auto-stamp logic still fires ("complete").

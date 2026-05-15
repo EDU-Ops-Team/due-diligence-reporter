@@ -23,6 +23,7 @@ dependencies = [
 
 [project.scripts]
 due-diligence-reporter-mcp = "due_diligence_reporter.server:main"
+ddr = "due_diligence_reporter.ddr_cli:main"
 
 [tool.ruff]
 line-length = 100

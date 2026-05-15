@@ -246,6 +246,17 @@ inbox scanner, classifier, and folder pings to RayCon, and `isp_found`
 is still surfaced in the readiness payload as informational — but
 report generation no longer waits on it.
 
+### SIR Learning Loop
+
+Readiness also records non-blocking SIR comparison metadata. When both an
+AI-generated SIR and a CDS/vendor SIR are present, the pipeline writes a
+`sir.learning_review` step with status `ready_for_review`. Missing pairs are
+recorded as `waiting_for_cds_sir`, `waiting_for_ai_sir`, or `not_applicable`.
+
+This does not change report readiness. It makes recent AI/CDS SIR pairs visible
+in the run manifest, Google Chat observability lines, and `ddr status` so the
+team can run the review process in `docs/process/sir-learning-loop.md`.
+
 ---
 
 ## Step-by-Step Workflow
@@ -282,9 +293,10 @@ report generation no longer waits on it.
 1. Searches shared Drive folders for SIR, ISP, and Building Inspection using site match terms
 2. Falls back to recursive site folder search with three-tier classification
 3. Checks if a DD report already exists
-4. Returns presence booleans, file metadata, and missing doc list
+4. Records SIR learning-review state when AI/CDS SIR candidates are present
+5. Returns presence booleans, file metadata, review metadata, and missing doc list
 
-**Output:** `sir_found`, `isp_found`, `inspection_found`, `report_exists`, `files` dict with `name`/`id`/`webViewLink` per doc type, `missing_docs` list, `p1_assignee_name`, `p1_assignee_email`.
+**Output:** `sir_found`, `isp_found`, `inspection_found`, `report_exists`, `sir_learning_review`, `files` dict with `name`/`id`/`webViewLink` per doc type, `missing_docs` list, `p1_assignee_name`, `p1_assignee_email`.
 
 ---
 

@@ -22,6 +22,7 @@ Environment (from .env):
     DD_TEMPLATE_V3_GOOGLE_DOC_ID, GOOGLE_DRIVE_ROOT_FOLDER_ID,
     EMAIL_SENDER, EMAIL_APP_PASSWORD, DD_REPORT_EMAIL_RECIPIENTS
 """
+# ruff: noqa: E402, I001
 
 from __future__ import annotations
 
@@ -38,6 +39,9 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(_project_root / ".env")
 
+from due_diligence_reporter.cds_verification import (  # noqa: E402
+    generate_cds_verification_report,
+)
 from due_diligence_reporter.config import get_settings  # noqa: E402
 from due_diligence_reporter.dd_republish import (  # noqa: E402
     load_state as _load_dd_republish_state,
@@ -55,9 +59,6 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
     post_pipeline_result,
     process_site_pipeline,
 )
-from due_diligence_reporter.cds_verification import (  # noqa: E402
-    generate_cds_verification_report,
-)
 from due_diligence_reporter.utils import (  # noqa: E402
     build_site_match_terms as _build_site_match_terms,
     escape_html_text,
@@ -70,11 +71,11 @@ from due_diligence_reporter.wrike import (  # noqa: E402
     _get_active_status_ids,
     _get_all_site_records,
     extract_address_from_record,
-    extract_school_feasibility_from_record,
-    extract_timeline_confidence_from_record,
     extract_google_folder_from_record,
     extract_p1_email_from_record,
     extract_p1_from_record,
+    extract_school_feasibility_from_record,
+    extract_timeline_confidence_from_record,
     filter_active_site_records,
     load_wrike_config,
 )
@@ -434,6 +435,14 @@ for you to fill in: CDS Verified Finding, CDS Source, and CDS Confidence.</p>
 
         # Print result
         print(f"  Pipeline: {site_title} -> {result.status}")
+        if result.run_id:
+            print(
+                "    "
+                f"run_id={result.run_id} "
+                f"failed_step={result.failed_step or '-'} "
+                f"quality={result.quality_score}/{result.quality_band or '-'} "
+                f"manifest={result.manifest_path or '-'}"
+            )
         if result.missing_docs:
             print(f"    Missing: {', '.join(result.missing_docs)}")
         if result.doc_url:

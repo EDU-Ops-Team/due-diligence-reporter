@@ -18,6 +18,7 @@ Environment (from .env):
     EMAIL_SENDER, EMAIL_APP_PASSWORD, DD_TEMPLATE_V3_GOOGLE_DOC_ID,
     GOOGLE_DRIVE_ROOT_FOLDER_ID, OPENAI_API_KEY
 """
+# ruff: noqa: E402, I001
 
 from __future__ import annotations
 
@@ -170,6 +171,14 @@ def main(site_filter: str | None = None) -> None:
             print(f"  [XX] {r.site_title} -- generation failed: {r.error}")
         else:
             print(f"  [??] {r.site_title} -- {r.status}")
+        if r.run_id:
+            print(
+                "       "
+                f"run_id={r.run_id} "
+                f"failed_step={r.failed_step or '-'} "
+                f"quality={r.quality_score}/{r.quality_band or '-'} "
+                f"manifest={r.manifest_path or '-'}"
+            )
     print("=" * 60)
 
 
