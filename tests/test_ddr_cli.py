@@ -48,3 +48,57 @@ def test_ddr_trace_failed_only_filters_successes(monkeypatch, tmp_path, capsys) 
     out = capsys.readouterr().out
     assert "report.generate: failed" in out
     assert "readiness.check" not in out
+
+
+def test_ddr_sir_review_add_records_issue(tmp_path, capsys) -> None:
+    store = tmp_path / "sir-review-outcomes.jsonl"
+
+    ddr_cli.main([
+        "sir-review",
+        "add",
+        "--site",
+        "Alpha Keller",
+        "--section",
+        "Zoning",
+        "--gap-category",
+        "AI missed item",
+        "--severity",
+        "material",
+        "--ddr-impact",
+        "exec.c_zoning",
+        "--evidence-checked",
+        "city code",
+        "--learning-action",
+        "retrieval rule",
+        "--status",
+        "accepted",
+        "--store",
+        str(store),
+    ])
+
+    out = capsys.readouterr().out
+    assert "Recorded SIR review issue" in out
+    assert "Alpha Keller" in store.read_text(encoding="utf-8")
+
+
+def test_ddr_sir_trends_defaults_to_30d(tmp_path, capsys) -> None:
+    store = tmp_path / "sir-review-outcomes.jsonl"
+    store.write_text(
+        "\n".join([
+            (
+                '{"created_at":"2099-01-01T00:00:00+00:00","site":"Alpha Keller",'
+                '"ai_sir":"ai","cds_sir":"cds","section":"Zoning",'
+                '"gap_category":"AI missed item","severity":"material",'
+                '"ddr_impact":"exec.c_zoning","learning_action":"retrieval rule",'
+                '"status":"accepted"}'
+            )
+        ]),
+        encoding="utf-8",
+    )
+
+    ddr_cli.main(["sir-trends", "--store", str(store)])
+
+    out = capsys.readouterr().out
+    assert "SIR Trends since 30d" in out
+    assert "Issues: 1" in out
+    assert "AI missed items/SIR: 1.0" in out
