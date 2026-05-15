@@ -61,6 +61,39 @@ sees SIR candidates. `process_site_pipeline()` records a non-blocking
 The step is observable in the local run manifest, uploaded manifest, Google
 Chat pipeline lines, and `ddr status --run-id ...`.
 
+## Outcome Capture
+
+After a reviewer adjudicates one issue, record it as structured data:
+
+```bash
+ddr sir-review add \
+  --site "Alpha Keller" \
+  --section "Zoning" \
+  --gap-category "AI missed item" \
+  --severity "material" \
+  --ddr-impact "exec.c_zoning" \
+  --evidence-checked "city code section / AHJ email / source doc" \
+  --learning-action "retrieval rule" \
+  --status "accepted" \
+  --ai-sir "AI SIR file id or link" \
+  --cds-sir "CDS SIR file id or link"
+```
+
+The CLI appends each issue to `.ddr-runs/sir-review-outcomes.jsonl`. That file
+is local runtime state and is ignored by Git.
+
+## 30-Day Trend Review
+
+Use a 30-day window by default:
+
+```bash
+ddr sir-trends --since 30d
+```
+
+This reports SIR pairs reviewed, issue counts, AI misses per SIR, unsupported
+AI claims per SIR, CDS misses per SIR, DDR-impacting findings, high/material
+findings, repeated section/category issues, and accepted learning actions.
+
 ## Fit With DDR Improvements
 
 This loop plugs into the broader DDR quality work from the run manifest effort:
@@ -76,7 +109,10 @@ This loop plugs into the broader DDR quality work from the run manifest effort:
 
 ## Operating Cadence
 
-Run a weekly sample of recent review-ready sites until the gap rate stabilizes.
+Run a weekly sample of recent review-ready sites and use the 30-day trend view
+to decide process updates. Do not update the process after every individual SIR
+unless the finding is blocking or materially risky.
+
 Track:
 
 - number of SIR pairs reviewed
