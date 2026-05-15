@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import anthropic
 
@@ -27,7 +27,21 @@ from .config import Settings, get_settings
 from .dashboard_publisher import publish_to_dashboard
 from .google_client import GoogleClient
 from .m1_lookup import _list_m1_documents_by_type, _resolve_m1_folder
+from .pipeline_contracts import (
+    ArtifactRef,
+    PipelineError,
+    PipelineRun,
+    StepResult,
+    StepStatus,
+    failed_step_name,
+    make_run_id,
+    next_operator_action,
+    utc_now_iso,
+)
+from .pipeline_manifest import manifest_has_secret_like_value, persist_run_manifest
+from .pipeline_quality import evaluate_run_quality
 from .provenance import classify_provenance
+from .sir_learning import build_sir_learning_review
 from .utils import (
     escape_html_text,
     extract_folder_id_from_url,
@@ -454,6 +468,17 @@ def check_site_readiness_direct(
                 "M1 lookup failed for raycon_scenario_json in %s: %s", site_title, e
             )
 
+    sir_review_files = [f for f in site_folder_files if f.get("doc_type") == "sir"]
+    shared_sir = shared_docs.get("sir")
+    if shared_sir:
+        sir_review_files.append({**shared_sir, "doc_type": "sir"})
+    sir_learning_review = build_sir_learning_review(
+        sir_review_files,
+        gc,
+        m1_folder_id=m1_folder_id,
+        read_only=read_only,
+    )
+
     return {
         "sir_found": files_by_type["sir"] is not None,
         "isp_found": files_by_type["isp"] is not None,
@@ -469,6 +494,7 @@ def check_site_readiness_direct(
         "e_occupancy_report_found": files_by_type["e_occupancy_report"] is not None,
         "school_approval_report_found": files_by_type["school_approval_report"] is not None,
         "all_files": ai_generated_site_files,
+        "sir_learning_review": sir_learning_review.to_dict(),
     }
 
 
@@ -639,6 +665,239 @@ class PipelineResult:
     error: str | None = None
     trace_url: str | None = None
     trace: ReportTrace | None = None
+    run_id: str | None = None
+    failed_step: str | None = None
+    quality_score: int | None = None
+    quality_band: str | None = None
+    manifest_path: str | None = None
+    sir_review_status: str | None = None
+    sir_learning_review: dict[str, Any] | None = None
+    steps: list[StepResult] = field(default_factory=list)
+
+
+class _RunRecorder:
+    """Collect step results for one pipeline run."""
+
+    def __init__(self, site_title: str, site_id: str | None = None) -> None:
+        self.run_id = make_run_id(site_title)
+        self.site_title = site_title
+        self.site_id = site_id
+        self.started_at = utc_now_iso()
+        self.steps: list[StepResult] = []
+        self.sir_learning_review: dict[str, Any] | None = None
+
+    def start(self) -> tuple[str, float]:
+        return utc_now_iso(), time.monotonic()
+
+    def record(
+        self,
+        step: str,
+        started_at: str,
+        started_monotonic: float,
+        status: str,
+        *,
+        error: PipelineError | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        skipped_reason: str | None = None,
+    ) -> StepResult:
+        rerun = None
+        if status in {"failed", "blocked"}:
+            rerun = _rerun_command(self.run_id, step)
+        result = StepResult(
+            run_id=self.run_id,
+            step=step,
+            status=cast(StepStatus, status),
+            started_at=started_at,
+            ended_at=utc_now_iso(),
+            duration_ms=int((time.monotonic() - started_monotonic) * 1000),
+            error=error,
+            artifacts=artifacts or [],
+            rerun_command=rerun,
+            skipped_reason=skipped_reason,
+        )
+        self.steps.append(result)
+        return result
+
+    def to_run(self, final_status: str) -> PipelineRun:
+        return PipelineRun(
+            run_id=self.run_id,
+            site_title=self.site_title,
+            site_id=self.site_id,
+            started_at=self.started_at,
+            ended_at=utc_now_iso(),
+            final_status=final_status,
+            steps=list(self.steps),
+            sir_learning_review=self.sir_learning_review,
+        )
+
+
+def _rerun_command(run_id: str, step: str) -> str:
+    return f"ddr rerun --run-id {run_id} --step {step}"
+
+
+def _pipeline_error(
+    run_id: str,
+    step: str,
+    code: str,
+    message: str,
+    *,
+    retryable: bool = True,
+    cause: str | None = None,
+) -> PipelineError:
+    return PipelineError(
+        code=code,
+        message=message,
+        retryable=retryable,
+        operator_action=_rerun_command(run_id, step),
+        cause=cause,
+    )
+
+
+def _finalize_pipeline_result(
+    result: PipelineResult,
+    recorder: _RunRecorder,
+    *,
+    gc: GoogleClient | None = None,
+    drive_folder_url: str = "",
+) -> PipelineResult:
+    if result.sir_learning_review is None:
+        result.sir_learning_review = recorder.sir_learning_review
+    if result.sir_learning_review:
+        result.sir_review_status = str(result.sir_learning_review.get("status") or "")
+    run = recorder.to_run(result.status)
+    manifest_persisted = False
+    secret_detected = manifest_has_secret_like_value(run.to_dict())
+    started_at, started_monotonic = recorder.start()
+    if secret_detected:
+        recorder.record(
+            "manifest.save",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "manifest.save",
+                "manifest_secret_detected",
+                "Run manifest contains secret-like material and was not persisted",
+                retryable=False,
+            ),
+        )
+    else:
+        try:
+            path = persist_run_manifest(run)
+            manifest_persisted = True
+            result.manifest_path = str(path)
+            recorder.record(
+                "manifest.save",
+                started_at,
+                started_monotonic,
+                "succeeded",
+                artifacts=[ArtifactRef(kind="manifest", name=path.name, uri=str(path))],
+            )
+        except Exception as e:  # pragma: no cover - defensive path
+            recorder.record(
+                "manifest.save",
+                started_at,
+                started_monotonic,
+                "failed",
+                error=_pipeline_error(
+                    recorder.run_id,
+                    "manifest.save",
+                    "manifest_save_failed",
+                    str(e),
+                ),
+            )
+    run = recorder.to_run(result.status)
+    run.manifest_path = result.manifest_path
+    run.quality = evaluate_run_quality(
+        run,
+        manifest_persisted=manifest_persisted,
+        secret_detected=secret_detected,
+    )
+    if manifest_persisted:
+        path = persist_run_manifest(run)
+        result.manifest_path = str(path)
+        _record_manifest_upload_step(recorder, gc, drive_folder_url, run)
+        run = recorder.to_run(result.status)
+        run.manifest_path = result.manifest_path
+        run.manifest_url = _manifest_upload_url(run.steps)
+        run.quality = evaluate_run_quality(
+            run,
+            manifest_persisted=manifest_persisted,
+            secret_detected=secret_detected,
+        )
+        persist_run_manifest(run)
+    result.run_id = run.run_id
+    result.steps = list(run.steps)
+    result.failed_step = failed_step_name(run.steps)
+    quality = run.quality
+    assert quality is not None
+    result.quality_score = quality.score
+    result.quality_band = quality.band
+    result.manifest_path = run.manifest_path
+    return result
+
+
+def _record_manifest_upload_step(
+    recorder: _RunRecorder,
+    gc: GoogleClient | None,
+    drive_folder_url: str,
+    run: PipelineRun,
+) -> None:
+    started_at, started_monotonic = recorder.start()
+    folder_id = extract_folder_id_from_url(drive_folder_url)
+    if gc is None or not isinstance(gc, GoogleClient) or not folder_id:
+        recorder.record(
+            "manifest.upload",
+            started_at,
+            started_monotonic,
+            "skipped",
+            skipped_reason="no Drive folder available",
+        )
+        return
+    try:
+        payload = json.dumps(run.to_dict(), indent=2).encode("utf-8")
+        uploaded = gc.upload_file_to_folder(
+            folder_id=folder_id,
+            file_name=f"{run.run_id} pipeline manifest.json",
+            file_bytes=payload,
+            mime_type="application/json",
+        )
+    except Exception as e:
+        recorder.record(
+            "manifest.upload",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "manifest.upload",
+                "manifest_upload_failed",
+                str(e),
+            ),
+        )
+        return
+    recorder.record(
+        "manifest.upload",
+        started_at,
+        started_monotonic,
+        "succeeded",
+        artifacts=[
+            ArtifactRef(
+                kind="manifest",
+                name=str(uploaded.get("name", "pipeline manifest")),
+                uri=uploaded.get("webViewLink"),
+                drive_file_id=uploaded.get("id"),
+            )
+        ],
+    )
+
+
+def _manifest_upload_url(steps: list[StepResult]) -> str | None:
+    for step in steps:
+        if step.step == "manifest.upload" and step.artifacts:
+            return step.artifacts[0].uri
+    return None
 
 
 def _get_payload_error(result: dict[str, Any]) -> str | None:
@@ -1225,10 +1484,10 @@ def _email_pipeline_report(
     site_title: str,
     doc_url: str,
     p1_email: str | None,
-) -> None:
+) -> str | None:
     """Send the completed DD report email when email settings are configured."""
     if not settings.email_sender or not settings.email_app_password:
-        return
+        return "email settings not configured"
 
     recipients = [
         r.strip()
@@ -1266,13 +1525,199 @@ def _email_pipeline_report(
             global_cc=settings.global_email_cc,
         )
         logger.info("Email sent for '%s' to %s", site_title, recipients)
+        return None
     except Exception as e:
         logger.error("Failed to send email for '%s': %s", site_title, e)
+        return str(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Full single-site pipeline
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _record_trace_save_step(
+    recorder: _RunRecorder,
+    gc: GoogleClient,
+    drive_folder_url: str,
+    site_title: str,
+    trace: ReportTrace | None,
+) -> str | None:
+    started_at, started_monotonic = recorder.start()
+    trace_url: Any = _save_pipeline_trace(gc, drive_folder_url, site_title, trace)
+    if trace is None:
+        recorder.record(
+            "trace.save",
+            started_at,
+            started_monotonic,
+            "skipped",
+            skipped_reason="no trace available",
+        )
+    elif trace_url is not None and not isinstance(trace_url, str):
+        recorder.record(
+            "trace.save",
+            started_at,
+            started_monotonic,
+            "skipped",
+            skipped_reason="trace save returned non-string URL",
+        )
+        return None
+    elif trace_url:
+        recorder.record(
+            "trace.save",
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[ArtifactRef(kind="trace", name="Report trace", uri=trace_url)],
+        )
+    else:
+        recorder.record(
+            "trace.save",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "trace.save",
+                "trace_save_failed",
+                "Trace could not be saved",
+            ),
+        )
+    return cast(str | None, trace_url)
+
+
+def _record_source_alert_step(
+    recorder: _RunRecorder,
+    settings: Settings,
+    site_title: str,
+    trace: ReportTrace | None,
+    *,
+    drive_folder_url: str,
+    trace_url: str,
+) -> None:
+    started_at, started_monotonic = recorder.start()
+    issues = _extract_source_read_issues(trace)
+    _notify_source_read_issues(
+        settings.google_chat_webhook_url,
+        site_title,
+        trace,
+        drive_folder_url=drive_folder_url,
+        trace_url=trace_url,
+    )
+    if issues:
+        recorder.record(
+            "source.alert",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "source.alert",
+                "source_read_issue",
+                f"{len(issues)} required source document read issue(s)",
+            ),
+        )
+    else:
+        recorder.record("source.alert", started_at, started_monotonic, "succeeded")
+
+
+def _record_sir_learning_review_step(
+    recorder: _RunRecorder,
+    review: dict[str, Any] | None,
+) -> None:
+    started_at, started_monotonic = recorder.start()
+    recorder.sir_learning_review = review
+    if not review:
+        recorder.record(
+            "sir.learning_review",
+            started_at,
+            started_monotonic,
+            "skipped",
+            skipped_reason="no SIR review metadata",
+        )
+        return
+
+    status = str(review.get("status") or "not_applicable")
+    if status == "ready_for_review":
+        recorder.record(
+            "sir.learning_review",
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[
+                ArtifactRef(
+                    kind="sir_learning_review",
+                    name="AI/CDS SIR comparison candidate",
+                    metadata=review,
+                )
+            ],
+        )
+        return
+
+    recorder.record(
+        "sir.learning_review",
+        started_at,
+        started_monotonic,
+        "skipped",
+        skipped_reason=str(review.get("reason") or status),
+    )
+
+
+def _record_email_step(
+    recorder: _RunRecorder,
+    settings: Settings,
+    site_title: str,
+    doc_url: str,
+    p1_email: str | None,
+) -> None:
+    started_at, started_monotonic = recorder.start()
+    error = _email_pipeline_report(settings, site_title, doc_url, p1_email)
+    if error == "email settings not configured":
+        recorder.record(
+            "notify.email",
+            started_at,
+            started_monotonic,
+            "skipped",
+            skipped_reason=error,
+        )
+    elif error:
+        recorder.record(
+            "notify.email",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(recorder.run_id, "notify.email", "email_failed", error),
+        )
+    else:
+        recorder.record("notify.email", started_at, started_monotonic, "succeeded")
+
+
+def _record_dashboard_step(recorder: _RunRecorder, **kwargs: Any) -> None:
+    started_at, started_monotonic = recorder.start()
+    error = _publish_to_dashboard_best_effort(**kwargs)
+    if error == "no final_report_data on trace":
+        recorder.record(
+            "publish.dashboard",
+            started_at,
+            started_monotonic,
+            "skipped",
+            skipped_reason=error,
+        )
+    elif error:
+        recorder.record(
+            "publish.dashboard",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "publish.dashboard",
+                "dashboard_publish_failed",
+                error,
+            ),
+        )
+    else:
+        recorder.record("publish.dashboard", started_at, started_monotonic, "succeeded")
 
 
 def process_site_pipeline(
@@ -1307,6 +1752,8 @@ def process_site_pipeline(
 
     Returns a PipelineResult describing what happened.
     """
+    recorder = _RunRecorder(site_title)
+    started_at, started_monotonic = recorder.start()
     try:
         readiness = check_site_readiness_direct(
             gc,
@@ -1318,24 +1765,105 @@ def process_site_pipeline(
         )
     except Exception as e:
         logger.error("Failed to check readiness for '%s': %s", site_title, e)
-        return PipelineResult(site_title=site_title, status="error", error=str(e))
+        recorder.record(
+            "readiness.check",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "readiness.check",
+                "readiness_check_failed",
+                str(e),
+            ),
+        )
+        return _finalize_pipeline_result(
+            PipelineResult(site_title=site_title, status="error", error=str(e)),
+            recorder,
+            gc=gc,
+            drive_folder_url=drive_folder_url,
+        )
 
     readiness_result = _resolve_readiness_result(
         site_title, readiness, force_regenerate=force_regenerate
     )
+    sir_learning_review = readiness.get("sir_learning_review")
     if readiness_result is not None:
-        return readiness_result
+        if readiness_result.status == "waiting_on_docs":
+            recorder.record(
+                "readiness.check",
+                started_at,
+                started_monotonic,
+                "blocked",
+                error=_pipeline_error(
+                    recorder.run_id,
+                    "readiness.check",
+                    "missing_required_documents",
+                    ", ".join(readiness_result.missing_docs),
+                    retryable=False,
+                ),
+            )
+        elif readiness_result.status == "error":
+            recorder.record(
+                "readiness.check",
+                started_at,
+                started_monotonic,
+                "failed",
+                error=_pipeline_error(
+                    recorder.run_id,
+                    "readiness.check",
+                    "readiness_payload_error",
+                    readiness_result.error or "Readiness check failed",
+                ),
+            )
+        else:
+            recorder.record("readiness.check", started_at, started_monotonic, "succeeded")
+            recorder.record(
+                "report.generate",
+                *recorder.start(),
+                "skipped",
+                skipped_reason=readiness_result.status,
+            )
+        _record_sir_learning_review_step(recorder, sir_learning_review)
+        return _finalize_pipeline_result(
+            readiness_result,
+            recorder,
+            gc=gc,
+            drive_folder_url=drive_folder_url,
+        )
+    recorder.record("readiness.check", started_at, started_monotonic, "succeeded")
+    _record_sir_learning_review_step(recorder, sir_learning_review)
 
+    started_at, started_monotonic = recorder.start()
     agent_result, generation_result = _run_pipeline_agent(site_title, system_prompt, settings)
     if generation_result is not None:
-        generation_result.trace_url = _save_pipeline_trace(
+        gen_status = "skipped" if generation_result.status == "yielded_to_pipeline" else "failed"
+        gen_error = None
+        if gen_status == "failed":
+            gen_error = _pipeline_error(
+                recorder.run_id,
+                "report.generate",
+                "report_generation_failed",
+                generation_result.error or generation_result.status,
+            )
+        recorder.record(
+            "report.generate",
+            started_at,
+            started_monotonic,
+            gen_status,
+            error=gen_error,
+            skipped_reason=generation_result.status if gen_status == "skipped" else None,
+        )
+        generation_result.trace_url = _record_trace_save_step(
+            recorder,
             gc,
             drive_folder_url,
             site_title,
             generation_result.trace,
         )
-        _notify_source_read_issues(
-            settings.google_chat_webhook_url,
+        _record_source_alert_step(
+            recorder,
+            settings,
             site_title,
             generation_result.trace,
             drive_folder_url=drive_folder_url,
@@ -1356,27 +1884,54 @@ def process_site_pipeline(
                 failure_reason=generation_result.error or "",
                 trace_url=generation_result.trace_url or "",
             )
-        return generation_result
+        return _finalize_pipeline_result(
+            generation_result,
+            recorder,
+            gc=gc,
+            drive_folder_url=drive_folder_url,
+        )
     assert agent_result is not None
+    recorder.record("report.generate", started_at, started_monotonic, "succeeded")
 
     doc_id = agent_result["doc_id"]
     doc_url = agent_result.get("doc_url", "")
-    trace_url = _save_pipeline_trace(
+    trace_url = _record_trace_save_step(
+        recorder,
         gc,
         drive_folder_url,
         site_title,
         agent_result.get("trace"),
     )
-    _notify_source_read_issues(
-        settings.google_chat_webhook_url,
+    _record_source_alert_step(
+        recorder,
+        settings,
         site_title,
         agent_result.get("trace"),
         drive_folder_url=drive_folder_url,
         trace_url=trace_url or "",
     )
 
+    started_at, started_monotonic = recorder.start()
     completeness, completeness_result = _check_generated_report(site_title, doc_id, doc_url)
     if completeness_result is not None:
+        validation_status = "failed"
+        validation_code = "report_validation_failed"
+        if completeness_result.status == "error":
+            validation_code = "report_validation_error"
+        recorder.record(
+            "report.validate",
+            started_at,
+            started_monotonic,
+            validation_status,
+            error=_pipeline_error(
+                recorder.run_id,
+                "report.validate",
+                validation_code,
+                completeness_result.error
+                or f"{len(completeness_result.unresolved_tokens)} unresolved token(s)",
+            ),
+            artifacts=[ArtifactRef(kind="google_doc", name="DD report", uri=doc_url, drive_file_id=doc_id)],
+        )
         completeness_result.trace_url = trace_url
         completeness_result.trace = agent_result.get("trace")
         # Same escalation as the agent-failure branch above: vendor gate
@@ -1406,7 +1961,8 @@ def process_site_pipeline(
         # reaches the dashboard, even when the agent successfully filled
         # most of the template. Keeps the success-path publish unchanged.
         if completeness_result.status == "report_incomplete":
-            _publish_to_dashboard_best_effort(
+            _record_dashboard_step(
+                recorder,
                 site_title=site_title,
                 trace=agent_result.get("trace"),
                 drive_folder_url=drive_folder_url,
@@ -1418,12 +1974,25 @@ def process_site_pipeline(
                 timeline_confidence=timeline_confidence,
                 wrike_created_at=wrike_created_at,
             )
-        return completeness_result
+        return _finalize_pipeline_result(
+            completeness_result,
+            recorder,
+            gc=gc,
+            drive_folder_url=drive_folder_url,
+        )
     assert completeness is not None
+    recorder.record(
+        "report.validate",
+        started_at,
+        started_monotonic,
+        "succeeded",
+        artifacts=[ArtifactRef(kind="google_doc", name="DD report", uri=doc_url, drive_file_id=doc_id)],
+    )
 
-    _email_pipeline_report(settings, site_title, doc_url, p1_email)
+    _record_email_step(recorder, settings, site_title, doc_url, p1_email)
 
-    _publish_to_dashboard_best_effort(
+    _record_dashboard_step(
+        recorder,
         site_title=site_title,
         trace=agent_result.get("trace"),
         drive_folder_url=drive_folder_url,
@@ -1435,14 +2004,19 @@ def process_site_pipeline(
         wrike_created_at=wrike_created_at,
     )
 
-    return PipelineResult(
-        site_title=site_title,
-        status="report_created",
-        doc_id=doc_id,
-        doc_url=doc_url,
-        pending_count=completeness.get("pending_section_count", 0),
-        trace_url=trace_url,
-        trace=agent_result.get("trace"),
+    return _finalize_pipeline_result(
+        PipelineResult(
+            site_title=site_title,
+            status="report_created",
+            doc_id=doc_id,
+            doc_url=doc_url,
+            pending_count=completeness.get("pending_section_count", 0),
+            trace_url=trace_url,
+            trace=agent_result.get("trace"),
+        ),
+        recorder,
+        gc=gc,
+        drive_folder_url=drive_folder_url,
     )
 
 
@@ -1463,7 +2037,7 @@ def _publish_to_dashboard_best_effort(
     school_feasibility: str | None = None,
     timeline_confidence: str | None = None,
     wrike_created_at: str | None = None,
-) -> None:
+) -> str | None:
     """Fire-and-forget dashboard publish. Never raises.
 
     Phase 3 fields (dd_site_score + dd_site_score_band) are derived
@@ -1484,7 +2058,7 @@ def _publish_to_dashboard_best_effort(
             "Skipping dashboard publish for %s \u2014 no final_report_data on trace",
             site_title,
         )
-        return
+        return "no final_report_data on trace"
     try:
         publish_to_dashboard(
             site_title,
@@ -1498,6 +2072,7 @@ def _publish_to_dashboard_best_effort(
             timeline_confidence=timeline_confidence,
             wrike_created_at=wrike_created_at,
         )
+        return None
     except Exception as e:
         # publish_to_dashboard already swallows requests errors; this is a
         # belt-and-suspenders guard against anything truly unexpected.
@@ -1526,6 +2101,7 @@ def _publish_to_dashboard_best_effort(
                 site_title,
                 record_err,
             )
+        return str(e)
 
 
 # Google Chat notification per pipeline result
@@ -1559,10 +2135,15 @@ def post_pipeline_result(
         ]
         if drive_folder_url:
             lines.append(f"Drive: {drive_folder_url}")
+        lines.extend(_pipeline_observability_lines(result))
         msg = "\n".join(lines)
 
     elif result.status == "report_exists":
-        msg = f"DD Check -- {result.site_title}\nReport already exists, skipping."
+        msg = "\n".join([
+            f"DD Check -- {result.site_title}",
+            "Report already exists, skipping.",
+            *_pipeline_observability_lines(result),
+        ])
 
     elif result.status == "report_created":
         msg = (
@@ -1573,6 +2154,7 @@ def post_pipeline_result(
             msg += f"\nTrace: {result.trace_url}"
         if result.pending_count:
             msg += f"\nPending fields: {result.pending_count}"
+        msg += "\n" + "\n".join(_pipeline_observability_lines(result))
 
     elif result.status == "report_incomplete":
         count = len(result.unresolved_tokens)
@@ -1589,24 +2171,46 @@ def post_pipeline_result(
                 f"Tokens: {tokens}\n"
                 f"Report: {result.doc_url or '(no URL)'}"
             )
+        msg += "\n" + "\n".join(_pipeline_observability_lines(result))
 
     elif result.status == "generation_failed":
         msg = (
             f"DD Report generation FAILED for {result.site_title}\n"
             f"Error: {result.error or 'unknown'}"
         )
+        msg += "\n" + "\n".join(_pipeline_observability_lines(result))
 
     elif result.status == "error":
         msg = (
             f"DD Check ERROR for {result.site_title}\n"
             f"Error: {result.error or 'unknown'}"
         )
+        msg += "\n" + "\n".join(_pipeline_observability_lines(result))
 
     else:
         msg = f"DD Check -- {result.site_title}\nStatus: {result.status}"
+        msg += "\n" + "\n".join(_pipeline_observability_lines(result))
 
     for url in urls:
         try:
             post_google_chat_message(url, msg)
         except Exception as e:
             logger.error("Failed to post Chat message for '%s' to %s: %s", result.site_title, url[:60], e)
+
+
+def _pipeline_observability_lines(result: PipelineResult) -> list[str]:
+    lines: list[str] = []
+    if result.run_id:
+        lines.append(f"Run ID: {result.run_id}")
+    if result.failed_step:
+        lines.append(f"Failed step: {result.failed_step}")
+    if result.quality_score is not None and result.quality_band:
+        lines.append(f"Run quality: {result.quality_score} ({result.quality_band})")
+    if result.manifest_path:
+        lines.append(f"Manifest: {result.manifest_path}")
+    if result.sir_review_status:
+        lines.append(f"SIR review: {result.sir_review_status}")
+    action = next_operator_action(result.steps)
+    if action:
+        lines.append(f"Next action: {action}")
+    return lines

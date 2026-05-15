@@ -186,6 +186,7 @@ def _resolve_site_for_tool(site_name_or_id: str) -> tuple[dict[str, Any] | None,
         "status": "not_found",
         "error": "No site found",
         "message": (
+            "Could not find a confident site match. "
             f"No site matched '{resolution.query}'. Closest near-matches below — "
             "refine the name or paste the Wrike ID/permalink."
         ),
