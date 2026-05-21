@@ -61,6 +61,31 @@ sees SIR candidates. `process_site_pipeline()` records a non-blocking
 The step is observable in the local run manifest, uploaded manifest, Google
 Chat pipeline lines, and `ddr status --run-id ...`.
 
+## Weekly Review Queue
+
+Use the queue command to find recent SIR pairs that are ready for claim-level
+review:
+
+```bash
+ddr sir-review queue
+```
+
+By default, the queue scans local `.ddr-runs/*.json` manifests, shows only
+`ready_for_review` pairs, deduplicates repeated manifests for the same site/SIR
+pair, and hides pairs that already have matching outcomes in
+`.ddr-runs/sir-review-outcomes.jsonl`.
+
+Useful options:
+
+```bash
+ddr sir-review queue --status all
+ddr sir-review queue --include-reviewed
+ddr sir-review queue --limit 25
+```
+
+Treat Gmail as a discovery fallback only. The operating queue should come from
+pipeline manifests and the site/Drive/LocationOS record.
+
 ## Outcome Capture
 
 After a reviewer adjudicates one issue, record it as structured data:
@@ -94,6 +119,15 @@ This reports SIR pairs reviewed, issue counts, AI misses per SIR, unsupported
 AI claims per SIR, CDS misses per SIR, DDR-impacting findings, high/material
 findings, repeated section/category issues, and accepted learning actions.
 
+For a monthly operating memo, use:
+
+```bash
+ddr sir-monthly-summary --since 30d
+```
+
+This prints a short markdown summary with review volume, reliability signals,
+repeat patterns, accepted learning actions, and monthly decision prompts.
+
 ## Fit With DDR Improvements
 
 This loop plugs into the broader DDR quality work from the run manifest effort:
@@ -121,3 +155,16 @@ Track:
 - CDS/vendor corrections that changed DDR output
 - learning actions implemented
 - repeat issues after implementation
+
+Recommended continuous loop:
+
+1. Weekly: run `ddr sir-review queue` and select 3-5 unreviewed
+   `ready_for_review` pairs.
+2. During review: record only adjudicated issue rows with
+   `ddr sir-review add`.
+3. Weekly or biweekly: run `ddr sir-trends --since 30d` to watch repeat
+   categories and sections.
+4. Monthly: run `ddr sir-monthly-summary --since 30d`, decide the 2-3 process
+   updates to make, and assign each to the narrowest owner.
+5. After implementation: keep the same categories stable so the next 30-day
+   window shows whether the repeat issue actually declines.

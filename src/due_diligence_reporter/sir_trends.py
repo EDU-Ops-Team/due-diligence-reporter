@@ -144,6 +144,11 @@ def summarize_sir_trends(
 ) -> dict[str, Any]:
     """Aggregate review outcomes since the supplied timestamp."""
     filtered = [outcome for outcome in outcomes if _created_at(outcome) >= since]
+    accepted = [
+        outcome
+        for outcome in filtered
+        if str(outcome.get("status", "")).strip().lower() == "accepted"
+    ]
     sites = {str(item.get("site", "")).strip() for item in filtered if item.get("site")}
     pair_keys = {
         (
@@ -187,8 +192,52 @@ def summarize_sir_trends(
         "by_severity": dict(_counter(filtered, "severity")),
         "by_status": dict(_counter(filtered, "status")),
         "by_learning_action": dict(_counter(filtered, "learning_action")),
+        "accepted_learning_actions": dict(_counter(accepted, "learning_action")),
         "repeat_issues": repeat_issues,
     }
+
+
+def format_monthly_learning_summary(
+    summary: dict[str, Any],
+    *,
+    since_label: str = DEFAULT_SINCE,
+) -> str:
+    """Format a lightweight monthly SIR learning memo from a trend summary."""
+    lines = [
+        f"# SIR Learning Summary ({since_label})",
+        "",
+        "## Review Volume",
+        f"- Issues reviewed: {summary['total_issues']}",
+        f"- Sites reviewed: {summary['sites_reviewed']}",
+        f"- SIR pairs reviewed: {summary['sir_pairs_reviewed']}",
+        f"- DDR-impacting findings: {summary['ddr_impacting_findings']}",
+        f"- Blocking/material findings: {summary['blocking_or_material_findings']}",
+        "",
+        "## Reliability Signals",
+        f"- AI missed items per SIR: {summary['ai_missed_items_per_sir']}",
+        f"- AI unsupported claims per SIR: {summary['ai_unsupported_claims_per_sir']}",
+        f"- CDS missed items per SIR: {summary['cds_missed_items_per_sir']}",
+        "",
+        "## Top Repeat Patterns",
+        *_counter_lines(summary.get("repeat_issues", {})),
+        "",
+        "## Top Categories",
+        *_counter_lines(summary.get("by_category", {})),
+        "",
+        "## Top Affected Sections",
+        *_counter_lines(summary.get("by_section", {})),
+        "",
+        "## Accepted Learning Actions",
+        *_counter_lines(summary.get("accepted_learning_actions", {})),
+        "",
+        "## Monthly Decisions",
+        "- Promote repeated source-retrieval misses into retrieval rules.",
+        "- Promote repeated reasoning failures into SIR prompt guidance.",
+        "- Promote repeated formatting or missing sections into the SIR template.",
+        "- Promote vendor-only gaps into CDS/vendor task cards.",
+        "- Promote repeated DDR token impact into DDR mapping or prompt changes.",
+    ]
+    return "\n".join(lines)
 
 
 def _required(value: str, field_name: str) -> str:
@@ -214,6 +263,18 @@ def _counter(outcomes: list[dict[str, Any]], field: str) -> Counter[str]:
         str(item.get(field, "")).strip() or "(blank)"
         for item in outcomes
     )
+
+
+def _counter_lines(values: Any, *, limit: int = 5) -> list[str]:
+    if not isinstance(values, dict) or not values:
+        return ["- None"]
+    return [
+        f"- {key}: {count}"
+        for key, count in sorted(
+            values.items(),
+            key=lambda item: (-int(item[1]), str(item[0])),
+        )[:limit]
+    ]
 
 
 def _rate(count: int, denominator: int) -> float:

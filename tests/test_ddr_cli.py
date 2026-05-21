@@ -102,3 +102,86 @@ def test_ddr_sir_trends_defaults_to_30d(tmp_path, capsys) -> None:
     assert "SIR Trends since 30d" in out
     assert "Issues: 1" in out
     assert "AI missed items/SIR: 1.0" in out
+
+
+def test_ddr_sir_review_queue_lists_ready_pairs(tmp_path, capsys) -> None:
+    manifest = {
+        "run_id": "run-ready",
+        "site_title": "Alpha Keller",
+        "started_at": "2026-05-15T00:00:00+00:00",
+        "sir_learning_review": {
+            "status": "ready_for_review",
+            "reason": "AI SIR and CDS/vendor SIR are both present",
+            "ai_sir": {"name": "ai.docx", "file_id": "ai-id"},
+            "cds_sir": {"name": "cds.pdf", "file_id": "cds-id"},
+        },
+    }
+    (tmp_path / "run-ready.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    ddr_cli.main(["sir-review", "queue", "--manifest-dir", str(tmp_path)])
+
+    out = capsys.readouterr().out
+    assert "SIR Review Queue" in out
+    assert "Alpha Keller" in out
+    assert "AI SIR: ai.docx (ai-id)" in out
+    assert "Reviewed: no" in out
+
+
+def test_ddr_sir_review_queue_omits_reviewed_pairs_by_default(tmp_path, capsys) -> None:
+    manifest = {
+        "run_id": "run-ready",
+        "site_title": "Alpha Keller",
+        "started_at": "2026-05-15T00:00:00+00:00",
+        "sir_learning_review": {
+            "status": "ready_for_review",
+            "ai_sir": {"name": "ai.docx", "file_id": "ai-id"},
+            "cds_sir": {"name": "cds.pdf", "file_id": "cds-id"},
+        },
+    }
+    store = tmp_path / "sir-review-outcomes.jsonl"
+    store.write_text(
+        (
+            '{"created_at":"2099-01-01T00:00:00+00:00","site":"Alpha Keller",'
+            '"ai_sir":"ai-id","cds_sir":"cds-id","section":"Zoning",'
+            '"gap_category":"AI missed item","severity":"material",'
+            '"ddr_impact":"exec.c_zoning","learning_action":"retrieval rule",'
+            '"status":"accepted"}'
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "run-ready.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    ddr_cli.main([
+        "sir-review",
+        "queue",
+        "--manifest-dir",
+        str(tmp_path),
+        "--store",
+        str(store),
+    ])
+
+    out = capsys.readouterr().out
+    assert "Items: 0" in out
+
+
+def test_ddr_sir_monthly_summary_prints_decision_template(tmp_path, capsys) -> None:
+    store = tmp_path / "sir-review-outcomes.jsonl"
+    store.write_text(
+        "\n".join([
+            (
+                '{"created_at":"2099-01-01T00:00:00+00:00","site":"Alpha Keller",'
+                '"ai_sir":"ai","cds_sir":"cds","section":"Zoning",'
+                '"gap_category":"AI missed item","severity":"material",'
+                '"ddr_impact":"exec.c_zoning","learning_action":"retrieval rule",'
+                '"status":"accepted"}'
+            )
+        ]),
+        encoding="utf-8",
+    )
+
+    ddr_cli.main(["sir-monthly-summary", "--store", str(store)])
+
+    out = capsys.readouterr().out
+    assert "# SIR Learning Summary (30d)" in out
+    assert "## Monthly Decisions" in out
+    assert "retrieval rule: 1" in out
