@@ -1,4 +1,4 @@
-﻿"""Tests for the DD report V3 schema, alias map, and normalization."""
+﻿"""Tests for the DD report schema, alias map, and normalization."""
 
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ def test_no_alias_is_also_a_template_token() -> None:
     assert overlap == set(), f"Alias keys that are also template tokens: {overlap}"
 
 
-def test_token_count_v3() -> None:
-    assert len(TEMPLATE_TOKENS) == 56, f"Expected 56 tokens, got {len(TEMPLATE_TOKENS)}"
+def test_token_count_current_template() -> None:
+    assert len(TEMPLATE_TOKENS) == 55, f"Expected 55 tokens, got {len(TEMPLATE_TOKENS)}"
     assert all("delta_" not in t for t in TEMPLATE_TOKENS)
 
 
@@ -106,7 +106,7 @@ class TestNormalization:
         assert sources["exec.fastest_open_open_date"] == "RayCon"
         assert sources["meta.rebl_site_id"] == "alias:rebl.site_id"
 
-    def test_legacy_v2_aliases_map_to_v3(self) -> None:
+    def test_legacy_v2_aliases_map_to_current_template(self) -> None:
         report_data = {
             "exec": {
                 "e_mvp_capacity": "36",
@@ -141,7 +141,7 @@ class TestNormalization:
         )
         assert "q1.zoning_designation" in unmatched
 
-    def test_unfilled_tokens_include_v3_fields(self) -> None:
+    def test_unfilled_tokens_include_current_fields(self) -> None:
         _, _, unfilled, _ = normalize_report_data(
             {},
             site_name="Test",
@@ -149,6 +149,7 @@ class TestNormalization:
         )
         assert "meta.site_name" not in unfilled
         assert "meta.report_date" not in unfilled
+        assert "meta.school_type" not in unfilled
         assert "exec.direct_viable_buildout" in unfilled
         assert "exec.alpha_fit" in unfilled
         assert "meta.rebl_site_id" in unfilled
@@ -164,6 +165,7 @@ class TestNormalization:
             report_date="03/19/2026",
         )
         assert replacements["meta.site_name"] == "Alpha Metro"
+        assert replacements["meta.school_type"] == "K-8 Private (Alpha School model)"
         assert replacements["meta.report_date"] == "03/19/2026"
         assert replacements["meta.prepared_by"] == MISSING_P1_ASSIGNEE_LABEL
 
@@ -188,6 +190,9 @@ class TestNormalization:
             # Legacy three-state "Yes see notes" / "Conditional" collapse to Yes
             ("CONDITIONAL", "Yes"),
             ("Yes see notes", "Yes"),
+            ("Yes, because permits can be completed by 09/08", "Yes"),
+            ("No, because permits extend beyond 09/08", "No"),
+            ("No, because:", "No"),
         ],
     )
     def test_can_we_answer_normalizes_to_allowed_values(self, raw_value: str, expected: str) -> None:
@@ -381,6 +386,12 @@ class TestPipelineToolDefinitions:
 
         tool_names = [tool["name"] for tool in TOOL_DEFINITIONS]
         assert "save_skill_report" in tool_names
+
+    def test_rhodes_owner_lookup_tool_exists(self) -> None:
+        from due_diligence_reporter.report_pipeline import TOOL_DEFINITIONS
+
+        tool_names = [tool["name"] for tool in TOOL_DEFINITIONS]
+        assert "lookup_rhodes_site_owner" in tool_names
 
     def test_capacity_brainlift_tool_removed(self) -> None:
         """apply_capacity_brainlift_skill and get_cost_estimate were removed when

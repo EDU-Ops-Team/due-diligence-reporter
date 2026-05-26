@@ -1,8 +1,9 @@
-﻿"""DD Report V3 template token schema, aliases, and normalization."""
+﻿"""Current DD report template token schema, aliases, and normalization."""
 
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any
@@ -14,10 +15,8 @@ logger = logging.getLogger(__name__)
 # The Executive Summary "Can We Open?" card answer. Binary plain-English
 # Yes / No — the literal answer to "Can this be a school by [date]?".
 #
-# Note: this is a separate concern from the publisher field
-# `dd_recommendation`, which carries the Go / No Go vocabulary used by the
-# dashboard. The publisher derives `dd_recommendation` from this value
-# (Yes → "go", No → "no_go"); see DD_RECOMMENDATION_FROM_C_ANSWER below.
+# Note: legacy exports may still carry the old Go / No Go vocabulary. Keep
+# the mapping below for backward-compatible normalization.
 #
 # Legacy reports may still contain "Go" / "No Go" / "Yes see notes" /
 # "Conditional" on this field — see LEGACY_CAN_WE_ANSWER_ALIASES for
@@ -62,8 +61,7 @@ LEGACY_CAN_WE_ANSWER_ALIASES: dict[str, str] = {
     # Canonical values (case/whitespace tolerance)
     "yes": "Yes",
     "no": "No",
-    # Go / No Go vocabulary used by the publisher and dashboard — collapse
-    # back to the report's Yes/No on this field.
+    # Legacy Go / No Go vocabulary; collapse back to report Yes/No.
     "go": "Yes",
     "no go": "No",
     "no-go": "No",
@@ -74,10 +72,7 @@ LEGACY_CAN_WE_ANSWER_ALIASES: dict[str, str] = {
     "conditional": "Yes",
 }
 
-# Publisher-side derivation: the dashboard `dd_recommendation` field carries
-# Go / No Go vocabulary. Derive from the (already-normalized) c_answer.
-# Returns None when c_answer is missing or unrecognized — publisher then
-# omits dd_recommendation, and the dashboard falls back to its own logic.
+# Legacy Go / No Go derivation retained for historical payload readers.
 DD_RECOMMENDATION_FROM_C_ANSWER: dict[str, str] = {
     "Yes": "go",
     "No": "no_go",
@@ -88,8 +83,7 @@ DD_RECOMMENDATION_FROM_C_ANSWER: dict[str, str] = {
 # The DD site score is a 0–100 numeric derived from the
 # `apply_e_occupancy_skill` MCP tool, which lands the value on the
 # `q2.e_occupancy_score` token. The publisher promotes this to a top-level
-# `dd_site_score` field on the dashboard payload (Phase 3, Rhodes data
-# dictionary, 4/24 review).
+# legacy `dd_site_score` field (Phase 3, Rhodes data dictionary, 4/24 review).
 #
 # Band thresholds mirror the E-Occupancy Rating Bands defined in the
 # `ease-of-conversion` user skill
@@ -100,9 +94,7 @@ DD_RECOMMENDATION_FROM_C_ANSWER: dict[str, str] = {
 #                  justification to continue
 #   RED     0– 39  Fatal flaws likely — recommend passing
 #
-# The dashboard chip renders the band; the score itself is shown as a
-# numeric badge alongside it. Score is the source of truth — band is
-# always derived to keep the two in sync.
+# Score is the source of truth; band is always derived to keep the two in sync.
 ALLOWED_SITE_SCORE_BANDS: frozenset[str] = frozenset({
     "green",
     "yellow",
@@ -145,9 +137,7 @@ def site_score_band(score: int | float | None) -> str | None:
 #
 # A single, canonical, deduplicated list of risk flags surfaced from the
 # multiple flag-like signals in the DD report (permit_history, e_occupancy
-# IBC gates, school_approval archetype, SIR Risk Watch). The publisher
-# emits this on the dashboard payload so the dashboard can render flag
-# chips/groupings without re-parsing per-source raw data.
+# IBC gates, school_approval archetype, SIR Risk Watch).
 #
 # Categories cover the topical buckets we surface across all archetypes.
 # `septic` deliberately rolls up under `environmental` (per Phase 4 design
@@ -187,7 +177,7 @@ RISK_FLAG_SEVERITY_RANK: dict[str, int] = {
     "low": 1,
 }
 
-MISSING_P1_ASSIGNEE_LABEL = "[Not found - P1 Assignee not set in Wrike]"
+MISSING_P1_ASSIGNEE_LABEL = "[Not found - P1 DRI not assigned]"
 
 SCENARIOS: tuple[str, ...] = (
     "fastest_open",
@@ -254,7 +244,6 @@ def _build_template_tokens() -> list[str]:
         "sources.e_occupancy_link",
         "sources.school_approval_link",
         "sources.opening_plan_link",
-        "sources.trace_link",
     ])
     return tokens
 
@@ -264,10 +253,10 @@ TEMPLATE_TOKEN_SET: frozenset[str] = frozenset(TEMPLATE_TOKENS)
 
 
 TOKEN_SOURCES: dict[str, str] = {
-    "meta.site_name": "Wrike",
-    "meta.city_state_zip": "Wrike",
-    "meta.school_type": "Wrike",
-    "meta.marketing_name": "Wrike",
+    "meta.site_name": "Site context",
+    "meta.city_state_zip": "Site context",
+    "meta.school_type": "Site context",
+    "meta.marketing_name": "Site context",
     "meta.report_date": "System",
     "meta.prepared_by": "System",
     "meta.rebl_site_id": "REBL",
@@ -305,7 +294,6 @@ LINK_TOKENS: frozenset[str] = frozenset({
     "sources.e_occupancy_link",
     "sources.school_approval_link",
     "sources.opening_plan_link",
-    "sources.trace_link",
     "meta.drive_folder_url",
 })
 
@@ -318,7 +306,6 @@ LINK_DISPLAY_LABELS: dict[str, str] = {
     "sources.e_occupancy_link": "View E-Occupancy",
     "sources.school_approval_link": "View School Approval",
     "sources.opening_plan_link": "View Opening Plan",
-    "sources.trace_link": "View Report Trace",
     "meta.drive_folder_url": "View Site Folder",
 }
 
@@ -533,6 +520,9 @@ def normalize_report_data(
     if "meta.report_date" not in flat:
         flat["meta.report_date"] = report_date
         token_sources["meta.report_date"] = "default"
+    if "meta.school_type" not in flat:
+        flat["meta.school_type"] = "K-8 Private (Alpha School model)"
+        token_sources["meta.school_type"] = "default"
 
     for alias, canonical in AGENT_KEY_ALIASES.items():
         if alias in flat and canonical not in flat:
@@ -605,7 +595,15 @@ def normalize_report_data(
 
 def normalize_can_we_answer(value: str) -> str | None:
     """Normalize legacy or case-variant answers to canonical allowed values."""
-    return LEGACY_CAN_WE_ANSWER_ALIASES.get(value.strip().rstrip(".,;:?!").lower())
+    cleaned = value.strip().rstrip(".,;:?!").lower()
+    alias = LEGACY_CAN_WE_ANSWER_ALIASES.get(cleaned)
+    if alias:
+        return alias
+    if re.match(r"^yes\b", cleaned):
+        return "Yes"
+    if re.match(r"^no\b", cleaned):
+        return "No"
+    return None
 
 
 def parse_open_date(value: str) -> date | None:

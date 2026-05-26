@@ -1,4 +1,4 @@
-"""Phase 4: canonical risk-flag derivation for the dashboard publisher.
+"""Phase 4: canonical risk-flag derivation for DD report data.
 
 Single source of truth for converting the four flag-like signals in a DD
 report's token bag into a canonical, deduped ``dd_risk_flags[]`` list:
@@ -40,10 +40,7 @@ Sources canonicalized
 
 Caller-wins precedence
 ----------------------
-``derive_risk_flags`` is called from the publisher only when the caller
-did not supply explicit ``dd_risk_flags=[…]``. The publisher itself
-applies the caller-wins gate and validation; this module focuses on the
-clean derivation path.
+``derive_risk_flags`` builds the canonical risk list from report data.
 
 Dedup
 -----
@@ -56,7 +53,8 @@ multiple times, the entry with the higher severity wins
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any, cast
 
 from .report_schema import (
     ALLOWED_RISK_FLAG_CATEGORIES,
@@ -144,25 +142,29 @@ _SIR_HIGH_KEYWORDS: frozenset[str] = frozenset({
 # --- Public API -----------------------------------------------------------
 
 
-def derive_risk_flags(report_data: dict[str, Any]) -> list[dict[str, Any]]:
+def derive_risk_flags(report_data: object) -> list[dict[str, Any]]:
     """Build canonical ``dd_risk_flags[]`` from a report's token bag.
 
     Returns a list sorted by (severity desc, category asc, source asc) so
-    output is deterministic for tests and stable for the dashboard.
+    output is deterministic for tests.
     Empty list when no upstream signals are present.
     """
     if not isinstance(report_data, dict):
         return []
 
+    report = cast(dict[str, Any], report_data)
     raw: list[dict[str, Any]] = []
-    raw.extend(_from_permit_history(report_data))
-    raw.extend(_from_e_occupancy(report_data))
-    raw.extend(_from_school_approval(report_data))
-    raw.extend(_from_sir_risk_watch(report_data))
+    raw.extend(_from_permit_history(report))
+    raw.extend(_from_e_occupancy(report))
+    raw.extend(_from_school_approval(report))
+    raw.extend(_from_sir_risk_watch(report))
 
     # Validate + dedup
-    cleaned = [_validate_flag(f) for f in raw]
-    cleaned = [f for f in cleaned if f is not None]
+    cleaned: list[dict[str, Any]] = []
+    for flag in raw:
+        validated = _validate_flag(flag)
+        if validated is not None:
+            cleaned.append(validated)
     return _dedup_and_sort(cleaned)
 
 

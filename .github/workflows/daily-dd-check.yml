@@ -39,7 +39,6 @@ jobs:
 
       - name: Verify required secrets
         run: |
-          [ -n "${{ secrets.WRIKE_ACCESS_TOKEN }}" ]         || { echo "[ERROR] WRIKE_ACCESS_TOKEN missing"; exit 1; }
           [ -n "${{ secrets.OPENAI_API_KEY }}" ]             || { echo "[ERROR] OPENAI_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]          || { echo "[ERROR] ANTHROPIC_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}" ] || { echo "[ERROR] _GOOGLE_DOC_ID missing"; exit 1; }
@@ -51,12 +50,10 @@ jobs:
           [ -n "${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}" ] || { echo "[ERROR] DD_REPORT_EMAIL_RECIPIENTS missing"; exit 1; }
           [ -n "${{ secrets.EMAIL_SENDER }}" ]               || { echo "[ERROR] EMAIL_SENDER missing"; exit 1; }
           [ -n "${{ secrets.EMAIL_APP_PASSWORD }}" ]         || { echo "[ERROR] EMAIL_APP_PASSWORD missing"; exit 1; }
-          [ -n "${{ secrets.DASHBOARD_PUBLISH_SECRET }}" ]   || { echo "[ERROR] DASHBOARD_PUBLISH_SECRET missing"; exit 1; }
           echo "[OK] All required secrets are present"
 
       - name: Create .env file from secrets
         env:
-          WRIKE_ACCESS_TOKEN: ${{ secrets.WRIKE_ACCESS_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DD_TEMPLATE_V3_GOOGLE_DOC_ID: ${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}
@@ -73,10 +70,8 @@ jobs:
           # SHOVELS_API_KEY intentionally omitted — Shovels integration
           # runs upstream (AI SIR / source-evidence build); DDR no
           # longer initiates live Shovels API calls.
-          DASHBOARD_PUBLISH_SECRET: ${{ secrets.DASHBOARD_PUBLISH_SECRET }}
         run: |
           touch .env
-          echo "WRIKE_ACCESS_TOKEN=${WRIKE_ACCESS_TOKEN}" >> .env
           echo "OPENAI_API_KEY=${OPENAI_API_KEY}" >> .env
           echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> .env
           echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID=${DD_TEMPLATE_V3_GOOGLE_DOC_ID}" >> .env
@@ -90,10 +85,6 @@ jobs:
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
           echo "BUILDING_INSPECTION_FOLDER_ID=${BUILDING_INSPECTION_FOLDER_ID}" >> .env
-          # Dashboard publish: bearer for POST /api/sites/:slug/publish on dd-dashboard.
-          # Without this the report pipeline silently skips the dashboard write
-          # (see dashboard_publisher.publish_to_dashboard early-return).
-          echo "DASHBOARD_PUBLISH_SECRET=${DASHBOARD_PUBLISH_SECRET}" >> .env
           echo "[OK] Created .env file"
 
       - name: Write Google OAuth client secrets

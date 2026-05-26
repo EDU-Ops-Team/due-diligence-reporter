@@ -63,7 +63,6 @@ jobs:
           [ -n "${{ secrets.SIR_FOLDER_ID }}" ]              || { echo "SIR_FOLDER_ID missing"; exit 1; }
           [ -n "${{ secrets.ISP_FOLDER_ID }}" ]              || { echo "ISP_FOLDER_ID missing"; exit 1; }
           [ -n "${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}" ] || { echo "BUILDING_INSPECTION_FOLDER_ID missing"; exit 1; }
-          [ -n "${{ secrets.DASHBOARD_PUBLISH_SECRET }}" ]   || { echo "DASHBOARD_PUBLISH_SECRET missing"; exit 1; }
           # RAYCON_WEBHOOK_SECRET is optional: RayCon's /v1/jobs is public
           # under the current /v1/* rollout. When set, we sign the body
           # with HMAC-SHA256 so we're ready the day RayCon flips on
@@ -72,7 +71,6 @@ jobs:
 
       - name: Create .env file from secrets
         env:
-          WRIKE_ACCESS_TOKEN: ${{ secrets.WRIKE_ACCESS_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DD_TEMPLATE_V3_GOOGLE_DOC_ID: ${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}
@@ -91,13 +89,11 @@ jobs:
           # SHOVELS_API_KEY intentionally omitted — Shovels integration
           # runs upstream (AI SIR / source-evidence build); DDR no
           # longer initiates live Shovels API calls.
-          DASHBOARD_PUBLISH_SECRET: ${{ secrets.DASHBOARD_PUBLISH_SECRET }}
           INBOX_SCANNER_TOKEN: ${{ secrets.INBOX_SCANNER_TOKEN }}
           RAYCON_WEBHOOK_SECRET: ${{ secrets.RAYCON_WEBHOOK_SECRET }}
           RAYCON_API_KEY: ${{ secrets.RAYCON_API_KEY }}
         run: |
           touch .env
-          echo "WRIKE_ACCESS_TOKEN=${WRIKE_ACCESS_TOKEN}" >> .env
           echo "OPENAI_API_KEY=${OPENAI_API_KEY}" >> .env
           echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> .env
           echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID=${DD_TEMPLATE_V3_GOOGLE_DOC_ID}" >> .env
@@ -113,10 +109,6 @@ jobs:
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
           echo "BUILDING_INSPECTION_FOLDER_ID=${BUILDING_INSPECTION_FOLDER_ID}" >> .env
-          # Dashboard publish: bearer for POST /api/sites/:slug/publish on dd-dashboard.
-          # Without this the report pipeline silently skips the dashboard write
-          # (see dashboard_publisher.publish_to_dashboard early-return).
-          echo "DASHBOARD_PUBLISH_SECRET=${DASHBOARD_PUBLISH_SECRET}" >> .env
           echo "INBOX_SCANNER_TOKEN=${INBOX_SCANNER_TOKEN}" >> .env
           echo "RAYCON_WEBHOOK_SECRET=${RAYCON_WEBHOOK_SECRET}" >> .env
           echo "RAYCON_API_KEY=${RAYCON_API_KEY}" >> .env

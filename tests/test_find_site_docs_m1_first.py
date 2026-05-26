@@ -105,6 +105,45 @@ def test_m1_partial_falls_back_to_shared_for_missing_types():
     assert "shared-isp-folder" in listed_folders
 
 
+def test_m1_partial_rejects_city_only_shared_matches_for_missing_types():
+    """A direct site folder cannot borrow another same-city site's source docs."""
+    gc = MagicMock()
+    gc.list_files_in_folder.return_value = []
+    gc.list_files_recursive.return_value = [
+        {
+            "id": "whitley-bi",
+            "name": "Alpha Los Angeles 1726 Whitley Ave Building Inspection.pdf",
+            "mimeType": "application/pdf",
+        },
+    ]
+
+    m1_files = {
+        "sir": {
+            "id": "m1-sir",
+            "name": "5400-beethoven-st-los-angeles-ca_2026-05-21_SIR.docx",
+        }
+    }
+
+    with (
+        _patch_settings(),
+        _patch_resolve(),
+        patch(
+            "due_diligence_reporter.server._list_m1_documents_by_type",
+            return_value=m1_files,
+        ),
+    ):
+        result = _find_site_docs_in_shared_folders(
+            gc,
+            ["Alpha Los Angeles 5400 Beethoven St", "Los Angeles", "5400", "Beethoven"],
+            site_title="Alpha Los Angeles 5400 Beethoven St",
+            site_address="5400 Beethoven St, Los Angeles, CA 90066",
+            drive_folder_url="https://drive.google.com/drive/folders/site-folder",
+        )
+
+    assert result["sir"]["id"] == "m1-sir"
+    assert result["building_inspection"] is None
+
+
 def test_no_drive_folder_url_skips_m1_check():
     """When caller doesn't pass `drive_folder_url`, M1 is not consulted."""
     gc = MagicMock()

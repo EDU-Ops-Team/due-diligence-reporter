@@ -1,14 +1,12 @@
 """Partial-on-purpose completeness metadata for DD reports.
 
 Computes a structured ``completeness`` block that downstream consumers
-(the V3 Google Doc renderer, the dashboard, the ``check_site_readiness``
-MCP tool) use to decide whether a report is "complete" or
+(the Google Doc renderer and the ``check_site_readiness`` MCP tool) use
+to decide whether a report is "complete" or
 "partial-on-purpose -- waiting on a known input".
 
-Today the only known reason a token can be pending is that
-``raycon_scenario.json`` has not yet landed in the site's M1 folder, but
-the schema is open-ended so other reasons (vendor SIR pending, etc.)
-can be added without a downstream contract change.
+Known pending reasons include missing RayCon scenario data and first-round
+reports that intentionally carry open vendor-verification items.
 """
 
 from __future__ import annotations
@@ -23,18 +21,23 @@ from .raycon_client import RAYCON_BREAKDOWN_ROWS
 
 RAYCON_PENDING_REASON = "raycon_scenario_pending"
 RAYCON_PENDING_TRIGGER_FILE = "raycon_scenario.json"
+VENDOR_VERIFICATION_PENDING_REASON = "vendor_verification_pending"
+VENDOR_VERIFICATION_TRIGGER_FILE = "vendor source documents"
+VERIFICATION_OPEN_ITEMS_TOKEN = "_internal.verification_open_items"
 
 # Human-readable label for each reason key. Consumed by the banner
-# renderer in the V3 doc builder. New reason keys must add an entry here
+# renderer in the document builder. New reason keys must add an entry here
 # or the banner falls back to the raw key.
 REASON_DISPLAY_LABELS: dict[str, str] = {
     RAYCON_PENDING_REASON: "RayCon cost & capacity",
+    VENDOR_VERIFICATION_PENDING_REASON: "Vendor verification",
 }
 
 # Trigger files keyed by reason — drives the ``auto_republish_on``
 # array on the completeness block.
 REASON_TRIGGER_FILES: dict[str, str] = {
     RAYCON_PENDING_REASON: RAYCON_PENDING_TRIGGER_FILE,
+    VENDOR_VERIFICATION_PENDING_REASON: VENDOR_VERIFICATION_TRIGGER_FILE,
 }
 
 
@@ -105,7 +108,7 @@ def compute_completeness_block(replacements: dict[str, str]) -> dict[str, Any]:
     tokens, grouping pending tokens by the reason they're pending.
 
     Args:
-        replacements: The normalized token -> value map that the V3
+        replacements: The normalized token -> value map that the report
             Google Doc renderer will consume.
 
     Returns:
@@ -125,7 +128,12 @@ def compute_completeness_block(replacements: dict[str, str]) -> dict[str, Any]:
     pending = 0
 
     for token, value in replacements.items():
-        if token in _RAYCON_TOKEN_PATHS and not _is_filled(value):
+        if token == VERIFICATION_OPEN_ITEMS_TOKEN and _is_filled(value):
+            pending_by_reason.setdefault(
+                VENDOR_VERIFICATION_PENDING_REASON, []
+            ).append(token)
+            pending += 1
+        elif token in _RAYCON_TOKEN_PATHS and not _is_filled(value):
             pending_by_reason.setdefault(RAYCON_PENDING_REASON, []).append(token)
             pending += 1
         elif _is_filled(value):
@@ -159,6 +167,7 @@ def compute_completeness_block(replacements: dict[str, str]) -> dict[str, Any]:
 def project_completeness_from_readiness(
     *,
     raycon_scenario_found: bool,
+    verification_open_items_pending: bool = False,
 ) -> dict[str, Any]:
     """Project what the completeness block will look like *before* the
     pipeline has run, based on which gating inputs are available.
@@ -166,13 +175,17 @@ def project_completeness_from_readiness(
     Used by ``check_site_readiness`` to give the agent (and Greg) a
     preview: ship partial now, or wait for the missing input?
 
-    Today RayCon is the only pending-input axis we model. When more
-    reasons are added to ``REASON_TRIGGER_FILES``, extend this function
-    to take their availability flags too.
+    RayCon is modeled directly from readiness. First-round vendor
+    verification can also be projected when the caller already knows
+    open items will be logged.
     """
     pending_reasons_unsorted: dict[str, list[str]] = {}
     if not raycon_scenario_found:
         pending_reasons_unsorted[RAYCON_PENDING_REASON] = sorted(_RAYCON_TOKEN_PATHS)
+    if verification_open_items_pending:
+        pending_reasons_unsorted[VENDOR_VERIFICATION_PENDING_REASON] = [
+            VERIFICATION_OPEN_ITEMS_TOKEN
+        ]
 
     pending_reasons = {
         reason: pending_reasons_unsorted[reason]

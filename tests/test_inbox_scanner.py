@@ -134,7 +134,7 @@ class TestClassification:
             remove_labels=[],
         )
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_by_content_llm")
     @patch("due_diligence_reporter.inbox_scanner.extract_text_from_pdf_bytes")
@@ -200,7 +200,7 @@ class TestClassification:
             file_bytes=b"%PDF-vague",
         )
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
@@ -251,7 +251,7 @@ class TestClassification:
         assert result["errors"][0]["filename"] == "Alpha Keller SIR.pdf"
         assert result["errors"][0]["error"] == "upload boom"
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
@@ -311,7 +311,7 @@ class TestClassification:
             file_bytes=b"pdf",
         )
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
@@ -368,7 +368,7 @@ class TestClassification:
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
     def test_unmatched_sir_goes_to_manual_review(self, mock_extract, mock_classify):
-        """With no Wrike match, SIR/BI/ISP follow the same review path as Block Plan.
+        """With no site match, SIR/BI/ISP follow the same review path as Block Plan.
 
         This guards the uniform fallback: every supported doc type now needs
         a matched site to know which M1 to upload into; without one, we leave
@@ -400,7 +400,7 @@ class TestClassification:
         # The scanner must NOT have tried to upload anything when site is unmatched.
         gc.upload_file_to_folder.assert_not_called()
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
@@ -423,7 +423,7 @@ class TestClassification:
             ],
         )
         mock_classify.return_value = ("sir", 0.95)
-        # Site exists in Wrike but has no drive_folder_url — the upstream gap
+        # Site metadata exists but has no drive_folder_url — the upstream gap
         # we explicitly want surfaced rather than papered over.
         mock_build_summary.return_value = {"title": "Alpha Keller", "drive_folder_url": ""}
 
@@ -474,7 +474,7 @@ class TestClassification:
         assert result["marked"] is True
         assert result["low_confidence"][0]["doc_type"] == "block_plan"
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._run_block_plan_downstream")
     @patch("due_diligence_reporter.inbox_scanner.extract_text_from_pdf_bytes")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
@@ -556,7 +556,7 @@ class TestClassification:
         )
         mock_downstream.assert_called_once()
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._list_m1_documents_by_type")
     @patch("due_diligence_reporter.inbox_scanner._run_block_plan_downstream")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
@@ -618,7 +618,7 @@ class TestClassification:
         gc.upload_file_to_folder.assert_not_called()
         mock_downstream.assert_not_called()
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._list_m1_documents_by_type")
     @patch("due_diligence_reporter.inbox_scanner._run_block_plan_downstream")
     @patch("due_diligence_reporter.inbox_scanner.extract_text_from_pdf_bytes")
@@ -700,7 +700,7 @@ class TestClassification:
         gc.upload_file_to_folder.assert_not_called()
         mock_downstream.assert_called_once()
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._send_block_plan_failure_notification")
     @patch("due_diligence_reporter.inbox_scanner._run_block_plan_downstream")
     @patch("due_diligence_reporter.inbox_scanner.extract_text_from_pdf_bytes")
@@ -1117,7 +1117,7 @@ class TestEffectiveSender:
         assert len(result["uploaded"]) == 0
         assert result["marked"] is True  # mark so we don't re-scan it forever
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
@@ -1526,7 +1526,7 @@ class TestDDRepublishCallbackWiring:
         )
         return extract
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
@@ -1580,7 +1580,7 @@ class TestDDRepublishCallbackWiring:
         assert kwargs["fingerprint"] == "sir_drive_id:2026-05-05T10:00:00Z"
         assert kwargs["site_summary"]["title"] == "Alpha Keller"
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
@@ -1635,7 +1635,7 @@ class TestDDRepublishCallbackWiring:
         assert kwargs["reason"] == "building_inspection"
         assert kwargs["fingerprint"] == "bi_drive_id:2026-05-06T14:00:00Z"
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
@@ -1681,7 +1681,7 @@ class TestDDRepublishCallbackWiring:
         )
         callback.assert_not_called()
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
@@ -1725,7 +1725,7 @@ class TestDDRepublishCallbackWiring:
         assert len(result["uploaded"]) == 1
         assert "dd_report_republish" not in result["uploaded"][0]
 
-    @patch("due_diligence_reporter.inbox_scanner.build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
@@ -1798,7 +1798,7 @@ class TestMaybeFireDDRepublishEnvelopeShapes:
             callback=MagicMock(),
             gc=MagicMock(),
             site_summary={"title": "S"},
-            doc_type="dashboard_aggregate",
+            doc_type="unknown_artifact",
             drive_file=self._drive_file(),
             dry_run=False,
         )
@@ -1889,107 +1889,3 @@ class TestMaybeFireDDRepublishProvenanceGate:
         assert result == {"status": "skipped", "reason": "ai_named_skipped"}
         callback.assert_not_called()
         mock_is_vendor.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Fuzzy-fallback auto-match policy in _match_attachment_to_site
-# ---------------------------------------------------------------------------
-
-
-class TestMatchAttachmentToSiteFuzzyFallback:
-    """Verify resolve_site fallback respects INBOX_AUTO_MATCH_SCORE / _LEAD."""
-
-    @staticmethod
-    def _meta(subject: str = "irrelevant subject") -> EmailMetadata:
-        return EmailMetadata(
-            message_id="msg_1",
-            subject=subject,
-            sender="sender@example.com",
-            body_snippet="",
-            label_ids=[],
-            attachments=[],
-        )
-
-    @staticmethod
-    def _records() -> list[dict]:
-        # Two ordinary records; deterministic pre-filter scores 0 by default.
-        return [
-            {"id": "S1", "title": "Foo", "customFields": []},
-            {"id": "S2", "title": "Bar", "customFields": []},
-        ]
-
-    @patch("due_diligence_reporter.inbox_scanner._site_match_score", return_value=0)
-    @patch("due_diligence_reporter.inbox_scanner.resolve_site")
-    def test_auto_match_fires_on_high_score_high_lead(self, mock_resolve, _mock_score):
-        from due_diligence_reporter.inbox_scanner import _match_attachment_to_site
-        from due_diligence_reporter.site_matching import ScoredCandidate, SiteResolution
-
-        records = self._records()
-        mock_resolve.return_value = SiteResolution(
-            status="matched",
-            query="x",
-            match=records[0],
-            candidates=[
-                ScoredCandidate(id="S1", title="Foo", address="", score=95.0),
-                ScoredCandidate(id="S2", title="Bar", address="", score=83.0),
-            ],
-            reason="leading",
-        )
-        result = _match_attachment_to_site("file.pdf", self._meta(), records)
-        assert result is records[0]
-
-    @patch("due_diligence_reporter.inbox_scanner._site_match_score", return_value=0)
-    @patch("due_diligence_reporter.inbox_scanner.resolve_site")
-    def test_auto_match_skips_on_borderline_score(self, mock_resolve, _mock_score):
-        from due_diligence_reporter.inbox_scanner import _match_attachment_to_site
-        from due_diligence_reporter.site_matching import ScoredCandidate, SiteResolution
-
-        records = self._records()
-        mock_resolve.return_value = SiteResolution(
-            status="matched",
-            query="x",
-            match=records[0],
-            candidates=[
-                ScoredCandidate(id="S1", title="Foo", address="", score=88.0),
-                ScoredCandidate(id="S2", title="Bar", address="", score=70.0),
-            ],
-            reason="below INBOX_AUTO_MATCH_SCORE",
-        )
-        assert _match_attachment_to_site("file.pdf", self._meta(), records) is None
-
-    @patch("due_diligence_reporter.inbox_scanner._site_match_score", return_value=0)
-    @patch("due_diligence_reporter.inbox_scanner.resolve_site")
-    def test_auto_match_skips_on_close_lead(self, mock_resolve, _mock_score):
-        from due_diligence_reporter.inbox_scanner import _match_attachment_to_site
-        from due_diligence_reporter.site_matching import ScoredCandidate, SiteResolution
-
-        records = self._records()
-        mock_resolve.return_value = SiteResolution(
-            status="matched",
-            query="x",
-            match=records[0],
-            candidates=[
-                ScoredCandidate(id="S1", title="Foo", address="", score=95.0),
-                ScoredCandidate(id="S2", title="Bar", address="", score=91.0),
-            ],
-            reason="close lead",
-        )
-        assert _match_attachment_to_site("file.pdf", self._meta(), records) is None
-
-    @patch("due_diligence_reporter.inbox_scanner._site_match_score", return_value=0)
-    @patch("due_diligence_reporter.inbox_scanner.resolve_site")
-    def test_auto_match_skips_on_ambiguous(self, mock_resolve, _mock_score):
-        from due_diligence_reporter.inbox_scanner import _match_attachment_to_site
-        from due_diligence_reporter.site_matching import ScoredCandidate, SiteResolution
-
-        records = self._records()
-        mock_resolve.return_value = SiteResolution(
-            status="ambiguous",
-            query="x",
-            candidates=[
-                ScoredCandidate(id="S1", title="Foo", address="", score=95.0),
-                ScoredCandidate(id="S2", title="Bar", address="", score=94.0),
-            ],
-            reason="ambiguous",
-        )
-        assert _match_attachment_to_site("file.pdf", self._meta(), records) is None

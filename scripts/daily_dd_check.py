@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
-"""
-daily_dd_check.py — Standalone daily cron script for DD report readiness checking.
+"""Standalone daily cron script for DD report readiness checking.
 
-Scans every active Wrike Site Record that has a Google Drive folder, checks for
-SIR + ISP documents, and:
-  - Posts a Google Chat alert if required documents are missing.
-  - Triggers a DD report generation via Claude API when all docs are present and
-    no report exists yet.
-  - Checks the generated report for completeness and sends an email if ready.
+Scans the configured Google Drive root folder for site folders, checks each
+folder for first-round DDR readiness, and triggers report generation when a SIR
+is present and no report exists yet.
 
 Run:
     uv run python scripts/daily_dd_check.py
 
-Environment (from .env):
-    WRIKE_ACCESS_TOKEN, GOOGLE_CLIENT_CONFIG, GOOGLE_TOKEN_FILE,
-    ANTHROPIC_API_KEY, GOOGLE_CHAT_WEBHOOK_URL, DD_REPORT_EMAIL_RECIPIENTS,
-    EMAIL_SENDER, EMAIL_APP_PASSWORD, DD_TEMPLATE_V3_GOOGLE_DOC_ID,
-    GOOGLE_DRIVE_ROOT_FOLDER_ID, OPENAI_API_KEY
+Environment:
+    GOOGLE_CLIENT_CONFIG, GOOGLE_TOKEN_FILE, ANTHROPIC_API_KEY,
+    GOOGLE_CHAT_WEBHOOK_URL, DD_REPORT_EMAIL_RECIPIENTS, EMAIL_SENDER,
+    EMAIL_APP_PASSWORD, GOOGLE_DRIVE_ROOT_FOLDER_ID, OPENAI_API_KEY
 """
-# ruff: noqa: E402, I001
+# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -26,7 +21,6 @@ import logging
 import sys
 from pathlib import Path
 
-# Ensure project src is on path when running as a script
 _project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(_project_root / "src"))
 
@@ -42,45 +36,38 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
     post_pipeline_result,
     process_site_pipeline,
 )
-from due_diligence_reporter.utils import build_site_match_terms as _build_site_match_terms  # noqa: E402
-from due_diligence_reporter.wrike import (  # noqa: E402
-    _get_active_status_ids,
-    _get_all_site_records,
-    extract_address_from_record,
-    extract_created_date_from_record,
-    extract_google_folder_from_record,
-    extract_p1_email_from_record,
-    extract_p1_from_record,
-    extract_school_feasibility_from_record,
-    extract_timeline_confidence_from_record,
-    filter_active_site_records,
-    load_wrike_config,
+from due_diligence_reporter.utils import (
+    build_site_match_terms as _build_site_match_terms,  # noqa: E402
 )
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
     handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger("daily_dd_check")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main loop
-# ─────────────────────────────────────────────────────────────────────────────
+def _folder_url(folder: dict[str, object]) -> str:
+    link = folder.get("webViewLink")
+    if isinstance(link, str) and link.strip():
+        return link.strip()
+    folder_id = str(folder.get("id") or "").strip()
+    return f"https://drive.google.com/drive/folders/{folder_id}" if folder_id else ""
+
 
 def main(site_filter: str | None = None) -> None:
     settings = get_settings()
-    wrike_cfg = load_wrike_config()
+    if not settings.google_drive_root_folder_id:
+        logger.error("GOOGLE_DRIVE_ROOT_FOLDER_ID is required for the daily sweep")
+        sys.exit(1)
 
-    # Load the agent system prompt
-    prompt_path = _project_root / "docs" / "prompts" / "prompt_v3.md"
+    prompt_path = _project_root / "docs" / "prompts" / "prompt_v4.md"
     if not prompt_path.exists():
-        logger.error("System prompt not found at %s — aborting", prompt_path)
+        logger.error("System prompt not found at %s - aborting", prompt_path)
         sys.exit(1)
     system_prompt = prompt_path.read_text(encoding="utf-8")
 
-    # Init Google client
     gc = GoogleClient.from_oauth_config(
         client_config_path=str(settings.get_client_config_path()),
         token_file_path=str(settings.get_token_file_path()),
@@ -88,75 +75,48 @@ def main(site_filter: str | None = None) -> None:
         scopes=settings.google_scopes,
     )
 
-    # Fetch all Wrike site records, then filter to active sites in DD stages
-    logger.info("Fetching all Wrike site records...")
-    all_records = _get_all_site_records(cfg=wrike_cfg)
-    active_status_ids = _get_active_status_ids(access_token=wrike_cfg.access_token)
-    active_records = filter_active_site_records(all_records, active_status_ids)
-    logger.info("Found %d site records (%d active in DD stages)", len(all_records), len(active_records))
+    logger.info("Listing site folders under Drive root %s", settings.google_drive_root_folder_id)
+    site_folders = gc.list_subfolders(settings.google_drive_root_folder_id)
+    logger.info("Found %d site folders", len(site_folders))
 
-    # Pre-fetch shared folder file lists once for all sites
-    logger.info("Listing shared Drive folders (SIR, ISP, Building Inspection)...")
+    logger.info("Listing shared Drive folders (SIR, ISP, Building Inspection)")
     shared_cache = list_shared_folders_once(gc)
-    logger.info(
-        "Shared folder files: SIR=%d, ISP=%d, Inspection=%d",
-        len(shared_cache.get("sir", [])),
-        len(shared_cache.get("isp", [])),
-        len(shared_cache.get("building_inspection", [])),
-    )
 
     results: list[PipelineResult] = []
-    skipped = len(all_records) - len(active_records)
+    skipped = 0
 
-    for record in active_records:
-        site_title = record.get("title", "Unknown")
+    for folder in site_folders:
+        site_title = str(folder.get("name") or "").strip()
+        drive_folder_url = _folder_url(folder)
 
+        if not site_title or not drive_folder_url:
+            skipped += 1
+            continue
         if site_filter and site_filter.lower() not in site_title.lower():
             continue
 
-        drive_folder_url = extract_google_folder_from_record(record)
-
-        if not drive_folder_url:
-            logger.debug("Skipping '%s' — no Drive folder URL", site_title)
-            continue
-
-        address = extract_address_from_record(record)
-        match_terms = _build_site_match_terms(site_title, address)
-        p1_email = extract_p1_email_from_record(record)
-        p1_profile = extract_p1_from_record(record) or {}
-        p1_name = p1_profile.get("name")
-        # Phase 2: Wrike W74 / W81 ratings (high/medium/low/unknown).
-        # None when the field isn't populated on the Wrike record.
-        school_feasibility = extract_school_feasibility_from_record(record)
-        timeline_confidence = extract_timeline_confidence_from_record(record)
-        # When the site was first created in Wrike (NOT when the DD report
-        # was generated). Threaded all the way to the dashboard publish so
-        # the Portfolio "Date Created" column tracks the real birth date.
-        wrike_created_at = extract_created_date_from_record(record)
-        logger.info("Checking site: %s (match terms: %s, p1: %s)", site_title, match_terms, p1_email)
+        match_terms = _build_site_match_terms(site_title, None)
+        logger.info("Checking site folder: %s (match terms: %s)", site_title, match_terms)
 
         try:
             result = process_site_pipeline(
-                gc, site_title, drive_folder_url, match_terms,
-                shared_cache, system_prompt, settings,
-                p1_email=p1_email, site_address=address, p1_name=p1_name,
-                school_feasibility=school_feasibility,
-                timeline_confidence=timeline_confidence,
-                wrike_created_at=wrike_created_at,
+                gc,
+                site_title,
+                drive_folder_url,
+                match_terms,
+                shared_cache,
+                system_prompt,
+                settings,
             )
         except Exception as e:
             logger.exception("Unexpected pipeline failure for '%s'", site_title)
             result = PipelineResult(site_title=site_title, status="error", error=str(e))
         results.append(result)
 
-        # Post each result to Google Chat
-        post_pipeline_result(
-            settings.google_chat_webhook_url, result, drive_folder_url,
-        )
+        post_pipeline_result(settings.google_chat_webhook_url, result, drive_folder_url)
 
-    # Summary — use ASCII-safe markers to avoid encoding errors on Windows
     print("\n" + "=" * 60)
-    print(f"Daily DD Check -- {len(results)} sites processed, {skipped} skipped (inactive or wrong stage)")
+    print(f"Daily DD Check -- {len(results)} sites processed, {skipped} skipped")
     print("=" * 60)
     for r in results:
         if r.status == "report_created":
@@ -186,6 +146,6 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Daily DD readiness check and report generation")
-    parser.add_argument("--site", type=str, default=None, help="Run for a single site (substring match on title)")
+    parser.add_argument("--site", type=str, default=None, help="Run for a single site folder")
     args = parser.parse_args()
     main(site_filter=args.site)

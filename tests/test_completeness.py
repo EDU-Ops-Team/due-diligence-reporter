@@ -6,6 +6,8 @@ from due_diligence_reporter import completeness as completeness_module
 from due_diligence_reporter.completeness import (
     RAYCON_PENDING_REASON,
     REASON_DISPLAY_LABELS,
+    VENDOR_VERIFICATION_PENDING_REASON,
+    VERIFICATION_OPEN_ITEMS_TOKEN,
     compute_completeness_block,
     is_raycon_pending_placeholder,
     project_completeness_from_readiness,
@@ -130,6 +132,18 @@ class TestComputeCompletenessBlock:
         for paths in block["pending_reasons"].values():
             assert isinstance(paths, list)
 
+    def test_verification_open_items_make_report_partial(self) -> None:
+        block = compute_completeness_block({
+            VERIFICATION_OPEN_ITEMS_TOKEN: "- Confirm zoning path with Planning",
+        })
+
+        assert block["stage"] == "partial"
+        assert block["pending_token_count"] == 1
+        assert block["auto_republish_on"] == ["vendor source documents"]
+        assert block["pending_reasons"][VENDOR_VERIFICATION_PENDING_REASON] == [
+            VERIFICATION_OPEN_ITEMS_TOKEN
+        ]
+
 
 class TestProjectCompletenessFromReadiness:
     def test_raycon_missing_projects_partial(self) -> None:
@@ -146,6 +160,15 @@ class TestProjectCompletenessFromReadiness:
         assert block["pending_token_count"] == 0
         assert block["pending_reasons"] == {}
         assert block["auto_republish_on"] == []
+
+    def test_verification_open_items_pending_projects_partial(self) -> None:
+        block = project_completeness_from_readiness(
+            raycon_scenario_found=True,
+            verification_open_items_pending=True,
+        )
+        assert block["stage"] == "partial"
+        assert block["pending_token_count"] == 1
+        assert VENDOR_VERIFICATION_PENDING_REASON in block["pending_reasons"]
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +197,19 @@ class TestFormatPartialBannerText:
         assert "RayCon cost & capacity" in text
         assert "Block Plan submitted 2026-05-07 13:42 UTC" in text
         assert "republish automatically" in text
+
+    def test_partial_with_vendor_verification_omits_block_plan_timestamp(self) -> None:
+        block = {
+            "stage": "partial",
+            "pending_reasons": {VENDOR_VERIFICATION_PENDING_REASON: [VERIFICATION_OPEN_ITEMS_TOKEN]},
+            "auto_republish_on": ["vendor source documents"],
+        }
+        text = format_partial_banner_text(
+            block,
+            block_plan_submitted_display="2026-05-07 13:42 UTC",
+        )
+        assert "Vendor verification" in text
+        assert "Block Plan submitted" not in text
 
     def test_partial_falls_back_when_timestamp_missing(self) -> None:
         block = {

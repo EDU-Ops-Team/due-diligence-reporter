@@ -17,16 +17,10 @@ from typing import Any, NotRequired, TypedDict
 
 from .classifier import classify_by_content_llm, classify_document
 from .config import Settings
-from .dashboard_readiness import edits_from_uploads, mark_readiness_complete
 from .google_client import GoogleClient
 from .m1_lookup import (
     _list_m1_documents_by_type,
     _resolve_m1_folder,
-)
-from .site_matching import (
-    INBOX_AUTO_MATCH_LEAD,
-    INBOX_AUTO_MATCH_SCORE,
-    resolve_site,
 )
 from .utils import (
     escape_html_text,
@@ -34,7 +28,6 @@ from .utils import (
     extract_text_from_pdf_bytes,
     send_email,
 )
-from .wrike import build_site_summary, extract_address_from_record
 
 
 class DDRepublishResult(TypedDict, total=False):
@@ -81,6 +74,58 @@ DOC_TYPE_FILENAME_TEMPLATES = {
     "isp": "{date} - {site_title} ISP.pdf",
     "block_plan": "{date} - {site_title} Block Plan.pdf",
 }
+
+
+def _custom_field_value(record: dict[str, Any], names: set[str]) -> str:
+    for field in record.get("customFields", []) or []:
+        if not isinstance(field, dict):
+            continue
+        label = str(
+            field.get("name")
+            or field.get("title")
+            or field.get("customFieldName")
+            or ""
+        ).strip().lower()
+        if label in names:
+            value = field.get("value")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _record_value(record: dict[str, Any], keys: tuple[str, ...], field_names: set[str]) -> str:
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return _custom_field_value(record, field_names)
+
+
+def _record_address(record: dict[str, Any]) -> str:
+    return _record_value(
+        record,
+        ("address", "site_address", "property_address"),
+        {"address", "site address", "property address"},
+    )
+
+
+def _build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(record.get("id") or record.get("site_id") or "").strip(),
+        "title": str(record.get("title") or record.get("name") or "").strip(),
+        "address": _record_address(record),
+        "drive_folder_url": _record_value(
+            record,
+            ("drive_folder_url", "google_folder", "folder_url"),
+            {"google folder", "drive folder", "drive folder url"},
+        ),
+        "total_building_sf": record.get("total_building_sf")
+        or record.get("building_square_feet")
+        or _custom_field_value(
+            record,
+            {"total building sf", "building square feet", "total building square feet"},
+        ),
+    }
 
 
 @dataclass
@@ -368,7 +413,7 @@ def _run_block_plan_downstream(
     if not (site_id and site_name and site_address and drive_folder_url):
         raise RuntimeError(
             "Block Plan downstream requires site_id, title, address, and "
-            "drive_folder_url on the Wrike record."
+            "drive_folder_url in the matched site metadata."
         )
     if not block_plan_file_id:
         raise RuntimeError(
@@ -389,7 +434,7 @@ def _run_block_plan_downstream(
             "RayCon needs m1_folder_id to know where to write the result."
         )
 
-    # total_building_sf comes from the Wrike record (may be missing for
+    # total_building_sf comes from the matched site metadata (may be missing for
     # early-stage sites; the spec marks it required so post_raycon_job
     # sends 0 when truly unknown rather than dropping the field).
     total_building_sf_raw = site_summary.get("total_building_sf")
@@ -603,19 +648,6 @@ def scan_inbox(
             logger.error("Failed to process email %s: %s", message_id, e)
             results["errors"].append({"message_id": message_id, "error": str(e)})
 
-    # Flip Portfolio doc-readiness columns for any docs we just filed. The
-    # dashboard's auto-readiness endpoint is one-way (Pending -> Complete) and
-    # never overwrites manual overrides, so this is safe to call on every run.
-    # Silent-fail: failures here must never block the scan summary.
-    if not dry_run:
-        readiness_edits = edits_from_uploads(results.get("uploads", []))
-        if readiness_edits:
-            readiness_result = mark_readiness_complete(readiness_edits)
-            results["readiness_flips_applied"] = readiness_result.get("applied", 0)
-            results["readiness_flips_attempted"] = len(readiness_edits)
-            if not readiness_result.get("ok"):
-                results["readiness_error"] = readiness_result.get("reason")
-
     logger.info(
         "Inbox scan complete: %d uploaded, %d skipped, %d internal, %d errors",
         results["attachments_uploaded"],
@@ -766,7 +798,7 @@ def process_email(
             review_needed = True
             continue
 
-        site_summary = build_site_summary(matched_record) if matched_record else {}
+        site_summary = _build_site_summary(matched_record) if matched_record else {}
         # All supported doc types route to the matched site's M1 subfolder.
         # The legacy shared-folder targets (sir_folder_id, building_inspection_folder_id,
         # isp_folder_id) are no longer used by the live scanner — they remain
@@ -1043,7 +1075,7 @@ def _prefix_original_filename(filename: str) -> str:
 def _site_match_score(filename: str, subject: str, record: dict[str, Any]) -> int:
     """Compute a deterministic match score between an attachment and a site record."""
     haystack = f"{filename} {subject}".lower()
-    title = str(record.get("title", "")).strip()
+    title = str(record.get("title") or record.get("name") or "").strip()
     if not title:
         return 0
 
@@ -1052,7 +1084,7 @@ def _site_match_score(filename: str, subject: str, record: dict[str, Any]) -> in
     if title_lower in haystack:
         score += 100
 
-    address = extract_address_from_record(record)
+    address = _record_address(record)
     city = extract_city_from_address(address)
     if city and city.lower() in haystack:
         score += 25
@@ -1078,7 +1110,7 @@ def _match_attachment_to_site(
     metadata: EmailMetadata,
     site_records: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Match an attachment to a Wrike site record using deterministic rules and LLM fallback."""
+    """Match an attachment to a site summary using deterministic rules."""
     if not site_records:
         return None
 
@@ -1095,31 +1127,6 @@ def _match_attachment_to_site(
         if best_score >= 100 or (best_score >= 35 and best_score >= next_score + 15):
             return best_record
 
-    query = f"{filename} {metadata.subject}".strip()
-    if not query:
-        return None
-
-    resolution = resolve_site(query, site_records=site_records)
-    top_score = resolution.candidates[0].score if resolution.candidates else 0.0
-    second_score = resolution.candidates[1].score if len(resolution.candidates) > 1 else 0.0
-    lead = top_score - second_score
-
-    if (
-        resolution.status == "matched"
-        and resolution.match is not None
-        and top_score >= INBOX_AUTO_MATCH_SCORE
-        and lead >= INBOX_AUTO_MATCH_LEAD
-    ):
-        return resolution.match
-
-    logger.warning(
-        "inbox_scanner: skipping auto-match for query=%r status=%s top_score=%s lead=%s reason=%s",
-        query,
-        resolution.status,
-        top_score,
-        lead,
-        resolution.reason,
-    )
     return None
 
 

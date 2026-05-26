@@ -19,12 +19,11 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, cast
 
 import requests
 
 from .config import Settings
-from .wrike import extract_p1_from_record
 
 logger = logging.getLogger("[assignment]")
 
@@ -163,17 +162,31 @@ def load_team_members(settings: Settings) -> list[TeamMember]:
 
 
 # ---------------------------------------------------------------------------
-# Wrike load counter
+# Existing-load counter
 # ---------------------------------------------------------------------------
 
 
-def build_site_counts(all_site_records: list[dict[str, Any]], cfg: Any) -> dict[str, int]:
-    """Count active sites per P1 email from already-fetched Wrike records."""
+def _extract_p1_email(record: dict[str, Any]) -> str | None:
+    """Extract a P1 email from a generic site summary payload."""
+    for key in ("p1_assignee_email", "p1_email", "owner_email", "site_owner_email"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    for key in ("p1_assignee", "p1", "p1Dri", "owner", "site_owner"):
+        value = record.get(key)
+        if isinstance(value, dict):
+            email = value.get("email")
+            if isinstance(email, str) and email.strip():
+                return email.strip().lower()
+    return None
+
+
+def build_site_counts(all_site_records: list[dict[str, Any]]) -> dict[str, int]:
+    """Count active sites per P1 email from already-fetched site summaries."""
     counts: dict[str, int] = {}
     for record in all_site_records:
-        p1 = extract_p1_from_record(record, cfg=cfg)
-        if p1 and p1.get("email"):
-            key = p1["email"].lower()
+        key = _extract_p1_email(record)
+        if key:
             counts[key] = counts.get(key, 0) + 1
     return counts
 
@@ -201,7 +214,8 @@ def _search_one_way(api_key: str, origin: str, dest: str, travel_date: str) -> l
     )
     resp.raise_for_status()
     data = resp.json()
-    return data.get("best_flights", []) + data.get("other_flights", [])
+    flights = data.get("best_flights", []) + data.get("other_flights", [])
+    return cast(list[dict[str, Any]], flights)
 
 
 def _departure_hour(flight_group: dict[str, Any]) -> float | None:
@@ -239,7 +253,7 @@ def _arrival_hour(flight_group: dict[str, Any]) -> float | None:
 
 def _total_duration_min(flight_group: dict[str, Any]) -> int:
     """Return total flight duration in minutes from SerpAPI group."""
-    return flight_group.get("total_duration", 9999)
+    return int(flight_group.get("total_duration", 9999))
 
 
 def _airlines_in_group(flight_group: dict[str, Any]) -> set[str]:
@@ -472,7 +486,6 @@ def assign_p1(
     state: str,
     settings: Settings,
     all_site_records: list[dict[str, Any]],
-    wrike_cfg: Any,
 ) -> dict[str, Any]:
     """Run the P1 assignment engine and return the assignment decision.
 
@@ -506,7 +519,7 @@ def assign_p1(
             "reasoning": "P1_TEAM_CONFIG not set or empty — no eligible contacts",
         }
 
-    counts = build_site_counts(all_site_records, wrike_cfg)
+    counts = build_site_counts(all_site_records)
 
     # ── Rule 1: Flight scoring ────────────────────────────────────────────
     if city and settings.serpapi_key:

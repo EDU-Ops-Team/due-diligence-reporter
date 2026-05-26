@@ -8,7 +8,7 @@ Last updated: 03/16/2026
 
 ## Completed
 
-- [x] Initial MCP server implementation (4 tools: get_site_record, list_drive_documents, read_drive_document, create_dd_report)
+- [x] Initial MCP server implementation (4 tools: list_drive_documents, read_drive_document, create_dd_report)
 - [x] E-Occupancy + School Approval skills embedded in prompt.md
 - [x] Google Doc template with {{placeholder}} tokens
 - [x] CI/CD deploy to MCP Hive via GitHub Actions
@@ -21,8 +21,8 @@ Last updated: 03/16/2026
   - List formatting rule (newline-separated strings)
   - 6 q4.*_confidence fields added to schema
   - utils.py list join `", "` → `"\n"`
-- [x] **Wrike stage + status filtering (03/12/2026):**
-  - Daily cron and inbox scanner pipeline phase now filter by Wrike active status group and stages 1–2
+- [x] **legacy stage + status filtering (03/12/2026):**
+  - Daily cron and inbox scanner pipeline phase now filter by legacy active status group and stages 1–2
   - `_get_active_status_ids()` fetches workflow metadata to resolve active `customStatusId` values
   - Records without a `customStatusId` default to active (safe fallback)
 - [x] **Tiered LLM document classification (03/12/2026):**
@@ -54,8 +54,8 @@ Last updated: 03/16/2026
   - Removed `PRICING_API_KEY` from config, all workflows, and scripts
   - Updated `_build_rooms_payload` component lists to match v2 room type catalog
 - [x] **Inactive site filtering fix (03/16/2026):**
-  - Confirmed Site Records have no `customStatusId` — the Wrike workflow status check was a no-op
-  - Cancelled/dead sites removed from EDU Ops space in Wrike (92 → 80 records)
+  - Confirmed Site Records have no `customStatusId` — the legacy workflow status check was a no-op
+  - Cancelled/dead sites removed from EDU Ops space in legacy system (92 → 80 records)
   - Stage filter (stages 1–2 only) confirmed working correctly
 - [x] **Inbox scanner account migration (03/16/2026):**
   - Switched inbox scan from `auth.permitting@trilogy.com` to `edu.ops@trilogy.com`

@@ -35,7 +35,6 @@ jobs:
         run: |
           [ -n "${{ secrets.MCP_HIVE_API_KEY }}" ] || { echo "MCP_HIVE_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.MCP_HIVE_ID }}" ] || { echo "MCP_HIVE_ID missing"; exit 1; }
-          [ -n "${{ secrets.WRIKE_ACCESS_TOKEN }}" ] || { echo "WRIKE_ACCESS_TOKEN missing"; exit 1; }
           [ -n "${{ secrets.OPENAI_API_KEY }}" ] || { echo "OPENAI_API_KEY missing"; exit 1; }
           if [ -z "${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}" ] && [ -z "${{ secrets.DD_TEMPLATE_GOOGLE_DOC_ID }}" ]; then
             echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID or DD_TEMPLATE_GOOGLE_DOC_ID must be set"
@@ -68,7 +67,6 @@ jobs:
 
       - name: Create .env file from GitHub secrets
         env:
-          WRIKE_ACCESS_TOKEN: ${{ secrets.WRIKE_ACCESS_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DD_TEMPLATE_GOOGLE_DOC_ID: ${{ secrets.DD_TEMPLATE_GOOGLE_DOC_ID }}
           DD_TEMPLATE_V3_GOOGLE_DOC_ID: ${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}
@@ -92,7 +90,6 @@ jobs:
             echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID not set; falling back to DD_TEMPLATE_GOOGLE_DOC_ID"
           fi
           touch .env
-          echo "WRIKE_ACCESS_TOKEN=${WRIKE_ACCESS_TOKEN}" >> .env
           echo "OPENAI_API_KEY=${OPENAI_API_KEY}" >> .env
           echo "DD_TEMPLATE_GOOGLE_DOC_ID=${DD_TEMPLATE_GOOGLE_DOC_ID}" >> .env
           echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID=${TEMPLATE_DOC_ID}" >> .env
@@ -118,9 +115,9 @@ jobs:
           cat > custom_payload.json << JSON
           {
             "hiveName": "Alpha DD Report Generator",
-            "hiveDescription": "Model Context Protocol server for generating Alpha School Due Diligence reports. Reads site data from Wrike and Google Drive, applies E-Occupancy and School Approval scoring, and creates a completed DD report Google Doc.",
+            "hiveDescription": "Model Context Protocol server for generating Alpha School Due Diligence reports. Reads supplied site context and Google Drive evidence, applies E-Occupancy and School Approval scoring, and creates a completed DD report Google Doc.",
             "version": "${{ steps.get_version.outputs.version }}",
-            "tags": ["wrike", "alpha-due-diligence", "google-docs"],
+            "tags": ["alpha-due-diligence", "google-docs"],
             "homePage": "${REPO_URL}",
             "env": [],
             "securitySchemes": [

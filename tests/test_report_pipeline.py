@@ -1,9 +1,7 @@
-﻿"""Tests for the report pipeline module."""
+"""Tests for the report pipeline module."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from due_diligence_reporter.report_pipeline import (
@@ -12,8 +10,6 @@ from due_diligence_reporter.report_pipeline import (
     TraceEvent,
     _extract_source_read_issues,
     _merge_cached_report_fields,
-    _publish_to_dashboard_best_effort,
-    _save_pipeline_trace,
     check_site_readiness_direct,
     match_site_in_shared_cache,
     process_site_pipeline,
@@ -104,6 +100,33 @@ class TestMatchSiteInSharedCache:
         assert result["building_inspection"] is not None
         assert result["building_inspection"]["id"] == "bi-right"
 
+    def test_rejects_city_only_same_metro_overlap_when_site_context_present(self):
+        cache = {
+            "sir": [
+                {
+                    "name": "May 1 2026 - Alpha School Los Angeles 1726 Whitley Ave SIR.pdf",
+                    "id": "sir-wrong",
+                },
+            ],
+            "isp": [],
+            "building_inspection": [
+                {
+                    "name": "Alpha Los Angeles 1726 Whitley Ave Building Inspection.pdf",
+                    "id": "bi-wrong",
+                },
+            ],
+        }
+
+        result = match_site_in_shared_cache(
+            ["Alpha Los Angeles 5400 Beethoven St", "Los Angeles", "5400", "Beethoven"],
+            cache,
+            site_title="Alpha Los Angeles 5400 Beethoven St",
+            site_address="5400 Beethoven St, Los Angeles, CA 90066",
+        )
+
+        assert result["sir"] is None
+        assert result["building_inspection"] is None
+
 
 # ---------------------------------------------------------------------------
 # process_site_pipeline
@@ -124,9 +147,9 @@ class TestProcessSitePipeline:
 
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
     def test_missing_docs(self, mock_readiness):
-        """Returns waiting_on_docs with correct missing list."""
+        """Returns waiting_on_docs when the first-round SIR floor is missing."""
         mock_readiness.return_value = {
-            "sir_found": True,
+            "sir_found": False,
             "isp_found": False,
             "inspection_found": False,
             "report_exists": False,
@@ -139,12 +162,76 @@ class TestProcessSitePipeline:
         )
 
         assert result.status == "waiting_on_docs"
-        assert "Building Inspection" in result.missing_docs
-        assert "SIR" not in result.missing_docs
+        assert result.missing_docs == ["SIR"]
         readiness_step = next(step for step in result.steps if step.step == "readiness.check")
         assert readiness_step.status == "blocked"
         assert result.failed_step == "readiness.check"
         assert result.quality_score is not None
+
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline._resolve_rhodes_owner_for_pipeline")
+    @patch("due_diligence_reporter.report_pipeline._email_pipeline_report")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_pipeline_seeds_report_with_rhodes_owner(
+        self,
+        mock_readiness,
+        mock_email,
+        mock_rhodes_owner,
+        mock_agent,
+        mock_completeness,
+    ):
+        """Rhodes p1Dri seeds meta.prepared_by and the P1 email recipient."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "sir_vendor": False,
+            "isp_found": False,
+            "inspection_found": False,
+            "inspection_vendor": False,
+            "raycon_scenario_found": False,
+            "report_exists": False,
+        }
+        mock_rhodes_owner.return_value = {
+            "status": "found",
+            "p1_assignee_name": "Devin Bates",
+            "p1_assignee_email": "devin.bates@trilogy.com",
+            "report_data_fields": {
+                "meta.prepared_by": "Devin Bates",
+                "p1_assignee_email": "devin.bates@trilogy.com",
+            },
+        }
+        mock_email.return_value = None
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc-first",
+            "doc_url": "https://docs.google.com/document/d/doc-first",
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            site_address="123 Main St, Keller, TX",
+        )
+
+        assert result.status == "report_created"
+        assert result.doc_id == "doc-first"
+        agent_kwargs = mock_agent.call_args.kwargs
+        assert agent_kwargs["initial_report_fields"]["meta.prepared_by"] == "Devin Bates"
+        assert agent_kwargs["rhodes_owner_context"]["p1_assignee_email"] == (
+            "devin.bates@trilogy.com"
+        )
+        mock_email.assert_called_once()
+        assert mock_email.call_args.args[3] == "devin.bates@trilogy.com"
 
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
     def test_report_exists(self, mock_readiness):
@@ -416,22 +503,16 @@ class TestProcessSitePipeline:
         assert "export broke" in (result.error or "")
         assert result.failed_step == "report.validate"
 
-    @patch("due_diligence_reporter.report_pipeline.publish_to_dashboard")
     @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
-    def test_report_incomplete_still_publishes_to_dashboard_in_progress(
+    def test_report_incomplete_does_not_record_publish_step(
         self,
         mock_readiness,
         mock_agent,
         mock_completeness,
-        mock_publish,
     ):
-        """report_incomplete reports must still publish partial data to the
-        dashboard with ``dd_status="in_progress"`` so sites do not get
-        stuck on the empty roster-sync stub when the completeness check
-        rejects an otherwise-filled report (raw template tokens leaking,
-        invalid Can-We-Open answer, unfilled placeholders)."""
+        """report_incomplete returns without a publish side effect."""
         mock_readiness.return_value = {
             "sir_found": True,
             "isp_found": False,
@@ -467,15 +548,13 @@ class TestProcessSitePipeline:
             }
 
         mock_completeness.side_effect = fake_completeness
-        mock_publish.return_value = True
-
         gc = MagicMock()
         result = process_site_pipeline(
             gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
             ["Alpha Keller"], {}, "system prompt", _make_settings(),
             site_address="123 Main St, Keller TX",
             p1_name="Robbie Forrest",
-            wrike_created_at="2026-04-01T00:00:00Z",
+            site_created_at="2026-04-01T00:00:00Z",
         )
 
         assert result.status == "report_incomplete"
@@ -483,21 +562,10 @@ class TestProcessSitePipeline:
         assert result.error == "Report NOT ready to send. 1 raw template token(s)."
         assert result.failed_step == "report.validate"
         assert result.quality_score is not None
-        # The HTTP publish must fire on the incomplete branch.
-        mock_publish.assert_called_once()
-        kwargs = mock_publish.call_args.kwargs
-        assert kwargs["dd_status"] == "in_progress"
-        assert kwargs["address"] == "123 Main St, Keller TX"
-        assert kwargs["site_owner"] == "Robbie Forrest"
-        assert kwargs["wrike_created_at"] == "2026-04-01T00:00:00Z"
-        # The real report data (not an empty stub) is published.
-        positional = mock_publish.call_args.args
-        assert positional[0] == "Alpha Keller"
-        assert positional[1] == trace.final_report_data
+        assert not any(step.step.startswith("publish.") for step in result.steps)
+        gc.upload_file_to_folder.assert_not_called()
 
     @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
-    @patch("due_diligence_reporter.report_pipeline._save_pipeline_trace")
-    @patch("due_diligence_reporter.report_pipeline.publish_to_dashboard")
     @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
@@ -506,8 +574,6 @@ class TestProcessSitePipeline:
         mock_readiness,
         mock_agent,
         mock_completeness,
-        mock_publish,
-        mock_save_trace,
         mock_chat,
         monkeypatch,
     ):
@@ -526,7 +592,6 @@ class TestProcessSitePipeline:
             "raycon_scenario_found": True,
             "report_exists": False,
         }
-        mock_save_trace.return_value = "https://drive.google.com/trace"
         mock_agent.return_value = {
             "success": True,
             "doc_id": "doc123",
@@ -551,7 +616,6 @@ class TestProcessSitePipeline:
             }
 
         mock_completeness.side_effect = fake_completeness
-        mock_publish.return_value = True
         settings = _make_settings()
         settings.google_chat_webhook_url = "https://chat.example/webhook"
 
@@ -572,19 +636,16 @@ class TestProcessSitePipeline:
         assert "Reason: Report NOT ready to send. 1 raw template token(s)." in vendor_message
         assert "0 tokens unresolved" not in vendor_message
 
-    @patch("due_diligence_reporter.report_pipeline.publish_to_dashboard")
     @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
-    def test_report_created_publishes_with_default_dd_status(
+    def test_report_created_does_not_record_publish_step(
         self,
         mock_readiness,
         mock_agent,
         mock_completeness,
-        mock_publish,
     ):
-        """Success path must NOT pass dd_status=in_progress; publisher
-        auto-stamps ``complete`` when the kwarg is None."""
+        """Success path does not record a publish side effect."""
         mock_readiness.return_value = {
             "sir_found": True,
             "isp_found": False,
@@ -608,8 +669,6 @@ class TestProcessSitePipeline:
             return {"ready_to_send": True, "pending_section_count": 0}
 
         mock_completeness.side_effect = fake_completeness
-        mock_publish.return_value = True
-
         gc = MagicMock()
         result = process_site_pipeline(
             gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
@@ -620,10 +679,8 @@ class TestProcessSitePipeline:
         assert result.run_id
         assert result.failed_step is None
         assert result.quality_band in {"green", "yellow", "orange", "red"}
-        mock_publish.assert_called_once()
-        # The success path leaves dd_status unset so the publisher's
-        # auto-stamp logic still fires ("complete").
-        assert mock_publish.call_args.kwargs["dd_status"] is None
+        assert not any(step.step.startswith("publish.") for step in result.steps)
+        gc.upload_file_to_folder.assert_not_called()
 
 
 class TestCheckSiteReadinessDirect:
@@ -829,15 +886,123 @@ class TestAgentToolMerging:
             },
         ]
 
-        result = run_dd_report_agent("Alpha Keller", "system prompt", "claude-test")
+        result = run_dd_report_agent(
+            "Alpha Keller",
+            "system prompt",
+            "claude-test",
+            initial_report_fields={
+                "meta.prepared_by": "Devin Bates",
+                "p1_assignee_email": "devin.bates@trilogy.com",
+            },
+        )
 
         assert result["success"] is True
         assert mock_route_tool_call_sync.call_count == 2
         create_call = mock_route_tool_call_sync.call_args_list[1]
         create_input = create_call.args[1]
         assert create_input["report_data"]["exec.fastest_open_capacity"] == "25"
+        assert create_input["report_data"]["meta.prepared_by"] == "Devin Bates"
+        assert create_input["report_data"]["p1_assignee_email"] == "devin.bates@trilogy.com"
         assert create_input["report_data"]["q2.school_approval_difficulty"] == "easy"
         assert create_input["report_data"]["q2.school_approval_score"] == "9"
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch("due_diligence_reporter.report_pipeline.anthropic.Anthropic")
+    def test_run_dd_report_agent_includes_direct_folder_context(self, mock_anthropic):
+        response = MagicMock()
+        response.content = []
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = response
+        mock_anthropic.return_value = mock_client
+
+        run_dd_report_agent(
+            "Alpha Los Angeles 5400 Beethoven St",
+            "system prompt",
+            "claude-test",
+            drive_folder_url="https://drive.google.com/drive/folders/folder123",
+            site_address="5400 Beethoven St, Los Angeles, CA 90066",
+            rhodes_owner_context={
+                "status": "found",
+                "p1_assignee_name": "Devin Bates",
+                "p1_assignee_email": "devin.bates@trilogy.com",
+            },
+        )
+
+        messages = mock_client.messages.create.call_args.kwargs["messages"]
+        user_content = messages[0]["content"]
+        assert "Alpha Los Angeles 5400 Beethoven St" in user_content
+        assert "5400 Beethoven St, Los Angeles, CA 90066" in user_content
+        assert "https://drive.google.com/drive/folders/folder123" in user_content
+        assert "Use the provided Drive folder directly" in user_content
+        assert "Rhodes P1 DRI / site owner: Devin Bates <devin.bates@trilogy.com>" in user_content
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
+    @patch("due_diligence_reporter.report_pipeline.anthropic.Anthropic")
+    def test_run_dd_report_agent_canonicalizes_site_scoped_tool_inputs(
+        self,
+        mock_anthropic,
+        mock_route_tool_call_sync,
+    ):
+        class FakeToolUse:
+            def __init__(self, tool_id, name, tool_input):
+                self.type = "tool_use"
+                self.id = tool_id
+                self.name = name
+                self.input = tool_input
+
+        response = MagicMock()
+        response.content = [
+            FakeToolUse(
+                "tool-1",
+                "list_drive_documents",
+                {
+                    "site_name": "Alpha Los Angeles",
+                    "drive_folder_url": "https://drive.google.com/drive/folders/wrong",
+                },
+            ),
+            FakeToolUse(
+                "tool-2",
+                "create_dd_report",
+                {
+                    "site_name": "Alpha Los Angeles",
+                    "drive_folder_url": "https://drive.google.com/drive/folders/wrong",
+                    "report_data": {"exec.fastest_open_capacity": "25"},
+                },
+            ),
+        ]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = response
+        mock_anthropic.return_value = mock_client
+        mock_route_tool_call_sync.side_effect = [
+            {"status": "success", "files": []},
+            {
+                "status": "success",
+                "document": {
+                    "id": "doc123",
+                    "url": "https://docs.google.com/document/d/doc123",
+                },
+                "replacements_applied": 10,
+                "unfilled_template_tokens": 0,
+            },
+        ]
+
+        result = run_dd_report_agent(
+            "Alpha Los Angeles 5400 Beethoven St",
+            "system prompt",
+            "claude-test",
+            drive_folder_url="https://drive.google.com/drive/folders/folder123",
+            site_address="5400 Beethoven St, Los Angeles, CA 90066",
+        )
+
+        assert result["success"] is True
+        list_input = mock_route_tool_call_sync.call_args_list[0].args[1]
+        assert list_input["site_name"] == "Alpha Los Angeles 5400 Beethoven St"
+        assert list_input["site_address"] == "5400 Beethoven St, Los Angeles, CA 90066"
+        assert list_input["drive_folder_url"].endswith("/folder123")
+        create_input = mock_route_tool_call_sync.call_args_list[1].args[1]
+        assert create_input["site_name"] == "Alpha Los Angeles 5400 Beethoven St"
+        assert create_input["drive_folder_url"].endswith("/folder123")
 
 
 class TestSourceReadAlerts:
@@ -881,7 +1046,33 @@ class TestSourceReadAlerts:
         assert issues[0]["doc_type"] == "SIR"
         assert issues[1]["doc_type"] == "Building Inspection"
 
-    @patch("due_diligence_reporter.report_pipeline._save_pipeline_trace")
+    def test_successful_source_read_message_is_not_an_issue(self):
+        trace = ReportTrace(
+            site_name="Alpha Los Angeles 5400 Beethoven St",
+            started_at="2026-05-26T15:22:04+00:00",
+            events=[
+                TraceEvent(
+                    timestamp="2026-05-26T15:22:04+00:00",
+                    event_type="tool_call",
+                    tool_name="read_drive_document",
+                    input_summary={
+                        "file_name": "5400-beethoven-st-los-angeles-ca_2026-05-21_SIR.docx",
+                    },
+                    output_summary={
+                        "status": "success",
+                        "content_length": 21505,
+                        "message": (
+                            "Successfully read 21505 characters from "
+                            "'5400-beethoven-st-los-angeles-ca_2026-05-21_SIR.docx'"
+                        ),
+                        "source_usable": True,
+                    },
+                ),
+            ],
+        )
+
+        assert _extract_source_read_issues(trace) == []
+
     @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
@@ -890,7 +1081,6 @@ class TestSourceReadAlerts:
         mock_readiness,
         mock_agent,
         mock_chat,
-        mock_save_trace,
     ):
         mock_readiness.return_value = {
             "sir_found": True,
@@ -898,7 +1088,6 @@ class TestSourceReadAlerts:
             "inspection_found": True,
             "report_exists": False,
         }
-        mock_save_trace.return_value = "https://drive.google.com/trace"
         mock_agent.return_value = {
             "success": False,
             "error": "Agent completed without creating a report",
@@ -930,156 +1119,9 @@ class TestSourceReadAlerts:
         )
 
         assert result.status == "generation_failed"
-        assert result.trace_url == "https://drive.google.com/trace"
+        assert result.trace_url is None
         mock_chat.assert_called_once()
         message = mock_chat.call_args.args[1]
         assert "DD Source Review Needed -- Alpha Keller" in message
         assert "SIR" in message
         assert "Failed to read document" in message
-
-
-# ---------------------------------------------------------------------------
-# Best-effort silent-failure observability (Rec. 6)
-# ---------------------------------------------------------------------------
-
-
-class _ExplodingTrace:
-    """ReportTrace stand-in whose ``to_dict`` raises mid-upload."""
-
-    final_report_data = {"q1.site_owner": "x"}
-
-    def to_dict(self) -> dict:
-        raise RuntimeError("trace serialization exploded")
-
-
-def _redirect_failure_state(monkeypatch, tmp_path) -> tuple[Path, Path]:
-    """Point both failure-state files at tmp_path so tests don't touch repo root."""
-    from due_diligence_reporter import report_pipeline as rp
-
-    pub_path = tmp_path / ".dashboard_publish_failures.json"
-    trace_path = tmp_path / ".pipeline_trace_failures.json"
-    monkeypatch.setattr(rp, "DASHBOARD_PUBLISH_FAILURES_PATH", pub_path)
-    monkeypatch.setattr(rp, "PIPELINE_TRACE_FAILURES_PATH", trace_path)
-    return pub_path, trace_path
-
-
-class TestDashboardPublishObservability:
-    """``_publish_to_dashboard_best_effort`` must surface failures, not swallow."""
-
-    def test_publish_failure_is_recorded_and_not_raised(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        pub_path, _ = _redirect_failure_state(monkeypatch, tmp_path)
-
-        trace = MagicMock()
-        trace.final_report_data = {"q1.site_owner": "P1"}
-
-        with patch(
-            "due_diligence_reporter.report_pipeline.publish_to_dashboard",
-            side_effect=RuntimeError("kaboom"),
-        ):
-            # Must not raise — fail-open behavior preserved.
-            _publish_to_dashboard_best_effort(
-                site_title="Alpha Keller",
-                trace=trace,
-                drive_folder_url="https://drive.google.com/drive/folders/x",
-                dd_report_url="https://docs/x",
-                site_address="123 Main",
-            )
-
-        # Failure must be persisted for on-call to discover.
-        assert pub_path.exists()
-        recorded = json.loads(pub_path.read_text())
-        assert "Alpha Keller" in recorded
-        entry = recorded["Alpha Keller"]
-        assert entry["site_title"] == "Alpha Keller"
-        assert entry["error_type"] == "RuntimeError"
-        assert "kaboom" in entry["error_message"]
-        assert entry["attempts"] == 1
-        assert "failed_at" in entry
-
-    def test_repeated_failures_increment_attempts(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        pub_path, _ = _redirect_failure_state(monkeypatch, tmp_path)
-        trace = MagicMock()
-        trace.final_report_data = {"q1.site_owner": "P1"}
-
-        with patch(
-            "due_diligence_reporter.report_pipeline.publish_to_dashboard",
-            side_effect=RuntimeError("kaboom"),
-        ):
-            for _ in range(3):
-                _publish_to_dashboard_best_effort(
-                    site_title="Alpha Keller",
-                    trace=trace,
-                    drive_folder_url="https://drive.google.com/drive/folders/x",
-                    dd_report_url="https://docs/x",
-                    site_address="123 Main",
-                )
-
-        recorded = json.loads(pub_path.read_text())
-        assert recorded["Alpha Keller"]["attempts"] == 3
-
-    def test_publish_success_does_not_record_failure(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        pub_path, _ = _redirect_failure_state(monkeypatch, tmp_path)
-        trace = MagicMock()
-        trace.final_report_data = {"q1.site_owner": "P1"}
-
-        with patch(
-            "due_diligence_reporter.report_pipeline.publish_to_dashboard",
-            return_value=None,
-        ):
-            _publish_to_dashboard_best_effort(
-                site_title="Alpha Keller",
-                trace=trace,
-                drive_folder_url="https://drive.google.com/drive/folders/x",
-                dd_report_url="https://docs/x",
-                site_address="123 Main",
-            )
-
-        assert not pub_path.exists()
-
-
-class TestPipelineTraceObservability:
-    """``_save_pipeline_trace`` failures land in ``.pipeline_trace_failures.json``."""
-
-    def test_upload_failure_is_recorded_and_returns_none(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        _, trace_path = _redirect_failure_state(monkeypatch, tmp_path)
-
-        gc = MagicMock()
-        gc.upload_file_to_folder.side_effect = RuntimeError("drive upload wedged")
-
-        trace = MagicMock()
-        trace.to_dict.return_value = {"events": []}
-
-        result = _save_pipeline_trace(
-            gc,
-            "https://drive.google.com/drive/folders/abc123",
-            "Alpha Keller",
-            trace,
-        )
-
-        assert result is None
-        assert trace_path.exists()
-        recorded = json.loads(trace_path.read_text())
-        entry = recorded["Alpha Keller"]
-        assert entry["error_type"] == "RuntimeError"
-        assert "drive upload wedged" in entry["error_message"]
-        assert entry["attempts"] == 1
-
-    def test_no_trace_does_not_record(self, monkeypatch, tmp_path) -> None:
-        _, trace_path = _redirect_failure_state(monkeypatch, tmp_path)
-        result = _save_pipeline_trace(
-            MagicMock(),
-            "https://drive.google.com/drive/folders/abc",
-            "Alpha Keller",
-            None,
-        )
-        assert result is None
-        assert not trace_path.exists()
-

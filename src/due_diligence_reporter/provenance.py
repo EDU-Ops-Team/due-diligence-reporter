@@ -40,7 +40,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,6 @@ _ALWAYS_AI_DOC_TYPES = frozenset({
     "opening_plan_report",
     "capacity_brainlift_report",
     "raycon_scenario_report",
-    "report_trace",
 })
 
 # Source doc types where vendor-vs-AI distinction matters for the gate.
@@ -195,7 +194,10 @@ def _load_cache(gc: Any, m1_folder_id: str | None) -> dict[str, dict[str, Any]]:
         for f in gc.list_files_in_folder(m1_folder_id):
             if str(f.get("name", "")).strip() == _PROVENANCE_CACHE_FILENAME:
                 blob = gc.download_file_bytes(f.get("id"))
-                return json.loads(blob.decode("utf-8"))
+                data = json.loads(blob.decode("utf-8"))
+                if isinstance(data, dict):
+                    return cast(dict[str, dict[str, Any]], data)
+                return {}
     except Exception as e:
         logger.debug("provenance cache load failed: %s", e)
     return {}
@@ -293,7 +295,7 @@ def classify_provenance(
 
 
 def _classify_provenance_inner(
-    file_info: dict[str, Any],
+    file_info: object,
     gc: Any | None = None,
     *,
     m1_folder_id: str | None = None,
@@ -304,9 +306,10 @@ def _classify_provenance_inner(
     if not isinstance(file_info, dict):
         return ProvenanceVerdict(_UNKNOWN, 0.0, "trivial", "no file_info")
 
-    name = str(file_info.get("name", "")).strip()
-    file_id = str(file_info.get("id", "")).strip()
-    modified = str(file_info.get("modifiedTime", "")).strip()
+    info = cast(dict[str, Any], file_info)
+    name = str(info.get("name", "")).strip()
+    file_id = str(info.get("id", "")).strip()
+    modified = str(info.get("modifiedTime", "")).strip()
 
     # Trivial — types only ever produced by AI never need a vendor check.
     if doc_type in _ALWAYS_AI_DOC_TYPES:

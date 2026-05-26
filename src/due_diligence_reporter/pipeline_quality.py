@@ -125,7 +125,7 @@ def _report_validity(run: PipelineRun) -> QualityCheck:
 def _side_effect_reliability(run: PipelineRun) -> QualityCheck:
     side_effects = [
         step for step in run.steps
-        if step.step in {"trace.save", "manifest.save", "publish.dashboard", "notify.email", "notify.chat"}
+        if step.step in {"manifest.save", "notify.email", "notify.chat"}
     ]
     if not side_effects:
         return QualityCheck("side_effect_reliability", "not_applicable", 8, 10)

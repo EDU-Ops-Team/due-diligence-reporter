@@ -226,26 +226,26 @@ The "omitted on empty" rule is what makes this safe to combine with the dashboar
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ dashboard_publisher.build_site_meta(dd_risk_flags=...)       │
+│ report_schema.normalize_report_data(dd_risk_flags=...)       │
 │   - caller passes explicit list?  → normalize_caller_flags() │
 │   - else                          → derive_risk_flags()      │
 │   - empty result                  → omit field               │
 └────────────────────────────┬─────────────────────────────────┘
-                             │ POST sites.json
+                             │ normalized report data
                              ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ Dashboard transform.ts → normalizeRiskFlags()                │
+│ normalize_caller_flags()                                     │
 │   - validates each entry against canonical enums             │
 │   - silently drops invalid                                   │
-│   - sticky-preserve: empty list does not overwrite prior     │
+│   - empty list remains omitted from the report payload       │
 └────────────────────────────┬─────────────────────────────────┘
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ Portfolio.tsx → RiskFlagsCell                                │
-│   - severity-toned count chip (block/warn/ok/em-dash)        │
-│   - hover tooltip: "3 risks: 1 high, 2 medium"               │
-│   - sortable by count, max-severity tie-breaker              │
+│ DD report payload                                            │
+│   - carries validated dd_risk_flags when present             │
+│   - omits the field when no risk flags are derived           │
+│   - keeps the canonical list deterministic for tests         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -257,13 +257,9 @@ The "omitted on empty" rule is what makes this safe to combine with the dashboar
 |---|---|---|
 | Canonical enums + severity rank | `src/due_diligence_reporter/report_schema.py` | reporter |
 | Derivation logic + canonicalizer | `src/due_diligence_reporter/risk_flags.py` | reporter |
-| Publisher wiring (caller-wins) | `src/due_diligence_reporter/dashboard_publisher.py` | reporter |
-| Pipeline skill docs | `skills/dd-report-assembly/references/v3-token-map.md` | alpha-dd-pipeline |
+| Report normalization (caller-wins) | `src/due_diligence_reporter/risk_flags.py` | reporter |
+| Pipeline skill docs | `skills/dd-report-assembly/references/current-token-map.md` | alpha-dd-pipeline |
 | Pipeline skill main flow | `skills/dd-report-assembly/SKILL.md` (Step 9) | alpha-dd-pipeline |
-| Dashboard validator | `api/_lib/transform.ts` (`normalizeRiskFlags`) | dd-dashboard |
-| Dashboard types | `client/src/types.ts` | dd-dashboard |
-| Dashboard render | `client/src/pages/Portfolio.tsx` (`RiskFlagsCell`) | dd-dashboard |
-| Field reference | `docs/column-vocabulary.md` | dd-dashboard |
 | Reporter how-it-works | `docs/process/HOW-IT-WORKS.md` (Phase 4 row) | reporter |
 
 ---
@@ -273,10 +269,9 @@ The "omitted on empty" rule is what makes this safe to combine with the dashboar
 ### Adding a new category
 
 1. Add the category string to `ALLOWED_RISK_FLAG_CATEGORIES` in `report_schema.py`.
-2. Add the same string to `RISK_FLAG_CATEGORIES` in dashboard `transform.ts` and `client/src/types.ts`.
-3. Wire at least one ingester to emit it (keyword map entry, upstream-token mapping, etc.).
-4. Add tests covering the new category.
-5. Update this design doc's category table.
+2. Wire at least one ingester to emit it (keyword map entry, upstream-token mapping, etc.).
+3. Add tests covering the new category.
+4. Update this design doc's category table.
 
 The 4-source enum is much harder to extend — adding a new source means writing a new ingester. Categories are the cheap axis to grow on.
 
@@ -289,7 +284,7 @@ Severity rules live inside each ingester. Change the function, add a test in `te
 Rare but possible. Steps:
 1. Write `_from_<source>()` ingester in `risk_flags.py`.
 2. Wire it into `derive_risk_flags()`.
-3. Add the source string to `ALLOWED_RISK_FLAG_SOURCES`, `RISK_FLAG_SOURCES` (dashboard transform), and the `client/src/types.ts` const array.
+3. Add the source string to `ALLOWED_RISK_FLAG_SOURCES`.
 4. Test coverage for the new ingester (canonicalization + severity + dedup behavior).
 5. Update this doc.
 
@@ -304,9 +299,9 @@ If you're trying to understand a specific behavior, the test that pins it down i
 | Per-source canonicalization | `tests/test_risk_flags.py::TestPermitHistoryIngester`, `TestEOccupancyIngester`, `TestSchoolApprovalIngester`, `TestSirRiskWatchIngester` |
 | Severity rules | Same file, `TestSeverityRules` |
 | Dedup + sort | Same file, `TestDedupAndSort` |
-| Caller-wins precedence | `tests/test_dashboard_publisher.py::TestDdRiskFlagsDerivation` |
-| Invalid-entry drop | Same file, `test_normalize_drops_invalid_entries` |
-| Empty-omits | Same file, `test_empty_result_omits_field` |
+| Caller flag normalization | `tests/test_risk_flags.py::TestNormalizeCallerFlags` |
+| Invalid-entry drop | Same file, `test_invalid_category_dropped` |
+| Empty input | Same file, `test_empty_or_none_input` |
 | Constants locked | `tests/test_report_schema.py::TestPhase4RiskFlagConstants` |
 
 Total: 48 Phase 4 tests across the three test files (658 reporter tests pass overall).

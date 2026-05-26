@@ -245,9 +245,9 @@ class TestContentTier:
 
     def test_cache_hit(self):
         cache_blob = (
-            '{"abc": {"modifiedTime": "t1", "label": "vendor", '
-            '"confidence": 0.9, "tier": "content", "reason": "cached"}}'
-        ).encode("utf-8")
+            b'{"abc": {"modifiedTime": "t1", "label": "vendor", '
+            b'"confidence": 0.9, "tier": "content", "reason": "cached"}}'
+        )
 
         class FakeGC:
             def list_files_in_folder(self, _id):

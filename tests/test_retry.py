@@ -202,7 +202,7 @@ class TestParseRetryAfterSeconds:
         Regression test for the iter1 fix: prior to the dual-source probe,
         ``hasattr(exc, "headers")`` returned False for requests.HTTPError
         and rate-limit-aware waits were silently disabled for every
-        requests-based client (Rebl, dashboard publish, etc.).
+        requests-based client.
         """
         response = MagicMock(spec=requests.Response)
         response.headers = {"Retry-After": "45"}
@@ -367,39 +367,6 @@ class TestRateLimitAwareWaitCap:
         # Then confirm the caller caps it.
         wait = _rate_limit_aware_wait(self._make_retry_state(exc))
         assert wait == _RETRY_AFTER_MAX_SECONDS
-
-
-# ---------------------------------------------------------------------------
-# Wrike _wrike_get integration test
-# ---------------------------------------------------------------------------
-
-
-class TestWrikeGetRetry:
-    """Test that _wrike_get retries on transient HTTP errors."""
-
-    @patch("due_diligence_reporter.wrike.requests.get")
-    def test_wrike_get_retries_on_503(self, mock_get: MagicMock) -> None:
-        from due_diligence_reporter.wrike import _wrike_get
-
-        # First call returns 503, second succeeds
-        fail_resp = MagicMock(spec=requests.Response)
-        fail_resp.ok = False
-        fail_resp.status_code = 503
-        fail_resp.raise_for_status.side_effect = requests.HTTPError(response=fail_resp)
-
-        ok_resp = MagicMock(spec=requests.Response)
-        ok_resp.ok = True
-        ok_resp.status_code = 200
-        ok_resp.json.return_value = {"data": []}
-
-        mock_get.side_effect = [fail_resp, ok_resp]
-
-        result = _wrike_get(
-            "https://www.wrike.com/api/v4/test",
-            headers={"Authorization": "bearer fake"},
-        )
-        assert result == ok_resp
-        assert mock_get.call_count == 2
 
 
 # ---------------------------------------------------------------------------

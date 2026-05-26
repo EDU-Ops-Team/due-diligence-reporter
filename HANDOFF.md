@@ -1,5 +1,456 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-26 - Greg Edits DDR V4 Formatting Contract
+
+Adopted `Alpha Los Angeles 5400 Beethoven St DD Report - Greg Edits.docx` as
+the first-round V4 DDR formatting contract and moved enforcement into the
+builder plus regression tests.
+
+Current behavior:
+
+- Executive summary now renders Greg's structure: question line, direct answer,
+  then labeled fields for `Zoning`, `Education Regulatory Approval`,
+  `Occupancy path`, `Permit Timeline`, and `Construction Timeline`.
+- Executive-summary labels are bolded separately from values. Continuation
+  lines inside a field render as support bullets under that field.
+- First-round `Supporting Notes` renders only `Open Items to Verify`.
+  Source-quality, lease-condition, and trade-off sections are still accepted as
+  compatibility/internal values but do not render in the first-round body.
+- `Source Notes` now renders after the `Referenced Reports` table as small,
+  one-line notes with no bullets.
+- Default school type is now `K-8 Private (Alpha School model)` unless a sourced
+  value overrides it.
+- Missing source-link gaps now use Greg's wording for building inspection and
+  E-Occupancy report gaps.
+- `Site Name / Address` uses the full canonical site name supplied by the
+  pipeline/request instead of trusting a shortened agent-provided `meta.site_name`.
+- Live source/docs grep is clean for removed first-round labels, `Report Trace`,
+  `sources.trace_link`, dashboard publishing text, and Wrike references.
+
+Verification completed:
+
+```powershell
+uv run ruff check src/due_diligence_reporter/google_doc_builder.py docs/prompts/prompt_v4.md tests/test_google_doc_builder.py tests/test_prompt_contract.py
+uv run mypy src/
+uv run pytest --basetemp C:\tmp\ddr-pytest-greg-format tests/test_google_doc_builder.py tests/test_report_schema.py tests/test_prompt_contract.py tests/test_dd_output_fixes.py
+git diff --check
+rg -n "Source Quality Notes|Lease Conditions|Trade-Offs and Deficiencies|Report Trace|sources\.trace_link|dashboard publishing|Wrike|wrike" src/due_diligence_reporter docs/prompts/prompt_v4.md docs/templates/Site_DD_Report_Template_V4.md
+```
+
+Results:
+
+- Ruff: all checks passed.
+- Mypy: no issues in 29 source files.
+- Focused pytest: 211 passed.
+- Diff whitespace check: clean, with only existing CRLF conversion warnings.
+- Final live source/docs grep: no matches.
+
+## 2026-05-26 - Dashboard and Drive Trace Artifact Removal
+
+Removed the live dashboard publishing path and the extra Drive-published
+diagnostic artifacts from DDR generation.
+
+Current behavior:
+
+- `process_site_pipeline` no longer runs `publish.dashboard`.
+- `create_dd_report` no longer writes dashboard JSON or a Report Trace JSON.
+- Pipeline manifests are saved only to local `.ddr-runs`; Drive manifest upload
+  was removed.
+- Pipeline trace data remains available as local run diagnostics only; it is not
+  uploaded as a separate Drive file.
+- `sources.trace_link` and the `Report Trace` source-link row were removed from
+  the report schema, prompt, builder, and templates.
+- Inbox scan no longer updates dashboard readiness state.
+- Legacy dashboard modules, scripts, workflows, and tests were removed from the
+  repo.
+- Legacy `Report Trace` JSON filenames are ignored by the classifier and are not
+  exposed to the report agent as usable site-folder artifacts.
+
+Verification completed:
+
+```powershell
+uv run mypy src/
+uv run ruff check src/due_diligence_reporter/classifier.py src/due_diligence_reporter/config.py src/due_diligence_reporter/google_doc_builder.py src/due_diligence_reporter/inbox_scanner.py src/due_diligence_reporter/pipeline_quality.py src/due_diligence_reporter/provenance.py src/due_diligence_reporter/raycon_client.py src/due_diligence_reporter/rebl.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/report_schema.py src/due_diligence_reporter/retry.py src/due_diligence_reporter/risk_flags.py src/due_diligence_reporter/server.py tests/test_report_pipeline.py tests/test_dd_output_fixes.py tests/test_google_doc_builder.py tests/test_report_schema.py tests/test_prompt_contract.py tests/test_permit_history.py tests/test_rebl.py tests/test_pipeline_contracts.py tests/test_inbox_scanner.py tests/test_classifier_keywords.py tests/test_provenance.py tests/test_risk_flags.py
+uv run pytest --basetemp C:\tmp\ddr-pytest-dashboard-trace-removal tests/test_classifier_keywords.py tests/test_dd_output_fixes.py tests/test_report_pipeline.py tests/test_google_doc_builder.py tests/test_report_schema.py tests/test_prompt_contract.py tests/test_inbox_scanner.py tests/test_provenance.py tests/test_risk_flags.py
+git diff --check
+rg -n "publish_to_dashboard|dashboard_|DASHBOARD_PUBLISH|dd-dashboard|sources\.trace_link|trace\.save|manifest\.upload|publish\.dashboard|_build_report_trace_data|_save_pipeline_trace|Report Trace|report_trace" src scripts .github docs .env.example
+rg -n "Wrike|wrike" src scripts docs .github .env.example
+```
+
+Results:
+
+- Mypy: no issues in 29 source files.
+- Targeted ruff: all checks passed.
+- Focused pytest: 406 passed.
+- Diff whitespace check: clean.
+- Final live-path grep: no matches in `src`, `scripts`, `.github`, `docs`, or
+  `.env.example`.
+- Full `uv run ruff check .` was attempted and still reports unrelated existing
+  lint findings in broad test/script files; those were not part of this cleanup.
+
+## 2026-05-26 - Beethoven V4 Live Rerun and Source-Selection Guards
+
+Re-ran the Beethoven first-round DDR flow against:
+
+- Site: `Alpha Los Angeles 5400 Beethoven St`
+- Address: `5400 Beethoven St, Los Angeles, CA 90066`
+- Drive folder: `https://drive.google.com/drive/folders/1G8fc0sX3dP83A7uMF5Bhz2pXnhRpaRJz?usp=drive_link`
+
+During the rerun, two source-selection issues surfaced and were fixed before
+accepting the final live artifact:
+
+- The agent shortened `site_name` to `Alpha Los Angeles`, which let shared
+  source matching consider the unrelated Whitley Avenue Los Angeles files.
+  `run_dd_report_agent` now canonicalizes site-scoped tool calls back to the
+  pipeline's full `site_title`, `drive_folder_url`, and `site_address`.
+- The server-side shared-folder match threshold now rejects city-only matches.
+  The Whitley Avenue Building Inspection continued to appear as an LLM
+  candidate but was rejected at score `30`, below the required score.
+- The source-alert parser was treating a successful
+  `Successfully read ...` message as a source-read issue. It now only flags
+  explicit errors, zero-length reads, or OCR/no-text warnings.
+- `list_drive_documents` no longer exposes generated `dd_report` artifacts to
+  the agent as source inputs, preventing reruns from reading a prior DDR as
+  evidence. The prompt doc-type table now says generated DDRs are not source
+  evidence.
+
+Final accepted live run:
+
+```text
+run_id: 20260526152812-alpha-los-angeles-5400-beethoven-st-9fa94736
+status: report_created
+quality: green / 95
+failed_step: notify.email
+doc: https://docs.google.com/document/d/19NYJPmyhF7OHMBh6hjAMZ5SMXNELDpvAd2OE3U-9F2A/edit?usp=drivesdk
+trace: https://drive.google.com/file/d/17zLiXAvkIgJj06whkNwLSAAKnVk_CIGD/view?usp=drivesdk
+manifest: https://drive.google.com/file/d/1C9OcSM7xBRqrS_YChrtSljanwayC5uVI/view?usp=drivesdk
+local manifest: C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.ddr-runs\20260526152812-alpha-los-angeles-5400-beethoven-st-9fa94736.json
+```
+
+Final run step status:
+
+- `readiness.check`: succeeded
+- `sir.learning_review`: skipped, `AI SIR present; CDS/vendor SIR not found yet`
+- `rhodes.owner_lookup`: succeeded
+- `report.generate`: succeeded
+- `trace.save`: succeeded
+- `source.alert`: succeeded
+- `report.validate`: succeeded
+- `notify.email`: failed with Gmail SMTP `535 Username and Password not accepted`
+- `publish.dashboard`: succeeded
+- `manifest.save`: succeeded
+- `manifest.upload`: succeeded
+
+Final artifact check:
+
+- Exported report text length: `11980` chars.
+- Report contains `Beethoven` and `5400`.
+- Report does not contain `Whitley` or `1726`.
+- Final report trace read only:
+  - `5400-beethoven-st-los-angeles-ca_2026-05-21_SIR.docx`
+  - `5400-beethoven-st-los-angeles-ca_2026-05-21_school-approval.docx`
+
+Verification completed:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-pytest-beethoven-final-guards tests/test_report_pipeline.py tests/test_find_site_docs_m1_first.py tests/test_dd_output_fixes.py tests/test_prompt_contract.py
+uv run ruff check src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/server.py tests/test_report_pipeline.py tests/test_find_site_docs_m1_first.py tests/test_dd_output_fixes.py tests/test_prompt_contract.py
+uv run mypy src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/server.py
+```
+
+Results:
+
+- Focused pytest: 96 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in the two touched source files.
+
+## 2026-05-26 - Prompt V4 Contract Rewrite
+
+Rewrote `docs/prompts/prompt_v4.md` from a long accumulated workflow prompt
+into a compact first-round DDR contract.
+
+Behavior / prompt intent changed:
+
+- Renamed the active prompt file from the previous prompt path to
+  `docs/prompts/prompt_v4.md`.
+- Renamed the markdown template file to
+  `docs/templates/Site_DD_Report_Template_V4.md`.
+- Updated scheduled loaders in `daily_dd_check.py`, `scan_inbox.py`, and
+  `raycon_followup.py` to read `prompt_v4.md`.
+- Updated prompt metadata to version `4.0.0` and `Last Updated: 2026-05-26`.
+- Updated the report trace prompt version to `4`.
+- Removed current-flow old-version labels from the prompt, docs, source comments,
+  tool descriptions, and focused tests. Remaining lowercase version hits are Google
+  Drive API version strings, not DDR prompt/report version labels.
+- Removed the deprecated template-ID readiness gate from `scan_inbox.py`;
+  generated reports are built programmatically and no longer require a template
+  environment variable to start the pipeline phase.
+- Centered the normal path on first-round DDR publishing from an AI SIR /
+  research baseline instead of full vendor-doc readiness.
+- Kept Rhodes / LocationOS P1 DRI lookup as a hard pre-report step.
+- Replaced duplicated formatting and citation guidance with a single JC-style
+  writing section plus one consolidated `Source Notes` contract through
+  `exec.citations_block`.
+- Removed stale normal-workflow instructions to generate an Opening Plan, call
+  email from inside the agent loop, wait on full vendor docs, or call RayCon
+  directly.
+- Preserved the current report data contract, first-round open-item requirements,
+  sourced gap-label rules, and exact executive-summary enum values.
+- Added `tests/test_prompt_contract.py` to prevent the stale workflow strings,
+  inline footnote style, encoding artifacts, retired-system references, and
+  excessive prompt length from coming back silently.
+
+Verification completed:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-pytest-prompt-contract-3 tests/test_prompt_contract.py tests/test_report_schema.py tests/test_google_doc_builder.py tests/test_dd_output_fixes.py
+uv run ruff check tests/test_prompt_contract.py
+uv run pytest --basetemp C:\tmp\ddr-pytest-prompt-v4-rename tests/test_prompt_contract.py tests/test_report_pipeline.py tests/test_report_trace.py tests/test_scan_inbox_e2e.py tests/test_raycon_followup.py
+uv run ruff check tests/test_prompt_contract.py scripts/daily_dd_check.py scripts/scan_inbox.py scripts/raycon_followup.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/server.py
+uv run pytest --basetemp C:\tmp\ddr-pytest-v4-no-old-version-final-2 tests/test_prompt_contract.py tests/test_report_schema.py tests/test_google_doc_builder.py tests/test_report_pipeline.py tests/test_report_trace.py tests/test_scan_inbox_e2e.py tests/test_raycon_followup.py
+uv run ruff check tests/test_prompt_contract.py tests/test_google_doc_builder.py tests/test_report_schema.py tests/test_raycon_followup.py scripts/daily_dd_check.py scripts/scan_inbox.py scripts/raycon_followup.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/server.py src/due_diligence_reporter/report_schema.py src/due_diligence_reporter/completeness.py src/due_diligence_reporter/google_doc_builder.py src/due_diligence_reporter/config.py
+rg -n "prompt_v[0-3]\.md|prompt_v[0-3]|Prompt V[0-3]|prompt v[0-3]" scripts src tests docs HANDOFF.md
+rg -n "\bV[0-3]\b|\bv[0-3]\b|prompt_v[0-3]|Prompt V[0-3]|prompt v[0-3]" docs\prompts\prompt_v4.md docs\process\HOW-IT-WORKS.md HANDOFF.md src\due_diligence_reporter tests\test_google_doc_builder.py tests\test_report_schema.py scripts\daily_dd_check.py scripts\scan_inbox.py scripts\raycon_followup.py .env.example
+rg --files | rg "V[0-3]|v[0-3]|prompt_v[0-3]|Template_V[0-3]|template_v[0-3]"
+rg -n "apply_opening_plan_skill|Always.*send_dd_report_email|Every DD Report answers four questions|How to Use Me|\[1\]|â|Ã|Wrike|wrike|RayCon API|calls the RayCon" docs\prompts\prompt_v4.md
+```
+
+Results:
+
+- Focused pytest: 210 passed.
+- Ruff: all checks passed for the new prompt contract test.
+- Rename-path pytest: 111 passed.
+- Rename-path ruff: all checks passed.
+- Final focused pytest: 270 passed.
+- Final focused ruff: all checks passed.
+- Old prompt-path reference scan: no active matches.
+- Current-flow old-version label scan: no DDR prompt/report-version matches; only
+  Google Drive API version strings remain.
+- Old-version filename scan: no matches.
+- Stale-string scan: no matches.
+
+## 2026-05-26 - JC-Style Report Cleanup and Rhodes P1 DRI Lookup
+
+Changed the DDR generation path so first-round and full DDRs use cleaner
+executive formatting and resolve the site owner from Rhodes.
+
+Behavior changed:
+
+- Added a read-only Rhodes / LocationOS MCP client in `rhodes.py` using
+  `RHODES_API_KEY` and optional `RHODES_MCP_URL`.
+- Added `lookup_rhodes_site_owner` as a server/tool-loop tool. It resolves the
+  site, hydrates the Rhodes site record, and returns `p1Dri.name` /
+  `p1Dri.email` plus `report_data_fields`.
+- `process_site_pipeline` now performs a best-effort Rhodes owner lookup before
+  report generation when a P1 name/email was not already supplied. The result
+  seeds `meta.prepared_by`, P1 email recipients, dashboard owner, and
+  `site_created_at` when Rhodes provides it. Missing/unconfigured Rhodes does
+  not block report generation.
+- `run_dd_report_agent` now carries initial report fields into
+  `create_dd_report` and includes the resolved Rhodes owner in the agent request
+  context.
+- `exec.citations_block` now survives server normalization and renders once as
+  `Source Notes`; when the block is present, inline `[1]` markers are stripped
+  from displayed Lease Conditions / Trade-Offs bullets.
+- Prompt/process docs now require JC-style answer-first formatting, clean
+  source notes instead of inline citations, and Rhodes P1 DRI lookup before DDR
+  creation.
+
+Live Rhodes check:
+
+- `Alpha Los Angeles 5400 Beethoven St` resolved in LocationOS to
+  `k9798fdj3vmy08sce06nhe167n874mvh`.
+- Rhodes `p1Dri` is Devin Bates (`devin.bates@trilogy.com`).
+
+Verification completed:
+
+```powershell
+uv run ruff check src/due_diligence_reporter/rhodes.py src/due_diligence_reporter/server.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/google_doc_builder.py tests/test_rhodes.py tests/test_report_pipeline.py tests/test_google_doc_builder.py tests/test_dd_output_fixes.py tests/test_report_schema.py
+uv run mypy src/due_diligence_reporter/rhodes.py src/due_diligence_reporter/server.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/google_doc_builder.py
+uv run pytest --basetemp C:\tmp\ddr-pytest-rhodes-style-2 tests/test_rhodes.py tests/test_report_pipeline.py tests/test_google_doc_builder.py tests/test_dd_output_fixes.py tests/test_report_schema.py
+rg -n "Wrike|wrike" src docs tests scripts
+rg -n "retired work-management|project_notes|work-management|source citations|Wrike|wrike|Citations" docs\prompts\prompt_v4.md docs\process\HOW-IT-WORKS.md src\due_diligence_reporter tests
+```
+
+Results:
+
+- Targeted ruff: all checks passed.
+- Targeted mypy: no issues in 4 source files.
+- Focused pytest: 248 passed.
+- Tracked grep for Wrike is clean.
+- Prompt/process grep for stale retired-system wording is clean.
+
+## 2026-05-26 - Retired Work-Management Integration Removal
+
+Removed the retired work-management integration from the active DDR codebase.
+The operating contract is now: supply the site name, site address, and Google
+Drive folder URL directly, then generate/read evidence from Drive and the report
+data.
+
+Behavior changed:
+
+- Removed the retired API client module, fuzzy site-record matching wrapper,
+  and MCP tools for external site-record/comment lookup.
+- Removed old one-off maintenance scripts, GitHub Actions workflows, and tests
+  whose only purpose was syncing/backfilling/reconciling against the retired
+  system.
+- `daily_dd_check`, `scan_inbox`, `raycon_followup`, and publish workflows no
+  longer require or write the retired access-token secret.
+- Report metadata now uses `site_created_at` instead of the old
+  source-specific created-at field.
+- Missing P1 fallback copy is now `[Not found - P1 DRI not assigned]`.
+- Active prompts/process docs now describe Drive + supplied site context.
+
+Verification completed:
+
+```powershell
+uv run ruff check src/due_diligence_reporter/server.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/report_schema.py src/due_diligence_reporter/assignment.py src/due_diligence_reporter/inbox_scanner.py src/due_diligence_reporter/dd_republish.py src/due_diligence_reporter/dashboard_publisher.py src/due_diligence_reporter/site_record.py src/due_diligence_reporter/raycon_client.py scripts/daily_dd_check.py scripts/scan_inbox.py scripts/raycon_followup.py tests/test_report_pipeline.py tests/test_dd_output_fixes.py tests/test_diagnose_site_readiness.py tests/test_dashboard_publisher.py tests/test_raycon_client.py tests/test_raycon_followup.py tests/test_scan_inbox_e2e.py tests/test_inbox_scanner.py tests/test_retry.py tests/test_report_trace.py tests/test_google_doc_builder.py
+uv run mypy src/due_diligence_reporter/server.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/assignment.py src/due_diligence_reporter/inbox_scanner.py src/due_diligence_reporter/dd_republish.py src/due_diligence_reporter/dashboard_publisher.py src/due_diligence_reporter/site_record.py src/due_diligence_reporter/raycon_client.py
+uv run pytest --basetemp C:\tmp\ddr-pytest-retired-integration-3 tests/test_report_pipeline.py tests/test_dd_output_fixes.py tests/test_diagnose_site_readiness.py tests/test_dashboard_publisher.py tests/test_raycon_client.py tests/test_raycon_followup.py tests/test_scan_inbox_e2e.py tests/test_inbox_scanner.py tests/test_retry.py tests/test_report_trace.py tests/test_google_doc_builder.py tests/test_report_schema.py tests/test_classifier_keywords.py tests/test_completeness.py tests/test_vendor_gate.py
+```
+
+Results:
+
+- Targeted ruff: all checks passed.
+- Targeted mypy: no issues in 8 source files.
+- Focused pytest: 640 passed.
+- Tracked grep for the retired system name and old lookup tool names is clean.
+
+## 2026-05-26 - First-Round DDR Publishing from AI SIR
+
+Changed the DDR pipeline so the first publish can proceed from any SIR/AI SIR
+research baseline instead of waiting for the full vendor document package.
+Vendor SIR, Building Inspection, and RayCon scenario readiness still matter for
+full-report completeness and republish, but they no longer block the initial
+DDR slice.
+
+Behavior changed:
+
+- Readiness now treats `sir_found AND NOT report_exists` as enough for
+  first-round report generation.
+- Pipeline readiness now blocks only when no SIR/AI SIR is present; the old
+  vendor/full-doc gate remains available for diagnostics and full-report status.
+- Incomplete first-round DDRs carry a partial-completeness reason of
+  `vendor_verification_pending` when `verification.open_items` is populated.
+- The Google Doc builder renders `Open Items to Verify` in Supporting Notes and
+  keeps the partial banner generic for vendor-verification items while preserving
+  RayCon-specific timestamp language only for RayCon-pending items.
+- `_normalize_report_replacements` accepts `verification.open_items`,
+  `open_items.verification`, `verification_open_items`, or the internal open
+  items token and maps them into the rendered DDR.
+
+Prompt/template/process docs updated:
+
+- `docs/prompts/prompt_v4.md` now defines the first-round scope as site
+  metadata plus executive-summary fields for current-school-year open,
+  zoning, education regulatory approval, occupancy path, permit timelines, and
+  construction timelines.
+- The prompt now instructs the agent to log concrete verification items from
+  AI SIR/research output, especially B/C confidence items affecting those
+  first-round fields.
+- `docs/templates/Site_DD_Report_Template_V4.md` names the 8/12 or 9/8
+  opening question and keeps permit/construction timelines in the executive
+  summary row.
+- `docs/process/HOW-IT-WORKS.md` now describes the first-round publish and later
+  vendor/RayCon republish flow.
+
+Verification completed:
+
+```powershell
+$stamp = Get-Date -Format 'yyyyMMddHHmmss'
+$envTmp = "C:\tmp\ddr-env-tmp-$stamp"
+$baseTmp = "C:\tmp\ddr-pytest-$stamp"
+New-Item -ItemType Directory -Force -Path $envTmp | Out-Null
+$env:TMP=$envTmp
+$env:TEMP=$envTmp
+uv run pytest --basetemp $baseTmp tests/test_completeness.py tests/test_google_doc_builder.py tests/test_report_pipeline.py tests/test_vendor_gate.py tests/test_diagnose_site_readiness.py tests/test_dd_output_fixes.py
+uv run ruff check src/due_diligence_reporter/completeness.py src/due_diligence_reporter/google_doc_builder.py src/due_diligence_reporter/server.py src/due_diligence_reporter/report_pipeline.py tests/test_completeness.py tests/test_google_doc_builder.py tests/test_report_pipeline.py tests/test_vendor_gate.py tests/test_diagnose_site_readiness.py tests/test_dd_output_fixes.py
+uv run mypy src/due_diligence_reporter/completeness.py src/due_diligence_reporter/google_doc_builder.py src/due_diligence_reporter/server.py src/due_diligence_reporter/report_pipeline.py
+uv run pytest --basetemp $baseTmp --ignore-glob "*pytest-cache-files*"
+```
+
+Results:
+
+- Focused pytest: 215 passed.
+- Targeted ruff: all checks passed.
+- Targeted mypy: no issues in the four touched source files.
+- Full pytest: 1224 passed when ignoring stale `pytest-cache-files-*` folders
+  already present in the repo tree.
+- Repo-wide `uv run ruff check .` is still blocked by 44 pre-existing issues in
+  unrelated scripts/tests.
+- Repo-wide `uv run mypy src/` is still blocked by 11 pre-existing errors in 7
+  unrelated modules.
+
+No commit was created.
+
+### Beethoven Live Test - 2026-05-26
+
+Tested the first-round flow against:
+
+- Site: `Alpha Los Angeles 5400 Beethoven St`
+- Address: `5400 Beethoven St, Los Angeles, CA 90066`
+- Drive folder: `https://drive.google.com/drive/folders/1G8fc0sX3dP83A7uMF5Bhz2pXnhRpaRJz?usp=drive_link`
+
+Important findings from the live run:
+
+- The site-record lookup did not find a matching operating record for Beethoven.
+  The closest same-market records were ignored; this run proceeded from the
+  direct Drive folder URL and supplied site/address context.
+- The Drive folder contains the AI SIR and school-approval report in M1. The
+  vendor Building Inspection, vendor SIR/CDS SIR, and RayCon scenario were not
+  present, so the report is a first-round/partial DDR.
+- Shared-source matching initially risked pulling Whitley Avenue Los Angeles
+  docs because city-only evidence scored too high. The matching floor and city
+  token handling now reject those weak matches.
+- Filename classification now treats `_SIR.docx` as `sir` and
+  `school-approval.docx` as `school_approval_report`.
+- Direct-folder `list_drive_documents` now succeeds when no site record exists
+  and skips shared-folder source matching in that path.
+- The prompt/agent path now receives `drive_folder_url` and `site_address`
+  directly, so it can continue from supplied context.
+- Rendering/validation fixes from the live test:
+  - `meta.prepared_by` falls back to
+    `[Not found - P1 DRI not assigned]` when no P1 DRI is supplied.
+  - Source-quality prose is sanitized so internal template keys such as
+    `meta.prepared_by` do not appear in the report body.
+  - Report completeness accepts the renderer's canonical display phrases
+    `Yes, if:` / `No, because:` while still rejecting malformed uppercase
+    answers like `YES`.
+
+Final live pipeline run:
+
+```text
+run_id: 20260526135816-alpha-los-angeles-5400-beethoven-st-f9e9c240
+status: report_created
+report.validate: succeeded
+source.alert: failed with source_read_issue
+quality: orange / 69
+doc: https://docs.google.com/document/d/1FtfkczUXerAvM1dQ6aFKLDq7pU6iUMnbHgwBfyYi22c/edit?usp=drivesdk
+trace: https://drive.google.com/file/d/1DaPpFUW8mGVFlXvD6zI_pDEjAtWCv4vy/view?usp=drivesdk
+manifest: C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.ddr-runs\20260526135816-alpha-los-angeles-5400-beethoven-st-f9e9c240.json
+```
+
+`source.alert` is still failing because the first-round report has a required
+source-read issue / missing vendor source state. That does not block
+`report_created` after the validation fixes, but it is still the operator
+follow-up if this needs to be green instead of orange.
+
+Additional verification after the Beethoven fixes:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-pytest-beethoven-1 tests/test_google_doc_builder.py tests/test_dd_output_fixes.py tests/test_classifier_keywords.py tests/test_report_pipeline.py tests/test_report_schema.py
+uv run ruff check src/due_diligence_reporter/google_doc_builder.py src/due_diligence_reporter/server.py src/due_diligence_reporter/report_schema.py tests/test_google_doc_builder.py tests/test_dd_output_fixes.py
+uv run mypy src/due_diligence_reporter/google_doc_builder.py src/due_diligence_reporter/server.py src/due_diligence_reporter/report_schema.py
+```
+
+Results:
+
+- Focused pytest after all Beethoven fixes: 215 passed for
+  `test_dd_output_fixes.py`, `test_google_doc_builder.py`, and
+  `test_report_schema.py`; earlier expanded focused pass was 297 passed.
+- Targeted ruff: all checks passed.
+- Targeted mypy: no issues in the touched validation/rendering modules.
+
 ## 2026-05-21 - AI SIR vs. CDS SIR First-Pass Deep Dive
 
 Objective: compare AI-generated Site Investigation Report packets against completed CDS SIRs and the supporting evidence in the reports. This pass used the model `AI SIR vs. CDS SIR vs. underlying evidence`, not a simple AI/CDS scorecard.

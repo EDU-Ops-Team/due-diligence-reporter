@@ -26,7 +26,6 @@ from due_diligence_reporter.raycon_client import (
     read_raycon_scenario_from_m1,
 )
 
-
 # ---------------------------------------------------------------------------
 # URL helpers
 # ---------------------------------------------------------------------------
@@ -35,7 +34,7 @@ from due_diligence_reporter.raycon_client import (
 class TestNormalizeDriveFolderUrl:
     """RayCon /v1/jobs validators reject HTML-anchor-wrapped folder URLs.
 
-    Wrike's rich-text Google Folder field can store an anchor; we must
+    Source Google Folder fields can store an anchor; we must
     rebuild a canonical /drive/folders/<id> URL before dispatch.
     """
 
@@ -65,7 +64,7 @@ class TestNormalizeDriveFolderUrl:
 
     def test_file_url_returns_none(self) -> None:
         # /file/d/<id> is not a folder URL — caller will raise a clear
-        # "fix the Wrike field" error rather than dispatch a doomed POST.
+        # "fix the Google Folder field" error rather than dispatch a doomed POST.
         out = _normalize_drive_folder_url(
             "https://drive.google.com/file/d/abc123abc123/view"
         )
@@ -250,7 +249,7 @@ class TestPostRayConJob:
 
     def test_total_building_sf_omitted_drops_field(self) -> None:
         # RayCon's validator rejects 0 ("Number must be greater than 0") and
-        # null on `total_building_sf`. When the Wrike record lacks a value,
+        # null on `total_building_sf`. When the source record lacks a value,
         # drop the field entirely so the payload validates.
         with patch(
             "due_diligence_reporter.raycon_client.get_settings",
@@ -308,7 +307,7 @@ class TestPostRayConJob:
 
     def test_drive_folder_url_html_anchor_normalized(self) -> None:
         # Live regression (2026-05-05): NYC 156 William and Dallas 4152 Cole
-        # had Wrike Google Folder fields stored as HTML anchors. RayCon's
+        # had Google Folder fields stored as HTML anchors. RayCon's
         # validator rejected the raw anchor with 400. We must unwrap to a
         # canonical /drive/folders/<id> URL before sending.
         kw = dict(_REQUIRED_KW)
@@ -351,9 +350,9 @@ class TestPostRayConJob:
         )
 
     def test_drive_folder_url_unparseable_raises_clear_error(self) -> None:
-        # When Wrike has a value with no recoverable folder ID (e.g. the PM
+        # When the source field has a value with no recoverable folder ID (e.g. the PM
         # pasted a /file/d/<id> URL by mistake), we must raise a clear
-        # message naming Wrike as the fix-it surface, *before* we burn a
+        # message naming the Google Folder field as the fix-it surface, *before* we burn a
         # RayCon dispatch on a guaranteed-400.
         kw = dict(_REQUIRED_KW)
         kw["drive_folder_url"] = (
@@ -366,7 +365,7 @@ class TestPostRayConJob:
             "due_diligence_reporter.raycon_client.requests.post",
             return_value=_accepted_job_response(),
         ) as mock_post:
-            with pytest.raises(ValueError, match="Google Folder custom field in Wrike"):
+            with pytest.raises(ValueError, match="site's Google Folder field"):
                 post_raycon_job(total_building_sf=8400, **kw)
         # Critically: we never made the network call.
         assert mock_post.call_count == 0
@@ -1027,7 +1026,7 @@ class TestRayConPayloadEnvelope:
 
     def test_failed_status_blanks_all_scenario_fields(self) -> None:
         """Failed run: $0 is the wrong default — it would render as a real
-        zero-cost scenario in the dashboard. We emit blanks instead and
+        zero-cost scenario in the generated report. We emit blanks instead and
         surface the failure reason for the published Doc."""
         payload = {
             "schema_version": "1.0",

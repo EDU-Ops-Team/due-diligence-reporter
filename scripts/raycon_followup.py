@@ -7,7 +7,7 @@ single ``raycon_scenario.json`` file back into the same M1 folder.
 
 This script runs on a 5-minute cadence (``raycon-followup.yml``) and:
 
-  1. Iterates every active Wrike Site Record.
+  1. Iterates every site folder under GOOGLE_DRIVE_ROOT_FOLDER_ID.
   2. Looks in each site's M1 folder for ``raycon_scenario.json``.
   3. If the JSON exists and is newer than the corresponding
      ``RayCon Scenario Assessment - <site>`` Google Doc (or that Doc
@@ -36,7 +36,7 @@ Run:
 
 Env:
     OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET / OAUTH_REFRESH_TOKEN
-    WRIKE_ACCESS_TOKEN
+    GOOGLE_DRIVE_ROOT_FOLDER_ID
     GOOGLE_CHAT_WEBHOOK_URL  (optional; alert sink)
 """
 
@@ -93,13 +93,6 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
 from due_diligence_reporter.server import save_skill_report  # noqa: E402
 from due_diligence_reporter.utils import (  # noqa: E402
     extract_folder_id_from_url,
-)
-from due_diligence_reporter.wrike import (  # noqa: E402
-    _get_active_status_ids,
-    _get_all_site_records,
-    build_site_summary,
-    filter_active_site_records,
-    load_wrike_config,
 )
 
 logging.basicConfig(
@@ -314,6 +307,25 @@ def _site_filter(site_summary: dict[str, Any], needle: str | None) -> bool:
     title = str(site_summary.get("title", "")).lower()
     address = str(site_summary.get("address", "")).lower()
     return needle_lc in title or needle_lc in address
+
+
+def _folder_url(folder: dict[str, Any]) -> str:
+    link = str(folder.get("webViewLink") or "").strip()
+    if link:
+        return link
+    folder_id = str(folder.get("id") or "").strip()
+    return f"https://drive.google.com/drive/folders/{folder_id}" if folder_id else ""
+
+
+def _site_summary_from_folder(folder: dict[str, Any]) -> dict[str, Any]:
+    folder_id = str(folder.get("id") or "").strip()
+    title = str(folder.get("name") or "").strip()
+    return {
+        "id": folder_id,
+        "title": title,
+        "address": "",
+        "drive_folder_url": _folder_url(folder),
+    }
 
 
 def _find_block_plan(gc: GoogleClient, m1_folder_id: str) -> dict[str, Any] | None:
@@ -686,7 +698,7 @@ def _republish_dd_report_if_present(
     # Pre-rec3 "skipped_no_drive_folder" / "skipped_bad_drive_url"
     # branches surfaced as distinct decision strings; the shared helper
     # collapses them into ``skip_bad_input``. Map back to the legacy
-    # strings so existing dashboards / log greps don't break.
+    # strings so existing log greps don't break.
     if not drive_folder_url:
         return {"dd_report_republish": "skipped_no_drive_folder"}
     if not extract_folder_id_from_url(drive_folder_url):
@@ -886,8 +898,8 @@ def _process_site(
     # Scenario JSON is here — but did the run actually succeed? RayCon
     # writes the same file with ``status: "failed"`` (and ``validation.passed:
     # false``) when it can't compute scenarios. Publishing a Doc in that
-    # state would render an empty/zero-dollar scenario the dashboard
-    # treats as authoritative. Surface the failure as an alert row instead
+    # state would render an empty/zero-dollar scenario as authoritative.
+    # Surface the failure as an alert row instead
     # so EDU Ops sees it in Chat and we don't pollute the site's M1 folder.
     if raycon_payload_failed(scenario):
         report_fields = raycon_scenario_to_report_fields(scenario)
@@ -1026,7 +1038,7 @@ def main(argv: list[str] | None = None) -> int:
         dest="site_id",
         default=None,
         help=(
-            "Wrike site record id to scope the run to (RayCon callback). "
+            "Site Drive folder id to scope the run to (RayCon callback). "
             "When set, only that site is processed. Unknown ids exit cleanly "
             "with a logged warning so the cron safety net can pick the run up."
         ),
@@ -1071,12 +1083,12 @@ def main(argv: list[str] | None = None) -> int:
         oauth_port=settings.oauth_port,
         scopes=settings.google_scopes,
     )
-    config = load_wrike_config()
-    records = _get_all_site_records(cfg=config)
-    active_status_ids = _get_active_status_ids(access_token=config.access_token)
-    active_records = filter_active_site_records(records, active_status_ids)
+    if not settings.google_drive_root_folder_id:
+        logger.error("GOOGLE_DRIVE_ROOT_FOLDER_ID is required for RayCon follow-up")
+        return 1
 
-    summaries = [build_site_summary(r) for r in active_records]
+    site_folders = gc.list_subfolders(settings.google_drive_root_folder_id)
+    summaries = [_site_summary_from_folder(folder) for folder in site_folders]
     summaries = [s for s in summaries if _site_filter(s, args.site)]
 
     # Rec. 2: when the RayCon callback supplies a site_id, scope the run
@@ -1122,7 +1134,7 @@ def main(argv: list[str] | None = None) -> int:
     ) -> dict[str, Any]:
         nonlocal _shared_cache, _system_prompt
         if _system_prompt is None:
-            prompt_path = _project_root / "docs" / "prompts" / "prompt_v3.md"
+            prompt_path = _project_root / "docs" / "prompts" / "prompt_v4.md"
             if not prompt_path.exists():
                 logger.error(
                     "DD Report republish: system prompt missing at %s", prompt_path
