@@ -33,6 +33,10 @@ oauth_response.json
 *.docx
 *.zip
 *.png
+reports/
+* Report Trace - *.json
+/Site_DD_Report_Template_V2.md
+/Resolving an address to a REBL site_id.md
 
 # Tool caches
 .ruff_cache/
