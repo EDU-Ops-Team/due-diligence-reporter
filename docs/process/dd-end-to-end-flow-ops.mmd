@@ -4,15 +4,15 @@ title: Due Diligence Report Process - Operations View
 flowchart TD
     A["Monitor inbox for new site documents"]
     B["File documents to the correct site folder"]
-    C{"Do we have all 3 required documents?<br/>SIR, Building Inspection, and Block Plan"}
-    D["Wait for remaining documents"]
+    C{"Do we have an SIR<br/>and no existing DDR?"}
+    D["Log missing source details<br/>as open verification items"]
     E["Start the due diligence report process"]
     F["Review available information from the site documents"]
     G{"Is all required report data available?"}
     H["Publish completed report"]
-    I["Publish report with clear placeholders<br/>showing what information is still missing"]
+    I["Publish partial DDR with<br/>Open Items to Verify"]
     J["Share report with the operations team"]
-    K["When missing information arrives,<br/>update the report"]
+    K["When a core source changes,<br/>republish the existing DDR"]
 
     A --> B --> C
     C -- No --> D

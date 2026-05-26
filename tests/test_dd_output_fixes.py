@@ -567,6 +567,34 @@ class TestReportNormalizationDefaults:
         assert enriched["sources"]["rebl_link"] == "https://rebl3.vercel.app/site/123-main-st-austin-tx"
         assert rebl_resolution.site_id == "123-main-st-austin-tx"
 
+    @patch("due_diligence_reporter.server.resolve_address")
+    def test_normalize_report_replacements_resolves_rebl_from_site_address_param(
+        self,
+        mock_resolve_address: MagicMock,
+    ) -> None:
+        from due_diligence_reporter.rebl import ReblResolution
+        from due_diligence_reporter.server import _normalize_report_replacements
+
+        mock_resolve_address.return_value = ReblResolution(
+            address_submitted="5400 Beethoven St, Los Angeles, CA 90066",
+            resolution_status="resolved",
+            site_id="5400-beethoven-st-los-angeles-ca",
+            url="https://rebl3.vercel.app/site/5400-beethoven-st-los-angeles-ca",
+        )
+
+        replacements, _, unfilled, _, rebl_resolution = _normalize_report_replacements(
+            report_data={"meta": {"prepared_by": "Devin Bates"}},
+            site_name="Alpha Los Angeles 5400 Beethoven St",
+            report_date="05/26/2026",
+            drive_folder_url="https://drive.google.com/drive/folders/folder123",
+            site_address="5400 Beethoven St, Los Angeles, CA 90066",
+        )
+
+        assert replacements["meta.rebl_site_id"] == "5400-beethoven-st-los-angeles-ca"
+        assert replacements["sources.rebl_link"].endswith("/5400-beethoven-st-los-angeles-ca")
+        assert "meta.rebl_site_id" not in unfilled
+        assert rebl_resolution.site_id == "5400-beethoven-st-los-angeles-ca"
+
     @patch("due_diligence_reporter.server.requests.get")
     def test_optional_params_passed_correctly(self, mock_get: MagicMock) -> None:
         import asyncio

@@ -1,17 +1,27 @@
 # Due Diligence Reporter â€” How It Works
 
-**Version:** 4.1.0
+**Version:** 4.2.0
 **Team:** EDU Ops Intelligence
-**Last Updated:** 2026-03-26
+**Last Updated:** 2026-05-26
 
 ---
 
 ## Overview
 
-The Due Diligence Reporter is an AI agent powered by Claude that generates Site Due Diligence (DD) Reports for potential Alpha School locations. It operates in three modes:
+The Due Diligence Reporter is an AI agent powered by Claude that generates Site Due Diligence (DD) Reports for potential Alpha School locations. It operates in interactive and automated modes.
+
+Current V4.2 behavior:
+
+- First-round readiness is `SIR found AND no existing DDR`. Missing vendor docs do not block the first publish.
+- Rhodes / LocationOS is the source of truth for site ID, Drive folder URL, and P1 DRI / site owner.
+- Open verification items are stored as structured run state and rendered only as `Open Items to Verify` in the DDR body.
+- Existing DDRs are republished in place when one of the five core source types changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, or School Approval report.
+- The active source sweep entrypoint is `scripts/vendor_doc_republish_sweep.py`; it scans active Rhodes sites with linked Drive folders and calls the shared `dd_republish` path.
+
+Legacy mode summary:
 
 1. **Interactive** â€” A human gives it a site name in chat via MCP Hive. The agent gathers data, runs analytical skills, and produces an executive-ready Google Doc.
-2. **Event-Driven (Inbox Scan â€” every 15 min)** â€” A scheduled script scans the `edu.ops@trilogy.com` inbox for new SIR, Building Inspection, and ISP PDFs, classifies them by filename using a three-tier classifier (regex â†’ GPT-4o-mini), and uploads to the correct shared Drive folder.
+2. **Event-Driven (Inbox Scan)** -- A scheduled script scans the `edu.ops@trilogy.com` inbox for new site documents, matches them to Rhodes site records, and uploads them to the matched site's M1 folder.
 3. **Daily Sweep (Safety Net â€” 9 AM)** â€” A scheduled script scans all site folders in active DD stages. When a site has an SIR / AI SIR and no existing report, it triggers first-round report generation. Vendor SIR, Building Inspection, RayCon, and other documents upgrade the report through republish paths as they land.
 
 The agent gathers facts. It does not make recommendations. The decision belongs to the leadership team.
@@ -98,7 +108,7 @@ Both require clean source notes. `risk_notes` must tie back to a specific docume
 
 ```
                               â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-                              â”‚  Inbox Scan (every 15min) â”‚
+                              â”‚  Inbox Scan workflow â”‚
                               â”‚  scan_inbox.py            â”‚
                               â”‚  three-tier classifier    â”‚
     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”   â”‚  (regex â†’ GPT-4o-mini)    â”‚
@@ -152,10 +162,10 @@ Claude AI Agent â—„â”€â”€â”€â”€â”€â”€â”€
 
 **Script:** `scripts/scan_inbox.py`
 **Module:** `src/due_diligence_reporter/inbox_scanner.py`
-**Schedule:** Every 15 minutes, 6 AMâ€“8 PM Central, Mondayâ€“Friday
+**Schedule:** See `.github/workflows/inbox-scan.yml`
 **Workflow:** `.github/workflows/inbox-scan.yml`
 
-The inbox scanner is the primary trigger for report generation. When a vendor emails a SIR or Building Inspection to `edu.ops@trilogy.com`, the scanner picks it up within 15 minutes.
+The inbox scanner is one trigger for report updates. When a vendor emails a SIR or Building Inspection to `edu.ops@trilogy.com`, the scanner files it to the matched Rhodes site's M1 folder and can trigger in-place DDR republish if a DDR already exists.
 
 ### Phase 1 â€” Scan, Classify, Upload
 
@@ -445,11 +455,11 @@ Sites in later stages (FTO in progress, FTO signed, operational) are skipped.
 
 ```
 For each site folder in the Drive root:
-  1. Check readiness (SIR + Inspection present, no report exists; ISP is informational only)
+  1. Check readiness (SIR found and no existing DDR; missing vendor docs become open verification items)
   2. If missing docs -> post Google Chat alert listing what's missing
   3. If report exists -> skip
   4. If ready -> run Claude agent loop:
-     a. check_site_readiness -> list_drive_documents -> read all 3 docs
+     a. check_site_readiness -> list_drive_documents -> read available first-round sources
      b. apply_e_occupancy_skill + apply_school_approval_skill + get_cost_estimate
      c. create_dd_report (with normalize_report_data + compute_deltas)
      d. check_report_completeness
@@ -531,19 +541,23 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 | `src/due_diligence_reporter/report_schema.py` | Template token list (28), alias map (26), `normalize_report_data()`, `compute_deltas()` |
 | `src/due_diligence_reporter/classifier.py` | Three-tier document classification (regex â†’ LLM filename â†’ LLM content) |
 | `src/due_diligence_reporter/inbox_scanner.py` | Gmail inbox scan, three-tier filename classification, Drive upload |
+| `src/due_diligence_reporter/open_questions.py` | Structured open-question and source-event state for partial DDR closure |
+| `src/due_diligence_reporter/vendor_doc_sweep.py` | Rhodes-backed core source sweep that triggers in-place republish |
 | `src/due_diligence_reporter/rhodes.py` | Rhodes / LocationOS MCP client for P1 DRI lookup |
 | `src/due_diligence_reporter/google_client.py` | Google Drive v3 + Docs v1 + Gmail API client (OAuth), `list_files_recursive()` |
 | `src/due_diligence_reporter/config.py` | Pydantic settings loader |
 | `src/due_diligence_reporter/utils.py` | PDF extraction, placeholder builder, email, Google Chat |
 | `scripts/daily_dd_check.py` | Daily sweep â€” stage-filtered readiness check + report pipeline |
 | `scripts/scan_inbox.py` | Inbox scan + per-site report pipeline trigger |
+| `scripts/vendor_doc_republish_sweep.py` | Active source sweep for vendor/RayCon/E-Occupancy/School Approval updates |
 | `tests/test_report_schema.py` | Schema integrity + normalization + delta tests (24 tests) |
 | `tests/test_report_pipeline.py` | Pipeline tool routing + readiness tests (13 tests) |
 | `tests/test_inbox_scanner.py` | Inbox scanner tests (19 tests) |
 | `tests/test_hyperlinks.py` | Link token insertion tests (17 tests) |
 | `tests/test_dd_output_fixes.py` | Output formatting + floorplan + rendering tests (25 tests) |
 | `.github/workflows/publish-to-mcp-hive.yml` | CI/CD â€” push to `main` deploys to MCP Hive |
-| `.github/workflows/inbox-scan.yml` | Inbox scan every 15 min, 6 AM-8 PM Central, Mon-Fri |
+| `.github/workflows/inbox-scan.yml` | Inbox scan schedule and Gmail filing workflow |
+| `.github/workflows/vendor-doc-republish-sweep.yml` | Active core source sweep for in-place DDR updates |
 | `.github/workflows/daily-dd-check.yml` | Daily sweep at 9 AM Central, Mon-Fri |
 
 ---

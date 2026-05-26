@@ -149,6 +149,8 @@ def test_list_rhodes_site_records_returns_drive_ready_inbox_records() -> None:
             "slug": "alpha-keller",
             "address": "123 Main St, Keller, TX 76248",
             "status": "active",
+            "createdDate": "2026-05-20",
+            "p1Dri": {"name": "Devin Bates", "email": "devin.bates@trilogy.com"},
             "driveFolderId": "drive-root-1",
         },
         sites=[{"_id": "SITE1", "name": "Alpha Keller"}],
@@ -166,7 +168,13 @@ def test_list_rhodes_site_records_returns_drive_ready_inbox_records() -> None:
             "address": "123 Main St, Keller, TX 76248",
             "drive_folder_id": "drive-root-1",
             "drive_folder_url": "https://drive.google.com/drive/folders/drive-root-1",
+            "p1_assignee_name": "Devin Bates",
+            "p1_assignee_email": "devin.bates@trilogy.com",
+            "p1_assignee_user_id": "",
+            "created_date": "2026-05-20",
+            "status": "active",
             "rhodes_status": "active",
+            "customFields": [],
         }
     ]
     assert client.calls == [

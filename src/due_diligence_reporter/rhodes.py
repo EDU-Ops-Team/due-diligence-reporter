@@ -543,6 +543,7 @@ def list_rhodes_site_records(
         name = _site_name(site) or _site_name(summary)
         if not name:
             continue
+        owner = _extract_p1_dri(site)
         records.append(
             {
                 "id": site_id,
@@ -553,7 +554,13 @@ def list_rhodes_site_records(
                 "address": _site_address(site) or _site_address(summary),
                 "drive_folder_id": drive_folder_id,
                 "drive_folder_url": drive_folder_url,
+                "p1_assignee_name": owner.get("name", ""),
+                "p1_assignee_email": owner.get("email", ""),
+                "p1_assignee_user_id": owner.get("userId", ""),
+                "created_date": str(site.get("createdDate") or summary.get("createdDate") or ""),
+                "status": str(site.get("status") or summary.get("status") or status),
                 "rhodes_status": site.get("status") or summary.get("status") or "",
+                "customFields": site.get("customFields") if isinstance(site.get("customFields"), list) else [],
             }
         )
     return records

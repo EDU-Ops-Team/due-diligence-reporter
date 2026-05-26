@@ -25,6 +25,11 @@ from .classifier import (
 from .config import Settings, get_settings
 from .google_client import GoogleClient
 from .m1_lookup import _list_m1_documents_by_type, _resolve_m1_folder
+from .open_questions import (
+    close_open_questions,
+    extract_open_questions_from_report_data,
+    serialize_open_questions,
+)
 from .pipeline_contracts import (
     ArtifactRef,
     PipelineError,
@@ -86,7 +91,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "lookup_rhodes_site_owner",
         "description": (
             "Read the Rhodes/LocationOS site record for the supplied site and return "
-            "the current P1 DRI / site owner. Call this before create_dd_report. "
+            "the current P1 DRI / site owner and linked Google Drive folder URL. "
+            "Call this before list_drive_documents or create_dd_report when the "
+            "request does not include a Drive folder URL. "
             "Use returned report_data_fields for meta.prepared_by and include the "
             "owner email in send_dd_report_email additional_recipients."
         ),
@@ -143,6 +150,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "properties": {
                 "site_name": {"type": "string"},
                 "drive_folder_url": {"type": "string"},
+                "site_address": {"type": "string", "description": "Optional full property address used for deterministic REBL site ID resolution"},
                 "report_data": {"type": "object"},
                 "token_evidence": {"type": "object", "description": "Optional dict mapping token names to raw source excerpts for local diagnostics"},
             },
@@ -237,6 +245,7 @@ def _canonicalize_site_tool_input(
     """Keep agent tool calls anchored to the pipeline's canonical site context."""
     canonical = dict(tool_input)
     if tool_name in {
+        "lookup_rhodes_site_owner",
         "list_drive_documents",
         "apply_e_occupancy_skill",
         "apply_school_approval_skill",
@@ -255,7 +264,11 @@ def _canonicalize_site_tool_input(
     }:
         canonical["drive_folder_url"] = drive_folder_url
 
-    if site_address and tool_name == "list_drive_documents":
+    if site_address and tool_name in {
+        "lookup_rhodes_site_owner",
+        "list_drive_documents",
+        "create_dd_report",
+    }:
         canonical["site_address"] = site_address
 
     return canonical
@@ -566,15 +579,30 @@ def run_dd_report_agent(
     run_start = time.monotonic()
 
     request_lines = [f"Generate a DD Report for: {site_title}"]
-    if site_address:
-        request_lines.append(f"Site address: {site_address}")
+    effective_site_address = site_address
+    if effective_site_address:
+        request_lines.append(f"Site address: {effective_site_address}")
+    effective_drive_folder_url = drive_folder_url
     if drive_folder_url:
         request_lines.append(f"Drive folder URL: {drive_folder_url}")
         request_lines.append("Use the provided Drive folder directly.")
+    else:
+        request_lines.append(
+            "Drive folder URL: not supplied. Use lookup_rhodes_site_owner first; "
+            "if it returns drive_folder_url, use that exact URL for Drive tools."
+        )
     if rhodes_owner_context:
         owner_name = str(rhodes_owner_context.get("p1_assignee_name") or "").strip()
         owner_email = str(rhodes_owner_context.get("p1_assignee_email") or "").strip()
         owner_status = str(rhodes_owner_context.get("status") or "").strip()
+        rhodes_drive_url = str(rhodes_owner_context.get("drive_folder_url") or "").strip()
+        rhodes_site_address = str(rhodes_owner_context.get("site_address") or "").strip()
+        if rhodes_site_address and not effective_site_address:
+            effective_site_address = rhodes_site_address
+            request_lines.append(f"Rhodes site address: {rhodes_site_address}")
+        if rhodes_drive_url and not effective_drive_folder_url:
+            effective_drive_folder_url = rhodes_drive_url
+            request_lines.append(f"Rhodes Drive folder URL: {rhodes_drive_url}")
         if owner_name or owner_email:
             owner_email_suffix = f" <{owner_email}>" if owner_email else ""
             request_lines.append(
@@ -591,6 +619,9 @@ def run_dd_report_agent(
     doc_id: str | None = None
     doc_url: str | None = None
     cached_report_fields: dict[str, Any] = dict(initial_report_fields or {})
+    if effective_site_address:
+        cached_report_fields.setdefault("site.address", effective_site_address)
+        cached_report_fields.setdefault("site.site_address", effective_site_address)
     max_iterations = 40  # Safety limit
 
     for iteration in range(max_iterations):
@@ -628,8 +659,8 @@ def run_dd_report_agent(
                 tool_use.name,
                 dict(tool_use.input),
                 site_title=site_title,
-                drive_folder_url=drive_folder_url,
-                site_address=site_address,
+                drive_folder_url=effective_drive_folder_url,
+                site_address=effective_site_address,
             )
             if tool_use.name == "create_dd_report":
                 tool_input = _merge_cached_report_fields(tool_input, cached_report_fields)
@@ -677,6 +708,26 @@ def run_dd_report_agent(
                 report_fields = result.get("report_data_fields")
                 if isinstance(report_fields, dict):
                     cached_report_fields.update(report_fields)
+                rhodes_drive_url = str(result.get("drive_folder_url") or "").strip()
+                rhodes_site_address = str(result.get("site_address") or "").strip()
+                if not rhodes_drive_url and isinstance(report_fields, dict):
+                    rhodes_drive_url = str(
+                        report_fields.get("meta.drive_folder_url")
+                        or report_fields.get("site.drive_folder_url")
+                        or ""
+                    ).strip()
+                if not rhodes_site_address and isinstance(report_fields, dict):
+                    rhodes_site_address = str(
+                        report_fields.get("site.address")
+                        or report_fields.get("site.site_address")
+                        or ""
+                    ).strip()
+                if rhodes_drive_url and not effective_drive_folder_url:
+                    effective_drive_folder_url = rhodes_drive_url
+                if rhodes_site_address and not effective_site_address:
+                    effective_site_address = rhodes_site_address
+                    cached_report_fields.setdefault("site.address", rhodes_site_address)
+                    cached_report_fields.setdefault("site.site_address", rhodes_site_address)
 
             tool_results.append({
                 "type": "tool_result",
@@ -731,6 +782,10 @@ class PipelineResult:
     manifest_path: str | None = None
     sir_review_status: str | None = None
     sir_learning_review: dict[str, Any] | None = None
+    source_event: dict[str, Any] | None = None
+    open_questions: list[dict[str, Any]] = field(default_factory=list)
+    closed_open_questions: list[dict[str, Any]] = field(default_factory=list)
+    republish_summary: dict[str, Any] | None = None
     steps: list[StepResult] = field(default_factory=list)
 
 
@@ -824,6 +879,7 @@ def _finalize_pipeline_result(
     if result.sir_learning_review:
         result.sir_review_status = str(result.sir_learning_review.get("status") or "")
     run = recorder.to_run(result.status)
+    _attach_result_metadata(run, result)
     manifest_persisted = False
     secret_detected = manifest_has_secret_like_value(run.to_dict())
     started_at, started_monotonic = recorder.start()
@@ -867,6 +923,7 @@ def _finalize_pipeline_result(
                 ),
             )
     run = recorder.to_run(result.status)
+    _attach_result_metadata(run, result)
     run.manifest_path = result.manifest_path
     run.quality = evaluate_run_quality(
         run,
@@ -877,6 +934,7 @@ def _finalize_pipeline_result(
         path = persist_run_manifest(run)
         result.manifest_path = str(path)
         run = recorder.to_run(result.status)
+        _attach_result_metadata(run, result)
         run.manifest_path = result.manifest_path
         run.quality = evaluate_run_quality(
             run,
@@ -893,6 +951,13 @@ def _finalize_pipeline_result(
     result.quality_band = quality.band
     result.manifest_path = run.manifest_path
     return result
+
+
+def _attach_result_metadata(run: PipelineRun, result: PipelineResult) -> None:
+    run.source_event = result.source_event
+    run.open_questions = result.open_questions
+    run.closed_open_questions = result.closed_open_questions
+    run.republish_summary = result.republish_summary
 
 
 def _get_payload_error(result: dict[str, Any]) -> str | None:
@@ -1396,6 +1461,9 @@ def _email_pipeline_report(
     site_title: str,
     doc_url: str,
     p1_email: str | None,
+    *,
+    is_update: bool = False,
+    open_question_count: int = 0,
 ) -> str | None:
     """Send the completed DD report email when email settings are configured."""
     if not settings.email_sender or not settings.email_app_password:
@@ -1423,7 +1491,8 @@ def _email_pipeline_report(
     html_body = f"""
 <html><body>
 <h2>Due Diligence Report - {safe_site_name}</h2>
-<p>A new Due Diligence report has been generated for <strong>{safe_site_name}</strong>.</p>
+<p>The Due Diligence report has been {"updated" if is_update else "generated"} for <strong>{safe_site_name}</strong>.</p>
+{"<p><strong>Status:</strong> DDR Published (Partial). Open verification items remain.</p>" if open_question_count else ""}
 {report_link_html}
 </body></html>
 """
@@ -1432,7 +1501,7 @@ def _email_pipeline_report(
             sender=settings.email_sender,
             app_password=settings.email_app_password,
             recipients=recipients,
-            subject=f"DD Report Ready - {site_title}",
+            subject=f"DD Report {'Updated' if is_update else 'Ready'} - {site_title}",
             html_body=html_body,
             global_cc=settings.global_email_cc,
         )
@@ -1447,7 +1516,7 @@ def _resolve_rhodes_owner_for_pipeline(
     site_title: str,
     site_address: str | None,
 ) -> dict[str, Any]:
-    """Best-effort Rhodes owner lookup for pipeline runs."""
+    """Best-effort Rhodes site lookup for owner and Drive-folder context."""
     try:
         result = lookup_rhodes_site_owner(
             site_name=site_title,
@@ -1470,11 +1539,62 @@ def _owner_lookup_report_fields(result: dict[str, Any] | None) -> dict[str, Any]
     return fields if isinstance(fields, dict) else {}
 
 
+def _drive_folder_from_rhodes(result: dict[str, Any] | None) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    direct = result.get("drive_folder_url")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    fields = _owner_lookup_report_fields(result)
+    for key in ("meta.drive_folder_url", "site.drive_folder_url"):
+        value = fields.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _first_text(*values: Any) -> str | None:
     for value in values:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _report_data_from_trace(trace: ReportTrace | None) -> dict[str, Any]:
+    if trace is None:
+        return {}
+    return trace.final_report_data if isinstance(trace.final_report_data, dict) else {}
+
+
+def _set_open_question_state(
+    result: PipelineResult,
+    *,
+    trace: ReportTrace | None,
+    run_id: str,
+    source_event: dict[str, Any] | None,
+    open_questions_before: list[dict[str, Any]] | None,
+    validated: bool,
+) -> None:
+    questions = extract_open_questions_from_report_data(
+        _report_data_from_trace(trace),
+        created_run=run_id,
+    )
+    result.open_questions = serialize_open_questions(questions)
+    result.source_event = source_event
+    if validated:
+        closures = close_open_questions(
+            open_questions_before or [],
+            result.open_questions,
+            source_event=source_event,
+            closed_run=run_id,
+        )
+        result.closed_open_questions = [closure.to_dict() for closure in closures]
+    if source_event:
+        result.republish_summary = {
+            "trigger_source": source_event.get("source_type", ""),
+            "closed_open_item_count": len(result.closed_open_questions),
+            "still_open_item_count": len(result.open_questions),
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1565,9 +1685,19 @@ def _record_email_step(
     site_title: str,
     doc_url: str,
     p1_email: str | None,
+    *,
+    is_update: bool = False,
+    open_question_count: int = 0,
 ) -> None:
     started_at, started_monotonic = recorder.start()
-    error = _email_pipeline_report(settings, site_title, doc_url, p1_email)
+    error = _email_pipeline_report(
+        settings,
+        site_title,
+        doc_url,
+        p1_email,
+        is_update=is_update,
+        open_question_count=open_question_count,
+    )
     if error == "email settings not configured":
         recorder.record(
             "notify.email",
@@ -1604,6 +1734,9 @@ def process_site_pipeline(
     timeline_confidence: str | None = None,
     # Optional ISO 8601 source created date.
     site_created_at: str | None = None,
+    site_id: str | None = None,
+    source_event: dict[str, Any] | None = None,
+    open_questions_before: list[dict[str, Any]] | None = None,
     # When True, bypass the ``report_exists`` short-circuit so a fresh
     # report is generated on top of an existing DD Report Doc. Used by the
     # event-driven republish path (raycon_followup) when authoritative
@@ -1615,7 +1748,84 @@ def process_site_pipeline(
 
     Returns a PipelineResult describing what happened.
     """
-    recorder = _RunRecorder(site_title)
+    recorder = _RunRecorder(site_title, site_id=site_id)
+    rhodes_owner_context: dict[str, Any] | None = None
+    initial_report_fields: dict[str, Any] = {}
+
+    if not drive_folder_url.strip():
+        started_at, started_monotonic = recorder.start()
+        rhodes_owner_context = _resolve_rhodes_owner_for_pipeline(site_title, site_address)
+        rhodes_status = str(rhodes_owner_context.get("status") or "")
+        if rhodes_status == "not_configured":
+            recorder.record(
+                "rhodes.owner_lookup",
+                started_at,
+                started_monotonic,
+                "skipped",
+                skipped_reason="RHODES_API_KEY not configured",
+            )
+        elif rhodes_status == "error":
+            recorder.record(
+                "rhodes.owner_lookup",
+                started_at,
+                started_monotonic,
+                "skipped",
+                skipped_reason=str(rhodes_owner_context.get("message") or "lookup failed"),
+            )
+        else:
+            recorder.record("rhodes.owner_lookup", started_at, started_monotonic, "succeeded")
+
+        resolved_site_id = str(rhodes_owner_context.get("site_id") or "").strip()
+        if resolved_site_id and not recorder.site_id:
+            recorder.site_id = resolved_site_id
+        initial_report_fields.update(_owner_lookup_report_fields(rhodes_owner_context))
+        p1_name = p1_name or _first_text(
+            rhodes_owner_context.get("p1_assignee_name"),
+            initial_report_fields.get("p1_assignee_name"),
+            initial_report_fields.get("site.p1_assignee_name"),
+        )
+        p1_email = p1_email or _first_text(
+            rhodes_owner_context.get("p1_assignee_email"),
+            initial_report_fields.get("p1_assignee_email"),
+            initial_report_fields.get("site.p1_assignee_email"),
+        )
+        site_created_at = site_created_at or _first_text(
+            initial_report_fields.get("site_created_at")
+        )
+        rhodes_drive_folder_url = _drive_folder_from_rhodes(rhodes_owner_context)
+        if rhodes_drive_folder_url and not drive_folder_url.strip():
+            drive_folder_url = rhodes_drive_folder_url
+
+    if not drive_folder_url.strip():
+        message = (
+            "No Drive folder URL was supplied and Rhodes did not return a linked "
+            "Google Drive folder for this site. Link/provision the site folder in "
+            "Rhodes and rerun."
+        )
+        started_at, started_monotonic = recorder.start()
+        recorder.record(
+            "readiness.check",
+            started_at,
+            started_monotonic,
+            "blocked",
+            error=_pipeline_error(
+                recorder.run_id,
+                "readiness.check",
+                "missing_drive_folder_url",
+                message,
+                retryable=False,
+                cause=str(
+                    (rhodes_owner_context or {}).get("drive_folder_message") or ""
+                ) or None,
+            ),
+        )
+        return _finalize_pipeline_result(
+            PipelineResult(site_title=site_title, status="error", error=message),
+            recorder,
+            gc=gc,
+            drive_folder_url=drive_folder_url,
+        )
+
     started_at, started_monotonic = recorder.start()
     try:
         readiness = check_site_readiness_direct(
@@ -1652,6 +1862,13 @@ def process_site_pipeline(
     )
     sir_learning_review = readiness.get("sir_learning_review")
     if readiness_result is not None:
+        if source_event:
+            readiness_result.source_event = source_event
+            readiness_result.republish_summary = {
+                "trigger_source": source_event.get("source_type", ""),
+                "closed_open_item_count": 0,
+                "still_open_item_count": 0,
+            }
         if readiness_result.status == "waiting_on_docs":
             recorder.record(
                 "readiness.check",
@@ -1698,9 +1915,7 @@ def process_site_pipeline(
     recorder.record("readiness.check", started_at, started_monotonic, "succeeded")
     _record_sir_learning_review_step(recorder, sir_learning_review)
 
-    rhodes_owner_context: dict[str, Any] | None = None
-    initial_report_fields: dict[str, Any] = {}
-    if not (p1_name and p1_email):
+    if rhodes_owner_context is None and not (p1_name and p1_email):
         started_at, started_monotonic = recorder.start()
         rhodes_owner_context = _resolve_rhodes_owner_for_pipeline(site_title, site_address)
         rhodes_status = str(rhodes_owner_context.get("status") or "")
@@ -1723,6 +1938,9 @@ def process_site_pipeline(
         else:
             recorder.record("rhodes.owner_lookup", started_at, started_monotonic, "succeeded")
 
+        resolved_site_id = str(rhodes_owner_context.get("site_id") or "").strip()
+        if resolved_site_id and not recorder.site_id:
+            recorder.site_id = resolved_site_id
         initial_report_fields.update(_owner_lookup_report_fields(rhodes_owner_context))
         p1_name = p1_name or _first_text(
             rhodes_owner_context.get("p1_assignee_name"),
@@ -1790,6 +2008,14 @@ def process_site_pipeline(
                 failure_reason=generation_result.error or "",
                 trace_url=generation_result.trace_url or "",
             )
+        _set_open_question_state(
+            generation_result,
+            trace=generation_result.trace,
+            run_id=recorder.run_id,
+            source_event=source_event,
+            open_questions_before=open_questions_before,
+            validated=False,
+        )
         return _finalize_pipeline_result(
             generation_result,
             recorder,
@@ -1868,6 +2094,14 @@ def process_site_pipeline(
                 failure_reason=failure_reason,
                 trace_url=trace_url or "",
             )
+        _set_open_question_state(
+            completeness_result,
+            trace=completeness_result.trace,
+            run_id=recorder.run_id,
+            source_event=source_event,
+            open_questions_before=open_questions_before,
+            validated=False,
+        )
         return _finalize_pipeline_result(
             completeness_result,
             recorder,
@@ -1883,18 +2117,35 @@ def process_site_pipeline(
         artifacts=[ArtifactRef(kind="google_doc", name="DD report", uri=doc_url, drive_file_id=doc_id)],
     )
 
-    _record_email_step(recorder, settings, site_title, doc_url, p1_email)
+    final_result = PipelineResult(
+        site_title=site_title,
+        status="report_created",
+        doc_id=doc_id,
+        doc_url=doc_url,
+        pending_count=completeness.get("pending_section_count", 0),
+        trace_url=trace_url,
+        trace=agent_result.get("trace"),
+    )
+    _set_open_question_state(
+        final_result,
+        trace=agent_result.get("trace"),
+        run_id=recorder.run_id,
+        source_event=source_event,
+        open_questions_before=open_questions_before,
+        validated=True,
+    )
+    _record_email_step(
+        recorder,
+        settings,
+        site_title,
+        doc_url,
+        p1_email,
+        is_update=source_event is not None,
+        open_question_count=len(final_result.open_questions),
+    )
 
     return _finalize_pipeline_result(
-        PipelineResult(
-            site_title=site_title,
-            status="report_created",
-            doc_id=doc_id,
-            doc_url=doc_url,
-            pending_count=completeness.get("pending_section_count", 0),
-            trace_url=trace_url,
-            trace=agent_result.get("trace"),
-        ),
+        final_result,
         recorder,
         gc=gc,
         drive_folder_url=drive_folder_url,
@@ -1943,10 +2194,19 @@ def post_pipeline_result(
         ])
 
     elif result.status == "report_created":
+        if result.source_event:
+            headline = "DDR Updated"
+        elif result.open_questions:
+            headline = "DDR Published (Partial)"
+        else:
+            headline = "DD Report CREATED"
         msg = (
-            f"DD Report CREATED -- {result.site_title}\n"
+            f"{headline} -- {result.site_title}\n"
             f"Report: {result.doc_url or '(no URL)'}"
         )
+        republish_lines = _republish_observability_lines(result)
+        if republish_lines:
+            msg += "\n" + "\n".join(republish_lines)
         if result.trace_url:
             msg += f"\nTrace: {result.trace_url}"
         if result.pending_count:
@@ -2010,4 +2270,25 @@ def _pipeline_observability_lines(result: PipelineResult) -> list[str]:
     action = next_operator_action(result.steps)
     if action:
         lines.append(f"Next action: {action}")
+    return lines
+
+
+def _republish_observability_lines(result: PipelineResult) -> list[str]:
+    lines: list[str] = []
+    source_event = result.source_event or {}
+    trigger_source = str(source_event.get("source_type") or "").strip()
+    if trigger_source:
+        lines.append(f"Trigger source: {trigger_source}")
+    if result.closed_open_questions:
+        lines.append(f"Closed open items: {len(result.closed_open_questions)}")
+        for item in result.closed_open_questions[:5]:
+            text = str(item.get("display_text") or "").strip()
+            if text:
+                lines.append(f"- {text}")
+    if result.open_questions:
+        lines.append(f"Still-open items: {len(result.open_questions)}")
+        for item in result.open_questions[:5]:
+            text = str(item.get("display_text") or "").strip()
+            if text:
+                lines.append(f"- {text}")
     return lines

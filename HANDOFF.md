@@ -1,5 +1,58 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-26 - Active DDR Open-Question Closure Workflow
+
+Implemented the partial-first, republish-in-place workflow for first-round DDRs.
+
+Current behavior:
+
+- `verification.open_items` is now converted into structured open-question
+  state with stable IDs, affected DDR field, expected source type, created run,
+  and closure metadata.
+- Pipeline manifests now carry `source_event`, `open_questions`,
+  `closed_open_questions`, and `republish_summary` outside the DDR body.
+- DDR body rendering remains unchanged: only `Open Items to Verify` is visible;
+  internal IDs, fingerprints, closure metadata, and source-event state do not
+  render into the report.
+- `dd_republish` now supports all five core source reasons:
+  `vendor_sir`, `building_inspection`, `raycon_scenario`,
+  `e_occupancy_report`, and `school_approval_report`.
+- A closure is recorded only after a validated `report_created` rerun and only
+  when a prior open item is absent from the updated report data.
+- `RepublishOutcome` now returns run ID, manifest path, trigger source event,
+  still-open items, and closed items.
+- `vendor_doc_republish_sweep.py` is the new scheduled/script entrypoint for
+  active source sweeps. It reads active Rhodes site records, scans linked Drive
+  roots/M1 folders for the five core source docs, fingerprints each source by
+  Drive file ID plus modified time, and calls the existing shared republish
+  path with `force_regenerate=True`.
+- Inbox and RayCon workflows now write Rhodes and Anthropic env vars needed for
+  in-place DDR updates.
+- `list_rhodes_site_records` now returns active Rhodes site records shaped for
+  inbox matching and source sweeps, including Drive folder and P1 DRI context.
+- Prompt/process docs now document Rhodes as source of truth, first-round
+  readiness as `SIR found AND no existing DDR`, structured open-question state,
+  and the active source sweep.
+
+Verification completed:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-pytest-active-closure-2 tests/test_dd_republish.py tests/test_inbox_scanner.py tests/test_report_pipeline.py tests/test_completeness.py tests/test_google_doc_builder.py tests/test_open_questions.py tests/test_vendor_doc_sweep.py tests/test_rhodes.py tests/test_pipeline_contracts.py
+uv run pytest --basetemp C:\tmp\ddr-pytest-docs-active tests/test_prompt_contract.py tests/test_dd_output_fixes.py tests/test_report_schema.py
+uv run ruff check src\due_diligence_reporter\open_questions.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\dd_republish.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\m1_lookup.py scripts\vendor_doc_republish_sweep.py scripts\scan_inbox.py tests\test_open_questions.py tests\test_vendor_doc_sweep.py tests\test_dd_republish.py tests\test_rhodes.py
+uv run mypy src/
+```
+
+Results:
+
+- Focused pipeline/inbox/builder/open-question sweep: 246 passed.
+- Prompt/schema/output regression suite: 145 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in 31 source files.
+- A first pytest attempt without `--basetemp` hit the known Windows temp-folder
+  permission issue at `C:\Users\foote\AppData\Local\Temp\pytest-of-foote`; the
+  rerun with `C:\tmp` basetemp passed.
+
 ## 2026-05-26 - Vendor SIR M1 Acquire Property Folder Routing
 
 Fixed the shared M1 Drive-folder resolver so vendor SIR uploads prefer the

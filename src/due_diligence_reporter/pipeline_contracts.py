@@ -138,6 +138,10 @@ class PipelineRun:
     steps: list[StepResult]
     quality: RunQualityReport | None = None
     sir_learning_review: dict[str, Any] | None = None
+    source_event: dict[str, Any] | None = None
+    open_questions: list[dict[str, Any]] = field(default_factory=list)
+    closed_open_questions: list[dict[str, Any]] = field(default_factory=list)
+    republish_summary: dict[str, Any] | None = None
     manifest_path: str | None = None
     manifest_url: str | None = None
 
@@ -152,6 +156,10 @@ class PipelineRun:
             "steps": [step.to_dict() for step in self.steps],
             "quality": self.quality.to_dict() if self.quality else None,
             "sir_learning_review": self.sir_learning_review,
+            "source_event": self.source_event,
+            "open_questions": self.open_questions,
+            "closed_open_questions": self.closed_open_questions,
+            "republish_summary": self.republish_summary,
             "manifest_path": self.manifest_path,
             "manifest_url": self.manifest_url,
             "failed_step": failed_step_name(self.steps),
