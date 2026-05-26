@@ -6,6 +6,8 @@ from due_diligence_reporter.rhodes import (
     RhodesError,
     list_rhodes_site_records,
     lookup_rhodes_site_owner,
+    map_ddr_doc_type_to_rhodes,
+    register_rhodes_document_for_upload,
 )
 
 
@@ -19,6 +21,8 @@ class FakeRhodesClient:
         self.site = site or {}
         self.sites = sites or []
         self.drive_root = drive_root
+        self.documents: list[dict[str, Any]] = []
+        self.registered_documents: list[dict[str, Any]] = []
         self.calls: list[tuple[str, dict[str, str]]] = []
 
     def resolve_site(self, *, name: str = "", address: str = "") -> dict[str, Any] | None:
@@ -41,6 +45,71 @@ class FakeRhodesClient:
             "drive-root-1",
             "https://drive.google.com/drive/folders/drive-root-1",
         )
+
+    def find_document_by_drive_file_id(
+        self,
+        *,
+        site_id: str,
+        drive_file_id: str,
+        doc_type: str | None = None,
+        milestone: str | None = None,
+    ) -> dict[str, Any] | None:
+        self.calls.append(
+            (
+                "find_document_by_drive_file_id",
+                {
+                    "site_id": site_id,
+                    "drive_file_id": drive_file_id,
+                    "doc_type": doc_type or "",
+                    "milestone": milestone or "",
+                },
+            )
+        )
+        for document in self.documents:
+            if document.get("driveFileId") == drive_file_id:
+                return document
+        return None
+
+    def register_document(
+        self,
+        *,
+        site_id: str,
+        title: str,
+        doc_type: str,
+        drive_file_id: str,
+        drive_url: str = "",
+        mime_type: str = "",
+        milestone: str | None = None,
+        quality_bar: str | None = None,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "register_document",
+                {
+                    "site_id": site_id,
+                    "title": title,
+                    "doc_type": doc_type,
+                    "drive_file_id": drive_file_id,
+                    "milestone": milestone or "",
+                    "quality_bar": quality_bar or "",
+                },
+            )
+        )
+        document = {
+            "_id": f"DOC{len(self.registered_documents) + 1}",
+            "siteId": site_id,
+            "title": title,
+            "docType": doc_type,
+            "driveFileId": drive_file_id,
+            "driveUrl": drive_url,
+            "mimeType": mime_type,
+            "milestone": milestone,
+            "qualityBar": quality_bar,
+            "notes": notes,
+        }
+        self.registered_documents.append(document)
+        return document
 
 
 def test_lookup_rhodes_site_owner_returns_p1_report_fields() -> None:
@@ -181,3 +250,70 @@ def test_list_rhodes_site_records_returns_drive_ready_inbox_records() -> None:
         ("list_sites", {"status": "active"}),
         ("get_site", {"site_id": "SITE1", "slug": ""}),
     ]
+
+
+def test_ddr_doc_type_mapping_covers_inbox_supported_docs() -> None:
+    assert map_ddr_doc_type_to_rhodes("sir").doc_type == "siteInvestigationReport"  # type: ignore[union-attr]
+    assert map_ddr_doc_type_to_rhodes("building_inspection").doc_type == (  # type: ignore[union-attr]
+        "propertyConditionAssessment"
+    )
+    assert map_ddr_doc_type_to_rhodes("block_plan").doc_type == "floorPlan"  # type: ignore[union-attr]
+    assert map_ddr_doc_type_to_rhodes("isp").doc_type == "other"  # type: ignore[union-attr]
+
+
+def test_register_rhodes_document_for_upload_registers_mapped_drive_file() -> None:
+    client = FakeRhodesClient()
+
+    result = register_rhodes_document_for_upload(
+        site_id="SITE1",
+        ddr_doc_type="block_plan",
+        title="May 26 2026 - Alpha Keller Block Plan.pdf",
+        drive_file_id="drive-file-1",
+        drive_url="https://drive.google.com/file/d/drive-file-1/view",
+        original_filename="Block Plan.pdf",
+        message_id="gmail-msg-1",
+        attachment_id="att-1",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "registered"
+    assert result["rhodes_doc_type"] == "floorPlan"
+    assert result["rhodes_milestone"] == "acquireProperty"
+    assert result["rhodes_document_id"] == "DOC1"
+    assert client.registered_documents[0]["docType"] == "floorPlan"
+    assert client.registered_documents[0]["milestone"] == "acquireProperty"
+    assert "DDR doc type: block_plan" in client.registered_documents[0]["notes"]
+    assert "Gmail message ID: gmail-msg-1" in client.registered_documents[0]["notes"]
+
+
+def test_register_rhodes_document_for_upload_skips_existing_drive_file() -> None:
+    client = FakeRhodesClient()
+    client.documents = [{"_id": "DOC_EXISTING", "driveFileId": "drive-file-1"}]
+
+    result = register_rhodes_document_for_upload(
+        site_id="SITE1",
+        ddr_doc_type="isp",
+        title="May 26 2026 - Alpha Keller ISP.pdf",
+        drive_file_id="drive-file-1",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "already_registered"
+    assert result["rhodes_doc_type"] == "other"
+    assert result["rhodes_document_id"] == "DOC_EXISTING"
+    assert client.registered_documents == []
+
+
+def test_register_rhodes_document_for_upload_handles_missing_config(monkeypatch) -> None:
+    monkeypatch.delenv("RHODES_API_KEY", raising=False)
+
+    result = register_rhodes_document_for_upload(
+        site_id="SITE1",
+        ddr_doc_type="sir",
+        title="Alpha Keller SIR.pdf",
+        drive_file_id="drive-file-1",
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "rhodes_error"
+    assert "RHODES_API_KEY" in result["error"]

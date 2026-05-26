@@ -18,6 +18,7 @@ from due_diligence_reporter.inbox_scanner import (
     _run_block_plan_downstream,
     _run_doc_arrival_folder_ping,
     _walk_parts,
+    build_scan_summary,
     has_site_identity,
     process_email,
     scan_inbox,
@@ -26,6 +27,33 @@ from due_diligence_reporter.inbox_scanner import (
 # ---------------------------------------------------------------------------
 # Filename generation
 # ---------------------------------------------------------------------------
+
+
+def test_scan_summary_includes_manual_review_reason() -> None:
+    summary = build_scan_summary(
+        {
+            "emails_found": 1,
+            "emails_processed": 1,
+            "attachments_uploaded": 0,
+            "attachments_skipped": 1,
+            "manual_review": [
+                {
+                    "filename": "Alpha Keller SIR.pdf",
+                    "doc_type": "sir",
+                    "reason": "unmatched_site",
+                    "confidence": 0.95,
+                    "email_subject": "Fwd: SIR",
+                }
+            ],
+            "low_confidence": [],
+            "uploads": [],
+            "errors": [],
+        }
+    )
+
+    assert "Needs manual review:" in summary
+    assert "reason: unmatched_site" in summary
+    assert "confidence: 95%" in summary
 
 
 class TestGenerateDriveFilename:
@@ -127,6 +155,8 @@ class TestClassification:
 
         assert len(result["low_confidence"]) == 1
         assert result["low_confidence"][0]["doc_type"] == "sir"
+        assert result["low_confidence"][0]["reason"] == "low_confidence"
+        assert result["manual_review"][0]["reason"] == "low_confidence"
         assert result["marked"] is True
         gc.gmail_modify_labels.assert_called_once_with(
             "msg_2",
@@ -250,6 +280,7 @@ class TestClassification:
         assert len(result["errors"]) == 1
         assert result["errors"][0]["filename"] == "Alpha Keller SIR.pdf"
         assert result["errors"][0]["error"] == "upload boom"
+        assert result["manual_review"][0]["reason"] == "upload_failed"
 
     @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
@@ -401,6 +432,8 @@ class TestClassification:
         assert result["skipped"] == 1
         assert result["marked"] is True
         assert result["low_confidence"][0]["doc_type"] == "sir"
+        assert result["low_confidence"][0]["reason"] == "unmatched_site"
+        assert result["manual_review"][0]["reason"] == "unmatched_site"
         # The scanner must NOT have tried to upload anything when site is unmatched.
         gc.upload_file_to_folder.assert_not_called()
 
@@ -448,6 +481,7 @@ class TestClassification:
             err.get("error") == "Matched site has no Google Drive folder URL"
             for err in result["errors"]
         )
+        assert result["manual_review"][0]["reason"] == "missing_drive_folder"
         mock_resolve_m1.assert_not_called()
         gc.upload_file_to_folder.assert_not_called()
 
@@ -477,6 +511,7 @@ class TestClassification:
         assert result["skipped"] == 1
         assert result["marked"] is True
         assert result["low_confidence"][0]["doc_type"] == "block_plan"
+        assert result["manual_review"][0]["reason"] == "unmatched_site"
 
     @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._run_block_plan_downstream")
@@ -1360,6 +1395,121 @@ class TestBlockPlanDownstream:
                 block_plan_file_id="block123",
             )
         mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Rhodes document registration side effect
+# ---------------------------------------------------------------------------
+
+
+class TestRhodesDocumentRegistration:
+    """Successful Drive uploads should be linked to Rhodes without blocking filing."""
+
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
+    @patch("due_diligence_reporter.inbox_scanner._register_uploaded_document_in_rhodes")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_successful_upload_records_rhodes_registration(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_register,
+        mock_ping,
+        mock_resolve_m1,
+        mock_build_summary,
+    ):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_rhodes",
+            subject="Alpha Keller ISP",
+            sender="vendor@example.com",
+            effective_sender="vendor@example.com",
+            body_snippet="",
+            attachments=[
+                {
+                    "filename": "Alpha Keller ISP.pdf",
+                    "attachment_id": "att_isp",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        mock_classify.return_value = ("isp", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "M1")
+        mock_build_summary.return_value = {
+            "id": "SITE1",
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+        }
+        mock_register.return_value = {
+            "status": "registered",
+            "rhodes_doc_type": "other",
+            "rhodes_document_id": "DOC1",
+        }
+        mock_ping.return_value = {"status": "accepted"}
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"pdf"
+        gc.upload_file_to_folder.return_value = {
+            "id": "isp_drive_id",
+            "webViewLink": "https://drive.google.com/file/d/isp_drive_id",
+        }
+
+        result = process_email(
+            gc,
+            "msg_rhodes",
+            MagicMock(),
+            "label_123",
+            "review_123",
+            site_records=[{"id": "SITE1", "title": "Alpha Keller", "customFields": []}],
+        )
+
+        assert result["uploaded"][0]["rhodes_registration"] == {
+            "status": "registered",
+            "rhodes_doc_type": "other",
+            "rhodes_document_id": "DOC1",
+        }
+        kwargs = mock_register.call_args.kwargs
+        assert kwargs["site_summary"]["id"] == "SITE1"
+        assert kwargs["ddr_doc_type"] == "isp"
+        assert kwargs["drive_file"]["id"] == "isp_drive_id"
+        assert kwargs["message_id"] == "msg_rhodes"
+        assert kwargs["attachment"]["attachment_id"] == "att_isp"
+
+    def test_build_scan_summary_includes_rhodes_registration_counts(self):
+        from due_diligence_reporter.inbox_scanner import build_scan_summary
+
+        summary = build_scan_summary(
+            {
+                "emails_found": 1,
+                "emails_processed": 1,
+                "attachments_uploaded": 2,
+                "attachments_skipped": 0,
+                "uploads": [
+                    {
+                        "doc_type": "sir",
+                        "drive_filename": "Alpha Keller SIR.pdf",
+                        "rhodes_registration": {"status": "registered"},
+                    },
+                    {
+                        "doc_type": "isp",
+                        "drive_filename": "Alpha Keller ISP.pdf",
+                        "rhodes_registration": {
+                            "status": "failed",
+                            "reason": "rhodes_error",
+                            "error": "timeout",
+                        },
+                    },
+                ],
+                "low_confidence": [],
+                "errors": [],
+            }
+        )
+
+        assert "Rhodes document links: failed=1 registered=1" in summary
+        assert "Rhodes: failed (rhodes_error: timeout)" in summary
 
 
 # ---------------------------------------------------------------------------

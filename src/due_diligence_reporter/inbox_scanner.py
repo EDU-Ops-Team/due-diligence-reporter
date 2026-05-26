@@ -22,6 +22,7 @@ from .m1_lookup import (
     _list_m1_documents_by_type,
     _resolve_m1_folder,
 )
+from .rhodes import register_rhodes_document_for_upload
 from .utils import (
     escape_html_text,
     extract_city_from_address,
@@ -74,6 +75,29 @@ DOC_TYPE_FILENAME_TEMPLATES = {
     "isp": "{date} - {site_title} ISP.pdf",
     "block_plan": "{date} - {site_title} Block Plan.pdf",
 }
+
+
+def _manual_review_item(
+    *,
+    filename: str,
+    doc_type: str,
+    confidence: float,
+    email_subject: str,
+    site_title: str | None,
+    reason: str,
+    error: str | None = None,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "filename": filename,
+        "doc_type": doc_type,
+        "confidence": confidence,
+        "email_subject": email_subject,
+        "site_title": site_title,
+        "reason": reason,
+    }
+    if error:
+        item["error"] = error
+    return item
 
 
 def _custom_field_value(record: dict[str, Any], names: set[str]) -> str:
@@ -285,6 +309,53 @@ def _run_doc_arrival_folder_ping(
         "doc_type": doc_type,
         "file_id": file_id,
     }
+
+
+def _register_uploaded_document_in_rhodes(
+    *,
+    site_summary: dict[str, Any],
+    ddr_doc_type: str,
+    drive_file: dict[str, Any],
+    drive_filename: str,
+    original_filename: str,
+    message_id: str,
+    attachment: dict[str, Any],
+) -> dict[str, Any]:
+    """Link a successfully-filed Drive document to its Rhodes site record.
+
+    This mirrors other post-upload side effects: failures are recorded on the
+    upload row but never undo the Drive filing or email processing.
+    """
+    site_id = str(site_summary.get("id") or site_summary.get("site_id") or "").strip()
+    try:
+        return register_rhodes_document_for_upload(
+            site_id=site_id,
+            ddr_doc_type=ddr_doc_type,
+            title=drive_filename,
+            drive_file_id=str(drive_file.get("id") or "").strip(),
+            drive_url=str(drive_file.get("webViewLink") or "").strip(),
+            mime_type=str(attachment.get("mime_type") or "application/pdf").strip(),
+            original_filename=original_filename,
+            source="inbox_scanner",
+            message_id=message_id,
+            attachment_id=str(attachment.get("attachment_id") or "").strip(),
+        )
+    except Exception as exc:  # noqa: BLE001 - non-fatal scanner side effect
+        logger.warning(
+            "Rhodes document registration failed for site=%s doc_type=%s file_id=%s: %s",
+            site_summary.get("title") or site_id or "(unknown)",
+            ddr_doc_type,
+            drive_file.get("id") or "(none)",
+            exc,
+        )
+        return {
+            "status": "failed",
+            "reason": "unexpected_error",
+            "rhodes_site_id": site_id,
+            "drive_file_id": str(drive_file.get("id") or "").strip(),
+            "ddr_doc_type": ddr_doc_type,
+            "error": str(exc),
+        }
 
 
 # Map of inbox doc_type → shared-helper reason code. Keep this narrow:
@@ -612,6 +683,7 @@ def scan_inbox(
         "emails_processed": 0,
         "errors": [],
         "uploads": [],
+        "manual_review": [],
         "low_confidence": [],
     }
 
@@ -640,6 +712,10 @@ def scan_inbox(
                 results["attachments_skipped"] += email_result["skipped"]
             if email_result.get("low_confidence"):
                 results["low_confidence"].extend(email_result["low_confidence"])
+            if email_result.get("manual_review"):
+                results["manual_review"].extend(email_result["manual_review"])
+            elif email_result.get("low_confidence"):
+                results["manual_review"].extend(email_result["low_confidence"])
             if email_result.get("errors"):
                 results["errors"].extend(email_result["errors"])
             if email_result.get("marked"):
@@ -679,7 +755,8 @@ def process_email(
     legacy first-generation path keeps owning the case where no DD
     Report exists yet.
 
-    Returns a dict with keys: uploaded, skipped, low_confidence, errors, marked.
+    Returns a dict with keys: uploaded, skipped, manual_review, low_confidence,
+    errors, marked.
     """
     metadata = _extract_email_metadata(gc, message_id)
     logger.info(
@@ -714,6 +791,7 @@ def process_email(
 
     uploaded: list[dict[str, Any]] = []
     skipped = 0
+    manual_review: list[dict[str, Any]] = []
     low_confidence: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     all_succeeded = True
@@ -766,15 +844,16 @@ def process_email(
                 confidence,
                 filename,
             )
-            low_confidence.append(
-                {
-                    "filename": filename,
-                    "doc_type": doc_type,
-                    "confidence": confidence,
-                    "email_subject": metadata.subject,
-                    "site_title": site_title,
-                }
+            review_item = _manual_review_item(
+                filename=filename,
+                doc_type=doc_type,
+                confidence=confidence,
+                email_subject=metadata.subject,
+                site_title=site_title,
+                reason="low_confidence",
             )
+            low_confidence.append(review_item)
+            manual_review.append(review_item)
             skipped += 1
             review_needed = True
             continue
@@ -785,15 +864,18 @@ def process_email(
                 doc_type,
                 filename,
             )
-            low_confidence.append(
-                {
-                    "filename": filename,
-                    "doc_type": doc_type,
-                    "confidence": confidence,
-                    "email_subject": metadata.subject,
-                    "site_title": site_title,
-                }
+            review_item = _manual_review_item(
+                filename=filename,
+                doc_type=doc_type,
+                confidence=confidence,
+                email_subject=metadata.subject,
+                site_title=site_title,
+                reason="unmatched_site",
             )
+            # Preserve the legacy key because existing callers use it as a
+            # broad manual-review bucket, even though the name is imprecise.
+            low_confidence.append(review_item)
+            manual_review.append(review_item)
             skipped += 1
             review_needed = True
             continue
@@ -805,13 +887,25 @@ def process_email(
         # configured only so the migration script can read from them.
         drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
         if not drive_folder_url:
+            error_message = "Matched site has no Google Drive folder URL"
             errors.append(
                 {
                     "message_id": message_id,
                     "filename": filename,
                     "doc_type": doc_type,
-                    "error": "Matched site has no Google Drive folder URL",
+                    "error": error_message,
                 }
+            )
+            manual_review.append(
+                _manual_review_item(
+                    filename=filename,
+                    doc_type=doc_type,
+                    confidence=confidence,
+                    email_subject=metadata.subject,
+                    site_title=site_title,
+                    reason="missing_drive_folder",
+                    error=error_message,
+                )
             )
             all_succeeded = False
             review_needed = True
@@ -823,25 +917,49 @@ def process_email(
                 allow_legacy_fallback=False,
             )
         except Exception as e:
+            error_message = f"Failed to resolve M1 folder: {e}"
             errors.append(
                 {
                     "message_id": message_id,
                     "filename": filename,
                     "doc_type": doc_type,
-                    "error": f"Failed to resolve M1 folder: {e}",
+                    "error": error_message,
                 }
+            )
+            manual_review.append(
+                _manual_review_item(
+                    filename=filename,
+                    doc_type=doc_type,
+                    confidence=confidence,
+                    email_subject=metadata.subject,
+                    site_title=site_title,
+                    reason="m1_resolution_failed",
+                    error=error_message,
+                )
             )
             all_succeeded = False
             review_needed = True
             continue
         if not target_folder_id:
+            error_message = "Could not resolve M1 folder ID"
             errors.append(
                 {
                     "message_id": message_id,
                     "filename": filename,
                     "doc_type": doc_type,
-                    "error": "Could not resolve M1 folder ID",
+                    "error": error_message,
                 }
+            )
+            manual_review.append(
+                _manual_review_item(
+                    filename=filename,
+                    doc_type=doc_type,
+                    confidence=confidence,
+                    email_subject=metadata.subject,
+                    site_title=site_title,
+                    reason="m1_folder_missing",
+                    error=error_message,
+                )
             )
             all_succeeded = False
             review_needed = True
@@ -897,13 +1015,25 @@ def process_email(
                 drive_filename,
             )
             if drive_file is None:
+                error_message = "Existing Block Plan PDF could not be found in M1"
                 errors.append(
                     {
                         "message_id": message_id,
                         "filename": filename,
                         "doc_type": doc_type,
-                        "error": "Existing Block Plan PDF could not be found in M1",
+                        "error": error_message,
                     }
+                )
+                manual_review.append(
+                    _manual_review_item(
+                        filename=filename,
+                        doc_type=doc_type,
+                        confidence=confidence,
+                        email_subject=metadata.subject,
+                        site_title=site_title,
+                        reason="existing_block_plan_missing",
+                        error=error_message,
+                    )
                 )
                 all_succeeded = False
                 review_needed = True
@@ -953,6 +1083,16 @@ def process_email(
             # (CDS SIR, Worksmith inspection, ISP, Block Plan). Block
             # Plan also still fires the full job dispatch below.
             if drive_file is not None and uploaded:
+                uploaded[-1]["rhodes_registration"] = _register_uploaded_document_in_rhodes(
+                    site_summary=site_summary,
+                    ddr_doc_type=doc_type,
+                    drive_file=drive_file,
+                    drive_filename=drive_filename,
+                    original_filename=filename,
+                    message_id=message_id,
+                    attachment=att,
+                )
+
                 folder_ping = _run_doc_arrival_folder_ping(
                     gc,
                     site_summary=site_summary,
@@ -1004,13 +1144,25 @@ def process_email(
                     uploaded[-1]["derived_documents"] = derived_docs
         except Exception as e:
             logger.error("Upload failed for '%s': %s", filename, e)
+            error_message = str(e)
             errors.append(
                 {
                     "message_id": message_id,
                     "filename": filename,
                     "doc_type": doc_type,
-                    "error": str(e),
+                    "error": error_message,
                 }
+            )
+            manual_review.append(
+                _manual_review_item(
+                    filename=filename,
+                    doc_type=doc_type,
+                    confidence=confidence,
+                    email_subject=metadata.subject,
+                    site_title=site_title,
+                    reason="upload_failed",
+                    error=error_message,
+                )
             )
             all_succeeded = False
             review_needed = True
@@ -1044,7 +1196,7 @@ def process_email(
             include_processed_label=not keep_unprocessed,
         )
         marked = True
-    elif all_succeeded and not dry_run and not low_confidence:
+    elif all_succeeded and not dry_run and not manual_review and not low_confidence:
         _mark_email_processed(
             gc,
             message_id,
@@ -1056,6 +1208,7 @@ def process_email(
     return {
         "uploaded": uploaded,
         "skipped": skipped,
+        "manual_review": manual_review,
         "low_confidence": low_confidence,
         "errors": errors,
         "marked": marked,
@@ -1268,17 +1421,49 @@ def build_scan_summary(results: dict[str, Any]) -> str:
         lines.append(f"  Internal sender skipped: {internal}")
 
     if results.get("uploads"):
+        rhodes_counts: dict[str, int] = {}
+        for upload in results["uploads"]:
+            registration = upload.get("rhodes_registration")
+            if not isinstance(registration, dict):
+                continue
+            status = str(registration.get("status") or "unknown")
+            rhodes_counts[status] = rhodes_counts.get(status, 0) + 1
+        if rhodes_counts:
+            lines.append(
+                "  Rhodes document links: "
+                + " ".join(
+                    f"{status}={count}"
+                    for status, count in sorted(rhodes_counts.items())
+                )
+            )
         lines.append("\nUploads:")
         for u in results["uploads"]:
             dry = " [DRY RUN]" if u.get("dry_run") else ""
             lines.append(f"  {u['doc_type'].upper()} -> {u['drive_filename']}{dry}")
+            registration = u.get("rhodes_registration")
+            if isinstance(registration, dict) and registration.get("status") == "failed":
+                lines.append(
+                    "    Rhodes: failed "
+                    f"({registration.get('reason') or 'error'}"
+                    f"{': ' + str(registration.get('error')) if registration.get('error') else ''})"
+                )
 
-    if results.get("low_confidence"):
+    manual_review = results.get("manual_review") or results.get("low_confidence") or []
+    if manual_review:
         lines.append("\nNeeds manual review:")
-        for lc in results["low_confidence"]:
+        for item in manual_review:
+            lc = item
+            reason = lc.get("reason") or (
+                "low_confidence"
+                if lc.get("confidence", 1.0) < AUTO_FILE_CONFIDENCE
+                else "manual_review"
+            )
+            error = lc.get("error")
+            error_fragment = f", detail: {error}" if error else ""
             lines.append(
                 f"  '{lc['filename']}' — {lc['doc_type']} "
-                f"(confidence: {lc['confidence']:.0%}, subject: {lc.get('email_subject', '')})"
+                f"(reason: {reason}, confidence: {lc['confidence']:.0%}, "
+                f"subject: {lc.get('email_subject', '')}{error_fragment})"
             )
 
     if results.get("errors"):

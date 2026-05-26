@@ -13,7 +13,7 @@ The Due Diligence Reporter is an AI agent powered by Claude that generates Site 
 Current V4.2 behavior:
 
 - First-round readiness is `SIR found AND no existing DDR`. Missing vendor docs do not block the first publish.
-- Rhodes / LocationOS is the source of truth for site ID, Drive folder URL, and P1 DRI / site owner.
+- Rhodes / LocationOS is the source of truth for site ID, Drive folder URL, P1 DRI / site owner, and registered document links.
 - Open verification items are stored as structured run state and rendered only as `Open Items to Verify` in the DDR body.
 - Existing DDRs are republished in place when one of the five core source types changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, or School Approval report.
 - The active source sweep entrypoint is `scripts/vendor_doc_republish_sweep.py`; it scans active Rhodes sites with linked Drive folders and calls the shared `dd_republish` path.
@@ -21,7 +21,7 @@ Current V4.2 behavior:
 Legacy mode summary:
 
 1. **Interactive** â€” A human gives it a site name in chat via MCP Hive. The agent gathers data, runs analytical skills, and produces an executive-ready Google Doc.
-2. **Event-Driven (Inbox Scan)** -- A scheduled script scans the `edu.ops@trilogy.com` inbox for new site documents, matches them to Rhodes site records, and uploads them to the matched site's M1 folder.
+2. **Event-Driven (Inbox Scan)** -- A scheduled script scans the `edu.ops@trilogy.com` inbox for new site documents, matches them to Rhodes site records, uploads them to the matched site's M1 folder, and registers the Drive file on the Rhodes site record.
 3. **Daily Sweep (Safety Net â€” 9 AM)** â€” A scheduled script scans all site folders in active DD stages. When a site has an SIR / AI SIR and no existing report, it triggers first-round report generation. Vendor SIR, Building Inspection, RayCon, and other documents upgrade the report through republish paths as they land.
 
 The agent gathers facts. It does not make recommendations. The decision belongs to the leadership team.
@@ -165,7 +165,7 @@ Claude AI Agent â—„â”€â”€â”€â”€â”€â”€â”€
 **Schedule:** See `.github/workflows/inbox-scan.yml`
 **Workflow:** `.github/workflows/inbox-scan.yml`
 
-The inbox scanner is one trigger for report updates. When a vendor emails a SIR or Building Inspection to `edu.ops@trilogy.com`, the scanner files it to the matched Rhodes site's M1 folder and can trigger in-place DDR republish if a DDR already exists.
+The inbox scanner is one trigger for report updates. When a vendor emails a supported DD source document to `edu.ops@trilogy.com`, the scanner files it to the matched Rhodes site's M1 folder, registers the Drive file as a Rhodes document, and can trigger in-place DDR republish if a DDR already exists.
 
 ### Phase 1 â€” Scan, Classify, Upload
 
@@ -187,7 +187,20 @@ For each unprocessed email with PDF attachments:
      joshua.rockers@trilogy.com, edu.ops@trilogy.com
 ```
 
-**Supported doc types:** `sir`, `building_inspection`, `isp`.
+**Supported doc types:** `sir`, `building_inspection`, `isp`, `block_plan`.
+
+**Current M1 filing and Rhodes registration behavior:** Supported documents are matched to a Rhodes site record, uploaded to the site's `M1 - Acquire Property` Drive folder, and then registered on the Rhodes site record. The registration mapping is:
+
+| DDR doc type | Rhodes docType | Milestone |
+|--------------|----------------|-----------|
+| `sir` | `siteInvestigationReport` | `acquireProperty` |
+| `building_inspection` | `propertyConditionAssessment` | `acquireProperty` |
+| `block_plan` | `floorPlan` | `acquireProperty` |
+| `isp` | `other` | `acquireProperty` |
+
+Current Phase 2 behavior uses the matched Rhodes site record from Phase 1 (`site_title`, `matched_site_id`, address, and Drive folder URL). Older references below to site matching being inactive are stale and retained only until this process doc is fully cleaned up.
+
+Rhodes registration is a non-blocking post-upload side effect. If registration fails or Rhodes is unavailable, the Drive upload remains successful and the scan summary records the Rhodes registration failure for operator follow-up.
 
 ### Phase 2 â€” Per-Site Pipeline
 
@@ -543,7 +556,7 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 | `src/due_diligence_reporter/inbox_scanner.py` | Gmail inbox scan, three-tier filename classification, Drive upload |
 | `src/due_diligence_reporter/open_questions.py` | Structured open-question and source-event state for partial DDR closure |
 | `src/due_diligence_reporter/vendor_doc_sweep.py` | Rhodes-backed core source sweep that triggers in-place republish |
-| `src/due_diligence_reporter/rhodes.py` | Rhodes / LocationOS MCP client for P1 DRI lookup |
+| `src/due_diligence_reporter/rhodes.py` | Rhodes / LocationOS MCP client for P1 DRI lookup and document registration |
 | `src/due_diligence_reporter/google_client.py` | Google Drive v3 + Docs v1 + Gmail API client (OAuth), `list_files_recursive()` |
 | `src/due_diligence_reporter/config.py` | Pydantic settings loader |
 | `src/due_diligence_reporter/utils.py` | PDF extraction, placeholder builder, email, Google Chat |
