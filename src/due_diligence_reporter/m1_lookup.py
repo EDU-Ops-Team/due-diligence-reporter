@@ -13,11 +13,14 @@ with scripts and tests that patch
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .classifier import classify_document
 from .google_client import GoogleClient
 from .utils import extract_folder_id_from_url
+
+M1_FOLDER_NAME = "M1 - Acquire Property"
 
 # Doc types the scanner now persists into per-site M1 folders, plus the
 # downstream reports the Block Plan pipeline derives. ``_list_m1_documents_by_type``
@@ -32,7 +35,44 @@ M1_RECOGNIZED_DOC_TYPES = {
     "raycon_scenario_report",
     # The async-handoff result file RayCon writes when its job finishes.
     "raycon_scenario_json",
+    "e_occupancy_report",
+    "school_approval_report",
 }
+
+
+def _normalize_folder_name(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def _is_m1_folder_name(name: str) -> bool:
+    return re.match(r"^m1(?:$|[^a-z0-9])", name.strip().lower()) is not None
+
+
+def _is_acquire_property_m1_folder(name: str) -> bool:
+    normalized = _normalize_folder_name(name)
+    return (
+        _is_m1_folder_name(name)
+        and "propert" in normalized
+        and ("acquir" in normalized or "aquir" in normalized)
+    )
+
+
+def _find_preferred_m1_subfolder(
+    subfolders: list[dict[str, Any]],
+    *,
+    allow_legacy_fallback: bool = True,
+) -> dict[str, Any] | None:
+    """Return the canonical M1 milestone folder before legacy generic M1 folders."""
+    fallback: dict[str, Any] | None = None
+    for subfolder in subfolders:
+        name = str(subfolder.get("name") or "").strip()
+        if not name:
+            continue
+        if _is_acquire_property_m1_folder(name):
+            return subfolder
+        if fallback is None and _is_m1_folder_name(name):
+            fallback = subfolder
+    return fallback if allow_legacy_fallback else None
 
 
 def _resolve_m1_folder(
@@ -40,23 +80,29 @@ def _resolve_m1_folder(
     drive_folder_url: str,
     *,
     create_if_missing: bool = True,
+    allow_legacy_fallback: bool = True,
 ) -> tuple[str | None, str | None]:
-    """Return the site's M1 folder ID, creating a plain ``M1`` folder when absent.
+    """Return the site's M1 Acquire Property folder ID, creating it when absent.
 
     Pass ``create_if_missing=False`` from read-only callers (e.g. the
     diagnose tool) to skip the ``gc.create_folder`` side effect; this
     returns ``(None, None)`` instead when M1 doesn't yet exist.
+
+    Pass ``allow_legacy_fallback=False`` from upload callers that must land in
+    the Acquire Property milestone folder instead of a legacy plain ``M1``.
     """
     folder_id = extract_folder_id_from_url(drive_folder_url)
     if not folder_id:
         return None, None
     subfolders = gc.list_subfolders(folder_id)
-    for subfolder in subfolders:
-        if subfolder.get("name", "").lower().startswith("m1"):
-            return subfolder.get("id"), subfolder.get("webViewLink")
+    if subfolder := _find_preferred_m1_subfolder(
+        subfolders,
+        allow_legacy_fallback=allow_legacy_fallback,
+    ):
+        return subfolder.get("id"), subfolder.get("webViewLink")
     if not create_if_missing:
         return None, None
-    created = gc.create_folder(folder_id, "M1")
+    created = gc.create_folder(folder_id, M1_FOLDER_NAME)
     return created.get("id"), created.get("webViewLink")
 
 

@@ -82,6 +82,8 @@ jobs:
           SIR_NOTIFICATION_RECIPIENTS: ${{ secrets.SIR_NOTIFICATION_RECIPIENTS }}
           CDS_NOTIFICATION_RECIPIENTS: ${{ secrets.CDS_NOTIFICATION_RECIPIENTS }}
           GLOBAL_EMAIL_CC: ${{ secrets.GLOBAL_EMAIL_CC }}
+          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
+          RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
 
           SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
           ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
@@ -105,6 +107,8 @@ jobs:
           echo "SIR_NOTIFICATION_RECIPIENTS=${SIR_NOTIFICATION_RECIPIENTS}" >> .env
           echo "CDS_NOTIFICATION_RECIPIENTS=${CDS_NOTIFICATION_RECIPIENTS}" >> .env
           echo "GLOBAL_EMAIL_CC=${GLOBAL_EMAIL_CC}" >> .env
+          echo "RHODES_API_KEY=${RHODES_API_KEY}" >> .env
+          echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
 
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env

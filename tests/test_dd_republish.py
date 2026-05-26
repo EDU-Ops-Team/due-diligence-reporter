@@ -19,22 +19,21 @@ arrival fires a "republish if needed" check. Tests assert that:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
-
 import json
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 
 from due_diligence_reporter.dd_republish import (
     DD_REPUBLISH_FORCE_AFTER,
     REASON_BUILDING_INSPECTION,
+    REASON_E_OCCUPANCY,
     REASON_RAYCON,
+    REASON_SCHOOL_APPROVAL,
     REASON_VENDOR_SIR,
-    RepublishOutcome,
     load_state,
     maybe_republish_dd_report,
     save_state,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -60,11 +59,20 @@ def _existing_dd_report() -> dict:
     }
 
 
-def _pipeline_runner_factory(status: str = "report_created", doc_url: str = "https://docs/x"):
+def _pipeline_runner_factory(
+    status: str = "report_created",
+    doc_url: str = "https://docs/x",
+    *,
+    open_questions: list[dict] | None = None,
+):
     """Return a MagicMock substitute for ``process_site_pipeline``."""
     result = MagicMock()
     result.status = status
     result.doc_url = doc_url
+    result.run_id = "run-123"
+    result.manifest_path = ".ddr-runs/run-123.json"
+    result.open_questions = open_questions or []
+    result.closed_open_questions = []
     return MagicMock(return_value=result)
 
 
@@ -79,6 +87,7 @@ def _call_helper(
     dry_run=False,
     force=False,
     now=None,
+    open_questions_before=None,
 ):
     """Driver helper to keep the test signatures terse."""
     return maybe_republish_dd_report(
@@ -96,6 +105,7 @@ def _call_helper(
         existing_report_finder=finder
         or MagicMock(return_value=_existing_dd_report()),
         pipeline_runner=runner or _pipeline_runner_factory(),
+        open_questions_before=open_questions_before,
     )
 
 
@@ -139,7 +149,7 @@ class TestVendorSIRArrival:
         """Same SIR fingerprint repeated within 12h → no diff, no republish."""
         runner = _pipeline_runner_factory()
         recent = (
-            datetime.now(timezone.utc) - timedelta(hours=1)
+            datetime.now(UTC) - timedelta(hours=1)
         ).isoformat()
         state = {
             "site-123:vendor_sir:sir-file-1:2026-05-05T10:00:00Z": recent,
@@ -160,7 +170,7 @@ class TestVendorSIRArrival:
     def test_new_fingerprint_after_old_one_fires(self):
         """A re-uploaded SIR (new modifiedTime) → fresh fingerprint → republish."""
         runner = _pipeline_runner_factory()
-        old = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        old = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         state = {
             "site-123:vendor_sir:sir-file-1:2026-05-05T10:00:00Z": old,
         }
@@ -205,7 +215,7 @@ class TestBuildingInspectionArrival:
     def test_same_fingerprint_skips(self):
         runner = _pipeline_runner_factory()
         recent = (
-            datetime.now(timezone.utc) - timedelta(minutes=15)
+            datetime.now(UTC) - timedelta(minutes=15)
         ).isoformat()
         state = {
             "site-123:building_inspection:bi-file-1:2026-05-05T10:00:00Z": recent,
@@ -246,7 +256,7 @@ class TestRayConRegression:
     def test_raycon_repeat_within_window_skips(self):
         runner = _pipeline_runner_factory()
         recent = (
-            datetime.now(timezone.utc) - timedelta(hours=1)
+            datetime.now(UTC) - timedelta(hours=1)
         ).isoformat()
         state = {"site-123:raycon_scenario:rc_run_abc": recent}
         outcome = _call_helper(
@@ -262,7 +272,7 @@ class TestRayConRegression:
         """Past the 12h force-after, the same run_id republishes again."""
         runner = _pipeline_runner_factory()
         old = (
-            datetime.now(timezone.utc) - timedelta(hours=DD_REPUBLISH_FORCE_AFTER.total_seconds() / 3600 + 1)
+            datetime.now(UTC) - timedelta(hours=DD_REPUBLISH_FORCE_AFTER.total_seconds() / 3600 + 1)
         ).isoformat()
         state = {"site-123:raycon_scenario:rc_run_abc": old}
         outcome = _call_helper(
@@ -337,6 +347,92 @@ class TestIdempotence:
         )
 
 
+class TestExpandedSourceReasons:
+    def test_e_occupancy_and_school_approval_reasons_are_supported(self):
+        runner = _pipeline_runner_factory()
+        state: dict = {}
+        finder = MagicMock(return_value=_existing_dd_report())
+
+        for reason in (REASON_E_OCCUPANCY, REASON_SCHOOL_APPROVAL):
+            outcome = _call_helper(
+                reason=reason,
+                fingerprint=f"{reason}-file:2026-05-26T10:00:00Z",
+                state=state,
+                runner=runner,
+                finder=finder,
+            )
+            assert outcome.decision == "republish"
+            assert outcome.reason == reason
+
+        assert runner.call_count == 2
+        assert (
+            "site-123:e_occupancy_report:e_occupancy_report-file:2026-05-26T10:00:00Z"
+            in state
+        )
+        assert (
+            "site-123:school_approval_report:school_approval_report-file:2026-05-26T10:00:00Z"
+            in state
+        )
+
+
+class TestOpenQuestionClosure:
+    def test_validated_rerun_closes_absent_prior_open_question(self):
+        previous = [
+            {
+                "open_question_id": "oq_1",
+                "display_text": "Confirm fire alarm path with Building Inspection.",
+                "affected_ddr_field": "Occupancy path",
+                "expected_source_type": "building_inspection",
+                "status": "open",
+            }
+        ]
+        runner = _pipeline_runner_factory(status="report_created", open_questions=[])
+
+        outcome = _call_helper(
+            reason=REASON_BUILDING_INSPECTION,
+            fingerprint="bi-file:2026-05-26T10:00:00Z",
+            runner=runner,
+            state={},
+            open_questions_before=previous,
+        )
+
+        assert outcome.closed_items == [
+            {
+                "open_question_id": "oq_1",
+                "display_text": "Confirm fire alarm path with Building Inspection.",
+                "affected_ddr_field": "Occupancy path",
+                "expected_source_type": "building_inspection",
+                "evidence_source": "bi-file",
+                "closed_run": "run-123",
+            }
+        ]
+        assert outcome.still_open_items == []
+
+    def test_partial_or_failed_rerun_never_records_closure(self):
+        previous = [
+            {
+                "open_question_id": "oq_1",
+                "display_text": "Confirm zoning.",
+                "affected_ddr_field": "Zoning",
+                "expected_source_type": "vendor_sir",
+                "status": "open",
+            }
+        ]
+        runner = _pipeline_runner_factory(status="report_incomplete", open_questions=[])
+
+        outcome = _call_helper(
+            reason=REASON_VENDOR_SIR,
+            fingerprint="sir-file:2026-05-26T10:00:00Z",
+            runner=runner,
+            state={},
+            open_questions_before=previous,
+        )
+
+        assert outcome.decision == "republish"
+        assert outcome.pipeline_status == "report_incomplete"
+        assert outcome.closed_items == []
+
+
 # ---------------------------------------------------------------------------
 # Failure handling + edge cases
 # ---------------------------------------------------------------------------
@@ -378,7 +474,7 @@ class TestEdgeCases:
         """``force=True`` bypasses the same-fingerprint dedup."""
         runner = _pipeline_runner_factory()
         recent = (
-            datetime.now(timezone.utc) - timedelta(minutes=5)
+            datetime.now(UTC) - timedelta(minutes=5)
         ).isoformat()
         state = {"site-123:vendor_sir:sir-1:2026-05-05T10:00:00Z": recent}
         outcome = _call_helper(
@@ -603,7 +699,7 @@ class TestRayConCompositeFingerprint:
         # inside the 12h force-after window. Without the modifiedTime
         # suffix this would be a "deduped" no-op.
         recent = (
-            datetime.now(timezone.utc) - timedelta(hours=1)
+            datetime.now(UTC) - timedelta(hours=1)
         ).isoformat()
         state = {
             "site-123:raycon_scenario:rc_run_abc:2026-05-05T10:00:00Z": recent,
@@ -639,8 +735,9 @@ class TestRayConCompositeFingerprint:
         also include the modifiedTime so we don't dedup all empty-run-id
         events on a given day. Review finding #10.
         """
-        from scripts.raycon_followup import _republish_dd_report_if_present
         from unittest.mock import patch
+
+        from scripts.raycon_followup import _republish_dd_report_if_present
 
         runner = MagicMock(
             return_value=MagicMock(
@@ -707,7 +804,7 @@ class TestLegacyFingerprintMigrationDedup:
     def test_legacy_entry_dedups_against_live_composite_key(self):
         runner = _pipeline_runner_factory()
         # Recent enough to be inside the force_after window.
-        recent = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        recent = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         # Migrated legacy key — no `:drive_modified_time` suffix.
         legacy_state = {"site-123:raycon_scenario:rc_run_abc": recent}
 

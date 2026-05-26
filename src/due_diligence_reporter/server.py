@@ -41,7 +41,12 @@ from .google_doc_builder import (
     VERIFICATION_OPEN_ITEMS_KEY,
     build_dd_report_doc,
 )
-from .m1_lookup import _list_m1_documents_by_type, _resolve_m1_folder
+from .m1_lookup import (
+    M1_FOLDER_NAME,
+    _find_preferred_m1_subfolder,
+    _list_m1_documents_by_type,
+    _resolve_m1_folder,
+)
 from .raycon_client import RAYCON_BREAKDOWN_ROWS
 from .rebl import ReblResolution, resolve_address
 from .report_schema import (
@@ -883,10 +888,11 @@ async def lookup_rhodes_site_owner(
     site_id: str = "",
     slug: str = "",
 ) -> dict[str, Any]:
-    """Resolve the current P1 DRI / site owner from Rhodes without mutating Rhodes.
+    """Resolve current site context from Rhodes without mutating Rhodes.
 
     The tool returns report_data_fields that can be merged into create_dd_report
-    so meta.prepared_by comes from the Rhodes p1Dri field.
+    so meta.prepared_by comes from Rhodes p1Dri and meta.drive_folder_url comes
+    from the linked Rhodes Google Drive folder when one exists.
     """
     logger.info(
         "Tool called: lookup_rhodes_site_owner - site=%s address=%s site_id=%s slug=%s",
@@ -1609,12 +1615,11 @@ def _get_or_create_m1_folder(
     gc: GoogleClient,
     folder_id: str,
 ) -> dict[str, Any]:
-    """Return the M1 subfolder, creating a plain `M1` folder when absent."""
+    """Return the M1 Acquire Property folder, creating it when absent."""
     subfolders = gc.list_subfolders(folder_id)
-    for subfolder in subfolders:
-        if subfolder.get("name", "").lower().startswith("m1"):
-            return subfolder
-    return gc.create_folder(folder_id, "M1")
+    if subfolder := _find_preferred_m1_subfolder(subfolders):
+        return subfolder
+    return gc.create_folder(folder_id, M1_FOLDER_NAME)
 
 
 # ---------------------------------------------------------------------------
@@ -2338,10 +2343,14 @@ def _normalize_report_replacements(
     site_name: str,
     report_date: str,
     drive_folder_url: str,
+    site_address: str = "",
 ) -> tuple[dict[str, str], list[str], list[str], dict[str, str], ReblResolution]:
     """Normalize report data and fill permissive current gap labels."""
     flat_report_data = flatten_report_data_for_replacement(report_data)
-    report_data, rebl_resolution = _inject_report_defaults(report_data)
+    report_data, rebl_resolution = _inject_report_defaults(
+        report_data,
+        site_address=site_address,
+    )
     replacements, unmatched, unfilled, token_sources = normalize_report_data(
         report_data,
         site_name=site_name,
@@ -2457,7 +2466,11 @@ def _extract_report_address(flat_report_data: dict[str, Any]) -> str:
     return ""
 
 
-def _inject_report_defaults(report_data: dict[str, Any]) -> tuple[dict[str, Any], ReblResolution]:
+def _inject_report_defaults(
+    report_data: dict[str, Any],
+    *,
+    site_address: str = "",
+) -> tuple[dict[str, Any], ReblResolution]:
     """Inject report defaults that should not depend on agent output."""
     enriched: dict[str, Any] = json.loads(json.dumps(report_data))
     flat_report_data = flatten_report_data_for_replacement(enriched)
@@ -2469,7 +2482,8 @@ def _inject_report_defaults(report_data: dict[str, Any]) -> tuple[dict[str, Any]
     ):
         enriched["p1_assignee_name"] = MISSING_P1_ASSIGNEE_LABEL
 
-    rebl_resolution = _resolve_rebl_identity(_extract_report_address(flat_report_data))
+    rebl_address = _extract_report_address(flat_report_data) or site_address.strip()
+    rebl_resolution = _resolve_rebl_identity(rebl_address)
     _apply_rebl_defaults(enriched, rebl_resolution)
     return enriched, rebl_resolution
 
@@ -2639,14 +2653,16 @@ async def create_dd_report(
     site_name: str,
     drive_folder_url: str,
     report_data: dict[str, Any],
+    site_address: str = "",
     token_evidence: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Create a completed DD report Google Doc for a site."""
     logger.info("Tool called: create_dd_report")
     logger.info(
-        "create_dd_report params: site_name=%s, drive_folder_url=%s",
+        "create_dd_report params: site_name=%s, drive_folder_url=%s, site_address=%s",
         site_name,
         drive_folder_url,
+        site_address,
     )
 
     if not site_name or not site_name.strip():
@@ -2723,6 +2739,7 @@ async def create_dd_report(
                 site_name=site_name.strip(),
                 report_date=today_str,
                 drive_folder_url=drive_folder_url,
+                site_address=site_address,
             )
             logger.info(
                 "Normalization: %d replacements, %d unmatched keys, %d unfilled tokens",

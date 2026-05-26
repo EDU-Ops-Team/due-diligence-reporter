@@ -168,6 +168,69 @@ class TestProcessSitePipeline:
         assert result.failed_step == "readiness.check"
         assert result.quality_score is not None
 
+    @patch("due_diligence_reporter.report_pipeline._resolve_rhodes_owner_for_pipeline")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_missing_drive_folder_blocks_with_rhodes_setup_message(
+        self,
+        mock_readiness,
+        mock_rhodes_owner,
+    ):
+        mock_rhodes_owner.return_value = {
+            "status": "found",
+            "drive_folder_status": "missing",
+            "drive_folder_message": "Site has no Google Drive folder",
+            "report_data_fields": {},
+        }
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Los Angeles 5400 Beethoven St",
+            "",
+            ["Alpha Los Angeles 5400 Beethoven St"],
+            {},
+            "system prompt",
+            _make_settings(),
+            site_address="5400 Beethoven St, Los Angeles, CA 90066",
+        )
+
+        assert result.status == "error"
+        assert result.failed_step == "readiness.check"
+        assert "Link/provision the site folder in Rhodes" in (result.error or "")
+        mock_readiness.assert_not_called()
+
+    @patch("due_diligence_reporter.report_pipeline._resolve_rhodes_owner_for_pipeline")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_missing_drive_folder_uses_rhodes_link_before_readiness(
+        self,
+        mock_readiness,
+        mock_rhodes_owner,
+    ):
+        mock_rhodes_owner.return_value = {
+            "status": "found",
+            "drive_folder_url": "https://drive.google.com/drive/folders/rhodes-root",
+            "report_data_fields": {
+                "meta.drive_folder_url": "https://drive.google.com/drive/folders/rhodes-root",
+            },
+        }
+        mock_readiness.return_value = {
+            "sir_found": False,
+            "report_exists": False,
+        }
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Los Angeles 5400 Beethoven St",
+            "",
+            ["Alpha Los Angeles 5400 Beethoven St"],
+            {},
+            "system prompt",
+            _make_settings(),
+            site_address="5400 Beethoven St, Los Angeles, CA 90066",
+        )
+
+        assert result.status == "waiting_on_docs"
+        assert mock_readiness.call_args.args[1].endswith("/rhodes-root")
+
     @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline._resolve_rhodes_owner_for_pipeline")
@@ -1003,6 +1066,91 @@ class TestAgentToolMerging:
         create_input = mock_route_tool_call_sync.call_args_list[1].args[1]
         assert create_input["site_name"] == "Alpha Los Angeles 5400 Beethoven St"
         assert create_input["drive_folder_url"].endswith("/folder123")
+        assert create_input["site_address"] == "5400 Beethoven St, Los Angeles, CA 90066"
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
+    @patch("due_diligence_reporter.report_pipeline.anthropic.Anthropic")
+    def test_run_dd_report_agent_uses_rhodes_drive_folder_when_omitted(
+        self,
+        mock_anthropic,
+        mock_route_tool_call_sync,
+    ):
+        class FakeToolUse:
+            def __init__(self, tool_id, name, tool_input):
+                self.type = "tool_use"
+                self.id = tool_id
+                self.name = name
+                self.input = tool_input
+
+        response = MagicMock()
+        response.content = [
+            FakeToolUse(
+                "tool-1",
+                "lookup_rhodes_site_owner",
+                {"site_name": "Alpha Los Angeles"},
+            ),
+            FakeToolUse(
+                "tool-2",
+                "list_drive_documents",
+                {"site_name": "Alpha Los Angeles"},
+            ),
+            FakeToolUse(
+                "tool-3",
+                "create_dd_report",
+                {
+                    "site_name": "Alpha Los Angeles",
+                    "report_data": {"exec.fastest_open_capacity": "25"},
+                },
+            ),
+        ]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = response
+        mock_anthropic.return_value = mock_client
+        mock_route_tool_call_sync.side_effect = [
+            {
+                "status": "found",
+                "p1_assignee_name": "Devin Bates",
+                "site_address": "5400 Beethoven St, Los Angeles, CA 90066",
+                "drive_folder_url": "https://drive.google.com/drive/folders/rhodes-root",
+                "report_data_fields": {
+                    "meta.prepared_by": "Devin Bates",
+                    "site.address": "5400 Beethoven St, Los Angeles, CA 90066",
+                    "meta.drive_folder_url": "https://drive.google.com/drive/folders/rhodes-root",
+                },
+            },
+            {"status": "success", "files": []},
+            {
+                "status": "success",
+                "document": {
+                    "id": "doc123",
+                    "url": "https://docs.google.com/document/d/doc123",
+                },
+                "replacements_applied": 10,
+                "unfilled_template_tokens": 0,
+            },
+        ]
+
+        result = run_dd_report_agent(
+            "Alpha Los Angeles 5400 Beethoven St",
+            "system prompt",
+            "claude-test",
+        )
+
+        assert result["success"] is True
+        lookup_input = mock_route_tool_call_sync.call_args_list[0].args[1]
+        assert lookup_input["site_name"] == "Alpha Los Angeles 5400 Beethoven St"
+        assert "site_address" not in lookup_input
+        list_input = mock_route_tool_call_sync.call_args_list[1].args[1]
+        assert list_input["drive_folder_url"].endswith("/rhodes-root")
+        assert list_input["site_address"] == "5400 Beethoven St, Los Angeles, CA 90066"
+        create_input = mock_route_tool_call_sync.call_args_list[2].args[1]
+        assert create_input["drive_folder_url"].endswith("/rhodes-root")
+        assert create_input["site_address"] == "5400 Beethoven St, Los Angeles, CA 90066"
+        assert create_input["report_data"]["meta.prepared_by"] == "Devin Bates"
+        assert create_input["report_data"]["site.address"] == (
+            "5400 Beethoven St, Los Angeles, CA 90066"
+        )
 
 
 class TestSourceReadAlerts:

@@ -817,7 +817,11 @@ def process_email(
             review_needed = True
             continue
         try:
-            target_folder_id, _target_folder_url = _resolve_m1_folder(gc, drive_folder_url)
+            target_folder_id, _target_folder_url = _resolve_m1_folder(
+                gc,
+                drive_folder_url,
+                allow_legacy_fallback=False,
+            )
         except Exception as e:
             errors.append(
                 {

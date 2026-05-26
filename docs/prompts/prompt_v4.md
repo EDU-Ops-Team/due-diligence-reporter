@@ -40,8 +40,10 @@ The first-round scope is:
 - Call `lookup_rhodes_site_owner` before `create_dd_report`.
 - Use the returned `report_data_fields` in `report_data`, especially
   `meta.prepared_by`.
-- Use supplied site name, site address, and Drive folder URL directly. Do not
-  invent folder IDs, document IDs, site IDs, or links.
+- Use supplied site name and site address directly. If the request supplies a
+  Drive folder URL, use it directly. If it does not, call Rhodes and use the
+  returned `drive_folder_url`. Do not invent folder IDs, document IDs, site IDs,
+  or links.
 - Publish first-round DDRs from an AI SIR / research baseline when no current
   DD report exists. Do not wait for vendor SIR, Building Inspection, RayCon, or
   downstream reports.
@@ -56,11 +58,16 @@ The first-round scope is:
 
 ## Tool Workflow
 
-1. Read the user request for site name, address, and Drive folder URL.
+1. Read the user request for site name, address, and any supplied Drive folder URL.
 2. Call `lookup_rhodes_site_owner(site_name, site_address)` before report
-   creation. If Rhodes is unavailable or no P1 DRI is assigned, continue with
-   the sourced gap label returned by the tool.
-3. Call `list_drive_documents(drive_folder_url, site_name, site_address)`.
+   creation. If Rhodes returns `drive_folder_url` and the user did not supply a
+   Drive folder URL, use the Rhodes URL for every Drive tool call. If Rhodes is
+   unavailable or no P1 DRI is assigned, continue with the sourced gap label
+   returned by the tool.
+3. Call `list_drive_documents(drive_folder_url, site_name, site_address)`. If no
+   Drive folder URL is supplied and Rhodes did not return one, stop and report
+   that the site folder must be linked/provisioned in Rhodes before DDR
+   publishing.
 4. Read the AI SIR / SIR first. If no SIR or AI SIR baseline exists, do not
    create the report.
 5. Read any relevant available documents: Building Inspection, Block Plan,
@@ -71,7 +78,8 @@ The first-round scope is:
 7. Build `report_data` using exact current template token keys.
 8. Build `token_evidence` with short source support for every material field.
 9. Call `create_dd_report(site_name, drive_folder_url, report_data,
-   token_evidence=evidence)`.
+   site_address=site_address, token_evidence=evidence)` so the builder can
+   resolve the required REBL Site ID deterministically.
 
 ---
 
@@ -130,6 +138,12 @@ Write open items as concrete verification tasks:
 - `Confirm with California Department of Education whether private-school affidavit timing is sufficient for 09/08 opening.`
 
 Do not write vague items like `Need more research` or `Vendor docs pending`.
+
+The system stores these items as structured open-question state. Do not include
+question IDs, run IDs, fingerprints, or closure metadata in the report text.
+When a vendor SIR, Building Inspection, RayCon scenario, E-Occupancy report, or
+School Approval report arrives, the pipeline republish process is responsible
+for closing items after a validated rerun.
 
 ---
 
@@ -204,8 +218,8 @@ Rules:
 - The label must say what was checked and why the value is absent.
 - If a gap affects the first-round executive summary, also add a matching
   verification item.
-- Keep detailed read failures in `source_quality_notes`; do not repeat them in
-  every executive-summary line.
+- Keep detailed read failures in internal diagnostics; do not repeat them in
+  every executive-summary line or render body-level source-quality sections.
 
 ---
 
@@ -358,8 +372,8 @@ Renderer-only additive fields:
 | `meta.marketing_name` | Supplied site context |
 | `meta.report_date` | Auto-filled |
 | `meta.prepared_by` | Rhodes P1 DRI or gap label |
-| `meta.rebl_site_id` | Auto-filled when address resolution succeeds |
-| `meta.drive_folder_url` | Supplied Drive folder |
+| `meta.rebl_site_id` | Auto-filled from supplied/Rhodes address when REBL resolution succeeds |
+| `meta.drive_folder_url` | Supplied Drive folder or Rhodes-linked Drive folder |
 
 ### Executive Summary
 

@@ -1,5 +1,158 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-26 - Active DDR Open-Question Closure Workflow
+
+Implemented the partial-first, republish-in-place workflow for first-round DDRs.
+
+Current behavior:
+
+- `verification.open_items` is now converted into structured open-question
+  state with stable IDs, affected DDR field, expected source type, created run,
+  and closure metadata.
+- Pipeline manifests now carry `source_event`, `open_questions`,
+  `closed_open_questions`, and `republish_summary` outside the DDR body.
+- DDR body rendering remains unchanged: only `Open Items to Verify` is visible;
+  internal IDs, fingerprints, closure metadata, and source-event state do not
+  render into the report.
+- `dd_republish` now supports all five core source reasons:
+  `vendor_sir`, `building_inspection`, `raycon_scenario`,
+  `e_occupancy_report`, and `school_approval_report`.
+- A closure is recorded only after a validated `report_created` rerun and only
+  when a prior open item is absent from the updated report data.
+- `RepublishOutcome` now returns run ID, manifest path, trigger source event,
+  still-open items, and closed items.
+- `vendor_doc_republish_sweep.py` is the new scheduled/script entrypoint for
+  active source sweeps. It reads active Rhodes site records, scans linked Drive
+  roots/M1 folders for the five core source docs, fingerprints each source by
+  Drive file ID plus modified time, and calls the existing shared republish
+  path with `force_regenerate=True`.
+- Inbox and RayCon workflows now write Rhodes and Anthropic env vars needed for
+  in-place DDR updates.
+- `list_rhodes_site_records` now returns active Rhodes site records shaped for
+  inbox matching and source sweeps, including Drive folder and P1 DRI context.
+- Prompt/process docs now document Rhodes as source of truth, first-round
+  readiness as `SIR found AND no existing DDR`, structured open-question state,
+  and the active source sweep.
+
+Verification completed:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-pytest-active-closure-2 tests/test_dd_republish.py tests/test_inbox_scanner.py tests/test_report_pipeline.py tests/test_completeness.py tests/test_google_doc_builder.py tests/test_open_questions.py tests/test_vendor_doc_sweep.py tests/test_rhodes.py tests/test_pipeline_contracts.py
+uv run pytest --basetemp C:\tmp\ddr-pytest-docs-active tests/test_prompt_contract.py tests/test_dd_output_fixes.py tests/test_report_schema.py
+uv run ruff check src\due_diligence_reporter\open_questions.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\dd_republish.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\m1_lookup.py scripts\vendor_doc_republish_sweep.py scripts\scan_inbox.py tests\test_open_questions.py tests\test_vendor_doc_sweep.py tests\test_dd_republish.py tests\test_rhodes.py
+uv run mypy src/
+```
+
+Results:
+
+- Focused pipeline/inbox/builder/open-question sweep: 246 passed.
+- Prompt/schema/output regression suite: 145 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in 31 source files.
+- A first pytest attempt without `--basetemp` hit the known Windows temp-folder
+  permission issue at `C:\Users\foote\AppData\Local\Temp\pytest-of-foote`; the
+  rerun with `C:\tmp` basetemp passed.
+
+## 2026-05-26 - Vendor SIR M1 Acquire Property Folder Routing
+
+Fixed the shared M1 Drive-folder resolver so vendor SIR uploads prefer the
+site-specific `M1 - Acquire Property` milestone folder instead of an arbitrary
+generic `M1` folder.
+
+Current behavior:
+
+- `scripts/scan_inbox.py` now loads active Rhodes site records before scanning
+  Gmail and passes those records into `scan_inbox`, so site matching uses
+  Rhodes site identity and the linked Rhodes Google Drive root folder URL.
+- `_resolve_m1_folder` now prefers folder names that represent M1 Acquire
+  Property, including the supplied `M1-Aquiring Property` spelling variant,
+  before falling back to legacy generic `M1` folders.
+- Inbox uploads pass `allow_legacy_fallback=False`, so vendor SIR / BI / ISP /
+  Block Plan filing creates or uses the Acquire Property milestone folder
+  instead of continuing to write to a legacy plain `M1` folder.
+- When the M1 folder is missing and the caller is allowed to create it, the
+  resolver now creates `M1 - Acquire Property` instead of plain `M1`.
+- The server-side skill-report publisher now uses the same folder selection
+  helper, so Drive-published support docs do not recreate the old plain-M1
+  behavior.
+- Read-only callers still pass `create_if_missing=False` and do not create any
+  Drive folders.
+
+Verification completed:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-pytest-m1-lookup tests/test_m1_lookup.py
+uv run pytest --basetemp C:\tmp\ddr-pytest-m1-vendor-sir-full tests/test_m1_lookup.py tests/test_inbox_scanner.py
+uv run pytest --basetemp C:\tmp\ddr-pytest-rhodes-inbox tests/test_rhodes.py tests/test_scan_inbox_e2e.py tests/test_m1_lookup.py tests/test_inbox_scanner.py
+uv run ruff check src/due_diligence_reporter/m1_lookup.py src/due_diligence_reporter/inbox_scanner.py src/due_diligence_reporter/server.py tests/test_m1_lookup.py tests/test_inbox_scanner.py
+uv run ruff check scripts/scan_inbox.py src/due_diligence_reporter/rhodes.py src/due_diligence_reporter/m1_lookup.py src/due_diligence_reporter/inbox_scanner.py src/due_diligence_reporter/server.py tests/test_rhodes.py tests/test_scan_inbox_e2e.py tests/test_m1_lookup.py tests/test_inbox_scanner.py
+uv run mypy src/
+```
+
+Results:
+
+- Resolver tests: 5 passed.
+- Full inbox scanner path plus resolver tests: 67 passed.
+- Rhodes/inbox scanner path plus resolver tests: 82 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in 30 source files.
+
+## 2026-05-26 - Rhodes Drive Folder and REBL Context for DDR Runs
+
+Fixed the DDR live-run path so Drive folder and address context can come from
+Rhodes instead of only from the user's prompt, and so the required REBL Site ID
+is resolved deterministically from the site address.
+
+Current behavior:
+
+- `lookup_rhodes_site_owner` still returns P1 DRI fields, and now also resolves
+  the linked Rhodes Google Drive root folder when present.
+- The lookup returns `drive_folder_id`, `drive_folder_url`,
+  `drive_folder_status`, and `meta.drive_folder_url` /
+  `site.drive_folder_url` report-data fields.
+- The lookup also returns Rhodes address fields into `site.address` /
+  `site.site_address` so downstream report creation has a deterministic address
+  source.
+- `run_dd_report_agent` now tells the agent to use Rhodes when the request omits
+  a Drive folder URL. Once Rhodes returns `drive_folder_url`, later
+  `list_drive_documents`, skill publishing, and `create_dd_report` tool calls
+  are canonicalized to that URL.
+- `create_dd_report` now accepts `site_address`, and normalization uses that
+  address to resolve `meta.rebl_site_id` / `sources.rebl_link` even if the agent
+  omits REBL fields from `report_data`.
+- `process_site_pipeline` now tries Rhodes before readiness when
+  `drive_folder_url` is missing. If Rhodes does not return a linked folder, the
+  pipeline blocks with a clear setup message instead of letting the agent search
+  or fail ambiguously.
+- Prompt V4 now says a missing user-supplied Drive URL should be resolved from
+  Rhodes, that DDR publishing should stop when the Rhodes site folder is not
+  linked/provisioned, and that `site_address` should be passed to
+  `create_dd_report` so REBL Site ID is builder-owned.
+
+Live data finding:
+
+- `Alpha Los Angeles 5400 Beethoven St` resolves in Rhodes to
+  `k9798fdj3vmy08sce06nhe167n874mvh`.
+- The site has P1 DRI `Devin Bates <devin.bates@trilogy.com>`.
+- LocationOS Drive resolution currently returns:
+  `Site "Alpha Los Angeles 5400 Beethoven St" has no Google Drive folder. Use driveProvisionSiteFolders to create one first.`
+- To unblock the live test, link the existing Beethoven Drive folder to this
+  Rhodes site or provision site folders from Rhodes, then rerun.
+
+Verification completed:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-pytest-rhodes-rebl tests/test_rhodes.py tests/test_report_pipeline.py tests/test_prompt_contract.py tests/test_dd_output_fixes.py tests/test_report_schema.py
+uv run ruff check src/due_diligence_reporter/rhodes.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/server.py docs/prompts/prompt_v4.md tests/test_rhodes.py tests/test_report_pipeline.py tests/test_prompt_contract.py tests/test_dd_output_fixes.py
+uv run mypy src/
+```
+
+Results:
+
+- Focused pytest: 187 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in 29 source files.
+
 ## 2026-05-26 - Greg Edits DDR V4 Formatting Contract
 
 Adopted `Alpha Los Angeles 5400 Beethoven St DD Report - Greg Edits.docx` as

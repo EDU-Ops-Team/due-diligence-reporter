@@ -55,6 +55,14 @@ from typing import Any
 from .classifier import classify_document_type
 from .config import Settings
 from .google_client import GoogleClient
+from .open_questions import (
+    CORE_SOURCE_TYPES,
+    SourceEvent,
+    close_open_questions,
+    load_latest_open_questions,
+    source_event_from_fingerprint,
+)
+from .pipeline_manifest import RUN_MANIFEST_DIR
 from .report_pipeline import PipelineResult, process_site_pipeline
 from .utils import build_site_match_terms, extract_folder_id_from_url
 
@@ -65,9 +73,9 @@ logger = logging.getLogger("dd_republish")
 REASON_RAYCON = "raycon_scenario"
 REASON_VENDOR_SIR = "vendor_sir"
 REASON_BUILDING_INSPECTION = "building_inspection"
-SUPPORTED_REASONS = frozenset(
-    {REASON_RAYCON, REASON_VENDOR_SIR, REASON_BUILDING_INSPECTION}
-)
+REASON_E_OCCUPANCY = "e_occupancy_report"
+REASON_SCHOOL_APPROVAL = "school_approval_report"
+SUPPORTED_REASONS = frozenset(CORE_SOURCE_TYPES)
 
 # Single shared state file for all three reasons. Keyed by
 # ``f"{site_id}:{reason}:{content_fingerprint}"``. Lives at repo root
@@ -123,6 +131,11 @@ class RepublishOutcome:
     pipeline_status: str = ""
     doc_url: str = ""
     last_republish: str = ""
+    run_id: str = ""
+    manifest_path: str = ""
+    source_event: dict[str, Any] | None = None
+    still_open_items: list[dict[str, Any]] | None = None
+    closed_items: list[dict[str, Any]] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -134,6 +147,11 @@ class RepublishOutcome:
             "pipeline_status": self.pipeline_status,
             "doc_url": self.doc_url,
             "last_republish": self.last_republish,
+            "run_id": self.run_id,
+            "manifest_path": self.manifest_path,
+            "source_event": self.source_event,
+            "still_open_items": self.still_open_items or [],
+            "closed_items": self.closed_items or [],
         }
 
 
@@ -310,6 +328,8 @@ def maybe_republish_dd_report(
         [GoogleClient, str], dict[str, Any] | None
     ]
     | None = None,
+    source_event: dict[str, Any] | SourceEvent | None = None,
+    open_questions_before: list[dict[str, Any]] | None = None,
 ) -> RepublishOutcome:
     """Idempotent "republish DD Report if a material input changed" hook.
 
@@ -380,6 +400,9 @@ def maybe_republish_dd_report(
             fingerprint=fingerprint,
             error="empty content_fingerprint",
         )
+
+    event = _coerce_source_event(reason, fingerprint, source_event, observed_at=now.isoformat())
+    event_dict = event.to_dict()
     if not drive_folder_url:
         logger.warning(
             "DD republish rejected: missing drive_folder_url reason=%s site_id=%s",
@@ -392,6 +415,7 @@ def maybe_republish_dd_report(
             site_id=site_id,
             fingerprint=fingerprint,
             error="missing drive_folder_url",
+            source_event=event_dict,
         )
 
     site_folder_id = extract_folder_id_from_url(drive_folder_url) or ""
@@ -408,6 +432,7 @@ def maybe_republish_dd_report(
             site_id=site_id,
             fingerprint=fingerprint,
             error="could not extract folder id from drive_folder_url",
+            source_event=event_dict,
         )
 
     existing = finder(gc, site_folder_id)
@@ -424,6 +449,7 @@ def maybe_republish_dd_report(
             reason=reason,
             site_id=site_id,
             fingerprint=fingerprint,
+            source_event=event_dict,
         )
 
     # Dedup key uses site_id when available so two sites with the same
@@ -466,6 +492,7 @@ def maybe_republish_dd_report(
             site_id=site_id,
             fingerprint=fingerprint,
             last_republish=last_iso or "",
+            source_event=event_dict,
         )
 
     if dry_run:
@@ -482,10 +509,20 @@ def maybe_republish_dd_report(
             reason=reason,
             site_id=site_id,
             fingerprint=fingerprint,
+            source_event=event_dict,
         )
 
     site_address = str(site_summary.get("address", "")).strip() or None
     match_terms = build_site_match_terms(site_name, site_address)
+    previous_open_questions = (
+        open_questions_before
+        if open_questions_before is not None
+        else load_latest_open_questions(
+            RUN_MANIFEST_DIR,
+            site_id=site_id,
+            site_title=site_name,
+        )
+    )
     try:
         result = runner(
             gc,
@@ -499,6 +536,9 @@ def maybe_republish_dd_report(
             site_address=site_address,
             p1_name=site_summary.get("p1_assignee_name"),
             site_created_at=site_summary.get("created_date") or None,
+            site_id=site_id or None,
+            source_event=event_dict,
+            open_questions_before=previous_open_questions,
             force_regenerate=True,
         )
     except Exception as e:
@@ -515,6 +555,7 @@ def maybe_republish_dd_report(
             site_id=site_id,
             fingerprint=fingerprint,
             error=str(e),
+            source_event=event_dict,
         )
 
     # Record the attempt regardless of result.status so a permanently
@@ -530,11 +571,65 @@ def maybe_republish_dd_report(
         fingerprint,
         result.status,
     )
+    still_open_items = _list_attr(result, "open_questions")
+    closed_items = _list_attr(result, "closed_open_questions")
+    if result.status == "report_created" and previous_open_questions and not closed_items:
+        closures = close_open_questions(
+            previous_open_questions,
+            still_open_items,
+            source_event=event_dict,
+            closed_run=_str_attr(result, "run_id"),
+        )
+        closed_items = [closure.to_dict() for closure in closures]
     return RepublishOutcome(
         decision="republish",
         reason=reason,
         site_id=site_id,
         fingerprint=fingerprint,
         pipeline_status=result.status,
-        doc_url=getattr(result, "doc_url", "") or "",
+        doc_url=_str_attr(result, "doc_url"),
+        run_id=_str_attr(result, "run_id"),
+        manifest_path=_str_attr(result, "manifest_path"),
+        source_event=event_dict,
+        still_open_items=still_open_items,
+        closed_items=closed_items if result.status == "report_created" else [],
     )
+
+
+def _coerce_source_event(
+    reason: str,
+    fingerprint: str,
+    source_event: dict[str, Any] | SourceEvent | None,
+    *,
+    observed_at: str,
+) -> SourceEvent:
+    if isinstance(source_event, SourceEvent):
+        return source_event
+    if isinstance(source_event, dict):
+        return SourceEvent(
+            source_type=str(source_event.get("source_type") or reason),  # type: ignore[arg-type]
+            fingerprint=str(source_event.get("fingerprint") or fingerprint).strip(),
+            doc_type=str(source_event.get("doc_type") or "").strip(),
+            drive_file_id=str(source_event.get("drive_file_id") or "").strip(),
+            drive_modified_time=str(source_event.get("drive_modified_time") or "").strip(),
+            file_name=str(source_event.get("file_name") or "").strip(),
+            drive_url=str(source_event.get("drive_url") or "").strip(),
+            observed_at=str(source_event.get("observed_at") or observed_at).strip(),
+        )
+    return source_event_from_fingerprint(
+        reason,  # type: ignore[arg-type]
+        fingerprint,
+        observed_at=observed_at,
+    )
+
+
+def _list_attr(obj: Any, name: str) -> list[dict[str, Any]]:
+    value = getattr(obj, name, [])
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _str_attr(obj: Any, name: str) -> str:
+    value = getattr(obj, name, "")
+    return value if isinstance(value, str) else ""
