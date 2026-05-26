@@ -23,18 +23,6 @@ SITE_ADDRESS = "123 Main St"
 DRIVE_URL = "https://drive.google.com/drive/folders/abc123"
 
 
-def _record() -> dict:
-    return {"id": "wrike-1", "title": SITE_TITLE}
-
-
-def _summary() -> dict:
-    return {
-        "title": SITE_TITLE,
-        "address": SITE_ADDRESS,
-        "drive_folder_url": DRIVE_URL,
-    }
-
-
 def _readiness(
     *,
     sir_found: bool = True,
@@ -59,7 +47,7 @@ def _readiness(
 
 
 def _run(site: str = SITE_TITLE) -> dict:
-    return asyncio.run(server.diagnose_site_readiness(site))
+    return asyncio.run(server.diagnose_site_readiness(site, DRIVE_URL, SITE_ADDRESS))
 
 
 def _vendor_gate_on(monkeypatch):
@@ -86,8 +74,6 @@ def _patch_common(
     if m1_docs is None:
         m1_docs = {}
     return [
-        patch("due_diligence_reporter.server.find_site_record", return_value=_record()),
-        patch("due_diligence_reporter.server.build_site_summary", return_value=_summary()),
         patch(
             "due_diligence_reporter.server._make_google_client",
             return_value=MagicMock(),
@@ -211,6 +197,31 @@ def test_vendor_sir_missing_blocks_partial(tmp_path, monkeypatch):
     assert raycon_entry["minutes_since"] is None
 
 
+def test_ai_sir_present_allows_first_round_partial(tmp_path, monkeypatch):
+    _vendor_gate_on(monkeypatch)
+    _no_dispatch_state(tmp_path, monkeypatch)
+
+    patchers = _patch_common(
+        readiness=_readiness(
+            sir_found=True,
+            sir_vendor=False,
+            inspection_found=False,
+            inspection_vendor=False,
+            raycon_scenario_found=False,
+        ),
+    )
+    _enter_all(patchers)
+    try:
+        result = _run()
+    finally:
+        _stop_all(patchers)
+
+    assert result["ready_for_full_report"] is False
+    assert result["partial_report_possible"] is True
+    statuses = {b["doc"]: b["status"] for b in result["blocking"]}
+    assert statuses["vendor_sir"] == "missing"
+
+
 # ---------------------------------------------------------------------------
 # 3. SIR present, BI missing, RayCon pending with Block Plan dispatched 14
 #    minutes ago → matches the example response shape.
@@ -322,17 +333,14 @@ def test_raycon_scenario_present_uses_run_timestamp(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_unknown_site_returns_graceful_error(tmp_path, monkeypatch):
+def test_missing_drive_url_returns_graceful_error(tmp_path, monkeypatch):
     _vendor_gate_on(monkeypatch)
     _no_dispatch_state(tmp_path, monkeypatch)
 
-    with patch("due_diligence_reporter.server.find_site_record", return_value=None):
-        result = asyncio.run(server.diagnose_site_readiness("Nonexistent Site"))
+    result = asyncio.run(server.diagnose_site_readiness("Nonexistent Site"))
 
-    # New disambiguation payload: status is "not_found" with did_you_mean hints.
-    assert result["status"] == "not_found"
-    assert "could not find" in result["message"].lower()
-    assert result["site"] == "Nonexistent Site"
+    assert result["status"] == "error"
+    assert "drive_folder_url" in result["message"]
 
 
 def test_empty_site_name_returns_graceful_error():
@@ -408,14 +416,6 @@ def test_diagnose_does_not_create_m1_folder(tmp_path, monkeypatch):
     # Use the *real* ``_resolve_m1_folder`` to confirm Fix 1's
     # ``create_if_missing=False`` propagates from the diagnose path.
     patchers = [
-        patch(
-            "due_diligence_reporter.server.find_site_record",
-            return_value=_record(),
-        ),
-        patch(
-            "due_diligence_reporter.server.build_site_summary",
-            return_value=_summary(),
-        ),
         patch(
             "due_diligence_reporter.server._make_google_client",
             return_value=fake_gc,
@@ -522,14 +522,6 @@ def test_diagnose_does_not_write_provenance_cache(tmp_path, monkeypatch):
         save_cache_calls.append((args, kwargs))
 
     patchers = [
-        patch(
-            "due_diligence_reporter.server.find_site_record",
-            return_value=_record(),
-        ),
-        patch(
-            "due_diligence_reporter.server.build_site_summary",
-            return_value=_summary(),
-        ),
         patch(
             "due_diligence_reporter.server._make_google_client",
             return_value=fake_gc,

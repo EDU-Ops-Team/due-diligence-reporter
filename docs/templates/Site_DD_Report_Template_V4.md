@@ -11,9 +11,14 @@
 
 # **Executive Summary**
 
-| Can this school be open in time for the current school year? |
+| Can this school be open in time for the current school year (8/12 or 9/8)? |
 | :---- |
-| **{{exec.c_answer}}** Education Regulatory Approval: {{exec.c_edreg}} Occupancy path: {{exec.c_occupancy}} Zoning: {{exec.c_zoning}} |
+| **{{exec.c_answer}}, if/because:** |
+| **Zoning:** {{exec.c_zoning}} |
+| **Education Regulatory Approval:** {{exec.c_edreg}} |
+| **Occupancy path:** {{exec.c_occupancy}} |
+| **Permit Timeline:** {{exec.c_permit_timeline}} |
+| **Construction Timeline:** {{exec.c_construction_timeline}} |
 
 | Direct Answer |
 | :---- |
@@ -47,15 +52,13 @@
 | **Contingency** | {{exec.cost_contingency_fastest_open}} | {{exec.cost_contingency_max_capacity}} |
 | **Grand Total** | {{exec.cost_grand_total_fastest_open}} | {{exec.cost_grand_total_max_capacity}} |
 
-| Lease Conditions |
-| :---- |
-| {{exec.acquisition_conditions}} |
+# **Supporting Notes**
 
-| Trade-Offs and Deficiencies |
-| :---- |
-| {{exec.tradeoffs_and_deficiencies}} |
+## **Open Items to Verify**
 
-# **Source Documents**
+{{verification.open_items}}
+
+## **Referenced Reports**
 
 | Document | Link |
 | :---- | :---- |
@@ -65,4 +68,7 @@
 | **Ease of Conversion Report** | {{sources.e_occupancy_link}} |
 | **School Approval Report** | {{sources.school_approval_link}} |
 | **Opening Plan** | {{sources.opening_plan_link}} |
-| **Trace Report** | {{sources.trace_link}} |
+
+## **Source Notes**
+
+{{exec.citations_block}}

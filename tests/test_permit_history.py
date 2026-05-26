@@ -1,5 +1,4 @@
-﻿"""Unit tests for the (DEPRECATED) Shovels.ai permit history helpers and
-trace integration.
+﻿"""Unit tests for the (DEPRECATED) Shovels.ai permit history helpers.
 
 The Shovels integration has been moved upstream to the AI SIR /
 source-evidence build; DDR no longer initiates live Shovels API calls
@@ -9,10 +8,6 @@ refactors don't silently break the code path. The MCP-tool exposure is
 asserted to be disabled by default in
 ``test_get_permit_history_not_registered_by_default``.
 
-The supplemental_evidence trace tests at the bottom of this file
-verify that upstream-supplied ``shovels.permit_history`` evidence still
-flows into the trace report when the SIR builder writes it into the
-token bag.
 """
 
 from __future__ import annotations
@@ -23,10 +18,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from due_diligence_reporter.rebl import ReblResolution
 from due_diligence_reporter.server import (
     _analyze_permit_flags,
-    _build_report_trace_data,
     _call_shovels_metrics,
     _call_shovels_permits,
     _call_shovels_search,
@@ -251,57 +244,6 @@ def test_format_permit_report_fields_empty_flags():
 
 
 # ---------------------------------------------------------------------------
-# Trace report â€” supplemental_evidence section
-# ---------------------------------------------------------------------------
-
-
-def _minimal_trace_args(**overrides) -> dict:
-    # `rebl_resolution` is required by `_build_report_trace_data`. These
-    # supplemental_evidence tests don't care about Rebl behaviour, so we
-    # pass a default (empty) ReblResolution. The Rebl-specific assertions
-    # live in tests/test_rebl.py.
-    base = {
-        "site_name": "Test Site",
-        "report_date": "2026-04-03",
-        "doc_id": "doc123",
-        "doc_url": "https://docs.google.com/doc123",
-        "replacements": {},
-        "unfilled": [],
-        "unmatched": [],
-        "hyperlink_trace": {},
-        "token_evidence": None,
-        "rebl_resolution": ReblResolution(),
-    }
-    return {**base, **overrides}
-
-
-def test_trace_supplemental_evidence_included_for_non_template_keys():
-    evidence = {"shovels.permit_history": '{"permit_count": 5, "risk_flags": []}'}
-    trace = _build_report_trace_data(**_minimal_trace_args(token_evidence=evidence))
-    assert "supplemental_evidence" in trace
-    assert "shovels.permit_history" in trace["supplemental_evidence"]
-    assert '"permit_count": 5' in trace["supplemental_evidence"]["shovels.permit_history"]
-
-
-def test_trace_supplemental_evidence_omitted_when_empty():
-    trace = _build_report_trace_data(**_minimal_trace_args(token_evidence=None))
-    assert "supplemental_evidence" not in trace
-
-
-def test_trace_supplemental_evidence_template_keys_not_duplicated():
-    # A key that IS a template token should appear in token_report, not supplemental_evidence
-    from due_diligence_reporter.report_schema import TEMPLATE_TOKENS
-    first_token = next(iter(TEMPLATE_TOKENS))
-    evidence = {
-        first_token: "some value",
-        "shovels.permit_history": "raw data",
-    }
-    trace = _build_report_trace_data(**_minimal_trace_args(token_evidence=evidence))
-    assert first_token not in trace.get("supplemental_evidence", {})
-    assert "shovels.permit_history" in trace["supplemental_evidence"]
-
-
-# ---------------------------------------------------------------------------
 # Shovels is out of normal DDR scope — these are the load-bearing assertions
 # for the upstream-only direction. The Shovels integration now runs in the
 # AI SIR / source-evidence build; DDR must not initiate live Shovels API
@@ -380,16 +322,6 @@ class TestShovelsOutOfDdrScope:
         merged_summary = next(f["summary"] for f in flags if f["source"] == "permit_history")
         assert "open permit" in merged_summary.lower()
         assert "no permit activity" in merged_summary.lower()
-
-    def test_upstream_shovels_supplemental_evidence_still_flows_to_trace(self) -> None:
-        # If the upstream SIR builder stores ``shovels.permit_history``
-        # in ``token_evidence``, DDR's trace report must continue to
-        # surface it in ``supplemental_evidence`` so reviewers can see
-        # the raw upstream payload that drove the flags.
-        evidence = {"shovels.permit_history": '{"permit_count": 5, "risk_flags": []}'}
-        trace = _build_report_trace_data(**_minimal_trace_args(token_evidence=evidence))
-        assert "shovels.permit_history" in trace["supplemental_evidence"]
-
 
 class TestLegacyShovelsToolOptIn:
     """The legacy ``get_permit_history`` MCP tool remains opt-in for callers

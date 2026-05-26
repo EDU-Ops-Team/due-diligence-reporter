@@ -33,7 +33,7 @@ import hashlib
 import hmac
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import requests
@@ -139,10 +139,10 @@ def _normalize_drive_folder_url(value: str) -> str | None:
     rejects HTML anchor wrapping, leading/trailing text, and file URLs
     (``/file/d/<id>``) with ``"drive_folder_url must be a Google Drive
     folder URL or folder ID containing a 10-200 character folder ID"``.
-    Wrike's "Google Folder" custom field, however, sometimes stores an
+    Source Google Folder fields can sometimes store an
     HTML anchor (e.g. ``<a href="...folders/<id>">Site</a>``) or has
     extra text appended by PMs. We normalize defensively here so a
-    sloppy Wrike entry doesn't burn a RayCon dispatch slot.
+    sloppy source entry doesn't burn a RayCon dispatch slot.
 
     Reuses :func:`extract_folder_id_from_url` (which unwraps anchors and
     matches both ``/folders/<id>`` and ``?id=<id>``) to pull the ID, then
@@ -157,7 +157,7 @@ def _normalize_drive_folder_url(value: str) -> str | None:
 def _unwrap_html_anchor(value: str) -> str:
     """Return the href content of an HTML anchor, or the value unchanged.
 
-    Wrike rich-text fields can wrap raw URLs in ``<a href="...">label</a>``
+    Rich-text fields can wrap raw URLs in ``<a href="...">label</a>``
     when a PM pastes via the rich-text editor. RayCon's validators are
     strict about extraneous markup, so this small unwrapper keeps us
     forward-safe across fields where the validator currently happens to
@@ -290,16 +290,16 @@ def post_raycon_job(
             "post_raycon_job missing required fields: " + ", ".join(missing_required)
         )
 
-    # Normalize Wrike-sourced URLs before they hit RayCon's strict
+    # Normalize source-system URLs before they hit RayCon's strict
     # validators. Live runs surfaced 400s from HTML-anchor-wrapped folder
-    # URLs in Wrike's Google Folder field (e.g. NYC 156 William, Dallas
+    # URLs in the source Google Folder field (e.g. NYC 156 William, Dallas
     # 4152 Cole on 2026-05-05).
     normalized_folder = _normalize_drive_folder_url(drive_folder_url)
     if not normalized_folder:
         raise ValueError(
             "post_raycon_job: drive_folder_url is not parseable as a Google "
             f"Drive folder URL or ID (got {drive_folder_url!r}). Fix the "
-            "site's Google Folder custom field in Wrike."
+            "site's Google Folder field."
         )
     drive_folder_url = normalized_folder
     block_plan_url = _unwrap_html_anchor(block_plan_url)
@@ -325,7 +325,7 @@ def post_raycon_job(
         "block_plan_file_id": block_plan_file_id,
         "block_plan_url": block_plan_url,
         "callback_marker": RAYCON_CALLBACK_MARKER,
-        "requested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "requested_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     if sf_int is not None:
         # Insert before callback_marker to preserve the canonical field
@@ -451,7 +451,7 @@ def post_raycon_folder_ping(
             + ", ".join(missing_required)
         )
 
-    # Same defensive normalization as post_raycon_job: a Wrike folder field
+    # Same defensive normalization as post_raycon_job: a source folder field
     # wrapped in an HTML anchor (or with extra text) makes RayCon's strict
     # validator return 400 here too.
     normalized_folder = _normalize_drive_folder_url(drive_folder_url)
@@ -459,7 +459,7 @@ def post_raycon_folder_ping(
         raise ValueError(
             "post_raycon_folder_ping: drive_folder_url is not parseable as a "
             f"Google Drive folder URL or ID (got {drive_folder_url!r}). Fix "
-            "the site's Google Folder custom field in Wrike."
+            "the site's Google Folder field."
         )
     drive_folder_url = normalized_folder
     if file_url:
@@ -474,7 +474,7 @@ def post_raycon_folder_ping(
         "m1_folder_id": m1_folder_id,
         "event": "folder_updated",
         "callback_marker": RAYCON_CALLBACK_MARKER,
-        "requested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "requested_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     if doc_type:
         body["doc_type"] = doc_type
@@ -806,7 +806,7 @@ def raycon_scenario_to_report_fields(payload: dict[str, Any]) -> dict[str, str]:
     The output contract for ``exec.fastest_open_*`` / ``exec.cost_<bucket>_*`` /
     ``exec.max_capacity_*`` matches the contract previously satisfied by the
     synchronous /v1/chat integration so the rest of the report pipeline
-    (Google Doc builder, dashboard publisher) is unaffected.
+    and Google Doc builder are unaffected.
     """
     fields: dict[str, str] = {}
 
@@ -822,7 +822,7 @@ def raycon_scenario_to_report_fields(payload: dict[str, Any]) -> dict[str, str]:
 
     # On a failed run, force every scenario field blank — emitting $0 here
     # would be indistinguishable from a successful zero-cost scenario and
-    # downstream readers (Doc builder, dashboard) would mis-render it.
+    # the Google Doc builder would mis-render it.
     if failed:
         fields["exec.fastest_open_capex"] = ""
         fields["exec.fastest_open_open_date"] = ""

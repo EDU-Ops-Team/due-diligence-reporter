@@ -13,7 +13,7 @@ flowchart TD
         I4{"PDF attachments found?"}
         I5["Label email for manual review"]
         I6["For each attachment:<br/>classify document type and confidence"]
-        I7["Match attachment to Wrike site<br/>deterministic scoring -> LLM fallback"]
+        I7["Match attachment to site<br/>deterministic scoring -> LLM fallback"]
         I8{"Supported doc type?"}
         I9["Skip attachment"]
         I10{"Confidence >= 0.70?"}
@@ -39,25 +39,24 @@ flowchart TD
         P4{"DD report already exists?"}
         P5["Status: report_exists<br/>post Google Chat result"]
         P6["Run Anthropic DD agent<br/>up to 40 tool-calling iterations"]
-        P7["Typical tool sequence:<br/>get_site_record<br/>list_drive_documents<br/>get_site_comments<br/>read_drive_document"]
+        P7["Typical tool sequence:<br/>list_drive_documents<br/>read_drive_document"]
         P8{"Block Plan or derived planning docs available?"}
         P9["Optional planning branch:<br/>use Block Plan / Capacity / RayCon context"]
         P10["Analysis tools:<br/>apply_e_occupancy_skill<br/>apply_school_approval_skill<br/>get_cost_estimate"]
-        P11["create_dd_report:<br/>inject Wrike defaults<br/>resolve REBL identity<br/>normalize report data<br/>create or reuse DD Google Doc<br/>build document structure programmatically<br/>create trace report"]
+        P11["create_dd_report:<br/>inject site-context defaults<br/>resolve REBL identity<br/>normalize report data<br/>create or reuse DD Google Doc<br/>build document structure programmatically"]
         P12{"Agent run succeeded?"}
-        P13["Save JSON run trace for failed run"]
+        P13["Keep failed-run trace in local manifest"]
         P14{"Unreadable SIR / Inspection<br/>seen in failed trace?"}
         P15["Post source-review alert to Google Chat"]
         P16["Status: generation_failed<br/>post Google Chat result"]
-        P17["Save JSON run trace beside report"]
+        P17["Keep successful-run trace in local manifest"]
         P18{"Unreadable SIR / Inspection<br/>seen in successful trace?"}
         P19["Post source-review alert to Google Chat"]
         P20["check_report_completeness:<br/>block on {{tokens}}, raw token leaks,<br/>or invalid can-we-answer value"]
         P21{"Ready to send?"}
         P22["Status: report_incomplete<br/>post Google Chat result"]
         P23["Email report link to configured recipients + P1"]
-        P24["Best-effort dashboard publish"]
-        P25["Status: report_created<br/>post Google Chat result"]
+        P24["Status: report_created<br/>post Google Chat result"]
     end
 
     A1 --> I1
@@ -83,7 +82,7 @@ flowchart TD
     I19 -- Yes --> I20 --> P0
     I19 -- No --> I21
 
-    A2 --> D1["Fetch active Wrike DD sites with Drive folders<br/>prefetch shared folder cache once"]
+    A2 --> D1["Fetch active Drive site folders with Drive folders<br/>prefetch shared folder cache once"]
     D1 --> P0
 
     A3 --> D2["Select one site<br/>load prompt and build match terms"]
@@ -106,7 +105,7 @@ flowchart TD
     P18 -- No --> P20
     P20 --> P21
     P21 -- No --> P22
-    P21 -- Yes --> P23 --> P24 --> P25
+    P21 -- Yes --> P23 --> P24
 
     classDef trigger fill:#f7ead9,stroke:#8a5a00,color:#3b2600;
     classDef process fill:#e8f1fb,stroke:#1d5fa7,color:#0a2946;
@@ -115,7 +114,7 @@ flowchart TD
     classDef alert fill:#fbe8e8,stroke:#a02d2d,color:#531616;
 
     class A1,A2,A3 trigger;
-    class I1,I6,I7,I13,I14,I15,I16,I17,I18,I20,D1,D2,P0,P1,P1A,P6,P7,P9,P10,P11,P13,P15,P17,P19,P20,P23,P24 process;
+    class I1,I6,I7,I13,I14,I15,I16,I17,I18,I20,D1,D2,P0,P1,P1A,P6,P7,P9,P10,P11,P13,P15,P17,P19,P20,P23 process;
     class I2,I4,I8,I10,I12,I19,P2,P4,P8,P12,P14,P18,P21 decision;
-    class I3,I9,I21,P5,P25 output;
+    class I3,I9,I21,P5,P24 output;
     class I5,I11,P3,P16,P22 alert;

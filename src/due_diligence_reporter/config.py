@@ -56,17 +56,6 @@ class Settings(BaseSettings):
         description="OAuth scopes for Drive, Docs, and Gmail operations",
     )
 
-    # DD Report Templates (deprecated — reports are now built programmatically)
-    dd_template_v3_google_doc_id: str = Field(
-        "",
-        description="Deprecated: Google Doc ID of the V3 DD report template. "
-        "Reports are now built programmatically via google_doc_builder.",
-    )
-    dd_template_v2_google_doc_id: str = Field(
-        "",
-        description="Deprecated: Legacy fallback Google Doc ID for DD report template.",
-    )
-
     # Google Drive root folder containing all site folders
     google_drive_root_folder_id: str = Field(
         "",
@@ -85,28 +74,6 @@ class Settings(BaseSettings):
     building_inspection_folder_id: str = Field(
         "15dfKaAnic9VRKhp_-vFSpTr7uPk_hhKo",
         description="Drive folder ID for shared Building Inspection documents",
-    )
-
-    # DD Dashboard aggregation + deploy
-    dashboard_output_path: str = Field(
-        "dist/sites.json",
-        description="Local filesystem path (relative to repo root) where the aggregated sites.json is written.",
-    )
-    dashboard_drive_folder_id: str = Field(
-        "",
-        description="Optional Drive folder ID. When set, the aggregated sites.json is also uploaded there.",
-    )
-    dashboard_repo: str = Field(
-        "",
-        description="Optional GitHub repo (owner/name) to push sites.json to. When set, the aggregator runs gh to commit and push.",
-    )
-    dashboard_repo_path: str = Field(
-        "public/sites.json",
-        description="Path inside DASHBOARD_REPO where sites.json should live.",
-    )
-    dashboard_repo_branch: str = Field(
-        "main",
-        description="Branch to push sites.json to.",
     )
 
     # RayCon async hand-off (inbox scanner pings RayCon when a Block Plan
@@ -260,7 +227,7 @@ class Settings(BaseSettings):
     #   v1: {to:edu.ops cc:edu.ops} ...           # silently dropped Forums tab
     #   v2: ... category:{primary forums updates} # Gmail UI syntax, REST API
     #                                              ignored it -> 0 results
-    #   v3: {to:edu.ops cc:edu.ops} -category:promotions -category:social
+    #   attempt 3: {to:edu.ops cc:edu.ops} -category:promotions -category:social
     #                                              # negative form is REST-API
     #                                              # safe BUT to:/cc:self-
     #                                              # reference returns 0 when
@@ -368,7 +335,7 @@ _SHOVELS_PLACEHOLDER_VALUES = frozenset({
 def shovels_status(settings: Settings | None = None) -> dict[str, object]:
     """Preflight status of the Shovels.ai integration.
 
-    Returns a dict suitable for surfacing in logs, the trace report, or a
+    Returns a dict suitable for surfacing in logs, local diagnostics, or a
     startup diagnostic. Never includes the raw key — only whether it is
     configured and why we think so. Safe to log.
 

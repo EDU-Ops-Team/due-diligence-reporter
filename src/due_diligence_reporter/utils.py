@@ -46,7 +46,7 @@ def extract_folder_id_from_url(url: str) -> str | None:
     - https://drive.google.com/drive/folders/FOLDER_ID
     - https://drive.google.com/drive/u/0/folders/FOLDER_ID
     - https://drive.google.com/open?id=FOLDER_ID
-    - HTML anchor tags wrapping any of the above (from Wrike rich-text fields)
+    - HTML anchor tags wrapping any of the above
 
     Returns the folder ID string, or None if not parseable.
     """
@@ -485,6 +485,8 @@ def score_site_match_strength(
     for term in build_site_match_terms(site_title, address):
         term_norm = _normalize_site_match_text(term)
         if not term_norm or term_norm in {title_norm, city_norm}:
+            continue
+        if city_norm and term_norm in set(city_norm.split()):
             continue
         if term_norm not in haystack:
             continue

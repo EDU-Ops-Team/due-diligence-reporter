@@ -2,7 +2,7 @@
 publishes RayCon scenario reports and alerts on stuck sites.
 
 Exercises the per-site processing logic in isolation using mocks for the
-Google client, Wrike, and ``save_skill_report``.
+Google client, Drive folder scanning, and ``save_skill_report``.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def _block_plan(modified_minutes_ago: int = 5) -> dict:
     when = datetime.now(UTC) - timedelta(minutes=modified_minutes_ago)
     return {
         "id": "bp_file_1",
-        "name": "Block Plan v3.pdf",
+        "name": "Block Plan current.pdf",
         "modifiedTime": when.isoformat().replace("+00:00", "Z"),
         "mimeType": "application/pdf",
     }
@@ -208,7 +208,7 @@ class TestProcessSite:
 class TestFailedScenarioAlerts:
     """When ``raycon_scenario.json`` arrives with ``status: failed`` (or
     ``validation.passed: false``), the followup must NOT publish a Doc —
-    that would render an empty/zero-cost scenario the dashboard treats as
+    that would render an empty/zero-cost scenario as
     real. Instead surface the failure as an alert row that flows through
     the existing Chat alert path."""
 
@@ -991,21 +991,14 @@ class TestDDReportRepublish:
         assert out["dd_report_republish"] == "failed"
         assert "Anthropic 500" in out["reason"]
 
-    @patch("due_diligence_reporter.dd_republish.extract_timeline_confidence_from_record")
-    @patch("due_diligence_reporter.dd_republish.extract_school_feasibility_from_record")
     @patch("scripts.raycon_followup.process_site_pipeline")
     @patch("scripts.raycon_followup._find_existing_dd_report")
-    def test_republish_forwards_p1_and_feasibility_fields(
+    def test_republish_forwards_p1_and_site_created_at(
         self,
         mock_find_dd,
         mock_pipeline,
-        mock_feasibility,
-        mock_timeline,
     ):
-        """Regression for #82: republish must thread p1/feasibility/timeline/
-        wrike_created_at into ``process_site_pipeline`` so the regenerated DD
-        Report email still CC's the P1 owner and the dashboard publish keeps
-        the W74/W81 ratings + Wrike createdDate.
+        """Republish threads P1 and source-created metadata into the pipeline.
 
         Covers two paths:
           1. all fields present on site_summary → all forwarded.
@@ -1016,8 +1009,6 @@ class TestDDReportRepublish:
         result_obj.status = "report_created"
         result_obj.doc_url = "https://docs.google.com/document/d/dd1"
         mock_pipeline.return_value = result_obj
-        mock_feasibility.return_value = "high"
-        mock_timeline.return_value = "medium"
 
         gc = MagicMock()
         full_site = {
@@ -1025,7 +1016,6 @@ class TestDDReportRepublish:
             "p1_assignee_email": "owner@example.com",
             "p1_assignee_name": "Alex Owner",
             "created_date": "2026-01-15T12:00:00Z",
-            "custom_fields": [{"id": "f1", "value": "high"}],
         }
         _republish_dd_report_if_present(
             gc,
@@ -1042,14 +1032,12 @@ class TestDDReportRepublish:
         assert kwargs.get("force_regenerate") is True
         assert kwargs.get("p1_email") == "owner@example.com"
         assert kwargs.get("p1_name") == "Alex Owner"
-        assert kwargs.get("school_feasibility") == "high"
-        assert kwargs.get("timeline_confidence") == "medium"
-        assert kwargs.get("wrike_created_at") == "2026-01-15T12:00:00Z"
+        assert "school_feasibility" not in kwargs
+        assert "timeline_confidence" not in kwargs
+        assert kwargs.get("site_created_at") == "2026-01-15T12:00:00Z"
 
         # Graceful-default path: site_summary missing the optional fields.
         mock_pipeline.reset_mock()
-        mock_feasibility.return_value = None
-        mock_timeline.return_value = None
         _republish_dd_report_if_present(
             gc,
             _site(),  # no p1_*, no created_date, no custom_fields
@@ -1063,9 +1051,9 @@ class TestDDReportRepublish:
         kwargs = mock_pipeline.call_args.kwargs
         assert kwargs.get("p1_email") is None
         assert kwargs.get("p1_name") is None
-        assert kwargs.get("school_feasibility") is None
-        assert kwargs.get("timeline_confidence") is None
-        assert kwargs.get("wrike_created_at") is None
+        assert "school_feasibility" not in kwargs
+        assert "timeline_confidence" not in kwargs
+        assert kwargs.get("site_created_at") is None
 
     @patch("scripts.raycon_followup.save_skill_report")
     @patch("scripts.raycon_followup._find_published_doc")
@@ -1366,53 +1354,35 @@ class TestCallbackReceiverScoping:
     """Verify the workflow_dispatch callback path scopes to a single site
     and falls back cleanly when site_id is unknown or absent.
 
-    Tests target ``main()`` with the integration boundaries (Wrike,
+    Tests target ``main()`` with the integration boundaries (Drive,
     Google, _process_site) mocked. The point is to prove the wiring —
     parsing the new flags, narrowing the site list, and exiting cleanly
     on an unknown id — not to re-test what `_process_site` already does.
     """
 
     def _patch_integration_points(self, summaries):
-        """Return a dict of patches that stand in for Wrike + Google.
+        """Return patches that stand in for Drive + Google.
 
         Callers use this with ``contextlib.ExitStack`` to keep test bodies
-        short. ``summaries`` is the list ``main()`` will iterate (each
-        entry is what ``build_site_summary`` would have returned).
+        short. ``summaries`` is the list ``main()`` will iterate.
         """
         from unittest.mock import patch as _patch
 
-        # Each Wrike record carries an ``id`` so build_site_summary's
-        # passthrough returns it unchanged.
-        records = [{"id": s["id"]} for s in summaries]
+        fake_gc = MagicMock()
+        fake_gc.list_subfolders.return_value = [
+            {
+                "id": s["id"],
+                "name": s["title"],
+                "webViewLink": s["drive_folder_url"],
+            }
+            for s in summaries
+        ]
 
         return {
             "get_settings": _patch("scripts.raycon_followup.get_settings"),
             "google_client": _patch(
                 "scripts.raycon_followup.GoogleClient.from_oauth_config",
-                return_value=MagicMock(),
-            ),
-            "load_wrike_config": _patch(
-                "scripts.raycon_followup.load_wrike_config",
-                return_value=MagicMock(access_token="t"),
-            ),
-            "get_all_site_records": _patch(
-                "scripts.raycon_followup._get_all_site_records",
-                return_value=records,
-            ),
-            "get_active_status_ids": _patch(
-                "scripts.raycon_followup._get_active_status_ids",
-                return_value={"active"},
-            ),
-            "filter_active": _patch(
-                "scripts.raycon_followup.filter_active_site_records",
-                return_value=records,
-            ),
-            "build_summary": _patch(
-                "scripts.raycon_followup.build_site_summary",
-                # Map record -> the matching summary the test set up.
-                side_effect=lambda rec: next(
-                    s for s in summaries if s["id"] == rec["id"]
-                ),
+                return_value=fake_gc,
             ),
             "process_site": _patch(
                 "scripts.raycon_followup._process_site",

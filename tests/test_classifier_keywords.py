@@ -27,6 +27,12 @@ class TestClassifyByKeywordsSIR:
     def test_sir_hyphenated(self):
         assert classify_by_keywords("keller-sir.pdf") == ("sir", 0.95)
 
+    def test_sir_underscore_suffix(self):
+        assert classify_by_keywords("5400-beethoven_2026-05-21_SIR.docx") == (
+            "sir",
+            0.95,
+        )
+
     def test_sir_underscore_no_boundary_match(self):
         """Underscore is a word char, so \\bsir\\b does not match 'sir_report'."""
         assert classify_by_keywords("sir_report_v2.pdf") == ("unknown", 0.0)
@@ -83,6 +89,12 @@ class TestClassifyByKeywordsEOccupancy:
 class TestClassifyByKeywordsSchoolApproval:
     def test_school_approval(self):
         assert classify_by_keywords("School Approval Assessment.pdf") == (
+            "school_approval_report",
+            0.95,
+        )
+
+    def test_school_approval_hyphenated(self):
+        assert classify_by_keywords("5400-beethoven_school-approval.docx") == (
             "school_approval_report",
             0.95,
         )
@@ -172,10 +184,10 @@ class TestClassifyByKeywordsDDReport:
             0.95,
         )
 
-    def test_report_trace(self):
+    def test_report_trace_json_is_ignored(self):
         assert classify_by_keywords("Alpha Tampa DD Report Trace - 2026-04-20.json") == (
-            "report_trace",
-            0.95,
+            "unknown",
+            0.0,
         )
 
 

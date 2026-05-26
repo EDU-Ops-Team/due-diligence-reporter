@@ -18,7 +18,6 @@ from due_diligence_reporter.risk_flags import (
     normalize_caller_flags,
 )
 
-
 # --- permit_history ingestion ---------------------------------------------
 
 

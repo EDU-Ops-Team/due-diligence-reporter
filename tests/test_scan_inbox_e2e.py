@@ -7,13 +7,12 @@ SIR notification, and CDS overlay dispatch. External services are mocked.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 # scan_inbox.py manipulates sys.path; import main directly
 from scripts.scan_inbox import main
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -137,7 +136,7 @@ _MODULE = "scripts.scan_inbox"
 
 @pytest.fixture(autouse=True)
 def _patch_externals(monkeypatch):
-    """Provide default settings and suppress real OAuth / Wrike calls."""
+    """Provide default settings and suppress real OAuth calls."""
     # Settings
     monkeypatch.setenv("GOOGLE_CLIENT_CONFIG", "/fake/client.json")
     monkeypatch.setenv("GOOGLE_TOKEN_FILE", "/fake/token.json")
@@ -163,14 +162,12 @@ class TestHappyPathSIRWithCDS:
     @patch(f"{_MODULE}.extract_text_from_pdf_bytes")
     @patch(f"{_MODULE}.post_google_chat_message")
     @patch(f"{_MODULE}.scan_inbox")
-    @patch(f"{_MODULE}.load_wrike_config")
     @patch(f"{_MODULE}.GoogleClient")
     @patch(f"{_MODULE}.get_settings")
     def test_sir_full_cds_flow(
         self,
         mock_settings_fn,
         mock_gc_cls,
-        mock_wrike_cfg,
         mock_scan,
         mock_chat,
         mock_extract,
@@ -188,9 +185,6 @@ class TestHappyPathSIRWithCDS:
 
         gc = MagicMock()
         mock_gc_cls.from_oauth_config.return_value = gc
-
-        # Wrike fails gracefully
-        mock_wrike_cfg.side_effect = RuntimeError("wrike down")
 
         sir = _sir_upload()
         mock_scan.return_value = _make_scan_result(uploads=[sir])
@@ -234,14 +228,12 @@ class TestBuildingInspectionNoCDS:
     @patch(f"{_MODULE}.send_email")
     @patch(f"{_MODULE}.extract_text_from_pdf_bytes")
     @patch(f"{_MODULE}.scan_inbox")
-    @patch(f"{_MODULE}.load_wrike_config")
     @patch(f"{_MODULE}.GoogleClient")
     @patch(f"{_MODULE}.get_settings")
     def test_no_cds_for_building_inspection(
         self,
         mock_settings_fn,
         mock_gc_cls,
-        mock_wrike_cfg,
         mock_scan,
         mock_extract,
         mock_send,
@@ -256,7 +248,6 @@ class TestBuildingInspectionNoCDS:
 
         gc = MagicMock()
         mock_gc_cls.from_oauth_config.return_value = gc
-        mock_wrike_cfg.side_effect = RuntimeError("skip wrike")
 
         mock_scan.return_value = _make_scan_result(uploads=[_bi_upload()])
 
@@ -272,11 +263,10 @@ class TestISPNoCDS:
 
     @patch(f"{_MODULE}.send_email")
     @patch(f"{_MODULE}.scan_inbox")
-    @patch(f"{_MODULE}.load_wrike_config")
     @patch(f"{_MODULE}.GoogleClient")
     @patch(f"{_MODULE}.get_settings")
     def test_no_cds_for_isp(
-        self, mock_settings_fn, mock_gc_cls, mock_wrike_cfg, mock_scan, mock_send
+        self, mock_settings_fn, mock_gc_cls, mock_scan, mock_send
     ):
         settings = MagicMock()
         settings.sir_notification_recipients = ""
@@ -288,7 +278,6 @@ class TestISPNoCDS:
 
         gc = MagicMock()
         mock_gc_cls.from_oauth_config.return_value = gc
-        mock_wrike_cfg.side_effect = RuntimeError("skip wrike")
 
         mock_scan.return_value = _make_scan_result(uploads=[_isp_upload()])
 
@@ -302,11 +291,10 @@ class TestUnknownDocTypeManualReview:
 
     @patch(f"{_MODULE}.send_email")
     @patch(f"{_MODULE}.scan_inbox")
-    @patch(f"{_MODULE}.load_wrike_config")
     @patch(f"{_MODULE}.GoogleClient")
     @patch(f"{_MODULE}.get_settings")
     def test_unknown_doc_type(
-        self, mock_settings_fn, mock_gc_cls, mock_wrike_cfg, mock_scan, mock_send
+        self, mock_settings_fn, mock_gc_cls, mock_scan, mock_send
     ):
         settings = MagicMock()
         settings.sir_notification_recipients = ""
@@ -318,7 +306,6 @@ class TestUnknownDocTypeManualReview:
 
         gc = MagicMock()
         mock_gc_cls.from_oauth_config.return_value = gc
-        mock_wrike_cfg.side_effect = RuntimeError("skip wrike")
 
         # scan returns no uploads — unknown docs are skipped / flagged
         mock_scan.return_value = _make_scan_result(
@@ -345,14 +332,12 @@ class TestMultipleAttachments:
     @patch(f"{_MODULE}.generate_cds_verification_report")
     @patch(f"{_MODULE}.extract_text_from_pdf_bytes")
     @patch(f"{_MODULE}.scan_inbox")
-    @patch(f"{_MODULE}.load_wrike_config")
     @patch(f"{_MODULE}.GoogleClient")
     @patch(f"{_MODULE}.get_settings")
     def test_multiple_attachments_uploaded(
         self,
         mock_settings_fn,
         mock_gc_cls,
-        mock_wrike_cfg,
         mock_scan,
         mock_extract,
         mock_cds_gen,
@@ -369,7 +354,6 @@ class TestMultipleAttachments:
 
         gc = MagicMock()
         mock_gc_cls.from_oauth_config.return_value = gc
-        mock_wrike_cfg.side_effect = RuntimeError("skip wrike")
 
         sir = _sir_upload()
         isp = _isp_upload()
@@ -404,14 +388,12 @@ class TestCDSSkippedNoBCItems:
     @patch(f"{_MODULE}.generate_cds_verification_report")
     @patch(f"{_MODULE}.extract_text_from_pdf_bytes")
     @patch(f"{_MODULE}.scan_inbox")
-    @patch(f"{_MODULE}.load_wrike_config")
     @patch(f"{_MODULE}.GoogleClient")
     @patch(f"{_MODULE}.get_settings")
     def test_cds_skipped_zero_bc(
         self,
         mock_settings_fn,
         mock_gc_cls,
-        mock_wrike_cfg,
         mock_scan,
         mock_extract,
         mock_cds_gen,
@@ -428,7 +410,6 @@ class TestCDSSkippedNoBCItems:
 
         gc = MagicMock()
         mock_gc_cls.from_oauth_config.return_value = gc
-        mock_wrike_cfg.side_effect = RuntimeError("skip wrike")
 
         sir = _sir_upload()
         mock_scan.return_value = _make_scan_result(uploads=[sir])
@@ -460,14 +441,12 @@ class TestCDSSkippedNoRecipients:
     @patch(f"{_MODULE}.generate_cds_verification_report")
     @patch(f"{_MODULE}.extract_text_from_pdf_bytes")
     @patch(f"{_MODULE}.scan_inbox")
-    @patch(f"{_MODULE}.load_wrike_config")
     @patch(f"{_MODULE}.GoogleClient")
     @patch(f"{_MODULE}.get_settings")
     def test_cds_skipped_empty_recipients(
         self,
         mock_settings_fn,
         mock_gc_cls,
-        mock_wrike_cfg,
         mock_scan,
         mock_extract,
         mock_cds_gen,
@@ -483,7 +462,6 @@ class TestCDSSkippedNoRecipients:
 
         gc = MagicMock()
         mock_gc_cls.from_oauth_config.return_value = gc
-        mock_wrike_cfg.side_effect = RuntimeError("skip wrike")
 
         sir = _sir_upload()
         mock_scan.return_value = _make_scan_result(uploads=[sir])
@@ -507,14 +485,12 @@ class TestUploadFailureResilience:
     @patch(f"{_MODULE}.generate_cds_verification_report")
     @patch(f"{_MODULE}.extract_text_from_pdf_bytes")
     @patch(f"{_MODULE}.scan_inbox")
-    @patch(f"{_MODULE}.load_wrike_config")
     @patch(f"{_MODULE}.GoogleClient")
     @patch(f"{_MODULE}.get_settings")
     def test_upload_failure_continues(
         self,
         mock_settings_fn,
         mock_gc_cls,
-        mock_wrike_cfg,
         mock_scan,
         mock_extract,
         mock_cds_gen,
@@ -531,7 +507,6 @@ class TestUploadFailureResilience:
 
         gc = MagicMock()
         mock_gc_cls.from_oauth_config.return_value = gc
-        mock_wrike_cfg.side_effect = RuntimeError("skip wrike")
 
         sir = _sir_upload()
         mock_scan.return_value = _make_scan_result(uploads=[sir])
@@ -554,11 +529,10 @@ class TestGmailAPIFailure:
     """Gmail API failure in scan_inbox raises (expected behavior)."""
 
     @patch(f"{_MODULE}.scan_inbox")
-    @patch(f"{_MODULE}.load_wrike_config")
     @patch(f"{_MODULE}.GoogleClient")
     @patch(f"{_MODULE}.get_settings")
     def test_gmail_failure_raises(
-        self, mock_settings_fn, mock_gc_cls, mock_wrike_cfg, mock_scan
+        self, mock_settings_fn, mock_gc_cls, mock_scan
     ):
         settings = MagicMock()
         settings.sir_notification_recipients = ""
@@ -568,7 +542,6 @@ class TestGmailAPIFailure:
 
         gc = MagicMock()
         mock_gc_cls.from_oauth_config.return_value = gc
-        mock_wrike_cfg.side_effect = RuntimeError("skip wrike")
 
         mock_scan.side_effect = RuntimeError("Gmail API failure")
 

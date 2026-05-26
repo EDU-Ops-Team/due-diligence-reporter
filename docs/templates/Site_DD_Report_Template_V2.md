@@ -68,4 +68,3 @@
 | **ISP** | {{sources.isp_link}} |
 | **Ease of Conversion Report** | {{sources.e_occupancy_link}} |
 | **School Approval Report** | {{sources.school_approval_link}} |
-| **Trace Report** | {{sources.trace_link}} |

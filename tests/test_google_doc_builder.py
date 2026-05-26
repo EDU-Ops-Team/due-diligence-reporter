@@ -12,6 +12,7 @@ from due_diligence_reporter.google_doc_builder import (
     _SOURCE_DOC_ROWS,
     CITATIONS_BLOCK_KEY,
     SOURCE_QUALITY_NOTES_KEY,
+    VERIFICATION_OPEN_ITEMS_KEY,
     _cell_index,
     _doc_end_index,
     _DocBuilder,
@@ -285,7 +286,7 @@ class TestCellIndex:
 
 
 class TestTokenCoverage:
-    """Verify the builder handles all current template tokens from the V3 spec."""
+    """Verify the builder handles all current template tokens."""
 
     # Collect all tokens referenced by the builder module
     _BUILDER_TOKENS: set[str] = set()
@@ -322,19 +323,19 @@ class TestTokenCoverage:
         for _, token in _SOURCE_DOC_ROWS:
             cls._BUILDER_TOKENS.add(token)
 
-    def test_all_v3_template_tokens_covered(self) -> None:
-        """Every V3 token in the live two-scenario contract is handled."""
-        v3_tokens = set()
+    def test_all_current_template_tokens_covered(self) -> None:
+        """Every token in the live two-scenario contract is handled."""
+        current_tokens = set()
 
         # meta tokens
-        v3_tokens.update([
+        current_tokens.update([
             "meta.site_name", "meta.marketing_name", "meta.city_state_zip",
             "meta.school_type", "meta.report_date", "meta.prepared_by", "meta.rebl_site_id",
             "meta.drive_folder_url",
         ])
 
         # exec can-we-open tokens
-        v3_tokens.update([
+        current_tokens.update([
             "exec.c_answer", "exec.c_edreg", "exec.c_occupancy", "exec.c_zoning",
             "exec.c_permit_timeline", "exec.c_construction_timeline",
             "exec.direct_viable_buildout", "exec.alpha_fit",
@@ -343,7 +344,7 @@ class TestTokenCoverage:
         # exec scenario summary (2 scenarios × 3 metrics = 6)
         for scenario in ("fastest_open", "max_capacity"):
             for metric in ("capacity", "capex", "open_date"):
-                v3_tokens.add(f"exec.{scenario}_{metric}")
+                current_tokens.add(f"exec.{scenario}_{metric}")
 
         # exec cost breakdown (12 rows × 2 scenarios = 24)
         cost_keys = [
@@ -354,26 +355,25 @@ class TestTokenCoverage:
         ]
         for key in cost_keys:
             for scenario in ("fastest_open", "max_capacity"):
-                v3_tokens.add(f"exec.{key}_{scenario}")
+                current_tokens.add(f"exec.{key}_{scenario}")
 
         # exec narrative
-        v3_tokens.update(["exec.acquisition_conditions", "exec.tradeoffs_and_deficiencies"])
+        current_tokens.update(["exec.acquisition_conditions", "exec.tradeoffs_and_deficiencies"])
 
         # sources
-        v3_tokens.update([
+        current_tokens.update([
             "sources.sir_link", "sources.inspection_link",
             "sources.block_plan_link", "sources.rebl_link",
             "sources.e_occupancy_link", "sources.school_approval_link",
             "sources.opening_plan_link",
-            "sources.trace_link",
         ])
 
-        # 8 meta + 8 exec summary/direct + 6 scenario summary + 24 cost + 2 narrative + 8 sources = 56
-        assert len(v3_tokens) == 56, f"Expected 56 V3 tokens, got {len(v3_tokens)}"
+        # 8 meta + 8 exec summary/direct + 6 scenario summary + 24 cost + 2 narrative + 7 sources = 55
+        assert len(current_tokens) == 55, f"Expected 55 tokens, got {len(current_tokens)}"
 
-        # All V3 tokens should be covered by the builder
-        missing = v3_tokens - self._BUILDER_TOKENS
-        assert not missing, f"Builder does not handle V3 tokens: {missing}"
+        # All template tokens should be covered by the builder
+        missing = current_tokens - self._BUILDER_TOKENS
+        assert not missing, f"Builder does not handle current tokens: {missing}"
 
     def test_builder_tokens_are_subset_of_template_tokens(self) -> None:
         """Every token the builder references exists in TEMPLATE_TOKENS."""
@@ -433,11 +433,27 @@ def _make_mock_docs_service(
     return service
 
 
+def _all_batch_requests(docs_svc: MagicMock) -> list[dict[str, Any]]:
+    return [
+        request
+        for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list
+        for request in call_args.kwargs["body"]["requests"]
+    ]
+
+
+def _inserted_text(docs_svc: MagicMock) -> str:
+    return "".join(
+        request["insertText"]["text"]
+        for request in _all_batch_requests(docs_svc)
+        if "insertText" in request
+    )
+
+
 class TestBuildDdReportDoc:
     """Integration-level tests for build_dd_report_doc with mocked API."""
 
     def _full_replacements(self) -> dict[str, str]:
-        """Build a complete set of replacements for all live V3 tokens."""
+        """Build a complete set of replacements for all live template tokens."""
         repl: dict[str, str] = {
             "meta.site_name": "Alpha Boca Raton 2200",
             "meta.marketing_name": "Boca Academy",
@@ -470,7 +486,6 @@ class TestBuildDdReportDoc:
             "sources.e_occupancy_link": "https://drive.google.com/file/d/eocc123",
             "sources.school_approval_link": "https://drive.google.com/file/d/sa123",
             "sources.opening_plan_link": "https://drive.google.com/file/d/op123",
-            "sources.trace_link": "",  # Not yet uploaded at build time
         }
         # Cost breakdown tokens
         cost_keys = [
@@ -517,8 +532,7 @@ class TestBuildDdReportDoc:
 
         result = build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Alpha Boca")
 
-        # We have 6 source URLs + 1 drive folder URL = up to 7 hyperlinks
-        # (trace_link is empty, so not hyperlinked)
+        # We have source URLs plus the Drive folder URL.
         assert result["applied"] >= 6
         assert "sources.sir_link" in result["found_tokens"]
 
@@ -538,19 +552,6 @@ class TestBuildDdReportDoc:
         assert "applied" in result
         # No hyperlinks since no URLs provided
         assert result["applied"] == 0
-
-    def test_trace_link_not_found_when_empty(self) -> None:
-        """sources.trace_link is not in not_found_tokens when empty (expected)."""
-        docs_svc = _make_mock_docs_service()
-        drive_svc = MagicMock()
-        repl = self._full_replacements()
-        repl["sources.trace_link"] = ""
-
-        result = build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Alpha Boca")
-
-        # trace_link should NOT be in not_found — it's expected to be empty
-        assert "sources.trace_link" not in result.get("not_found_tokens", [])
-
 
 class TestBuildDdReportDocRequestStructure:
     """Verify the structure of batchUpdate requests."""
@@ -602,25 +603,84 @@ class TestBuildDdReportDocRequestStructure:
             for table in insert_tables
         )
 
-    def test_source_quality_notes_render_before_acquisition_conditions(self) -> None:
+    def test_first_round_supporting_notes_only_render_open_items(self) -> None:
         docs_svc = _make_mock_docs_service()
         drive_svc = MagicMock()
         repl = {
             "meta.site_name": "Test",
             "meta.report_date": "04/14/2026",
+            VERIFICATION_OPEN_ITEMS_KEY: "- Confirm zoning path with Planning",
             SOURCE_QUALITY_NOTES_KEY: "- Building Inspection from another site was excluded",
+            "exec.acquisition_conditions": "- Require landlord sprinkler records",
+            "exec.tradeoffs_and_deficiencies": "- Parking count unknown",
         }
 
         build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
 
-        inserted_text = "\n".join(
-            request["insertText"]["text"]
-            for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list
-            for request in call_args.kwargs["body"]["requests"]
-            if "insertText" in request
-        )
+        inserted_text = _inserted_text(docs_svc)
 
-        assert inserted_text.index("Source Quality Notes\n") < inserted_text.index("Lease Conditions\n")
+        assert "Supporting Notes\n" in inserted_text
+        assert "Open Items to Verify\n" in inserted_text
+        assert "Confirm zoning path with Planning" in inserted_text
+        assert "Source Quality Notes\n" not in inserted_text
+        assert "Lease Conditions\n" not in inserted_text
+        assert "Trade-Offs and Deficiencies\n" not in inserted_text
+
+    def test_greg_edits_section_order_is_canonical(self) -> None:
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {
+            "meta.site_name": "Alpha Los Angeles 5400 Beethoven St",
+            "meta.report_date": "05/26/2026",
+            "exec.c_answer": "No",
+            "exec.c_zoning": "Use Permit Required (public)",
+            "exec.c_edreg": (
+                "California requires a Private School Affidavit (PSA)\n"
+                "The CO is the only pre-open milestone on the education track."
+            ),
+            "exec.c_occupancy": (
+                "Building is currently active as a school -- Group E occupancy is already established."
+            ),
+            "exec.c_permit_timeline": (
+                "Best case: 16 weeks, worst case: 40 weeks\n"
+                "9/8/2026 is 15 weeks from today"
+            ),
+            "exec.c_construction_timeline": (
+                "SIR estimates 8 to 20 weeks for construction after permit issuance."
+            ),
+            "exec.direct_viable_buildout": "Fastest Open",
+            "exec.alpha_fit": "Yes",
+            VERIFICATION_OPEN_ITEMS_KEY: (
+                "- Pull ZIMAS case records and LADBS CO history\n"
+                "- Confirm correct lease address with landlord"
+            ),
+            SOURCE_QUALITY_NOTES_KEY: "- Building Inspection from another site was excluded",
+            "exec.acquisition_conditions": "- Require landlord sprinkler records",
+            "exec.tradeoffs_and_deficiencies": "- Parking count unknown",
+            CITATIONS_BLOCK_KEY: (
+                "SIR -- zoning classification is M2-1 (Limited Industrial)\n"
+                "School Approval Report -- California NOTIFICATION archetype confirmed"
+            ),
+        }
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        inserted_text = _inserted_text(docs_svc)
+
+        assert (
+            inserted_text.index("Executive Summary\n")
+            < inserted_text.index("Direct Answer\n")
+            < inserted_text.index("Buildout Analysis\n")
+            < inserted_text.index("Detailed Cost Breakdown\n")
+            < inserted_text.index("Supporting Notes\n")
+            < inserted_text.index("Open Items to Verify\n")
+            < inserted_text.index("Referenced Reports\n")
+            < inserted_text.index("Source Notes\n")
+        )
+        assert "Source Quality Notes\n" not in inserted_text
+        assert "Lease Conditions\n" not in inserted_text
+        assert "Trade-Offs and Deficiencies\n" not in inserted_text
+        assert "Report Trace" not in inserted_text
 
     def test_partial_banner_emitted_when_completeness_partial(self) -> None:
         """build_dd_report_doc emits the PARTIAL REPORT banner when stage='partial'."""
@@ -722,6 +782,51 @@ class TestBuildDdReportDocRequestStructure:
         assert inserted_text.index("Direct Answer\n") < inserted_text.index("Buildout Analysis\n")
         assert "2a. Viable Buildout: " in inserted_text
         assert "2b. Great Alpha School Site: " in inserted_text
+
+    def test_exec_summary_labels_are_bold_and_support_lines_are_bulleted(self) -> None:
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {
+            "meta.site_name": "Test",
+            "meta.report_date": "04/14/2026",
+            "exec.c_zoning": (
+                "Use Permit Required (public)\n"
+                "Confirm CUP transfer before lease signing"
+            ),
+        }
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        requests = _all_batch_requests(docs_svc)
+        zoning_insert = next(
+            request["insertText"]
+            for request in requests
+            if request.get("insertText", {}).get("text") == "Zoning: "
+        )
+        zoning_start = zoning_insert["location"]["index"]
+        support_insert = next(
+            request["insertText"]
+            for request in requests
+            if request.get("insertText", {}).get("text")
+            == "Confirm CUP transfer before lease signing\n"
+        )
+        support_start = support_insert["location"]["index"]
+
+        assert any(
+            request.get("updateTextStyle", {}).get("range") == {
+                "startIndex": zoning_start,
+                "endIndex": zoning_start + len("Zoning: "),
+            }
+            and request["updateTextStyle"]["textStyle"].get("bold") is True
+            for request in requests
+        )
+        assert any(
+            "createParagraphBullets" in request
+            and request["createParagraphBullets"]["range"]["startIndex"]
+            <= support_start
+            < request["createParagraphBullets"]["range"]["endIndex"]
+            for request in requests
+        )
 
 
 class TestGapLabelsForLinks:
@@ -846,6 +951,23 @@ class TestNarrativeNormalization:
         )
         assert "School Approval.docx" in replacements[SOURCE_QUALITY_NOTES_KEY]
 
+    def test_replaces_internal_template_key_mentions_in_narrative(self) -> None:
+        replacements = _normalize_replacements_for_rendering({
+            SOURCE_QUALITY_NOTES_KEY: (
+                "- No P1 DRI was supplied; meta.prepared_by could not be populated."
+            ),
+            "exec.acquisition_conditions": (
+                "- Confirm exec.cost_demolition_fastest_open once RayCon is available."
+            ),
+        })
+
+        assert "meta.prepared_by" not in replacements[SOURCE_QUALITY_NOTES_KEY]
+        assert "Prepared By could not be populated" in replacements[SOURCE_QUALITY_NOTES_KEY]
+        assert "exec.cost_demolition_fastest_open" not in replacements[
+            "exec.acquisition_conditions"
+        ]
+        assert "Cost Demolition Fastest Open" in replacements["exec.acquisition_conditions"]
+
 
 class TestAsciiPunctuationSanitizer:
     def test_replaces_em_and_en_dashes(self) -> None:
@@ -888,7 +1010,7 @@ class TestAsciiPunctuationSanitizer:
         assert repl["sources.sir_link"] == url
 
 
-class TestCitationsBlockConsolidation:
+class TestSourceNotesBlockConsolidation:
     def test_strips_per_field_footnotes_when_block_present(self) -> None:
         repl = _normalize_replacements_for_rendering({
             "exec.acquisition_conditions": (
@@ -913,9 +1035,11 @@ class TestCitationsBlockConsolidation:
         assert "[1] Building Inspection p.3" not in repl["exec.acquisition_conditions"]
         assert "[2] SIR p.7" not in repl["exec.acquisition_conditions"]
         assert "[1] Building Inspection p.10" not in repl["exec.tradeoffs_and_deficiencies"]
-        # Inline markers in bullet text are preserved
-        assert "[1]" in repl["exec.acquisition_conditions"]
-        assert "[2]" in repl["exec.acquisition_conditions"]
+        # Inline markers are removed from display text; the single source-note
+        # block carries the source context.
+        assert "[1]" not in repl["exec.acquisition_conditions"]
+        assert "[2]" not in repl["exec.acquisition_conditions"]
+        assert "TI allowance ~$45,000" in repl["exec.acquisition_conditions"]
 
     def test_normalizes_per_field_footnotes_when_block_absent(self) -> None:
         # Without a citations block, the existing per-field renumbering still runs.
@@ -928,7 +1052,7 @@ class TestCitationsBlockConsolidation:
         })
         assert "[1] Building Inspection p.3" in repl["exec.acquisition_conditions"]
 
-    def test_citations_block_renders_once_in_supporting_notes(self) -> None:
+    def test_citations_block_renders_once_after_referenced_reports(self) -> None:
         docs_svc = _make_mock_docs_service()
         drive_svc = MagicMock()
         repl = {
@@ -947,21 +1071,17 @@ class TestCitationsBlockConsolidation:
 
         build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
 
-        inserted_text = "\n".join(
-            request["insertText"]["text"]
-            for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list
-            for request in call_args.kwargs["body"]["requests"]
-            if "insertText" in request
-        )
+        inserted_text = _inserted_text(docs_svc)
 
-        # The Citations heading appears exactly once.
-        assert inserted_text.count("Citations\n") == 1
-        # And appears between Trade-Offs and Referenced Reports.
+        # The Source Notes heading appears exactly once.
+        assert inserted_text.count("Source Notes\n") == 1
+        # And appears after Referenced Reports in the Greg Edits format.
         assert (
-            inserted_text.index("Trade-Offs and Deficiencies\n")
-            < inserted_text.index("Citations\n")
-            < inserted_text.index("Referenced Reports\n")
+            inserted_text.index("Referenced Reports\n")
+            < inserted_text.index("Source Notes\n")
         )
+        assert "[1] Building Inspection p.3" not in inserted_text
+        assert "Building Inspection p.3" in inserted_text
 
     def test_citations_block_omitted_when_not_provided(self) -> None:
         docs_svc = _make_mock_docs_service()
@@ -973,13 +1093,8 @@ class TestCitationsBlockConsolidation:
 
         build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
 
-        inserted_text = "\n".join(
-            request["insertText"]["text"]
-            for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list
-            for request in call_args.kwargs["body"]["requests"]
-            if "insertText" in request
-        )
-        assert "Citations\n" not in inserted_text
+        inserted_text = _inserted_text(docs_svc)
+        assert "Source Notes\n" not in inserted_text
 
 
 class TestReferencedReportsTableInsertOrder:
@@ -1032,7 +1147,7 @@ class TestReferencedReportsTableInsertOrder:
             for r in source_table_batch
             if "insertText" in r
         ]
-        for prev, cur in zip(insert_indices, insert_indices[1:]):
+        for prev, cur in zip(insert_indices, insert_indices[1:], strict=False):
             assert cur <= prev, (
                 f"Phase 7 insert order is not strictly reverse: "
                 f"index {cur} follows {prev}"

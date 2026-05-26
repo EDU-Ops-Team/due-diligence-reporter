@@ -34,9 +34,13 @@ from .completeness import (
     raycon_token_paths,
 )
 from .config import get_settings, shovels_status
-from .dashboard_publish import publish_site_record
 from .google_client import GoogleClient
-from .google_doc_builder import SOURCE_QUALITY_NOTES_KEY, build_dd_report_doc
+from .google_doc_builder import (
+    CITATIONS_BLOCK_KEY,
+    SOURCE_QUALITY_NOTES_KEY,
+    VERIFICATION_OPEN_ITEMS_KEY,
+    build_dd_report_doc,
+)
 from .m1_lookup import _list_m1_documents_by_type, _resolve_m1_folder
 from .raycon_client import RAYCON_BREAKDOWN_ROWS
 from .rebl import ReblResolution, resolve_address
@@ -46,37 +50,22 @@ from .report_schema import (
     LINK_TOKENS,
     MISSING_P1_ASSIGNEE_LABEL,
     TEMPLATE_TOKENS,
-    TOKEN_SOURCES,
     normalize_can_we_answer,
     normalize_report_data,
 )
 from .retry import retry_config
-from .site_matching import SiteResolution, resolve_site
-from .site_record import SiteRecord
+from .rhodes import lookup_rhodes_site_owner as _lookup_rhodes_site_owner
 from .utils import (
     build_hyperlink_requests,
     escape_html_text,
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
-    find_text_index_in_doc,
     flatten_report_data_for_replacement,
     sanitize_http_url,
     score_site_match_strength,
     send_email,
 )
 from .utils import build_site_match_terms as _build_site_match_terms
-from .wrike import (
-    _get_all_site_records,
-    _looks_like_permalink,
-    _looks_like_wrike_id,
-    build_site_summary,
-    classify_comment_to_section,
-    enrich_custom_fields_with_names,
-    extract_p1_from_record,
-    find_site_record,
-    get_record_comments,
-    load_wrike_config,
-)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,99 +94,15 @@ EXPORTABLE_MIME_TYPES: set[str] = {
 }
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 DOC_MIME = "application/msword"
-MIN_SITE_MATCH_SCORE = 20
+MIN_SITE_MATCH_SCORE = 40
 
 _READ_CONTEXT_BY_FILE_ID: dict[str, dict[str, str]] = {}
 _REBL_RESOLUTION_CACHE: dict[str, ReblResolution] = {}
 
 
-def _resolve_site_for_tool(site_name_or_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """Resolve a site query and return ``(record, error_payload)``.
-
-    Returns ``(record, None)`` on a confident match and ``(None, payload)``
-    when the resolver returns ``ambiguous`` or ``not_found``. The payload is
-    the user-facing dict the MCP tool should bubble up to the caller so the
-    user can pick a candidate or refine the query. Payload contract:
-
-    - ``status`` is ``"ambiguous"`` or ``"not_found"``.
-    - ``candidates`` (ambiguous) / ``did_you_mean`` (not_found): list of
-      ``{id, title, address, score}`` entries.
-    - ``message`` instructs the user to reply with a Wrike ID, permalink,
-      or a more specific name.
-
-    The happy-path lookup goes through ``find_site_record`` so existing test
-    suites that patch that symbol stay green; only when it returns ``None``
-    do we re-run the resolver to harvest disambiguation candidates.
-    """
-    query = (site_name_or_id or "").strip()
-
-    record = find_site_record(site_name_or_id=site_name_or_id)
-    if record is not None:
-        return record, None
-
-    # No confident match — re-run the resolver against the name path to
-    # surface candidates / did-you-mean entries to the user.
-    if _looks_like_wrike_id(query) or _looks_like_permalink(query):
-        return None, {
-            "status": "not_found",
-            "error": "No site found",
-            "message": (
-                f"Could not resolve '{query}' to a Wrike Site Record. "
-                "Verify the ID/permalink or paste the site name to fuzzy-match."
-            ),
-            "query": query,
-            "did_you_mean": [],
-            "reason": "ID/permalink lookup failed",
-        }
-
-    try:
-        cfg = load_wrike_config()
-        all_records = _get_all_site_records(cfg=cfg)
-    except Exception as e:
-        logger.warning("Could not load Wrike records for disambiguation: %s", e)
-        return None, {
-            "status": "not_found",
-            "error": "No site found",
-            "message": f"Could not find a Wrike Site Record matching '{query}'.",
-            "query": query,
-            "did_you_mean": [],
-            "reason": str(e),
-        }
-
-    resolution: SiteResolution = resolve_site(query, site_records=all_records)
-
-    if resolution.status == "matched" and resolution.match is not None:
-        return enrich_custom_fields_with_names(resolution.match), None
-
-    if resolution.status == "ambiguous":
-        return None, {
-            "status": "ambiguous",
-            "error": "Multiple sites match",
-            "message": (
-                f"{len(resolution.candidates)} sites match '{resolution.query}'. "
-                "Reply with the Wrike ID, the permalink, or a more specific name."
-            ),
-            "query": resolution.query,
-            "candidates": [c.to_dict() for c in resolution.candidates],
-            "reason": resolution.reason,
-        }
-
-    return None, {
-        "status": "not_found",
-        "error": "No site found",
-        "message": (
-            "Could not find a confident site match. "
-            f"No site matched '{resolution.query}'. Closest near-matches below — "
-            "refine the name or paste the Wrike ID/permalink."
-        ),
-        "query": resolution.query,
-        "did_you_mean": [c.to_dict() for c in resolution.candidates],
-        "reason": resolution.reason,
-    }
-
 CAN_WE_SECTION_DELIMITER = "Education Regulatory Approval:"
-V3_CAN_WE_HEADING = "Can this school be open in time for the current school year (8/12 or 9/8)?"
-LEGACY_V3_CAN_WE_HEADING = "Can this school be open in time for the current school year?"
+CURRENT_CAN_WE_HEADING = "Can this school be open in time for the current school year (8/12 or 9/8)?"
+LEGACY_CURRENT_CAN_WE_HEADING = "Can this school be open in time for the current school year?"
 LEGACY_CAN_WE_HEADING = "Can we do this?"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -913,7 +818,7 @@ def _validate_document_site_context(
     doc_type: str = "",
 ) -> tuple[bool, list[str], bool]:
     """Validate that document text appears to belong to the requested site."""
-    if not site_title.strip() or doc_type == "report_trace":
+    if not site_title.strip():
         return True, [], False
 
     name_score = score_site_match_strength(file_name, site_title, site_address)
@@ -935,6 +840,8 @@ def _list_ai_generated_site_reports(site_files: list[dict[str, Any]]) -> list[di
     reports: list[dict[str, Any]] = []
     for file_info in site_files:
         annotated = {**file_info, "doc_type": _classify_document_type(file_info.get("name", ""))}
+        if annotated["doc_type"] == "dd_report":
+            continue
         if annotated["doc_type"] not in SITE_FOLDER_DOC_TYPES:
             continue
         annotated["reference_origin"] = (
@@ -966,6 +873,34 @@ def _make_google_client() -> GoogleClient:
         token_file_path=str(settings.get_token_file_path()),
         oauth_port=settings.oauth_port,
         scopes=settings.google_scopes,
+    )
+
+
+@mcp.tool()
+async def lookup_rhodes_site_owner(
+    site_name: str = "",
+    site_address: str = "",
+    site_id: str = "",
+    slug: str = "",
+) -> dict[str, Any]:
+    """Resolve the current P1 DRI / site owner from Rhodes without mutating Rhodes.
+
+    The tool returns report_data_fields that can be merged into create_dd_report
+    so meta.prepared_by comes from the Rhodes p1Dri field.
+    """
+    logger.info(
+        "Tool called: lookup_rhodes_site_owner - site=%s address=%s site_id=%s slug=%s",
+        site_name,
+        site_address,
+        site_id,
+        slug,
+    )
+    return await asyncio.to_thread(
+        _lookup_rhodes_site_owner,
+        site_name=site_name,
+        site_address=site_address,
+        site_id=site_id,
+        slug=slug,
     )
 
 
@@ -1012,24 +947,14 @@ async def assign_p1_accountable(
         return {"status": "error", "error": "Missing parameter", "message": "state is required"}
 
     def _work() -> dict[str, Any]:
-        from .wrike import _get_all_site_records, load_wrike_config
-
         settings = get_settings()
-        cfg = load_wrike_config()
-
-        try:
-            all_records = _get_all_site_records(cfg=cfg)
-        except Exception as e:
-            logger.warning("Could not fetch Wrike records for load counts: %s", e)
-            all_records = []
 
         result = assign_p1(
             school_type=school_type,
             city=city,
             state=state,
             settings=settings,
-            all_site_records=all_records,
-            wrike_cfg=cfg,
+            all_site_records=[],
         )
         result["site_name"] = site_name
         return result
@@ -1038,70 +963,8 @@ async def assign_p1_accountable(
 
 
 @mcp.tool()
-async def get_site_record(site_name_or_id: str) -> dict[str, Any]:
-    """Fetch a Wrike Site Record by name or ID.
-
-    Searches for the site record matching the given name or Wrike ID. Returns
-    address, school type, current stage, Drive folder URL, and all DD-relevant
-    custom field metadata stored in Wrike.
-
-    Args:
-        site_name_or_id: Site name (e.g., "Alpha Austin Demo"), Wrike record ID,
-            or Wrike permalink URL.
-
-    Returns:
-        Dict with site metadata, or error dict if not found.
-    """
-    logger.info("Tool called: get_site_record")
-    logger.info("get_site_record params: site_name_or_id=%s", site_name_or_id)
-
-    if not site_name_or_id or not site_name_or_id.strip():
-        return {
-            "status": "error",
-            "error": "Missing parameter",
-            "message": "site_name_or_id must be a non-empty string",
-        }
-
-    def _work() -> dict[str, Any]:
-        try:
-            record, error_payload = _resolve_site_for_tool(site_name_or_id)
-            if error_payload is not None:
-                logger.info(
-                    "get_site_record disambiguation: status=%s query=%r",
-                    error_payload.get("status"),
-                    site_name_or_id,
-                )
-                return error_payload
-
-            assert record is not None  # narrows for type-checker; guarded above
-            summary = build_site_summary(record)
-            logger.info(
-                "Found Site Record: %s (id=%s, stage=%s)",
-                summary.get("title"),
-                summary.get("id"),
-                summary.get("stage"),
-            )
-
-            return {
-                "status": "success",
-                "site": summary,
-                "message": f"Found Site Record: {summary.get('title')}",
-            }
-
-        except Exception as e:
-            logger.error("Failed to fetch Site Record: %s", e)
-            return {
-                "status": "error",
-                "error": "Wrike API error",
-                "message": str(e),
-            }
-
-    return await asyncio.to_thread(_work)
-
-
-@mcp.tool()
 async def list_drive_documents(
-    drive_folder_url: str, site_name: str = ""
+    drive_folder_url: str, site_name: str = "", site_address: str = ""
 ) -> dict[str, Any]:
     """List matched shared source reports plus site-folder artifacts.
 
@@ -1112,10 +975,10 @@ async def list_drive_documents(
     report traces.
 
     Args:
-        drive_folder_url: Google Drive folder URL (from the site's Wrike record).
+        drive_folder_url: Google Drive folder URL.
         site_name: Optional site name used to match docs in shared Drive folders
-            (SIR, ISP, Building Inspection).  Pass the Wrike site title for best
-            results.
+            (SIR, ISP, Building Inspection).
+        site_address: Optional address used to strengthen shared-folder matching.
 
     Returns:
         Dict with lists of files found in the site folder and shared folders.
@@ -1148,17 +1011,8 @@ async def list_drive_documents(
     def _work() -> dict[str, Any]:
         try:
             shared_folder_files: list[dict[str, Any]] = []
-            address: str | None = None
-            if site_name.strip():
-                # Resolve up front so an ambiguous name short-circuits before
-                # any Drive listing — cheaper to fail fast and let the user pick.
-                record, error_payload = _resolve_site_for_tool(site_name)
-                if error_payload is not None:
-                    return error_payload
-                if record is not None:
-                    summary = build_site_summary(record)
-                    address = summary.get("address")
-
+            address = site_address.strip() or None
+            search_shared_folders = bool(site_name.strip())
             gc = _make_google_client()
 
             all_site_files_raw = gc.list_files_recursive(folder_id, max_depth=2)
@@ -1168,7 +1022,7 @@ async def list_drive_documents(
                 len(site_files), folder_id,
             )
 
-            if site_name.strip():
+            if site_name.strip() and search_shared_folders:
                 match_terms = _build_site_match_terms(site_name.strip(), address)
                 shared_docs = _find_site_docs_in_shared_folders(
                     gc, match_terms,
@@ -1189,10 +1043,16 @@ async def list_drive_documents(
                     site_title=site_name.strip(),
                     site_address=address,
                 )
+            elif site_name.strip():
+                _register_file_read_context(
+                    site_files,
+                    site_title=site_name.strip(),
+                    site_address=address,
+                )
 
             total_files = len(site_files) + len(shared_folder_files)
 
-            return {
+            response: dict[str, Any] = {
                 "status": "success",
                 "folder_id": folder_id,
                 "drive_folder_url": drive_folder_url,
@@ -1205,6 +1065,7 @@ async def list_drive_documents(
                     f"({total_files} total)"
                 ),
             }
+            return response
 
         except Exception as e:
             logger.error("Failed to list Drive documents: %s", e)
@@ -1442,7 +1303,7 @@ async def apply_e_occupancy_skill(
     Evaluates the building's current use against the Alpha School E-Occupancy scoring
     matrix and returns a complete structured assessment including IBC compliance gates.
     Call this tool in Step 4 after identifying the building's current use from source
-    documents or the Wrike record.
+    documents or supplied site metadata.
 
     If site_name and drive_folder_url are provided, the full assessment is automatically
     saved as a Google Doc in the site's M1 subfolder and the doc_url is returned.
@@ -1946,7 +1807,8 @@ async def apply_opening_plan_skill(
                 max_tokens=8192,
                 messages=[{"role": "user", "content": prompt}],
             )
-            plan_content = response.content[0].text if response.content else ""
+            first_block = response.content[0] if response.content else None
+            plan_content = str(getattr(first_block, "text", "") or "")
         except Exception as e:
             logger.error("Claude call failed for opening plan: %s", e)
             return {
@@ -2008,9 +1870,9 @@ async def apply_opening_plan_skill(
 # ---------------------------------------------------------------------------
 
 # Canonical gap labels for downstream report generation. Shovels failures
-# must not crash the DD report run — the prompt v3 spec (Step 5.5) tells the
-# agent to store these strings in token_evidence["shovels.permit_history"]
-# and proceed. Keep these stable so reports that reference them keep parsing.
+# must not crash the DD report run. The current prompt contract tells the agent
+# to store these strings in token_evidence["shovels.permit_history"] and
+# proceed. Keep these stable so reports that reference them keep parsing.
 SHOVELS_GAP_LABEL_NOT_CONFIGURED = (
     "[Not found — Shovels.ai API key not configured; permit history unavailable]"
 )
@@ -2420,7 +2282,7 @@ def _attach_block_plan_submitted_timestamp(
     completeness: dict[str, Any],
 ) -> None:
     """Look up the Block Plan ``modifiedTime`` from the site's M1 folder
-    and attach it to ``completeness`` so the V3 banner can name the
+    and attach it to ``completeness`` so the report banner can name the
     submission timestamp.
 
     No-op when ``completeness.stage != "partial"`` (banner won't
@@ -2477,9 +2339,9 @@ def _normalize_report_replacements(
     report_date: str,
     drive_folder_url: str,
 ) -> tuple[dict[str, str], list[str], list[str], dict[str, str], ReblResolution]:
-    """Normalize report data and fill permissive V3 gap labels."""
+    """Normalize report data and fill permissive current gap labels."""
     flat_report_data = flatten_report_data_for_replacement(report_data)
-    report_data, rebl_resolution = _inject_wrike_report_defaults(report_data, site_name)
+    report_data, rebl_resolution = _inject_report_defaults(report_data)
     replacements, unmatched, unfilled, token_sources = normalize_report_data(
         report_data,
         site_name=site_name,
@@ -2489,15 +2351,12 @@ def _normalize_report_replacements(
         normalized_answer = normalize_can_we_answer(replacements["exec.c_answer"])
         if normalized_answer is not None:
             replacements["exec.c_answer"] = normalized_answer
+    if site_name.strip():
+        replacements["meta.site_name"] = site_name.strip()
     _fill_fastest_open_placeholders(replacements)
     _fill_max_capacity_placeholders(replacements)
 
     replacements.setdefault("meta.drive_folder_url", drive_folder_url)
-    # Carry the Wrike folder createdDate through normalization so the
-    # dashboard SiteRecord can consume it without another Wrike fetch.
-    _wrike_created = report_data.get("wrike_created_at")
-    if isinstance(_wrike_created, str) and _wrike_created.strip():
-        replacements["meta.wrike_created_at"] = _wrike_created.strip()
     source_quality_notes = (
         flat_report_data.get("source_quality_notes")
         or flat_report_data.get("notes.source_quality")
@@ -2506,6 +2365,23 @@ def _normalize_report_replacements(
     ).strip()
     if source_quality_notes:
         replacements[SOURCE_QUALITY_NOTES_KEY] = source_quality_notes
+    citations_block = (
+        flat_report_data.get("exec.citations_block")
+        or flat_report_data.get("citations_block")
+        or flat_report_data.get(CITATIONS_BLOCK_KEY)
+        or ""
+    ).strip()
+    if citations_block:
+        replacements[CITATIONS_BLOCK_KEY] = citations_block
+    verification_open_items = (
+        flat_report_data.get("verification.open_items")
+        or flat_report_data.get("open_items.verification")
+        or flat_report_data.get("verification_open_items")
+        or flat_report_data.get(VERIFICATION_OPEN_ITEMS_KEY)
+        or ""
+    ).strip()
+    if verification_open_items:
+        replacements[VERIFICATION_OPEN_ITEMS_KEY] = verification_open_items
     return replacements, unmatched, unfilled, token_sources, rebl_resolution
 
 
@@ -2555,47 +2431,45 @@ def _apply_rebl_defaults(
         sources["rebl_link"] = rebl_resolution.url
 
 
-def _apply_wrike_prepared_by_defaults(
-    report_data: dict[str, Any],
-    summary: dict[str, Any],
-) -> None:
-    p1_name = summary.get("p1_assignee_name")
-    p1_email = summary.get("p1_assignee_email")
-
-    if isinstance(p1_name, str) and p1_name.strip():
-        report_data["p1_assignee_name"] = p1_name.strip()
-        site_block = _ensure_report_section(report_data, "site")
-        site_block["p1_assignee_name"] = p1_name.strip()
-
-    if isinstance(p1_email, str) and p1_email.strip():
-        report_data["p1_assignee_email"] = p1_email.strip()
+def _is_missing_prepared_by(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return True
+    normalized = value.strip().lower()
+    return normalized in {
+        "dd report agent",
+        "alpha dd reporter",
+        "due diligence reporter",
+        "system",
+    }
 
 
-def _inject_wrike_report_defaults(
-    report_data: dict[str, Any],
-    site_name: str,
-) -> tuple[dict[str, Any], ReblResolution]:
-    """Inject authoritative Wrike defaults that should not depend on agent output."""
+def _extract_report_address(flat_report_data: dict[str, Any]) -> str:
+    for key in (
+        "site.address",
+        "site.site_address",
+        "property.address",
+        "address",
+        "site_address",
+    ):
+        value = flat_report_data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _inject_report_defaults(report_data: dict[str, Any]) -> tuple[dict[str, Any], ReblResolution]:
+    """Inject report defaults that should not depend on agent output."""
     enriched: dict[str, Any] = json.loads(json.dumps(report_data))
-    try:
-        record = find_site_record(site_name_or_id=site_name)
-    except Exception as e:
-        logger.warning("Could not fetch Wrike defaults for '%s': %s", site_name, e)
-        record = None
+    flat_report_data = flatten_report_data_for_replacement(enriched)
 
-    if not record:
+    if (
+        not flat_report_data.get("p1_assignee_name")
+        and not flat_report_data.get("site.p1_assignee_name")
+        and _is_missing_prepared_by(flat_report_data.get("meta.prepared_by"))
+    ):
         enriched["p1_assignee_name"] = MISSING_P1_ASSIGNEE_LABEL
-        return enriched, ReblResolution.error_result("", "Wrike site record not found.")
 
-    summary = build_site_summary(record)
-    _apply_wrike_prepared_by_defaults(enriched, summary)
-    # Stash Wrike folder createdDate so downstream SiteRecord.from_replacements
-    # can pick it up. Distinct from report_date (when DD ran) and
-    # published_at (dashboard upsert time).
-    created_date = summary.get("created_date")
-    if isinstance(created_date, str) and created_date.strip():
-        enriched["wrike_created_at"] = created_date.strip()
-    rebl_resolution = _resolve_rebl_identity(str(summary.get("address") or ""))
+    rebl_resolution = _resolve_rebl_identity(_extract_report_address(flat_report_data))
     _apply_rebl_defaults(enriched, rebl_resolution)
     return enriched, rebl_resolution
 
@@ -2639,7 +2513,7 @@ def _fill_scenario_placeholders(
     scenario: str,
     label: str,
 ) -> None:
-    """Fill missing V3 scenario summary and detailed breakdown fields."""
+    """Fill missing scenario summary and detailed breakdown fields."""
     for metric in ("capacity", "capex", "open_date"):
         token = f"exec.{scenario}_{metric}"
         if token not in replacements or not str(replacements[token]).strip():
@@ -2758,175 +2632,6 @@ def _apply_report_hyperlinks(
         hyperlink_trace["error"] = str(e)
 
     return hyperlink_trace
-
-
-def _build_report_trace_data(
-    site_name: str,
-    report_date: str,
-    doc_id: str,
-    doc_url: str | None,
-    replacements: dict[str, str],
-    unfilled: list[str],
-    unmatched: list[str],
-    hyperlink_trace: dict[str, Any],
-    token_evidence: dict[str, str] | None,
-    rebl_resolution: ReblResolution,
-    completeness: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build the report trace payload persisted beside the DD report."""
-    evidence = token_evidence or {}
-    token_report = {
-        token: {
-            "value": replacements.get(token, "")[:200],
-            "source": TOKEN_SOURCES.get(token, "Unknown"),
-            "filled": token not in unfilled,
-            **({"evidence": evidence[token][:500]} if token in evidence else {}),
-        }
-        for token in TEMPLATE_TOKENS
-        if token not in LINK_TOKENS
-    }
-    # Collect any non-template keys from token_evidence (e.g. full API payloads)
-    # into a dedicated supplemental_evidence section so they are visible in the trace.
-    template_key_set = set(TEMPLATE_TOKENS)
-    supplemental_evidence = {
-        k: v for k, v in evidence.items() if k not in template_key_set
-    }
-    return {
-        "site_name": site_name,
-        "date": report_date,
-        "report_doc_id": doc_id,
-        "report_doc_url": doc_url,
-        "token_report": token_report,
-        "unmatched_keys": unmatched,
-        "unfilled_tokens": unfilled,
-        "hyperlinks": hyperlink_trace,
-        "rebl": rebl_resolution.to_dict(),
-        **({"supplemental_evidence": supplemental_evidence} if supplemental_evidence else {}),
-        **({"report_metadata": {"completeness": completeness}} if completeness else {}),
-    }
-
-
-def _upload_report_trace(
-    gc: GoogleClient,
-    folder_id: str,
-    site_name: str,
-    report_date: str,
-    doc_id: str,
-    trace_data: dict[str, Any],
-) -> None:
-    """Upload the report trace JSON and link it from the generated report.
-
-    Finds the "Report Trace" row in the source documents table and
-    inserts the trace label as a hyperlink in the link cell.
-    """
-    trace_name = f"{site_name} Report Trace - {report_date.replace('/', '-')}.json"
-    trace_json = json.dumps(trace_data, indent=2)
-    trace_file = gc.upload_file_to_folder(
-        folder_id=folder_id,
-        file_name=trace_name,
-        file_bytes=trace_json.encode("utf-8"),
-        mime_type="application/json",
-    )
-    trace_url = trace_file.get("webViewLink", "")
-    logger.info("Uploaded report trace: %s", trace_url)
-    if not trace_url:
-        return
-
-    trace_label = LINK_DISPLAY_LABELS.get("sources.trace_link", trace_url)
-
-    # Find the Report Trace row in the source documents table.
-    # The builder inserts the trace link cell as empty; we look for
-    # the "Report Trace" label in column 0 and insert into column 1.
-    doc = gc.get_document(doc_id)
-    doc_body = doc.get("body", {})
-    body_content = doc_body.get("content", [])
-
-    trace_cell_idx = _find_trace_link_cell(body_content)
-    if trace_cell_idx is not None:
-        # Insert trace label text and apply hyperlink styling
-        gc.batch_update_document(doc_id, [
-            {
-                "insertText": {
-                    "location": {"index": trace_cell_idx},
-                    "text": trace_label,
-                }
-            },
-            {
-                "updateTextStyle": {
-                    "range": {
-                        "startIndex": trace_cell_idx,
-                        "endIndex": trace_cell_idx + len(trace_label),
-                    },
-                    "textStyle": {
-                        "link": {"url": trace_url},
-                        "foregroundColor": {
-                            "color": {
-                                "rgbColor": {"red": 0.067, "green": 0.333, "blue": 0.800},
-                            },
-                        },
-                    },
-                    "fields": "link,foregroundColor",
-                }
-            },
-        ])
-        logger.info("Linked trace report in doc: %s", trace_label)
-    else:
-        # Fallback: search for any existing trace label text
-        start_idx = find_text_index_in_doc(doc_body, trace_label)
-        if start_idx is not None:
-            gc.batch_update_document(doc_id, [{
-                "updateTextStyle": {
-                    "range": {
-                        "startIndex": start_idx,
-                        "endIndex": start_idx + len(trace_label),
-                    },
-                    "textStyle": {"link": {"url": trace_url}},
-                    "fields": "link",
-                }
-            }])
-            logger.info("Linked trace report in doc (fallback): %s", trace_label)
-        else:
-            logger.warning("Could not find trace link cell in document")
-
-
-def _find_trace_link_cell(body_content: list[dict[str, Any]]) -> int | None:
-    """Find the insertion index for the trace link cell in the source docs table.
-
-    Scans tables for a row whose first cell contains "Report Trace" and
-    returns the start index of the second cell's first paragraph.
-    """
-    for element in body_content:
-        if "table" not in element:
-            continue
-        for row in element["table"].get("tableRows", []):
-            cells = row.get("tableCells", [])
-            if len(cells) < 2:
-                continue
-            # Check if first cell contains "Report Trace"
-            cell0_text = _extract_cell_text(cells[0])
-            if "Report Trace" in cell0_text:
-                # Return the start index of the second cell's content
-                cell1_content = cells[1].get("content", [])
-                if cell1_content:
-                    first_para = cell1_content[0]
-                    if "paragraph" in first_para:
-                        elements = first_para["paragraph"].get("elements", [])
-                        if elements:
-                            return int(elements[0].get("startIndex", 0))
-                        return int(first_para.get("startIndex", 0))
-    return None
-
-
-def _extract_cell_text(cell: dict[str, Any]) -> str:
-    """Extract all text from a table cell."""
-    texts: list[str] = []
-    for content_el in cell.get("content", []):
-        if "paragraph" in content_el:
-            for pe in content_el["paragraph"].get("elements", []):
-                text_run = pe.get("textRun")
-                if text_run:
-                    texts.append(text_run.get("content", ""))
-    return "".join(texts)
 
 
 @mcp.tool()
@@ -3072,66 +2777,6 @@ async def create_dd_report(
             }
 
             logger.info("DD report created successfully: %s", doc_url)
-            trace_data = _build_report_trace_data(
-                site_name=site_name.strip(),
-                report_date=today_str,
-                doc_id=doc_id,
-                doc_url=doc_url,
-                replacements=replacements,
-                unfilled=unfilled,
-                unmatched=unmatched,
-                hyperlink_trace=hyperlink_trace,
-                token_evidence=token_evidence,
-                rebl_resolution=rebl_resolution,
-                completeness=completeness,
-            )
-            try:
-                _upload_report_trace(
-                    gc=gc,
-                    folder_id=folder_id,
-                    site_name=site_name.strip(),
-                    report_date=today_str,
-                    doc_id=doc_id,
-                    trace_data=trace_data,
-                )
-            except Exception as e:
-                logger.warning("Failed to upload report trace (report still valid): %s", e)
-
-            # ── Publish to DD Dashboard ──────────────────────────────
-            # Build a SiteRecord from the V3 replacements we already
-            # have in memory and upsert it as JSON into the site
-            # folder. The pipeline aggregator picks these up and
-            # rebuilds the dashboard's sites.json. A publish failure
-            # must never block the DD report itself, so this is
-            # wrapped and logged.
-            dashboard_payload: dict[str, Any] | None = None
-            try:
-                site_record = SiteRecord.from_replacements(
-                    replacements,
-                    site_name=site_name.strip(),
-                    report_date=today_str,
-                    drive_folder_url=drive_folder_url,
-                    dd_report_url=doc_url or "",
-                    rebl_resolution=rebl_resolution,
-                    wrike_created_at=replacements.get("meta.wrike_created_at", ""),
-                    completeness=completeness,
-                )
-                dashboard_payload = publish_site_record(
-                    gc=gc,
-                    folder_id=folder_id,
-                    record=site_record,
-                )
-                logger.info(
-                    "Dashboard publish: slug=%s classification=%s confidence=%.2f",
-                    site_record.slug,
-                    site_record.classification.label,
-                    site_record.classification.confidence,
-                )
-            except Exception as e:
-                logger.warning(
-                    "Failed to publish dashboard payload (report still valid): %s", e,
-                )
-
             response: dict[str, Any] = {
                 "status": "success",
                 "document": {"id": doc_id, "name": doc_name, "url": doc_url},
@@ -3143,13 +2788,6 @@ async def create_dd_report(
                 "report_metadata": {"completeness": completeness},
                 "message": f"DD report built: {doc_url}",
             }
-            if dashboard_payload is not None:
-                response["dashboard_payload"] = {
-                    "file_id": dashboard_payload.get("file_id", ""),
-                    "file_name": dashboard_payload.get("file_name", ""),
-                    "web_view_link": dashboard_payload.get("web_view_link", ""),
-                    "replaced_count": dashboard_payload.get("replaced_count", 0),
-                }
             return response
         except Exception as e:
             logger.error("Failed to create DD report: %s", e)
@@ -3163,135 +2801,74 @@ async def create_dd_report(
 
 
 @mcp.tool()
-async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
-    """Check whether a site has all required DD documents and whether a report already exists."""
-    logger.info("Tool called: check_site_readiness - %s", site_name_or_id)
+async def check_site_readiness(
+    drive_folder_url: str,
+    site_name: str = "",
+    site_address: str = "",
+) -> dict[str, Any]:
+    """Check whether a Drive-backed site folder is ready for DD generation."""
+    logger.info("Tool called: check_site_readiness - site=%s", site_name or drive_folder_url)
 
-    if not site_name_or_id or not site_name_or_id.strip():
+    if not drive_folder_url or not drive_folder_url.strip():
         return {
             "status": "error",
             "error": "Missing parameter",
-            "message": "site_name_or_id must be a non-empty string",
+            "message": "drive_folder_url must be a non-empty string",
         }
 
     def _work() -> dict[str, Any]:
+        from .report_pipeline import check_site_readiness_direct, list_shared_folders_once
+
         try:
-            record, error_payload = _resolve_site_for_tool(site_name_or_id)
-            if error_payload is not None:
-                return error_payload
-            assert record is not None
-
-            summary = build_site_summary(record)
-            site_title = summary.get("title", site_name_or_id)
-            address = summary.get("address")
-            drive_folder_url = summary.get("drive_folder_url")
-            if not drive_folder_url:
-                return {
-                    "status": "error",
-                    "error": "No Drive folder",
-                    "message": f"Site record '{site_title}' has no Google Drive folder URL in Wrike.",
-                }
-
-            folder_id = extract_folder_id_from_url(drive_folder_url)
-            if not folder_id:
+            gc = _make_google_client()
+            site_title = site_name.strip() or "Provided site"
+            address = site_address.strip() or None
+            match_terms = _build_site_match_terms(site_title, address)
+            shared_cache = list_shared_folders_once(gc)
+            readiness = check_site_readiness_direct(
+                gc,
+                drive_folder_url,
+                match_terms,
+                shared_cache,
+                site_title=site_title,
+                site_address=address,
+                read_only=True,
+            )
+            if readiness.get("error") == "bad_url":
                 return {
                     "status": "error",
                     "error": "Invalid Drive folder URL",
                     "message": f"Could not parse folder ID from: {drive_folder_url}",
                 }
 
-            gc = _make_google_client()
-            match_terms = _build_site_match_terms(site_title, address)
-            logger.info("Match terms for '%s': %s", site_title, match_terms)
-            shared_docs = _find_site_docs_in_shared_folders(
-                gc, match_terms, site_title=site_title, site_address=address,
-                drive_folder_url=drive_folder_url,
-            )
-            site_reports = _list_ai_generated_site_reports(
-                gc.list_files_recursive(folder_id, max_depth=2)
-            )
-
-            files_by_type: dict[str, dict[str, Any] | None] = {
-                "sir": shared_docs.get("sir"),
-                "isp": shared_docs.get("isp"),
-                "building_inspection": shared_docs.get("building_inspection"),
-                "dd_report": None,
-            }
-            for file_info in site_reports:
-                if file_info.get("doc_type") != "dd_report":
-                    continue
-                files_by_type["dd_report"] = _pick_preferred_report(
-                    files_by_type["dd_report"],
-                    file_info,
-                )
-
-            sir_found = files_by_type["sir"] is not None
-            isp_found = files_by_type["isp"] is not None
-            inspection_found = files_by_type["building_inspection"] is not None
-            report_exists = files_by_type["dd_report"] is not None
-
-            # Probe M1 for raycon_scenario.json so the projected
-            # completeness block tells callers whether a report
-            # generated *right now* would be partial-on-purpose.
-            raycon_scenario_found = False
-            try:
-                m1_folder_id, _ = _resolve_m1_folder(gc, drive_folder_url)
-            except Exception as e:
-                logger.warning(
-                    "check_site_readiness: M1 resolve failed for '%s': %s",
-                    site_title,
-                    e,
-                )
-                m1_folder_id = None
-            if m1_folder_id:
-                try:
-                    m1_docs = _list_m1_documents_by_type(gc, m1_folder_id)
-                    raycon_scenario_found = m1_docs.get("raycon_scenario_json") is not None
-                except Exception as e:
-                    logger.warning(
-                        "check_site_readiness: M1 list failed for '%s': %s",
-                        site_title,
-                        e,
-                    )
-
+            sir_found = bool(readiness.get("sir_found"))
+            report_exists = bool(readiness.get("report_exists"))
+            missing_docs = [] if sir_found else ["sir"]
+            ready_for_report = sir_found and not report_exists
             projected_completeness = project_completeness_from_readiness(
-                raycon_scenario_found=raycon_scenario_found,
+                raycon_scenario_found=bool(readiness.get("raycon_scenario_found")),
             )
-
-            missing_docs: list[str] = []
-            if not sir_found:
-                missing_docs.append("sir")
-            if not inspection_found:
-                missing_docs.append("building_inspection")
-
-            ready_for_report = sir_found and inspection_found and not report_exists
-            p1_profile = extract_p1_from_record(record)
-            p1_email = p1_profile.get("email") if p1_profile else None
-            p1_name = p1_profile.get("name") if p1_profile else None
 
             return {
                 "status": "success",
                 "site_title": site_title,
-                "p1_assignee_name": p1_name,
-                "p1_assignee_email": p1_email,
                 "sir_found": sir_found,
-                "isp_found": isp_found,
-                "inspection_found": inspection_found,
+                "isp_found": bool(readiness.get("isp_found")),
+                "inspection_found": bool(readiness.get("inspection_found")),
                 "report_exists": report_exists,
-                "raycon_scenario_found": raycon_scenario_found,
+                "raycon_scenario_found": bool(readiness.get("raycon_scenario_found")),
                 "missing_docs": missing_docs,
                 "ready_for_report": ready_for_report,
-                "files": files_by_type,
                 "drive_folder_url": drive_folder_url,
                 "report_metadata": {"completeness": projected_completeness},
                 "message": "\n".join([
                     f"Site '{site_title}' document readiness:",
-                    f"  SIR: {'found - ' + (files_by_type.get('sir') or {}).get('name', '') if sir_found else 'not found'}",
-                    f"  Building Inspection: {'found - ' + (files_by_type.get('building_inspection') or {}).get('name', '') if inspection_found else 'not found'}",
-                    f"  DD Report: {'exists - ' + (files_by_type.get('dd_report') or {}).get('name', '') if report_exists else 'not yet created'}",
-                    f"  RayCon scenario: {'found' if raycon_scenario_found else 'not yet posted'}",
+                    f"  SIR: {'found' if sir_found else 'not found'}",
+                    f"  Building Inspection: {'found' if readiness.get('inspection_found') else 'not found'}",
+                    f"  DD Report: {'exists' if report_exists else 'not yet created'}",
+                    f"  RayCon scenario: {'found' if readiness.get('raycon_scenario_found') else 'not yet posted'}",
                     "",
-                    "Ready for report generation." if ready_for_report else (
+                    "Ready for first-round report generation." if ready_for_report else (
                         "Not ready - " + ", ".join(missing_docs) + " missing." if missing_docs else "Report already exists."
                     ),
                     (
@@ -3310,7 +2887,6 @@ async def check_site_readiness(site_name_or_id: str) -> dict[str, Any]:
             }
 
     return await asyncio.to_thread(_work)
-
 
 # ---------------------------------------------------------------------------
 # diagnose_site_readiness — richer "should I run now or wait?" diagnostic.
@@ -3451,7 +3027,11 @@ def _build_blocking_entries(
 
 
 @mcp.tool()
-async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
+async def diagnose_site_readiness(
+    site_name: str,
+    drive_folder_url: str = "",
+    site_address: str = "",
+) -> dict[str, Any]:
     """Read-only "should I run now or wait?" diagnostic for a site.
 
     Surfaces the cron-path readiness view for a site:
@@ -3468,10 +3048,10 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
       ``VENDOR_GATE_ENABLED=0`` only SIR + BI presence is required and
       RayCon absence does NOT block readiness (``blocking[]`` still
       reports its actual status, but it's diagnostic-only).
-    * ``partial_report_possible`` — true iff the floor for "we have
-      something to write about" is met (vendor SIR present, or — with the
-      legacy gate — bare SIR presence). A partial report is possible even
-      if BI is missing or RayCon is pending.
+    * ``partial_report_possible`` — true iff the floor for first-round
+      publishing is met: any SIR is present, including the AI SIR /
+      research output. A partial report is possible even if vendor SIR,
+      BI, or RayCon are still pending.
     * ``would_be_filled_now`` / ``would_be_pending`` — token paths the
       report would fill or leave pending if it ran right now.
     * ``vendor_gate_enabled`` — which view (vendor-strict vs. legacy) is
@@ -3503,6 +3083,12 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
             "error": "Missing parameter",
             "message": "site_name must be a non-empty string",
         }
+    if not drive_folder_url or not drive_folder_url.strip():
+        return {
+            "status": "error",
+            "error": "Missing parameter",
+            "message": "drive_folder_url must be provided for site readiness diagnostics",
+        }
 
     def _work() -> dict[str, Any]:
         # Local imports to avoid pulling anthropic et al. into the
@@ -3515,25 +3101,8 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
         )
 
         try:
-            record, error_payload = _resolve_site_for_tool(site_name)
-            if error_payload is not None:
-                error_payload["site"] = site_name
-                return error_payload
-            assert record is not None
-
-            summary = build_site_summary(record)
-            site_title = summary.get("title", site_name)
-            address = summary.get("address")
-            drive_folder_url = summary.get("drive_folder_url")
-            if not drive_folder_url:
-                return {
-                    "status": "error",
-                    "error": "No Drive folder",
-                    "message": (
-                        f"Site record '{site_title}' has no Google Drive folder URL in Wrike."
-                    ),
-                    "site": site_title,
-                }
+            site_title = site_name.strip()
+            address = site_address.strip() or None
 
             gc = _make_google_client()
             match_terms = _build_site_match_terms(site_title, address)
@@ -3646,13 +3215,10 @@ async def diagnose_site_readiness(site_name: str) -> dict[str, Any]:
             # ``ready_for_full_report`` to False.
             ready_for_full_report = not _missing_required_docs(readiness)
 
-            # ``partial_report_possible`` floor: vendor SIR present (with
-            # the gate on) or any SIR present (legacy). Mirrors what
-            # ``_missing_required_docs`` would treat as the SIR slot.
-            if vendor_gate_enabled:
-                partial_report_possible = bool(readiness.get("sir_vendor"))
-            else:
-                partial_report_possible = bool(readiness.get("sir_found"))
+            # First-round floor: any SIR is enough to publish the first
+            # DDR slice, including AI-generated research output. Full
+            # vendor readiness remains represented by ready_for_full_report.
+            partial_report_possible = bool(readiness.get("sir_found"))
 
             projection = project_completeness_from_readiness(
                 raycon_scenario_found=raycon_present,
@@ -3796,8 +3362,8 @@ async def check_report_completeness(doc_id: str) -> dict[str, Any]:
 def _extract_invalid_can_we_answer(text: str) -> tuple[str | None, str]:
     """Return non-canonical answer and detected heading label."""
     heading_patterns = (
-        V3_CAN_WE_HEADING,
-        LEGACY_V3_CAN_WE_HEADING,
+        CURRENT_CAN_WE_HEADING,
+        LEGACY_CURRENT_CAN_WE_HEADING,
         LEGACY_CAN_WE_HEADING,
     )
     for heading in heading_patterns:
@@ -3810,11 +3376,11 @@ def _extract_invalid_can_we_answer(text: str) -> tuple[str | None, str]:
         answer = " ".join(raw_value.replace("*", " ").split()).strip()
         if not answer or answer in ALLOWED_CAN_WE_ANSWERS:
             return None, heading
-        if normalize_can_we_answer(answer) in ALLOWED_CAN_WE_ANSWERS:
-            return answer, heading
+        if re.match(r"^(?:Yes|No),\s+(?:if|because):?$", answer):
+            return None, heading
         return answer, heading
 
-    return None, V3_CAN_WE_HEADING
+    return None, CURRENT_CAN_WE_HEADING
 
 
 def _extract_raw_template_tokens(text: str) -> list[str]:
@@ -3826,79 +3392,6 @@ def _extract_raw_template_tokens(text: str) -> list[str]:
         if token in text:
             found.append(token)
     return found
-
-
-@mcp.tool()
-async def get_site_comments(site_name_or_id: str) -> dict[str, Any]:
-    """Retrieve Wrike record comments for a site, grouped by suggested report section.
-
-    Comments are classified into report sections (q1, q2, q3, q4, appendix, general)
-    using keyword matching. Useful for incorporating pre-app meeting notes, vendor
-    updates, and other contextual information into the DD report.
-
-    Args:
-        site_name_or_id: Site name, Wrike record ID, or Wrike permalink URL.
-
-    Returns:
-        Dict with comments grouped by section, plus a flat list of all comments.
-    """
-    logger.info("Tool called: get_site_comments - %s", site_name_or_id)
-
-    if not site_name_or_id or not site_name_or_id.strip():
-        return {
-            "status": "error",
-            "error": "Missing parameter",
-            "message": "site_name_or_id must be a non-empty string",
-        }
-
-    def _work() -> dict[str, Any]:
-        try:
-            record, error_payload = _resolve_site_for_tool(site_name_or_id)
-            if error_payload is not None:
-                return error_payload
-            assert record is not None
-
-            record_id = record.get("id")
-            if not record_id:
-                return {"status": "error", "error": "No record ID", "message": "Record has no ID."}
-
-            comments = get_record_comments(record_id=record_id)
-            if not comments:
-                return {
-                    "status": "success",
-                    "site_title": record.get("title", site_name_or_id),
-                    "comment_count": 0,
-                    "by_section": {},
-                    "all_comments": [],
-                    "message": f"No comments found on Wrike record for '{record.get('title', site_name_or_id)}'.",
-                }
-
-            by_section: dict[str, list[dict[str, Any]]] = {}
-            for comment in comments:
-                section = classify_comment_to_section(comment["text"])
-                by_section.setdefault(section, []).append(comment)
-
-            return {
-                "status": "success",
-                "site_title": record.get("title", site_name_or_id),
-                "comment_count": len(comments),
-                "by_section": by_section,
-                "all_comments": comments,
-                "message": (
-                    f"Found {len(comments)} comment(s) on '{record.get('title', site_name_or_id)}'. "
-                    f"Sections: {', '.join(sorted(by_section.keys()))}."
-                ),
-            }
-
-        except Exception as e:
-            logger.error("get_site_comments failed: %s", e)
-            return {
-                "status": "error",
-                "error": "get_site_comments failed",
-                "message": str(e),
-            }
-
-    return await asyncio.to_thread(_work)
 
 
 MATTERBOT_BASE_URL = "https://matterbot-1819903979408.us-central1.run.app"
@@ -3924,7 +3417,7 @@ async def generate_marketing_pack(
     minutes depending on room count and tier).
 
     Args:
-        space_sid: Matterport space SID (from the scan URL or Wrike record).
+        space_sid: Matterport space SID from the scan URL.
         space_name: Space / site name (used for Drive folder matching).
         tier: Rendering quality tier - "standard" or "premium".
         max_rooms: Maximum rooms to render. 0 = service default (~12).
@@ -4185,7 +3678,7 @@ def _format_skill_document(
                 "",
             ])
             # Detailed cost breakdown table — row keys come from
-            # RAYCON_BREAKDOWN_ROWS so the column count matches the V3
+            # RAYCON_BREAKDOWN_ROWS so the column count matches the current
             # template exactly.
             lines.append("Detailed Cost Breakdown")
             for row_key, row_label in RAYCON_BREAKDOWN_ROWS:
@@ -4288,7 +3781,7 @@ async def send_dd_report_email(
     """Send the completed DD report by email.
 
     Sends to the configured DD_REPORT_EMAIL_RECIPIENTS plus any additional
-    recipients (e.g., the P1 Assignee from Wrike). Duplicates are removed.
+    recipients. Duplicates are removed.
 
     Args:
         site_name: Site name for the email subject line.

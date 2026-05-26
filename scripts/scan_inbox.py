@@ -8,7 +8,7 @@ uploads to the correct shared Drive folder by doc_type only (no site matching).
 
 Phase 2: Pipeline trigger for newly-uploaded sites. This stays disabled unless
 uploads carry site identity. Today the filename classifier does not match files
-to Wrike site records, so report generation falls to the daily sweep instead.
+to a site Drive folder, so report generation falls to the daily sweep instead.
 
 Run:
     uv run python scripts/scan_inbox.py
@@ -16,10 +16,10 @@ Run:
     uv run python scripts/scan_inbox.py --scan-only
 
 Environment (from .env):
-    WRIKE_ACCESS_TOKEN, GOOGLE_CLIENT_CONFIG, GOOGLE_TOKEN_FILE,
+    GOOGLE_CLIENT_CONFIG, GOOGLE_TOKEN_FILE,
     OPENAI_API_KEY, GOOGLE_CHAT_WEBHOOK_URL, ANTHROPIC_API_KEY,
     SIR_FOLDER_ID, ISP_FOLDER_ID, BUILDING_INSPECTION_FOLDER_ID,
-    DD_TEMPLATE_V3_GOOGLE_DOC_ID, GOOGLE_DRIVE_ROOT_FOLDER_ID,
+    GOOGLE_DRIVE_ROOT_FOLDER_ID,
     EMAIL_SENDER, EMAIL_APP_PASSWORD, DD_REPORT_EMAIL_RECIPIENTS
 """
 # ruff: noqa: E402, I001
@@ -67,18 +67,6 @@ from due_diligence_reporter.utils import (  # noqa: E402
     sanitize_http_url,
     send_email,
 )
-from due_diligence_reporter.wrike import (  # noqa: E402
-    _get_active_status_ids,
-    _get_all_site_records,
-    extract_address_from_record,
-    extract_google_folder_from_record,
-    extract_p1_email_from_record,
-    extract_p1_from_record,
-    extract_school_feasibility_from_record,
-    extract_timeline_confidence_from_record,
-    filter_active_site_records,
-    load_wrike_config,
-)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -108,25 +96,6 @@ def _extract_unique_sites_from_uploads(
     return unique
 
 
-def _find_record_by_title_or_id(
-    site_records: list[dict[str, Any]],
-    title: str | None,
-    site_id: str | None,
-) -> dict[str, Any] | None:
-    """Find a Wrike site record by title or ID."""
-    for record in site_records:
-        if site_id and record.get("id") == site_id:
-            return record
-        if title and record.get("title", "").lower() == title.lower():
-            return record
-    return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 def main(dry_run: bool = False, scan_only: bool = False) -> None:
     settings = get_settings()
 
@@ -138,19 +107,9 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
         scopes=settings.google_scopes,
     )
 
-    # Fetch Wrike site records when available. Inbox filing should continue even if Wrike is down.
     site_records: list[dict[str, Any]] = []
-    try:
-        logger.info("Fetching Wrike site records...")
-        wrike_cfg = load_wrike_config()
-        all_records = _get_all_site_records(cfg=wrike_cfg)
-        active_status_ids = _get_active_status_ids(access_token=wrike_cfg.access_token)
-        site_records = filter_active_site_records(all_records, active_status_ids)
-        logger.info("Found %d site records (%d active)", len(all_records), len(site_records))
-    except Exception as e:
-        logger.error("Wrike lookup failed; continuing with inbox scan only: %s", e)
 
-    # ── Rec. 3: event-driven DD Report republish callback ───────────────────
+    # Rec. 3: event-driven DD Report republish callback
     # When a vendor SIR or Building Inspection lands on a site that
     # already has a DD Report, regenerate the report on top of it so
     # the new authoritative input is reflected. We share state with
@@ -175,7 +134,7 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     ) -> dict[str, Any]:
         nonlocal _shared_cache, _system_prompt
         if _system_prompt is None:
-            prompt_path = _project_root / "docs" / "prompts" / "prompt_v3.md"
+            prompt_path = _project_root / "docs" / "prompts" / "prompt_v4.md"
             if not prompt_path.exists():
                 logger.error(
                     "DD Report republish: system prompt missing at %s", prompt_path
@@ -373,11 +332,7 @@ for you to fill in: CDS Verified Finding, CDS Source, and CDS Confidence.</p>
     if not has_site_identity(uploads):
         logger.info("Uploads lack site identity — skipping pipeline phase until matching exists")
         return
-    if not site_records:
-        logger.info("Wrike site records unavailable — skipping pipeline phase")
-        return
-    template_id = settings.dd_template_v3_google_doc_id or settings.dd_template_v2_google_doc_id
-    if not template_id or not settings.google_drive_root_folder_id:
+    if not settings.google_drive_root_folder_id:
         logger.info("DD report generation settings missing — skipping pipeline phase")
         return
 
@@ -385,7 +340,7 @@ for you to fill in: CDS Verified Finding, CDS Source, and CDS Confidence.</p>
     logger.info("Pipeline phase: %d unique site(s) received new uploads", len(unique_sites))
 
     # Load the agent system prompt
-    prompt_path = _project_root / "docs" / "prompts" / "prompt_v3.md"
+    prompt_path = _project_root / "docs" / "prompts" / "prompt_v4.md"
     if not prompt_path.exists():
         logger.error("System prompt not found at %s — aborting pipeline phase", prompt_path)
         return
@@ -397,35 +352,19 @@ for you to fill in: CDS Verified Finding, CDS Source, and CDS Confidence.</p>
 
     for site_info in unique_sites:
         site_title = site_info["site_title"]
-        site_id = site_info.get("matched_site_id")
-
-        # Look up the full Wrike record (already filtered to active sites)
-        record = _find_record_by_title_or_id(site_records, site_title, site_id)
-        if not record:
-            logger.warning("No Wrike record found for '%s' — skipping pipeline", site_title)
-            continue
-
-        drive_folder_url = extract_google_folder_from_record(record)
+        drive_folder_url = str(site_info.get("drive_folder_url") or "").strip()
         if not drive_folder_url:
-            logger.warning("No Drive folder URL for '%s' — skipping pipeline", site_title)
+            logger.warning("No Drive folder URL for '%s' - skipping pipeline", site_title)
             continue
 
-        address = extract_address_from_record(record)
+        address = str(site_info.get("site_address") or site_info.get("address") or "").strip() or None
         match_terms = _build_site_match_terms(site_title, address)
-        p1_email = extract_p1_email_from_record(record)
-        p1_profile = extract_p1_from_record(record) or {}
-        p1_name = p1_profile.get("name")
-        # Phase 2: Wrike W74 / W81 ratings (high/medium/low/unknown).
-        school_feasibility = extract_school_feasibility_from_record(record)
-        timeline_confidence = extract_timeline_confidence_from_record(record)
 
-        logger.info("Running pipeline for '%s' (match terms: %s, p1: %s)", site_title, match_terms, p1_email)
+        logger.info("Running pipeline for '%s' (match terms: %s)", site_title, match_terms)
         result = process_site_pipeline(
             gc, site_title, drive_folder_url, match_terms,
             shared_cache, system_prompt, settings,
-            p1_email=p1_email, site_address=address, p1_name=p1_name,
-            school_feasibility=school_feasibility,
-            timeline_confidence=timeline_confidence,
+            site_address=address,
         )
 
         # Post each result to Google Chat

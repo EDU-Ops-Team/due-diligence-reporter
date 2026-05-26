@@ -10,7 +10,6 @@ from due_diligence_reporter.rebl import (
     resolve_address,
     resolve_addresses,
 )
-from due_diligence_reporter.server import _build_report_trace_data
 
 # resolve_addresses is wrapped in @retry; tests of error paths call the
 # underlying function directly to avoid 5x retry latency on synthetic 5xx.
@@ -153,7 +152,7 @@ class TestCanonicalSlugForAddress:
 
 
 class TestCanonicalSlugsForAddresses:
-    """Batch variant used by reconcile_dashboard for many sites at once."""
+    """Batch variant used by legacy reconciliation jobs for many sites at once."""
 
     def test_returns_only_resolved_addresses(self) -> None:
         session = _FakeSession(_FakeResponse(
@@ -185,32 +184,3 @@ class TestCanonicalSlugsForAddresses:
             session=_RaisingSession(),
         )
         assert result == {}
-
-
-class TestReportTraceRebl:
-    def test_build_report_trace_includes_rebl_block(self) -> None:
-        rebl = ReblResolution(
-            address_submitted="123 Main St, Austin, TX",
-            resolution_status="resolved",
-            site_id="123-main-st-austin-tx",
-            url="https://rebl3.vercel.app/site/123-main-st-austin-tx",
-            matched_by="slug",
-            scored=True,
-        )
-
-        trace = _build_report_trace_data(
-            site_name="Austin",
-            report_date="04/23/2026",
-            doc_id="doc123",
-            doc_url="https://docs.google.com/document/d/doc123",
-            replacements={"meta.site_name": "Austin"},
-            unfilled=["meta.rebl_site_id"],
-            unmatched=[],
-            hyperlink_trace={"applied": 0},
-            token_evidence=None,
-            rebl_resolution=rebl,
-        )
-
-        assert trace["rebl"]["site_id"] == "123-main-st-austin-tx"
-        assert trace["rebl"]["url"] == "https://rebl3.vercel.app/site/123-main-st-austin-tx"
-        assert trace["rebl"]["resolution_status"] == "resolved"

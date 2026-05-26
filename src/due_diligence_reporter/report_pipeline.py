@@ -12,7 +12,6 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, cast
 
 import anthropic
@@ -24,7 +23,6 @@ from .classifier import (
     match_file_to_site_llm,
 )
 from .config import Settings, get_settings
-from .dashboard_publisher import publish_to_dashboard
 from .google_client import GoogleClient
 from .m1_lookup import _list_m1_documents_by_type, _resolve_m1_folder
 from .pipeline_contracts import (
@@ -41,6 +39,7 @@ from .pipeline_contracts import (
 from .pipeline_manifest import manifest_has_secret_like_value, persist_run_manifest
 from .pipeline_quality import evaluate_run_quality
 from .provenance import classify_provenance
+from .rhodes import lookup_rhodes_site_owner
 from .sir_learning import build_sir_learning_review
 from .utils import (
     escape_html_text,
@@ -59,24 +58,14 @@ logger = logging.getLogger("report_pipeline")
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
-        "name": "get_site_record",
-        "description": "Fetch a Wrike Site Record by name or ID.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "site_name_or_id": {"type": "string", "description": "Site name or Wrike ID"},
-            },
-            "required": ["site_name_or_id"],
-        },
-    },
-    {
         "name": "list_drive_documents",
-        "description": "List matched shared DD source reports plus site-folder artifacts found in the site folder or its M1 subfolder. Results may include Block Plan PDFs and derived reports such as Capacity Brainlift, RayCon Scenario, Opening Plan, and DD reports. Each file includes a doc_type field. Always pass site_name to match shared-folder docs.",
+        "description": "List matched shared DD source reports plus site-folder artifacts found in the site folder or its M1 subfolder. Results may include Block Plan PDFs and derived reports such as Capacity Brainlift, RayCon Scenario, Opening Plan, and DD reports. Each file includes a doc_type field. Pass the full request site_name and site_address so shared-folder matching cannot use city-only evidence.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "drive_folder_url": {"type": "string", "description": "Google Drive folder URL"},
-                "site_name": {"type": "string", "description": "Site name from Wrike (used to match docs in shared folders)"},
+                "site_name": {"type": "string", "description": "Site name used to match docs in shared folders"},
+                "site_address": {"type": "string", "description": "Optional full property address used to strengthen shared-folder matching"},
             },
             "required": ["drive_folder_url"],
         },
@@ -91,6 +80,24 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "file_name": {"type": "string"},
             },
             "required": ["file_id", "file_name"],
+        },
+    },
+    {
+        "name": "lookup_rhodes_site_owner",
+        "description": (
+            "Read the Rhodes/LocationOS site record for the supplied site and return "
+            "the current P1 DRI / site owner. Call this before create_dd_report. "
+            "Use returned report_data_fields for meta.prepared_by and include the "
+            "owner email in send_dd_report_email additional_recipients."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "site_name": {"type": "string", "description": "Site display name"},
+                "site_address": {"type": "string", "description": "Full site address"},
+                "site_id": {"type": "string", "description": "Optional Rhodes site ID"},
+                "slug": {"type": "string", "description": "Optional Rhodes site slug"},
+            },
         },
     },
     {
@@ -130,14 +137,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "create_dd_report",
-        "description": "Create a completed DD report Google Doc. The report_data dict must use exact V3 template token keys (e.g. 'exec.c_zoning', 'exec.fastest_open_capex', 'sources.sir_link'). Copy report_data_fields from skill tools directly into report_data. Pass token_evidence for source traceability.",
+        "description": "Create a completed DD report Google Doc. The report_data dict must use exact current template token keys (e.g. 'exec.c_zoning', 'exec.fastest_open_capex', 'sources.sir_link'). Copy report_data_fields from skill tools directly into report_data. Pass token_evidence for source traceability.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "site_name": {"type": "string"},
                 "drive_folder_url": {"type": "string"},
                 "report_data": {"type": "object"},
-                "token_evidence": {"type": "object", "description": "Optional dict mapping token names to raw source excerpts for the trace report"},
+                "token_evidence": {"type": "object", "description": "Optional dict mapping token names to raw source excerpts for local diagnostics"},
             },
             "required": ["site_name", "drive_folder_url", "report_data"],
         },
@@ -151,17 +158,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "doc_id": {"type": "string"},
             },
             "required": ["doc_id"],
-        },
-    },
-    {
-        "name": "get_site_comments",
-        "description": "Retrieve Wrike record comments for a site, grouped by suggested report section (q1-q4, appendix, general). Useful for incorporating pre-app meeting notes, vendor updates, and cost overrides.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "site_name_or_id": {"type": "string", "description": "Site name, Wrike record ID, or Wrike permalink URL"},
-            },
-            "required": ["site_name_or_id"],
         },
     },
     {
@@ -205,14 +201,13 @@ async def route_tool_call(tool_name: str, tool_input: dict[str, Any]) -> Any:
     from . import server as srv
 
     tool_map = {
-        "get_site_record": srv.get_site_record,
         "list_drive_documents": srv.list_drive_documents,
         "read_drive_document": srv.read_drive_document,
+        "lookup_rhodes_site_owner": srv.lookup_rhodes_site_owner,
         "apply_e_occupancy_skill": srv.apply_e_occupancy_skill,
         "apply_school_approval_skill": srv.apply_school_approval_skill,
         "create_dd_report": srv.create_dd_report,
         "check_report_completeness": srv.check_report_completeness,
-        "get_site_comments": srv.get_site_comments,
         "save_skill_report": srv.save_skill_report,
         "send_dd_report_email": srv.send_dd_report_email,
     }
@@ -229,6 +224,41 @@ def route_tool_call_sync(tool_name: str, tool_input: dict[str, Any]) -> Any:
     import asyncio
 
     return asyncio.run(route_tool_call(tool_name, tool_input))
+
+
+def _canonicalize_site_tool_input(
+    tool_name: str,
+    tool_input: dict[str, Any],
+    *,
+    site_title: str,
+    drive_folder_url: str | None,
+    site_address: str | None,
+) -> dict[str, Any]:
+    """Keep agent tool calls anchored to the pipeline's canonical site context."""
+    canonical = dict(tool_input)
+    if tool_name in {
+        "list_drive_documents",
+        "apply_e_occupancy_skill",
+        "apply_school_approval_skill",
+        "create_dd_report",
+        "save_skill_report",
+        "send_dd_report_email",
+    }:
+        canonical["site_name"] = site_title
+
+    if drive_folder_url and tool_name in {
+        "list_drive_documents",
+        "apply_e_occupancy_skill",
+        "apply_school_approval_skill",
+        "create_dd_report",
+        "save_skill_report",
+    }:
+        canonical["drive_folder_url"] = drive_folder_url
+
+    if site_address and tool_name == "list_drive_documents":
+        canonical["site_address"] = site_address
+
+    return canonical
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -280,7 +310,7 @@ def match_site_in_shared_cache(
         "isp": None,
         "building_inspection": None,
     }
-    min_match_score = 20
+    min_match_score = 40 if site_title else 20
 
     # Pass 1: substring match
     for doc_type, files in shared_cache.items():
@@ -415,9 +445,8 @@ def check_site_readiness_direct(
         if files_by_type[dt] is None:
             files_by_type[dt] = shared_docs.get(dt)
 
-    # `all_files` historically held only the AI-generated artifacts (used by
-    # callers that surface report artifacts back to the dashboard). Preserve
-    # that contract — source docs are exposed via the per-type flags below.
+    # `all_files` holds only derived artifacts; preserve
+    # the contract that source docs are exposed via the per-type flags below.
     ai_generated_site_files = [
         f for f in site_folder_files if f.get("doc_type") in AI_GENERATED_DOC_TYPES
     ]
@@ -507,6 +536,11 @@ def run_dd_report_agent(
     site_title: str,
     system_prompt: str,
     model_id: str,
+    *,
+    drive_folder_url: str | None = None,
+    site_address: str | None = None,
+    initial_report_fields: dict[str, Any] | None = None,
+    rhodes_owner_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run Claude as a tool-calling agent to generate one DD report.
 
@@ -527,17 +561,36 @@ def run_dd_report_agent(
     trace = ReportTrace(
         site_name=site_title,
         started_at=datetime.now(UTC).isoformat(),
-        prompt_version=3,
+        prompt_version=4,
     )
     run_start = time.monotonic()
 
+    request_lines = [f"Generate a DD Report for: {site_title}"]
+    if site_address:
+        request_lines.append(f"Site address: {site_address}")
+    if drive_folder_url:
+        request_lines.append(f"Drive folder URL: {drive_folder_url}")
+        request_lines.append("Use the provided Drive folder directly.")
+    if rhodes_owner_context:
+        owner_name = str(rhodes_owner_context.get("p1_assignee_name") or "").strip()
+        owner_email = str(rhodes_owner_context.get("p1_assignee_email") or "").strip()
+        owner_status = str(rhodes_owner_context.get("status") or "").strip()
+        if owner_name or owner_email:
+            owner_email_suffix = f" <{owner_email}>" if owner_email else ""
+            request_lines.append(
+                f"Rhodes P1 DRI / site owner: {owner_name or '[name missing]'}"
+                f"{owner_email_suffix}"
+            )
+        elif owner_status:
+            request_lines.append(f"Rhodes P1 DRI / site owner lookup status: {owner_status}")
+
     messages: list[dict[str, Any]] = [
-        {"role": "user", "content": f"Generate a DD Report for: {site_title}"},
+        {"role": "user", "content": "\n".join(request_lines)},
     ]
 
     doc_id: str | None = None
     doc_url: str | None = None
-    cached_report_fields: dict[str, Any] = {}
+    cached_report_fields: dict[str, Any] = dict(initial_report_fields or {})
     max_iterations = 40  # Safety limit
 
     for iteration in range(max_iterations):
@@ -571,7 +624,13 @@ def run_dd_report_agent(
         tool_results: list[dict[str, Any]] = []
         for tool_use in tool_uses:
             logger.info("Executing tool: %s", tool_use.name)
-            tool_input = dict(tool_use.input)
+            tool_input = _canonicalize_site_tool_input(
+                tool_use.name,
+                dict(tool_use.input),
+                site_title=site_title,
+                drive_folder_url=drive_folder_url,
+                site_address=site_address,
+            )
             if tool_use.name == "create_dd_report":
                 tool_input = _merge_cached_report_fields(tool_input, cached_report_fields)
 
@@ -606,8 +665,8 @@ def run_dd_report_agent(
                     trace.doc_id = doc_id
                     trace.tokens_filled = result.get("replacements_applied", 0)
                     trace.tokens_unfilled = result.get("unfilled_template_tokens", 0)
-                    # Stash the final, fully-merged report_data for the
-                    # dashboard publisher.
+                    # Stash the final, fully-merged report_data for local
+                    # run diagnostics.
                     rd = tool_input.get("report_data")
                     normalized = result.get("normalized_report_data")
                     if isinstance(rd, dict):
@@ -817,10 +876,8 @@ def _finalize_pipeline_result(
     if manifest_persisted:
         path = persist_run_manifest(run)
         result.manifest_path = str(path)
-        _record_manifest_upload_step(recorder, gc, drive_folder_url, run)
         run = recorder.to_run(result.status)
         run.manifest_path = result.manifest_path
-        run.manifest_url = _manifest_upload_url(run.steps)
         run.quality = evaluate_run_quality(
             run,
             manifest_persisted=manifest_persisted,
@@ -836,68 +893,6 @@ def _finalize_pipeline_result(
     result.quality_band = quality.band
     result.manifest_path = run.manifest_path
     return result
-
-
-def _record_manifest_upload_step(
-    recorder: _RunRecorder,
-    gc: GoogleClient | None,
-    drive_folder_url: str,
-    run: PipelineRun,
-) -> None:
-    started_at, started_monotonic = recorder.start()
-    folder_id = extract_folder_id_from_url(drive_folder_url)
-    if gc is None or not isinstance(gc, GoogleClient) or not folder_id:
-        recorder.record(
-            "manifest.upload",
-            started_at,
-            started_monotonic,
-            "skipped",
-            skipped_reason="no Drive folder available",
-        )
-        return
-    try:
-        payload = json.dumps(run.to_dict(), indent=2).encode("utf-8")
-        uploaded = gc.upload_file_to_folder(
-            folder_id=folder_id,
-            file_name=f"{run.run_id} pipeline manifest.json",
-            file_bytes=payload,
-            mime_type="application/json",
-        )
-    except Exception as e:
-        recorder.record(
-            "manifest.upload",
-            started_at,
-            started_monotonic,
-            "failed",
-            error=_pipeline_error(
-                recorder.run_id,
-                "manifest.upload",
-                "manifest_upload_failed",
-                str(e),
-            ),
-        )
-        return
-    recorder.record(
-        "manifest.upload",
-        started_at,
-        started_monotonic,
-        "succeeded",
-        artifacts=[
-            ArtifactRef(
-                kind="manifest",
-                name=str(uploaded.get("name", "pipeline manifest")),
-                uri=uploaded.get("webViewLink"),
-                drive_file_id=uploaded.get("id"),
-            )
-        ],
-    )
-
-
-def _manifest_upload_url(steps: list[StepResult]) -> str | None:
-    for step in steps:
-        if step.step == "manifest.upload" and step.artifacts:
-            return step.artifacts[0].uri
-    return None
 
 
 def _get_payload_error(result: dict[str, Any]) -> str | None:
@@ -946,9 +941,7 @@ class ReportTrace:
     tokens_filled: int = 0
     tokens_unfilled: int = 0
     # Full report_data passed to create_dd_report (flat token dict). Kept on
-    # the trace so downstream consumers (dashboard publisher) can re-use it
-    # without re-parsing the doc. Not serialized into the trace JSON to keep
-    # the provenance file small.
+    # the in-memory trace for validation and local run diagnostics.
     final_report_data: dict[str, Any] = field(default_factory=dict)
 
     def add_event(self, event: TraceEvent) -> None:
@@ -1068,7 +1061,7 @@ def _vendor_gate_enabled() -> bool:
 
 
 def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
-    """Return human-readable names for missing required DD docs.
+    """Return human-readable names for missing full-report DD inputs.
 
     With ``VENDOR_GATE_ENABLED=1`` the gate requires:
       * Vendor-sourced SIR
@@ -1101,6 +1094,18 @@ def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
     return missing
 
 
+def _missing_first_round_docs(readiness: dict[str, Any]) -> list[str]:
+    """Return blocking inputs for first-round DDR publishing.
+
+    First-round reports are allowed to publish from the AI SIR / research
+    output before all vendor documents come back. Full-report readiness stays
+    modeled by ``_missing_required_docs`` for diagnostics and escalation.
+    """
+    if readiness.get("sir_found", False):
+        return []
+    return ["SIR"]
+
+
 def _source_doc_type_for_alert(file_name: str) -> str | None:
     """Return the monitored source-doc label for a filename."""
     name = file_name.lower()
@@ -1128,15 +1133,16 @@ def _extract_source_read_issues(trace: ReportTrace | None) -> list[dict[str, str
 
         output = event.output_summary
         preview = str(output.get("content_preview", ""))
-        problem = (
-            event.error
-            or str(output.get("error", "")).strip()
-            or str(output.get("message", "")).strip()
-        )
+        explicit_problem = event.error or str(output.get("error", "")).strip()
+        raw_content_length = output.get("content_length")
+        try:
+            empty_content = raw_content_length is not None and int(raw_content_length) == 0
+        except (TypeError, ValueError):
+            empty_content = False
         has_issue = (
-            bool(problem)
+            bool(explicit_problem)
             or output.get("status") == "error"
-            or output.get("content_length") == 0
+            or empty_content
             or "returned no text" in preview.lower()
             or "requires ocr" in preview.lower()
         )
@@ -1150,7 +1156,11 @@ def _extract_source_read_issues(trace: ReportTrace | None) -> list[dict[str, str
         issues.append({
             "doc_type": doc_type,
             "file_name": file_name or doc_type,
-            "problem": problem or "Document could not be read cleanly",
+            "problem": (
+                explicit_problem
+                or str(output.get("message", "")).strip()
+                or "Document could not be read cleanly"
+            ),
         })
 
     return issues
@@ -1260,7 +1270,7 @@ def _resolve_readiness_result(
         logger.error("Readiness check failed for '%s': %s", site_title, readiness_error)
         return PipelineResult(site_title=site_title, status="error", error=readiness_error)
 
-    missing_docs = _missing_required_docs(readiness)
+    missing_docs = _missing_first_round_docs(readiness)
     if missing_docs:
         return PipelineResult(
             site_title=site_title,
@@ -1285,16 +1295,20 @@ def _run_pipeline_agent(
     site_title: str,
     system_prompt: str,
     settings: Settings,
+    *,
+    drive_folder_url: str | None = None,
+    site_address: str | None = None,
+    initial_report_fields: dict[str, Any] | None = None,
+    rhodes_owner_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, PipelineResult | None]:
     """Run report generation and map failures into a PipelineResult."""
     # Phase B-PR3 cutover: when DD_REPORT_OWNER=pipeline, the
     # alpha-dd-pipeline WU-13 is the sole DD-report producer. Short-circuit
     # before any agent work so reruns and backfills both honor the flag
     # uniformly. We yield a distinct status ("yielded_to_pipeline") so the
-    # caller can skip the dashboard publish + email/trace side effects that
-    # the Anthropic agent would normally feed. Default "reporter" preserves
-    # legacy behavior until soak passes; "pipeline" is the only value that
-    # disables the agent run. Mirrors DASHBOARD_PUBLISH_OWNER (Phase A5).
+    # caller can skip the email and validation side effects that the Anthropic
+    # agent would normally feed. Default "reporter" preserves legacy behavior
+    # until soak passes; "pipeline" is the only value that disables the agent run.
     owner = os.environ.get("DD_REPORT_OWNER", "reporter").strip().lower()
     if owner == "pipeline":
         logger.info(
@@ -1313,6 +1327,10 @@ def _run_pipeline_agent(
             site_title,
             system_prompt,
             settings.anthropic_report_model,
+            drive_folder_url=drive_folder_url,
+            site_address=site_address,
+            initial_report_fields=initial_report_fields,
+            rhodes_owner_context=rhodes_owner_context,
         )
     except Exception as e:
         logger.error("Report generation crashed for '%s': %s", site_title, e)
@@ -1336,113 +1354,7 @@ def _run_pipeline_agent(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Best-effort observability state files
-#
-# Mirror the ``.raycon_dispatch_state.json`` shape used by ``raycon_followup``
-# so on-call has a single style of failure-state file to look at when a
-# best-effort path silently degraded.
 # ─────────────────────────────────────────────────────────────────────────────
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DASHBOARD_PUBLISH_FAILURES_PATH = _PROJECT_ROOT / ".dashboard_publish_failures.json"
-PIPELINE_TRACE_FAILURES_PATH = _PROJECT_ROOT / ".pipeline_trace_failures.json"
-
-
-def _load_failure_state(path: Path) -> dict[str, dict[str, Any]]:
-    """Load a best-effort failure-state map. Returns ``{}`` on any error."""
-    try:
-        if not path.exists():
-            return {}
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return {}
-        return {k: v for k, v in data.items() if isinstance(v, dict)}
-    except Exception as e:
-        logger.warning("Failed to read failure state at %s: %s", path, e)
-        return {}
-
-
-def _save_failure_state(state: dict[str, dict[str, Any]], path: Path) -> None:
-    """Persist a best-effort failure-state map. Logs but does not raise."""
-    from .dd_republish import atomic_write_json
-
-    try:
-        atomic_write_json(path, state)
-    except Exception as e:
-        logger.warning("Failed to write failure state at %s: %s", path, e)
-
-
-def _record_best_effort_failure(
-    path: Path,
-    key: str,
-    *,
-    site_title: str,
-    error_type: str,
-    error_message: str,
-) -> None:
-    """Append/update a failure record so silent degradations stay observable."""
-    state = _load_failure_state(path)
-    prior = state.get(key, {}) if isinstance(state.get(key), dict) else {}
-    attempts = int(prior.get("attempts", 0)) + 1
-    state[key] = {
-        "site_title": site_title,
-        "error_type": error_type,
-        "error_message": error_message[:500],
-        "failed_at": datetime.now(UTC).isoformat(),
-        "attempts": attempts,
-    }
-    _save_failure_state(state, path)
-
-
-def _save_pipeline_trace(
-    gc: GoogleClient,
-    drive_folder_url: str,
-    site_title: str,
-    trace: ReportTrace | None,
-) -> str | None:
-    """Persist a report trace JSON beside the generated report.
-
-    Best-effort: on upload failure, log AND append a structured record to
-    ``.pipeline_trace_failures.json`` so a wedged trace upload doesn't go
-    unnoticed for days. Never raises.
-    """
-    if not trace:
-        return None
-
-    folder_id = extract_folder_id_from_url(drive_folder_url)
-    if not folder_id:
-        return None
-
-    trace_date = datetime.now(UTC).strftime("%Y-%m-%d")
-    trace_name = f"{site_title} DD Report Trace - {trace_date}.json"
-    try:
-        trace_json = json.dumps(trace.to_dict(), indent=2)
-        trace_file = gc.upload_file_to_folder(
-            folder_id=folder_id,
-            file_name=trace_name,
-            file_bytes=trace_json.encode("utf-8"),
-            mime_type="application/json",
-        )
-        logger.info("Saved report trace: %s", trace_name)
-        return trace_file.get("webViewLink")
-    except Exception as e:
-        logger.warning("Failed to save report trace: %s", e)
-        try:
-            _record_best_effort_failure(
-                PIPELINE_TRACE_FAILURES_PATH,
-                key=site_title,
-                site_title=site_title,
-                error_type=type(e).__name__,
-                error_message=str(e),
-            )
-        except Exception as record_err:  # pragma: no cover — defensive
-            logger.warning(
-                "Failed to record pipeline-trace failure for '%s': %s",
-                site_title,
-                record_err,
-            )
-        return None
-
 
 def _check_generated_report(
     site_title: str,
@@ -1531,59 +1443,43 @@ def _email_pipeline_report(
         return str(e)
 
 
+def _resolve_rhodes_owner_for_pipeline(
+    site_title: str,
+    site_address: str | None,
+) -> dict[str, Any]:
+    """Best-effort Rhodes owner lookup for pipeline runs."""
+    try:
+        result = lookup_rhodes_site_owner(
+            site_name=site_title,
+            site_address=site_address or "",
+        )
+    except Exception as exc:  # noqa: BLE001 - non-blocking lookup
+        logger.warning("Rhodes owner lookup failed for %s: %s", site_title, exc)
+        return {
+            "status": "error",
+            "message": str(exc),
+            "report_data_fields": {},
+        }
+    return result
+
+
+def _owner_lookup_report_fields(result: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    fields = result.get("report_data_fields")
+    return fields if isinstance(fields, dict) else {}
+
+
+def _first_text(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Full single-site pipeline
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _record_trace_save_step(
-    recorder: _RunRecorder,
-    gc: GoogleClient,
-    drive_folder_url: str,
-    site_title: str,
-    trace: ReportTrace | None,
-) -> str | None:
-    started_at, started_monotonic = recorder.start()
-    trace_url: Any = _save_pipeline_trace(gc, drive_folder_url, site_title, trace)
-    if trace is None:
-        recorder.record(
-            "trace.save",
-            started_at,
-            started_monotonic,
-            "skipped",
-            skipped_reason="no trace available",
-        )
-    elif trace_url is not None and not isinstance(trace_url, str):
-        recorder.record(
-            "trace.save",
-            started_at,
-            started_monotonic,
-            "skipped",
-            skipped_reason="trace save returned non-string URL",
-        )
-        return None
-    elif trace_url:
-        recorder.record(
-            "trace.save",
-            started_at,
-            started_monotonic,
-            "succeeded",
-            artifacts=[ArtifactRef(kind="trace", name="Report trace", uri=trace_url)],
-        )
-    else:
-        recorder.record(
-            "trace.save",
-            started_at,
-            started_monotonic,
-            "failed",
-            error=_pipeline_error(
-                recorder.run_id,
-                "trace.save",
-                "trace_save_failed",
-                "Trace could not be saved",
-            ),
-        )
-    return cast(str | None, trace_url)
 
 
 def _record_source_alert_step(
@@ -1692,34 +1588,6 @@ def _record_email_step(
         recorder.record("notify.email", started_at, started_monotonic, "succeeded")
 
 
-def _record_dashboard_step(recorder: _RunRecorder, **kwargs: Any) -> None:
-    started_at, started_monotonic = recorder.start()
-    error = _publish_to_dashboard_best_effort(**kwargs)
-    if error == "no final_report_data on trace":
-        recorder.record(
-            "publish.dashboard",
-            started_at,
-            started_monotonic,
-            "skipped",
-            skipped_reason=error,
-        )
-    elif error:
-        recorder.record(
-            "publish.dashboard",
-            started_at,
-            started_monotonic,
-            "failed",
-            error=_pipeline_error(
-                recorder.run_id,
-                "publish.dashboard",
-                "dashboard_publish_failed",
-                error,
-            ),
-        )
-    else:
-        recorder.record("publish.dashboard", started_at, started_monotonic, "succeeded")
-
-
 def process_site_pipeline(
     gc: GoogleClient,
     site_title: str,
@@ -1731,16 +1599,11 @@ def process_site_pipeline(
     p1_email: str | None = None,
     site_address: str | None = None,
     p1_name: str | None = None,
-    # --- Phase 2 DD provenance (Wrike W74 / W81) ---
-    # Optional. Callers (scripts/daily_dd_check.py et al.) read these from
-    # the Wrike record up front and forward them to the dashboard publish
-    # step. None means "don't override the dashboard's stored value".
+    # Deprecated provenance fields accepted for caller compatibility.
     school_feasibility: str | None = None,
     timeline_confidence: str | None = None,
-    # ISO 8601 createdDate from the Wrike Site Record. Forwarded to the
-    # dashboard so the Portfolio "Date Created" column reflects when the
-    # site itself was added in Wrike, not when the DD report was generated.
-    wrike_created_at: str | None = None,
+    # Optional ISO 8601 source created date.
+    site_created_at: str | None = None,
     # When True, bypass the ``report_exists`` short-circuit so a fresh
     # report is generated on top of an existing DD Report Doc. Used by the
     # event-driven republish path (raycon_followup) when authoritative
@@ -1831,11 +1694,60 @@ def process_site_pipeline(
             gc=gc,
             drive_folder_url=drive_folder_url,
         )
+    full_report_inputs_present = not _missing_required_docs(readiness)
     recorder.record("readiness.check", started_at, started_monotonic, "succeeded")
     _record_sir_learning_review_step(recorder, sir_learning_review)
 
+    rhodes_owner_context: dict[str, Any] | None = None
+    initial_report_fields: dict[str, Any] = {}
+    if not (p1_name and p1_email):
+        started_at, started_monotonic = recorder.start()
+        rhodes_owner_context = _resolve_rhodes_owner_for_pipeline(site_title, site_address)
+        rhodes_status = str(rhodes_owner_context.get("status") or "")
+        if rhodes_status == "not_configured":
+            recorder.record(
+                "rhodes.owner_lookup",
+                started_at,
+                started_monotonic,
+                "skipped",
+                skipped_reason="RHODES_API_KEY not configured",
+            )
+        elif rhodes_status == "error":
+            recorder.record(
+                "rhodes.owner_lookup",
+                started_at,
+                started_monotonic,
+                "skipped",
+                skipped_reason=str(rhodes_owner_context.get("message") or "lookup failed"),
+            )
+        else:
+            recorder.record("rhodes.owner_lookup", started_at, started_monotonic, "succeeded")
+
+        initial_report_fields.update(_owner_lookup_report_fields(rhodes_owner_context))
+        p1_name = p1_name or _first_text(
+            rhodes_owner_context.get("p1_assignee_name"),
+            initial_report_fields.get("p1_assignee_name"),
+            initial_report_fields.get("site.p1_assignee_name"),
+        )
+        p1_email = p1_email or _first_text(
+            rhodes_owner_context.get("p1_assignee_email"),
+            initial_report_fields.get("p1_assignee_email"),
+            initial_report_fields.get("site.p1_assignee_email"),
+        )
+        site_created_at = site_created_at or _first_text(
+            initial_report_fields.get("site_created_at")
+        )
+
     started_at, started_monotonic = recorder.start()
-    agent_result, generation_result = _run_pipeline_agent(site_title, system_prompt, settings)
+    agent_result, generation_result = _run_pipeline_agent(
+        site_title,
+        system_prompt,
+        settings,
+        drive_folder_url=drive_folder_url,
+        site_address=site_address,
+        initial_report_fields=initial_report_fields,
+        rhodes_owner_context=rhodes_owner_context,
+    )
     if generation_result is not None:
         gen_status = "skipped" if generation_result.status == "yielded_to_pipeline" else "failed"
         gen_error = None
@@ -1854,13 +1766,7 @@ def process_site_pipeline(
             error=gen_error,
             skipped_reason=generation_result.status if gen_status == "skipped" else None,
         )
-        generation_result.trace_url = _record_trace_save_step(
-            recorder,
-            gc,
-            drive_folder_url,
-            site_title,
-            generation_result.trace,
-        )
+        generation_result.trace_url = None
         _record_source_alert_step(
             recorder,
             settings,
@@ -1869,12 +1775,12 @@ def process_site_pipeline(
             drive_folder_url=drive_folder_url,
             trace_url=generation_result.trace_url or "",
         )
-        # Vendor gate has already passed at this point (we're past
-        # ``_resolve_readiness_result``). If the agent still failed to build
-        # a report, escalate to humans — the inputs themselves likely need
-        # review (OCR-stuck PDF, malformed RayCon JSON, conflicting permits).
+        # First-round publishing can proceed before every full-report
+        # vendor/RayCon input is present. Escalate only when the full input
+        # set was actually present and generation still failed.
         if (
             _vendor_gate_enabled()
+            and full_report_inputs_present
             and generation_result.status == "generation_failed"
         ):
             _notify_vendor_gate_extraction_failure(
@@ -1895,13 +1801,21 @@ def process_site_pipeline(
 
     doc_id = agent_result["doc_id"]
     doc_url = agent_result.get("doc_url", "")
-    trace_url = _record_trace_save_step(
-        recorder,
-        gc,
-        drive_folder_url,
-        site_title,
-        agent_result.get("trace"),
-    )
+    final_report_data = getattr(agent_result.get("trace"), "final_report_data", None)
+    if isinstance(final_report_data, dict):
+        p1_name = p1_name or _first_text(
+            final_report_data.get("p1_assignee_name"),
+            final_report_data.get("site.p1_assignee_name"),
+            final_report_data.get("meta.prepared_by"),
+        )
+        p1_email = p1_email or _first_text(
+            final_report_data.get("p1_assignee_email"),
+            final_report_data.get("site.p1_assignee_email"),
+        )
+        site_created_at = site_created_at or _first_text(
+            final_report_data.get("site_created_at")
+        )
+    trace_url = ""
     _record_source_alert_step(
         recorder,
         settings,
@@ -1934,11 +1848,12 @@ def process_site_pipeline(
         )
         completeness_result.trace_url = trace_url
         completeness_result.trace = agent_result.get("trace")
-        # Same escalation as the agent-failure branch above: vendor gate
-        # has passed but the resulting report is incomplete — humans need
-        # to look at the inputs.
+        # Same escalation as the agent-failure branch above: when the full
+        # vendor/RayCon input set was present but the resulting report is
+        # incomplete, humans need to look at the inputs.
         if (
             _vendor_gate_enabled()
+            and full_report_inputs_present
             and completeness_result.status == "report_incomplete"
         ):
             failure_reason = completeness_result.error or (
@@ -1952,27 +1867,6 @@ def process_site_pipeline(
                 drive_folder_url=drive_folder_url,
                 failure_reason=failure_reason,
                 trace_url=trace_url or "",
-            )
-        # Publish partial data to the dashboard with dd_status="in_progress"
-        # so the row shows the real report fields instead of leaving the
-        # site stuck on the empty roster-sync stub. Without this branch,
-        # any report that fails the completeness check (raw template
-        # tokens, invalid Can-We-Open answer, unfilled placeholders) never
-        # reaches the dashboard, even when the agent successfully filled
-        # most of the template. Keeps the success-path publish unchanged.
-        if completeness_result.status == "report_incomplete":
-            _record_dashboard_step(
-                recorder,
-                site_title=site_title,
-                trace=agent_result.get("trace"),
-                drive_folder_url=drive_folder_url,
-                dd_report_url=doc_url,
-                site_address=site_address,
-                p1_name=p1_name,
-                dd_status="in_progress",
-                school_feasibility=school_feasibility,
-                timeline_confidence=timeline_confidence,
-                wrike_created_at=wrike_created_at,
             )
         return _finalize_pipeline_result(
             completeness_result,
@@ -1991,19 +1885,6 @@ def process_site_pipeline(
 
     _record_email_step(recorder, settings, site_title, doc_url, p1_email)
 
-    _record_dashboard_step(
-        recorder,
-        site_title=site_title,
-        trace=agent_result.get("trace"),
-        drive_folder_url=drive_folder_url,
-        dd_report_url=doc_url,
-        site_address=site_address,
-        p1_name=p1_name,
-        school_feasibility=school_feasibility,
-        timeline_confidence=timeline_confidence,
-        wrike_created_at=wrike_created_at,
-    )
-
     return _finalize_pipeline_result(
         PipelineResult(
             site_title=site_title,
@@ -2018,90 +1899,6 @@ def process_site_pipeline(
         gc=gc,
         drive_folder_url=drive_folder_url,
     )
-
-
-def _publish_to_dashboard_best_effort(
-    *,
-    site_title: str,
-    trace: ReportTrace | None,
-    drive_folder_url: str,
-    dd_report_url: str,
-    site_address: str | None,
-    p1_name: str | None = None,
-    # Phase 2 DD provenance pass-through. Publisher auto-stamps
-    # dd_status="complete" when this is None, so callers on the success
-    # path can leave it unset. The ``report_incomplete`` branch passes
-    # ``"in_progress"`` so partial real data still lands on the dashboard
-    # instead of leaving sites stuck on the empty roster-sync stub.
-    dd_status: str | None = None,
-    school_feasibility: str | None = None,
-    timeline_confidence: str | None = None,
-    wrike_created_at: str | None = None,
-) -> str | None:
-    """Fire-and-forget dashboard publish. Never raises.
-
-    Phase 3 fields (dd_site_score + dd_site_score_band) are derived
-    automatically by ``publish_to_dashboard`` from the report's
-    ``q2.e_occupancy_score`` token and don't need to be threaded through
-    here — the e-occupancy tool emits that token as part of its standard
-    output whenever it runs in the pipeline.
-
-    Phase 4 ``dd_risk_flags`` are likewise derived automatically by
-    ``publish_to_dashboard`` from the report's flag-like tokens
-    (``permit_history.risk_flags``, ``q2.ibc_flags`` /
-    ``q2.e_occupancy_ibc_summary``, ``q1.school_approval_*``,
-    ``sir.risk_watch``). See ``risk_flags.py`` for the canonical enums
-    and severity rules.
-    """
-    if trace is None or not getattr(trace, "final_report_data", None):
-        logger.info(
-            "Skipping dashboard publish for %s \u2014 no final_report_data on trace",
-            site_title,
-        )
-        return "no final_report_data on trace"
-    try:
-        publish_to_dashboard(
-            site_title,
-            trace.final_report_data,
-            address=site_address,
-            drive_folder_url=drive_folder_url,
-            dd_report_url=dd_report_url,
-            site_owner=p1_name,
-            dd_status=dd_status,
-            school_feasibility=school_feasibility,
-            timeline_confidence=timeline_confidence,
-            wrike_created_at=wrike_created_at,
-        )
-        return None
-    except Exception as e:
-        # publish_to_dashboard already swallows requests errors; this is a
-        # belt-and-suspenders guard against anything truly unexpected.
-        # We had a recent incident where a wedged dashboard publish went
-        # unnoticed for days because this branch silently swallowed the
-        # error. Surface every failure now: log AND append a structured
-        # record to ``.dashboard_publish_failures.json`` so on-call can
-        # see what's wedged without grepping cron logs.
-        logger.error(
-            "Dashboard publish raised for %s (%s): %s",
-            site_title,
-            type(e).__name__,
-            e,
-        )
-        try:
-            _record_best_effort_failure(
-                DASHBOARD_PUBLISH_FAILURES_PATH,
-                key=site_title,
-                site_title=site_title,
-                error_type=type(e).__name__,
-                error_message=str(e),
-            )
-        except Exception as record_err:  # pragma: no cover — defensive
-            logger.warning(
-                "Failed to record dashboard-publish failure for '%s': %s",
-                site_title,
-                record_err,
-            )
-        return str(e)
 
 
 # Google Chat notification per pipeline result

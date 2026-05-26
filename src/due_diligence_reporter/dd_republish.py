@@ -46,20 +46,17 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .classifier import classify_document_type
 from .config import Settings
 from .google_client import GoogleClient
 from .report_pipeline import PipelineResult, process_site_pipeline
 from .utils import build_site_match_terms, extract_folder_id_from_url
-from .wrike import (
-    extract_school_feasibility_from_record,
-    extract_timeline_confidence_from_record,
-)
 
 logger = logging.getLogger("dd_republish")
 
@@ -318,12 +315,10 @@ def maybe_republish_dd_report(
 
     Args:
         gc: Authenticated Google client.
-        site_summary: Wrike-derived dict with at minimum ``id``,
-            ``title``, ``drive_folder_url``. Also forwards
-            ``p1_assignee_email``/``_name``, ``custom_fields``, and
-            ``created_date`` to ``process_site_pipeline`` so the
-            regenerated DD Report email keeps the P1 CC and the
-            dashboard publish keeps W74/W81 + Wrike createdDate.
+        site_summary: Site summary dict with at minimum ``id``,
+            ``title``, and ``drive_folder_url``. Also forwards
+            ``p1_assignee_email``/``_name`` and ``created_date`` to
+            ``process_site_pipeline`` when supplied.
         reason: One of ``vendor_sir``, ``building_inspection``,
             ``raycon_scenario``. Anything else is rejected as
             ``skip_bad_input``.
@@ -350,7 +345,7 @@ def maybe_republish_dd_report(
     Returns: ``RepublishOutcome``. Never raises; failures are encoded
     in the returned outcome.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     runner = pipeline_runner or process_site_pipeline
     finder = existing_report_finder or find_existing_dd_report
 
@@ -491,8 +486,6 @@ def maybe_republish_dd_report(
 
     site_address = str(site_summary.get("address", "")).strip() or None
     match_terms = build_site_match_terms(site_name, site_address)
-    record_for_extract = {"customFields": site_summary.get("custom_fields", [])}
-
     try:
         result = runner(
             gc,
@@ -505,13 +498,7 @@ def maybe_republish_dd_report(
             p1_email=site_summary.get("p1_assignee_email"),
             site_address=site_address,
             p1_name=site_summary.get("p1_assignee_name"),
-            school_feasibility=extract_school_feasibility_from_record(
-                record_for_extract
-            ),
-            timeline_confidence=extract_timeline_confidence_from_record(
-                record_for_extract
-            ),
-            wrike_created_at=site_summary.get("created_date") or None,
+            site_created_at=site_summary.get("created_date") or None,
             force_regenerate=True,
         )
     except Exception as e:

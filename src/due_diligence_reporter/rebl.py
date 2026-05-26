@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, cast
 
 import requests
 from tenacity import retry
@@ -128,12 +128,15 @@ def resolve_address(
     cleaned = address.strip()
     if not cleaned:
         return ReblResolution.missing_address()
-    return resolve_addresses(
-        [cleaned],
-        base_url=base_url,
-        timeout=timeout,
-        session=session,
-    )[0]
+    return cast(
+        ReblResolution,
+        resolve_addresses(
+            [cleaned],
+            base_url=base_url,
+            timeout=timeout,
+            session=session,
+        )[0],
+    )
 
 
 def canonical_slug_for_address(
@@ -149,7 +152,7 @@ def canonical_slug_for_address(
     Used by readers/scripts (reconcile, sync_site_roster, etc.) that need to
     know the slug a *publish* would mint. Single source of truth: the
     publisher uses the same Rebl ``site_id``, so any caller that runs this
-    helper and gets a non-empty result will agree with the dashboard.
+    helper and gets a non-empty result will agree with other REBL-aware flows.
 
     Returns ``fallback`` (which most callers will pass as ``slugify(title)``)
     when:

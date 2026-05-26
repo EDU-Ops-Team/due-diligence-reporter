@@ -1,7 +1,7 @@
 """Shared retry utilities for external API calls.
 
 Provides a standard retry configuration using ``tenacity`` for all outbound
-HTTP requests (Wrike, RayCon, OpenAI, Google APIs).
+HTTP requests (RayCon, OpenAI, Google APIs).
 Retries on transient errors: connection errors, timeouts, and HTTP 429/5xx.
 
 For 429 (rate limit) errors, the retry logic parses the ``Retry-After`` header
@@ -82,7 +82,7 @@ def _parse_retry_after_seconds(exc: BaseException) -> float | None:
     #
     # The original ``hasattr(exc, "headers")`` check returned False for
     # requests.HTTPError, which silently disabled rate-limit-aware waits
-    # for every HTTP client (Rebl, dashboard publish, etc.). Probe both
+    # for requests-based HTTP clients. Probe both
     # locations so a 429 from a requests-based client is honored.
     candidate_headers: Any = None
     if hasattr(exc, "headers"):

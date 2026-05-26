@@ -33,7 +33,7 @@ Use one row per issue, not one row per section.
 
 | Field | Meaning |
 |---|---|
-| Site | Wrike site title |
+| Site | site title |
 | AI SIR | Link or file ID |
 | CDS/vendor SIR | Link or file ID |
 | Section | SIR section or DDR token area |
@@ -42,7 +42,7 @@ Use one row per issue, not one row per section.
 | Evidence checked | Source used to adjudicate the difference |
 | Gap category | One of the standard tags above |
 | Severity | Blocking, material, cleanup |
-| DDR impact | Token, prompt, trace, dashboard, or none |
+| DDR impact | Token, prompt, local trace, or none |
 | Learning action | Concrete change to make |
 | Owner | Person or system owner |
 | Status | Open, accepted, implemented, rejected |
@@ -139,7 +139,7 @@ This loop plugs into the broader DDR quality work from the run manifest effort:
   disagreement between two documents.
 - When a finding affects DDR output, update the narrowest layer that owns the
   issue: retrieval first, SIR prompt/template second, DDR prompt/token mapping
-  third, dashboard presentation last.
+  third, presentation polish last.
 
 ## Operating Cadence
 

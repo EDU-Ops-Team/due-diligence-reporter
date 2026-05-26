@@ -20,7 +20,6 @@ from due_diligence_reporter.utils import (
     find_text_index_in_doc,
     sanitize_http_url,
 )
-from due_diligence_reporter.wrike import classify_comment_to_section
 
 
 def _build_docx_bytes(text: str) -> bytes:
@@ -203,62 +202,6 @@ class TestDocumentSiteValidation:
         assert "excluded from this run" in warnings[0]
 
 # ---------------------------------------------------------------------------
-# Fix 5: Comment classification
-# ---------------------------------------------------------------------------
-
-class TestCommentClassification:
-    def test_zoning_comment(self) -> None:
-        assert classify_comment_to_section("Zoning variance required for this location") == "q1"
-
-    def test_pre_app_comment(self) -> None:
-        assert classify_comment_to_section("Pre-app meeting notes from city planner") == "q1"
-
-    def test_permit_comment(self) -> None:
-        assert classify_comment_to_section("Permit timeline is 6-8 weeks") == "q1"
-
-    def test_building_comment(self) -> None:
-        assert classify_comment_to_section("HVAC system needs full replacement") == "q2"
-
-    def test_inspection_comment(self) -> None:
-        assert classify_comment_to_section("Building inspection scheduled for Monday") == "q2"
-
-    def test_cost_comment(self) -> None:
-        assert classify_comment_to_section("Budget estimate came in at $250k") == "q3"
-
-    def test_timeline_comment(self) -> None:
-        assert classify_comment_to_section("Timeline pushed back, target date is Q3") == "q4"
-
-    def test_general_comment(self) -> None:
-        assert classify_comment_to_section("Great location, team is excited") == "general"
-
-    def test_empty_comment(self) -> None:
-        assert classify_comment_to_section("") == "general"
-
-
-class TestWrikeSiteSummary:
-    @patch("due_diligence_reporter.wrike.extract_p1_from_record")
-    def test_build_site_summary_includes_p1_assignee(self, mock_extract_p1: MagicMock) -> None:
-        from due_diligence_reporter.wrike import build_site_summary
-
-        mock_extract_p1.return_value = {
-            "name": "Jane Owner",
-            "email": "jane@example.com",
-        }
-        record = {
-            "id": "wrike-1",
-            "title": "Alpha Atlanta 345",
-            "customFields": [],
-            "permalink": "https://wrike.example/item",
-            "description": "site",
-        }
-
-        summary = build_site_summary(record)
-
-        assert summary["p1_assignee_name"] == "Jane Owner"
-        assert summary["p1_assignee_email"] == "jane@example.com"
-
-
-# ---------------------------------------------------------------------------
 # MatterBot integration
 # ---------------------------------------------------------------------------
 
@@ -374,6 +317,27 @@ class TestCheckReportCompleteness:
         assert result["ready_to_send"] is True
         assert result["invalid_can_we_answer"] is None
 
+    def test_accepts_rendered_can_we_answer_phrase(self) -> None:
+        from due_diligence_reporter.server import check_report_completeness
+
+        gc = MagicMock()
+        gc.export_google_doc_as_text.return_value = (
+            "Can this school be open in time for the current school year (8/12 or 9/8)?\n"
+            "No, because:\n"
+            "Education Regulatory Approval: Not required "
+            "Occupancy path: Has E-Occupancy Zoning: Use Permit Required (public)\n"
+        )
+
+        with patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ):
+            result = asyncio.run(check_report_completeness("doc123"))
+
+        assert result["status"] == "success"
+        assert result["ready_to_send"] is True
+        assert result["invalid_can_we_answer"] is None
+
     def test_rejects_raw_template_tokens(self) -> None:
         from due_diligence_reporter.server import check_report_completeness
 
@@ -400,7 +364,7 @@ class TestCheckReportCompleteness:
 
 
 class TestListDriveDocumentsFiltering:
-    def test_returns_only_ai_generated_site_reports(self) -> None:
+    def test_returns_site_folder_report_and_source_artifacts(self) -> None:
         from due_diligence_reporter.server import list_drive_documents
 
         gc = MagicMock()
@@ -409,21 +373,13 @@ class TestListDriveDocumentsFiltering:
             {"id": "opening-plan", "name": "Opening Plan - Alpha Keller"},
             {"id": "eocc", "name": "E-Occupancy Assessment - Alpha Keller"},
             {"id": "trace", "name": "Alpha Keller DD Report Trace - 2026-04-20.json"},
+            {"id": "dd-report", "name": "Alpha Keller DD Report - 2026-04-20"},
             {"id": "lease", "name": "Lease Draft.pdf"},
         ]
 
-        # Provide a confident match so the new disambiguation pre-flight in
-        # ``list_drive_documents`` short-circuits cleanly. The legacy contract
-        # — return success and continue listing files — is preserved.
         with patch(
             "due_diligence_reporter.server._make_google_client",
             return_value=gc,
-        ), patch(
-            "due_diligence_reporter.server.find_site_record",
-            return_value={"id": "wrike-1", "title": "Alpha Keller"},
-        ), patch(
-            "due_diligence_reporter.server.build_site_summary",
-            return_value={"title": "Alpha Keller", "address": "123 Main St"},
         ), patch(
             "due_diligence_reporter.server._find_site_docs_in_shared_folders",
             return_value={
@@ -435,36 +391,54 @@ class TestListDriveDocumentsFiltering:
             result = asyncio.run(list_drive_documents(
                 "https://drive.google.com/drive/folders/folder123",
                 "Alpha Keller",
+                "123 Main St, Keller TX",
             ))
 
         assert result["status"] == "success"
         site_files = {file_info["name"]: file_info for file_info in result["site_folder_files"]}
-        assert "Alpha Keller SIR.pdf" not in site_files
         assert "Lease Draft.pdf" not in site_files
+        assert "Alpha Keller DD Report - 2026-04-20" not in site_files
+        assert "Alpha Keller DD Report Trace - 2026-04-20.json" not in site_files
+        assert site_files["Alpha Keller SIR.pdf"]["doc_type"] == "sir"
         assert site_files["Opening Plan - Alpha Keller"]["doc_type"] == "opening_plan_report"
         assert site_files["E-Occupancy Assessment - Alpha Keller"]["doc_type"] == "e_occupancy_report"
-        assert site_files["Alpha Keller DD Report Trace - 2026-04-20.json"]["doc_type"] == "report_trace"
         assert result["shared_folder_files"][0]["reference_origin"] == "shared_source"
+
+    def test_missing_site_name_lists_drive_folder_without_shared_search(self) -> None:
+        from due_diligence_reporter.server import list_drive_documents
+
+        gc = MagicMock()
+        gc.list_files_recursive.return_value = [
+            {"id": "site-sir", "name": "Alpha Beethoven_SIR.docx"},
+            {"id": "school-approval", "name": "Alpha Beethoven_school-approval.docx"},
+        ]
+
+        with patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ), patch(
+            "due_diligence_reporter.server._find_site_docs_in_shared_folders",
+        ) as find_shared:
+            result = asyncio.run(list_drive_documents(
+                "https://drive.google.com/drive/folders/folder123",
+                "",
+            ))
+
+        assert result["status"] == "success"
+        assert result["shared_folder_files"] == []
+        assert find_shared.call_count == 0
+        assert [f["doc_type"] for f in result["site_folder_files"]] == [
+            "sir",
+            "school_approval_report",
+        ]
 
 
 class TestReportNormalizationDefaults:
-    @patch("due_diligence_reporter.server.build_site_summary")
-    @patch("due_diligence_reporter.server.find_site_record")
-    def test_normalize_report_replacements_prefers_wrike_p1(
-        self,
-        mock_find_site_record: MagicMock,
-        mock_build_site_summary: MagicMock,
-    ) -> None:
+    def test_normalize_report_replacements_uses_supplied_prepared_by(self) -> None:
         from due_diligence_reporter.server import _normalize_report_replacements
 
-        mock_find_site_record.return_value = {"id": "wrike-1"}
-        mock_build_site_summary.return_value = {
-            "p1_assignee_name": "Jane Owner",
-            "p1_assignee_email": "jane@example.com",
-        }
-
         replacements, _, _, _, _ = _normalize_report_replacements(
-            report_data={"meta": {"prepared_by": "DD Report Agent"}},
+            report_data={"meta": {"prepared_by": "Jane Owner"}},
             site_name="Alpha Atlanta 345",
             report_date="04/02/2026",
             drive_folder_url="https://drive.google.com/drive/folders/folder123",
@@ -472,17 +446,20 @@ class TestReportNormalizationDefaults:
 
         assert replacements["meta.prepared_by"] == "Jane Owner"
 
-    @patch("due_diligence_reporter.server.build_site_summary")
-    @patch("due_diligence_reporter.server.find_site_record")
-    def test_normalize_report_replacements_fills_two_scenario_gap_labels(
-        self,
-        mock_find_site_record: MagicMock,
-        mock_build_site_summary: MagicMock,
-    ) -> None:
+    def test_normalize_report_replacements_uses_canonical_site_name(self) -> None:
         from due_diligence_reporter.server import _normalize_report_replacements
 
-        mock_find_site_record.return_value = {"id": "wrike-1"}
-        mock_build_site_summary.return_value = {}
+        replacements, _, _, _, _ = _normalize_report_replacements(
+            report_data={"meta": {"site_name": "Alpha Los Angeles"}},
+            site_name="Alpha Los Angeles 5400 Beethoven St",
+            report_date="05/26/2026",
+            drive_folder_url="https://drive.google.com/drive/folders/folder123",
+        )
+
+        assert replacements["meta.site_name"] == "Alpha Los Angeles 5400 Beethoven St"
+
+    def test_normalize_report_replacements_fills_two_scenario_gap_labels(self) -> None:
+        from due_diligence_reporter.server import _normalize_report_replacements
 
         replacements, _, _, _, _ = _normalize_report_replacements(
             report_data={
@@ -504,41 +481,77 @@ class TestReportNormalizationDefaults:
         assert replacements["exec.max_capacity_capex"] == "[Not found - Max Capacity scenario not extracted]"
         assert "exec.max_value_capacity" not in replacements
 
-    @patch("due_diligence_reporter.server.find_site_record")
-    def test_inject_wrike_defaults_sets_missing_p1_label_when_lookup_misses(
-        self,
-        mock_find_site_record: MagicMock,
-    ) -> None:
+    def test_normalize_report_replacements_preserves_verification_open_items(self) -> None:
+        from due_diligence_reporter.google_doc_builder import VERIFICATION_OPEN_ITEMS_KEY
+        from due_diligence_reporter.server import _normalize_report_replacements
+
+        replacements, _, _, _, _ = _normalize_report_replacements(
+            report_data={
+                "verification": {
+                    "open_items": "- Confirm zoning path with Planning",
+                },
+            },
+            site_name="Alpha Atlanta 345",
+            report_date="04/02/2026",
+            drive_folder_url="https://drive.google.com/drive/folders/folder123",
+        )
+
+        assert replacements[VERIFICATION_OPEN_ITEMS_KEY] == (
+            "- Confirm zoning path with Planning"
+        )
+
+    def test_normalize_report_replacements_preserves_citations_block(self) -> None:
+        from due_diligence_reporter.google_doc_builder import CITATIONS_BLOCK_KEY
+        from due_diligence_reporter.server import _normalize_report_replacements
+
+        replacements, _, _, _, _ = _normalize_report_replacements(
+            report_data={
+                "exec": {
+                    "citations_block": "SIR -- zoning table lists school use as permitted",
+                },
+            },
+            site_name="Alpha Atlanta 345",
+            report_date="04/02/2026",
+            drive_folder_url="https://drive.google.com/drive/folders/folder123",
+        )
+
+        assert replacements[CITATIONS_BLOCK_KEY] == (
+            "SIR -- zoning table lists school use as permitted"
+        )
+
+    def test_inject_report_defaults_sets_missing_p1_label(self) -> None:
         from due_diligence_reporter.report_schema import MISSING_P1_ASSIGNEE_LABEL
-        from due_diligence_reporter.server import _inject_wrike_report_defaults
+        from due_diligence_reporter.server import _inject_report_defaults
 
-        mock_find_site_record.return_value = None
-
-        enriched, rebl_resolution = _inject_wrike_report_defaults(
-            {"meta": {"prepared_by": "DD Report Agent"}},
-            "Alpha Atlanta 345",
+        enriched, rebl_resolution = _inject_report_defaults(
+            {"meta": {"prepared_by": "DD Report Agent"}}
         )
 
         assert enriched["p1_assignee_name"] == MISSING_P1_ASSIGNEE_LABEL
-        assert rebl_resolution.resolution_status == "error"
+        assert rebl_resolution.resolution_status == "missing_address"
+
+    def test_normalize_report_replacements_uses_missing_p1_label(self) -> None:
+        from due_diligence_reporter.report_schema import MISSING_P1_ASSIGNEE_LABEL
+        from due_diligence_reporter.server import _normalize_report_replacements
+
+        replacements, _, unfilled, _, _ = _normalize_report_replacements(
+            report_data={"meta": {"prepared_by": "DD Report Agent"}},
+            site_name="Alpha Los Angeles 5400 Beethoven St",
+            report_date="05/26/2026",
+            drive_folder_url="https://drive.google.com/drive/folders/folder123",
+        )
+
+        assert replacements["meta.prepared_by"] == MISSING_P1_ASSIGNEE_LABEL
+        assert "meta.prepared_by" not in unfilled
 
     @patch("due_diligence_reporter.server.resolve_address")
-    @patch("due_diligence_reporter.server.build_site_summary")
-    @patch("due_diligence_reporter.server.find_site_record")
-    def test_inject_wrike_defaults_adds_rebl_fields(
+    def test_inject_report_defaults_adds_rebl_fields(
         self,
-        mock_find_site_record: MagicMock,
-        mock_build_site_summary: MagicMock,
         mock_resolve_address: MagicMock,
     ) -> None:
         from due_diligence_reporter.rebl import ReblResolution
-        from due_diligence_reporter.server import _inject_wrike_report_defaults
+        from due_diligence_reporter.server import _inject_report_defaults
 
-        mock_find_site_record.return_value = {"id": "wrike-1"}
-        mock_build_site_summary.return_value = {
-            "address": "123 Main St, Austin, TX 78701",
-            "p1_assignee_name": "Jane Owner",
-        }
         mock_resolve_address.return_value = ReblResolution(
             address_submitted="123 Main St, Austin, TX 78701",
             resolution_status="resolved",
@@ -546,7 +559,9 @@ class TestReportNormalizationDefaults:
             url="https://rebl3.vercel.app/site/123-main-st-austin-tx",
         )
 
-        enriched, rebl_resolution = _inject_wrike_report_defaults({}, "Alpha Austin")
+        enriched, rebl_resolution = _inject_report_defaults(
+            {"site": {"address": "123 Main St, Austin, TX 78701"}}
+        )
 
         assert enriched["meta"]["rebl_site_id"] == "123-main-st-austin-tx"
         assert enriched["sources"]["rebl_link"] == "https://rebl3.vercel.app/site/123-main-st-austin-tx"
@@ -829,6 +844,7 @@ class TestAsyncOffloading:
 
         assert result["status"] == "success"
         gc.create_document.assert_called_once()
+        gc.upload_file_to_folder.assert_not_called()
         mock_to_thread.assert_awaited_once()
 
     def test_create_dd_report_uses_to_thread(self) -> None:
@@ -866,6 +882,7 @@ class TestAsyncOffloading:
 
         assert result["status"] == "success"
         gc.create_document.assert_called_once()
+        gc.upload_file_to_folder.assert_not_called()
         mock_to_thread.assert_awaited_once()
 
     def test_create_dd_report_rebuilds_existing_same_day_doc(self) -> None:
@@ -911,6 +928,7 @@ class TestAsyncOffloading:
         assert result["status"] == "success"
         assert result["document"]["id"] == "doc-existing"
         gc.create_document.assert_not_called()
+        gc.upload_file_to_folder.assert_not_called()
         mock_clear.assert_called_once_with(gc, doc_id="doc-existing")
 
 

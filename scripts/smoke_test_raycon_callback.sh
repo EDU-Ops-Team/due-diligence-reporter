@@ -10,7 +10,7 @@
 # /home/user/workspace/raycon-callback-ask.md for the contract.
 set -euo pipefail
 
-SITE_ID="${1:?site_id required (use a Wrike site record id from the active site list)}"
+SITE_ID="${1:?site_id required (use a site Drive folder id)}"
 RUN_ID="${2:-smoke-$(date +%s)}"
 STATUS="${3:-succeeded}"
 

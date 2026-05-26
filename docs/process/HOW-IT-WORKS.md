@@ -1,4 +1,4 @@
-﻿# Due Diligence Reporter â€” How It Works
+# Due Diligence Reporter â€” How It Works
 
 **Version:** 4.1.0
 **Team:** EDU Ops Intelligence
@@ -12,23 +12,23 @@ The Due Diligence Reporter is an AI agent powered by Claude that generates Site 
 
 1. **Interactive** â€” A human gives it a site name in chat via MCP Hive. The agent gathers data, runs analytical skills, and produces an executive-ready Google Doc.
 2. **Event-Driven (Inbox Scan â€” every 15 min)** â€” A scheduled script scans the `edu.ops@trilogy.com` inbox for new SIR, Building Inspection, and ISP PDFs, classifies them by filename using a three-tier classifier (regex â†’ GPT-4o-mini), and uploads to the correct shared Drive folder.
-3. **Daily Sweep (Safety Net â€” 9 AM)** â€” A scheduled script scans all Wrike Site Records in active DD stages. When a site has the required documents (SIR + Building Inspection; ISP is informational only) and no existing report, it triggers full report generation. This catches anything the 15-min scan missed.
+3. **Daily Sweep (Safety Net â€” 9 AM)** â€” A scheduled script scans all site folders in active DD stages. When a site has an SIR / AI SIR and no existing report, it triggers first-round report generation. Vendor SIR, Building Inspection, RayCon, and other documents upgrade the report through republish paths as they land.
 
 The agent gathers facts. It does not make recommendations. The decision belongs to the leadership team.
 
 ---
 
-## The V3 Report
+## The V4 Report
 
-The V2 DD Report is a **structured executive one-pager** â€” not the multi-page narrative of V1. It uses structured checklists, pick-menu dimensions, and bare values instead of prose paragraphs.
+The V4 DD Report is a **structured executive one-pager** -- not the multi-page narrative of the original report. It uses structured checklists, pick-menu dimensions, and bare values instead of prose paragraphs.
 
-**70 template tokens** across three sections:
+**56 template tokens** across three sections:
 
 | Section | Count | What it covers |
 |---------|-------|----------------|
-| **meta** | 7 | Site name, address, school type, marketing name, report date, prepared by, Drive folder link |
-| **exec** | 57 | "Can this school be open in time for the current school year?" card (4 pick-menu dimensions), build scenarios table (9 values), detailed cost breakdown table (36 values),  lease conditions, risk notes |
-| **sources** | 6 | Links to SIR, Building Inspection, ISP, E-Occupancy Assessment, School Approval Assessment, Report Trace |
+| **meta** | 8 | Site name, address, school type, marketing name, report date, prepared by, site ID, Drive folder link |
+| **exec** | 40 | "Can this school be open in time for the current school year?" card, direct answer, two build scenarios, detailed cost breakdown, lease conditions, trade-offs |
+| **sources** | 7 | Links to SIR, Building Inspection, Block Plan, site record, E-Occupancy Assessment, School Approval Assessment, and Opening Plan |
 
 ### "Can this school be open in time for the current school year?" card
 
@@ -36,8 +36,8 @@ Four dimensions, each a fixed pick-menu:
 
 | Dimension | Source | Options |
 |-----------|--------|---------|
-| `exec.c_answer` | Agent synthesis | Yes / No (binary) — the literal answer to "Can this be a school by [date]?". The publisher derives the dashboard's Go / No Go recommendation chip (`dd_recommendation`) from this automatically. |
-| `q2.e_occupancy_score` | E-Occupancy tool | Integer 0–100 emitted by `apply_e_occupancy_skill`. The publisher derives the dashboard's `dd_site_score` (numeric column) and `dd_site_score_band` (`green` / `yellow` / `orange` / `red` chip) from this automatically. |
+| `exec.c_answer` | Agent synthesis | Yes / No (binary) — the literal answer to "Can this be a school by [date]?". |
+| `q2.e_occupancy_score` | E-Occupancy tool | Integer 0–100 emitted by `apply_e_occupancy_skill`. |
 | `dd_risk_flags[]` (Phase 4) | Multiple | Canonical, deduped list of `{category, severity, source, summary}` derived from four upstream signals: `permit_history.risk_flags` (produced by the upstream AI SIR / source-evidence build — DDR no longer calls Shovels directly), `q2.ibc_flags` / `q2.e_occupancy_ibc_summary`, `q1.school_approval_zone`, and `sir.risk_watch`. Categories: `zoning`, `occupancy`, `ahj_history`, `parking`, `traffic`, `environmental`, `flood_zone`, `historic_district`, `accessibility`, `ed_reg`. Severity per source rule (see `risk_flags.py`). |
 | `exec.c_zoning` | SIR | Permitted by right / Use Permit Required (Admin) / Use Permit Required (Public) / Prohibited |
 | `exec.c_occupancy` | E-Occupancy skill | Has E-Occupancy / Change of use required, meets E-Occupancy / Change of use required, needs work |
@@ -62,7 +62,7 @@ Delta analysis compares each scenario against Fastest Open:
 | Row | Max Capacity delta | Max Value delta |
 |-----|-------------------|----------------|
 
-Rules: cost = single midpoint number (not a range), timeline = MM/YY format only, and Wrike comments override API numbers.
+Rules: cost = single midpoint number (not a range), timeline = MM/YY format only, and sourced team notes override API numbers.
 
 ### Detailed Cost Breakdown
 
@@ -90,7 +90,7 @@ Two separate tokens with distinct classification rules:
 | `exec.acquisition_conditions` | TI allowance ask OR landlord-must-fix items | Type A: quantifiable buildout cost â†’ negotiate TI. Type B: landlord's existing obligation â†’ not acceptable in current state. |
 | `exec.risk_notes` | Confirmed document findings that threaten timeline or viability | "Did we actually find this in the documents AND does it directly threaten timeline or viability?" |
 
-Both require per-bullet source citations. `risk_notes` must cite a specific document finding â€” no speculative or generic items.
+Both require clean source notes. `risk_notes` must tie back to a specific document finding -- no speculative or generic items.
 
 ---
 
@@ -110,7 +110,7 @@ Both require per-bullet source citations. `risk_notes` must cite a specific docu
 Human (chat)   â”‚       report_pipeline.py  â”‚  shared pipeline module
     â”‚          â”‚          â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
     â”‚          â”‚          â”‚
-    â”‚  docs/prompts/prompt_v3.md â”‚  same tools, same prompt
+    â”‚  docs/prompts/prompt_v4.md â”‚  same tools, same prompt
     â–¼          â–¼          â–¼
 Claude AI Agent â—„â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
     â”‚
@@ -121,7 +121,7 @@ Claude AI Agent â—„â”€â”€â”€â”€â”€â”€â”€
 â”‚  dd-reporter â€” 13 tools                                  â”‚
 â”‚                                                          â”‚
 â”‚  Tools:                                                  â”‚
-â”‚  â”œâ”€ get_site_record          (Wrike lookup)              â”‚
+â”‚  â”œâ”€ lookup_rhodes_site_owner (Rhodes P1 DRI lookup)       â”‚
 â”‚  â”œâ”€ list_drive_documents     (Drive + shared folders)    â”‚
 â”‚  â”œâ”€ read_drive_document      (Drive file reader)         â”‚
 â”‚  â”œâ”€ apply_e_occupancy_skill  (E-Occ scoring)             â”‚
@@ -130,7 +130,7 @@ Claude AI Agent â—„â”€â”€â”€â”€â”€â”€â”€
 â”‚  â”œâ”€ create_dd_report         (Template copy + fill)      â”‚
 â”‚  â”œâ”€ check_site_readiness     (Doc presence gate)         â”‚
 â”‚  â”œâ”€ check_report_completeness (Token scan)               â”‚
-â”‚  â”œâ”€ get_site_comments        (Wrike comments by section) â”‚
+â”‚  â”œâ”€ check_site_readiness     (Doc presence gate)         â”‚
 â”‚  â”œâ”€ generate_marketing_pack  (MatterBot rendering)       â”‚
 â”‚  â”œâ”€ save_skill_report        (Publish assessment to Drive)â”‚
 â”‚  â””â”€ send_dd_report_email     (Gmail SMTP)                â”‚
@@ -141,7 +141,7 @@ Claude AI Agent â—„â”€â”€â”€â”€â”€â”€â”€
                â”‚
     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
     â–¼          â–¼              â–¼           â–¼
- Wrike API  Google          Building    Gmail SMTP +
+ Google Drive  Google          Building    Gmail SMTP +
  (v4)       Drive/Docs/     Optimizer   Google Chat
             Gmail (OAuth)   Pricing API Webhook
 ```
@@ -181,13 +181,13 @@ For each unprocessed email with PDF attachments:
 
 ### Phase 2 â€” Per-Site Pipeline
 
-After all uploads complete, the scanner attempts to run the report pipeline for each site that received a new document. Phase 2 requires a `site_title` to look up the Wrike record. The current classifier routes by `doc_type` only and does not match files to sites, so `site_title` is `None` in all uploads â€” **Phase 2 is currently inactive** and report generation falls to the daily sweep.
+After all uploads complete, the scanner attempts to run the report pipeline for each site that received a new document. Phase 2 requires a `site_title` to look up the site context. The current classifier routes by `doc_type` only and does not match files to sites, so `site_title` is `None` in all uploads â€” **Phase 2 is currently inactive** and report generation falls to the daily sweep.
 
 When site matching is re-enabled (e.g., via a future `matched_site_id` returned from classification), Phase 2 will run:
 
 ```
 For each unique site that received an upload:
-  1. Look up Wrike record â†’ get Drive folder URL â†’ build match terms
+  1. Look up site context â†’ get Drive folder URL â†’ build match terms
   2. Refresh shared folder cache (picks up just-uploaded files)
   3. Run process_site_pipeline():
      a. Check readiness (SIR + Inspection present? ISP is informational only)
@@ -235,16 +235,16 @@ Only escalates when the previous tier returns unknown/low confidence. Falls back
 
 ### Readiness Gate
 
-A report is only generated when all three conditions are met:
+The first-round report is generated when these conditions are met:
 
 ```
-ready_for_report = sir_found AND inspection_found AND NOT report_exists
+ready_for_report = sir_found AND NOT report_exists
 ```
 
-ISP is no longer a gating input. It still gets routed to Drive by the
-inbox scanner, classifier, and folder pings to RayCon, and `isp_found`
-is still surfaced in the readiness payload as informational — but
-report generation no longer waits on it.
+The full-report diagnostic still tracks vendor SIR, Building Inspection,
+and RayCon scenario readiness. Missing vendor inputs no longer block the
+first publish; they are logged as open verification items and the report
+republishes as authoritative inputs arrive. ISP remains informational.
 
 ### SIR Learning Loop
 
@@ -267,21 +267,20 @@ team can run the review process in `docs/process/sir-learning-loop.md`.
 
 **Inbox scan mode:** `scan_inbox.py` detects a new upload and triggers the pipeline for that specific site.
 
-**Daily sweep mode:** `daily_dd_check.py` fetches all Wrike Site Records, filters to active DD stages only ("1. Looking for Sites" and "2. Evaluating Potential Sites (LOI)"), pre-fetches the three shared Drive folders once, then checks each site's readiness.
+**Daily sweep mode:** `daily_dd_check.py` fetches all site folders, filters to active DD stages only ("1. Looking for Sites" and "2. Evaluating Potential Sites (LOI)"), pre-fetches the three shared Drive folders once, then checks each site's readiness.
 
 ---
 
-### Step 2 â€” Look Up the Wrike Site Record
+### Step 2 -- Identify Site Folder Context
 
-**Tool:** `get_site_record(site_name_or_id)`
+**Input:** supplied site name, address, and Drive folder URL
 
 **Activity:**
-1. Checks if input is a direct Wrike ID or permalink URL â€” fetches directly
-2. Otherwise fetches all Site Records from Wrike space `IEAGN6I6I5RFSYZI` in batches of 100
-3. Uses **GPT-4o-mini** to fuzzy-match the query against all record titles and addresses
-4. Enriches the matched record with human-readable custom field names
+1. Uses the supplied site name and address as the report identity
+2. Uses the supplied or scanned Drive folder URL as the document source
+3. Builds match terms for shared source-folder matching
 
-**Output:** Site title, Wrike ID, address, school type, stage, Google Drive folder URL, and all custom fields.
+**Output:** Site title, address, Drive folder URL, and shared-folder match terms.
 
 ---
 
@@ -296,19 +295,20 @@ team can run the review process in `docs/process/sir-learning-loop.md`.
 4. Records SIR learning-review state when AI/CDS SIR candidates are present
 5. Returns presence booleans, file metadata, review metadata, and missing doc list
 
-**Output:** `sir_found`, `isp_found`, `inspection_found`, `report_exists`, `sir_learning_review`, `files` dict with `name`/`id`/`webViewLink` per doc type, `missing_docs` list, `p1_assignee_name`, `p1_assignee_email`.
+**Output:** `sir_found`, `isp_found`, `inspection_found`, `report_exists`, `sir_learning_review`, `files` dict with `name`/`id`/`webViewLink` per doc type, and `missing_docs` list.
 
 ---
 
-### Step 3.5 â€” Retrieve Wrike Comments
+### Step 3.5 -- Resolve Rhodes P1 DRI / site owner
 
-**Tool:** `get_site_comments(site_name)`
+**Tool:** `lookup_rhodes_site_owner(site_name, site_address)`
 
 **Activity:**
-1. Fetches all comments on the Wrike site record
-2. Groups comments by suggested report section (q1, q2, q3, q4, appendix, general)
+1. Resolves the supplied site name/address against Rhodes / LocationOS
+2. Reads the matched site record
+3. Pulls `p1Dri.name` and `p1Dri.email` into the DDR as `meta.prepared_by` and the P1 email recipient
 
-**Key rule:** If Wrike comments contain team-provided cost analysis or capacity numbers, these override Building Optimizer API estimates. The team's numbers reflect real-world constraints the API doesn't capture.
+**Key rule:** Rhodes is the owner source of truth. If no Rhodes site or P1 DRI is found, the report uses `[Not found - P1 DRI not assigned]` and continues from the supplied site/address/Drive context.
 
 ---
 
@@ -343,7 +343,7 @@ Three skill tools analyze the source data and produce structured outputs. The fi
 4. Runs IBC compliance gates: sprinkler requirement, travel distance, exit count, construction type
 5. Returns score (0â€“100), zone (GREEN/YELLOW/RED), tier, confidence, `ibc_gates`, `ibc_flags`, and `q2.e_occupancy_ibc_summary`
 6. Publishes assessment â†’ `sources.e_occupancy_link`
-7. Phase 4: `ibc_flags` and `q2.e_occupancy_zone` flow through to the dashboard's `dd_risk_flags[]` automatically (categories: `occupancy`, `accessibility`, `parking`; severity from gate-fail keywords)
+7. Phase 4: `ibc_flags` and `q2.e_occupancy_zone` remain available in report data for downstream analysis.
 
 **School Approval Skill** â€” `apply_school_approval_skill(state, site_name, drive_folder_url)`
 1. Looks up state in built-in approval table (all 50 states + DC)
@@ -376,9 +376,9 @@ Three skill tools analyze the source data and produce structured outputs. The fi
 
 4. **Fill template** â€” `batchUpdate` to Docs API with `replaceAllText` per token. Link tokens (`sources.*`, `meta.drive_folder_url`) are inserted as clickable hyperlinks with display labels.
 
-5. **Generate trace report** â€” Creates a companion trace document listing each token's value, source, and raw evidence excerpt. Linked via `sources.trace_link`.
+5. **Return diagnostics** â€” Returns applied replacement counts, unmatched keys, unfilled tokens, and normalized report data to the pipeline.
 
-**Token evidence:** As the agent reads each source document, it builds a parallel `evidence` dict recording the raw excerpt supporting each token value. This powers the trace report so reviewers can verify every field back to its source.
+**Token evidence:** As the agent reads each source document, it builds a parallel `evidence` dict recording the raw excerpt supporting each token value. Evidence is kept in the local run manifest instead of publishing a companion trace file.
 
 **Output:** Google Doc URL + diagnostics.
 
@@ -402,7 +402,7 @@ Three skill tools analyze the source data and produce structured outputs. The fi
 
 **Tool:** `send_dd_report_email(site_name, report_url, key_findings, additional_recipients)`
 
-**Activity:** Sends an HTML email to configured recipients (base list + P1 Accountable person from Wrike) with the site name, key findings summary, and a link to the Google Doc report. Sent automatically â€” no confirmation prompt.
+**Activity:** Sends an HTML email to configured recipients (base list + Rhodes P1 DRI when found) with the site name, key findings summary, and a link to the Google Doc report. Sent automatically â€” no confirmation prompt.
 
 ---
 
@@ -444,12 +444,12 @@ Sites in later stages (FTO in progress, FTO signed, operational) are skipped.
 **Flow per site:**
 
 ```
-For each Wrike Site Record in active stages with a Drive folder:
+For each site folder in the Drive root:
   1. Check readiness (SIR + Inspection present, no report exists; ISP is informational only)
   2. If missing docs -> post Google Chat alert listing what's missing
   3. If report exists -> skip
   4. If ready -> run Claude agent loop:
-     a. get_site_record -> list_drive_documents -> read all 3 docs
+     a. check_site_readiness -> list_drive_documents -> read all 3 docs
      b. apply_e_occupancy_skill + apply_school_approval_skill + get_cost_estimate
      c. create_dd_report (with normalize_report_data + compute_deltas)
      d. check_report_completeness
@@ -483,7 +483,7 @@ This tells `check_report_completeness` and human reviewers exactly why each fiel
 - **Make lease or buy recommendations.** It presents data. The executive team decides.
 - **Editorialize.** No "well below standard", "executive review recommended", or "consider before proceeding" language.
 - **Override skill scores.** E-Occupancy and School Approval scores are authoritative.
-- **Fabricate system IDs.** Every Wrike ID, folder ID, and document ID comes from an actual API call.
+- **Fabricate system IDs.** Every source system ID, folder ID, and document ID comes from an actual API call.
 - **Leave unsourced gap labels.** Every unfilled field names the source that was checked.
 
 ---
@@ -501,9 +501,11 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 
 | Variable | Purpose |
 |----------|---------|
-| `WRIKE_ACCESS_TOKEN` | Wrike API bearer token |
+| `GOOGLE_DRIVE_ROOT_FOLDER_ID` | Parent Drive folder containing all site folders |
 | `OPENAI_API_KEY` | GPT-4o-mini for inbox classification (Tier 2/3) and fuzzy site name matching |
 | `ANTHROPIC_API_KEY` | Claude API for automated report generation agent |
+| `RHODES_API_KEY` | Rhodes / LocationOS MCP token for read-only P1 DRI lookup |
+| `RHODES_MCP_URL` | Optional Rhodes / LocationOS MCP endpoint override |
 | `DD_TEMPLATE_GOOGLE_DOC_ID` | Master DD report template Google Doc ID |
 | `GOOGLE_DRIVE_ROOT_FOLDER_ID` | Parent Drive folder containing all site folders |
 | `SIR_FOLDER_ID` | Shared SIR folder in Google Drive |
@@ -523,13 +525,13 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 
 | File | What It Is |
 |------|-----------|
-| `docs/prompts/prompt_v3.md` | Agent system prompt â€” V2 workflow, exec summary format, report data schema |
+| `docs/prompts/prompt_v4.md` | Agent system prompt -- V4 first-round workflow, exec summary format, report data schema |
 | `src/due_diligence_reporter/server.py` | MCP server â€” 13 tools + embedded skill logic |
 | `src/due_diligence_reporter/report_pipeline.py` | Shared pipeline â€” readiness check, Claude agent loop, notifications |
 | `src/due_diligence_reporter/report_schema.py` | Template token list (28), alias map (26), `normalize_report_data()`, `compute_deltas()` |
 | `src/due_diligence_reporter/classifier.py` | Three-tier document classification (regex â†’ LLM filename â†’ LLM content) |
 | `src/due_diligence_reporter/inbox_scanner.py` | Gmail inbox scan, three-tier filename classification, Drive upload |
-| `src/due_diligence_reporter/wrike.py` | Wrike API client, site record search, LLM matching |
+| `src/due_diligence_reporter/rhodes.py` | Rhodes / LocationOS MCP client for P1 DRI lookup |
 | `src/due_diligence_reporter/google_client.py` | Google Drive v3 + Docs v1 + Gmail API client (OAuth), `list_files_recursive()` |
 | `src/due_diligence_reporter/config.py` | Pydantic settings loader |
 | `src/due_diligence_reporter/utils.py` | PDF extraction, placeholder builder, email, Google Chat |
@@ -538,7 +540,6 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 | `tests/test_report_schema.py` | Schema integrity + normalization + delta tests (24 tests) |
 | `tests/test_report_pipeline.py` | Pipeline tool routing + readiness tests (13 tests) |
 | `tests/test_inbox_scanner.py` | Inbox scanner tests (19 tests) |
-| `tests/test_report_trace.py` | Trace report generation tests (15 tests) |
 | `tests/test_hyperlinks.py` | Link token insertion tests (17 tests) |
 | `tests/test_dd_output_fixes.py` | Output formatting + floorplan + rendering tests (25 tests) |
 | `.github/workflows/publish-to-mcp-hive.yml` | CI/CD â€” push to `main` deploys to MCP Hive |
@@ -549,7 +550,7 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 
 ## GitHub Secrets (18 total)
 
-**Publish workflow (9):** `MCP_HIVE_API_KEY`, `MCP_HIVE_ID`, `WRIKE_ACCESS_TOKEN`, `OPENAI_API_KEY`, `DD_TEMPLATE_GOOGLE_DOC_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_REFRESH_TOKEN`
+**Publish workflow (9):** `MCP_HIVE_API_KEY`, `MCP_HIVE_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OPENAI_API_KEY`, `DD_TEMPLATE_GOOGLE_DOC_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_REFRESH_TOKEN`
 
 **Cron + Inbox workflows (9 additional):** `ANTHROPIC_API_KEY`, `GOOGLE_CHAT_WEBHOOK_URL`, `DD_REPORT_EMAIL_RECIPIENTS`, `EMAIL_SENDER`, `EMAIL_APP_PASSWORD`, `SIR_FOLDER_ID`, `ISP_FOLDER_ID`, `BUILDING_INSPECTION_FOLDER_ID`, `PRICING_API_KEY`
 

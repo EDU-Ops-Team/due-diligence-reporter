@@ -11,12 +11,18 @@ import logging
 import re
 from typing import Any
 
-from .completeness import REASON_DISPLAY_LABELS
-from .report_schema import LINK_DISPLAY_LABELS, LINK_TOKENS
+from .completeness import (
+    RAYCON_PENDING_REASON,
+    REASON_DISPLAY_LABELS,
+    REASON_TRIGGER_FILES,
+    VERIFICATION_OPEN_ITEMS_TOKEN,
+)
+from .report_schema import LINK_DISPLAY_LABELS, LINK_TOKENS, TEMPLATE_TOKENS
 
 logger = logging.getLogger(__name__)
 
 SOURCE_QUALITY_NOTES_KEY = "_internal.source_quality_notes"
+VERIFICATION_OPEN_ITEMS_KEY = VERIFICATION_OPEN_ITEMS_TOKEN
 CITATIONS_BLOCK_KEY = "exec.citations_block"
 
 # Map of non-ASCII punctuation characters that JC's style requires we replace
@@ -34,7 +40,7 @@ _ASCII_PUNCTUATION_MAP: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Style constants — reproduce the V3 template visual appearance
+# Style constants — reproduce the current template visual appearance
 # ---------------------------------------------------------------------------
 
 _DARK_BLUE: dict[str, float] = {"red": 0.102, "green": 0.235, "blue": 0.369}  # #1A3C5E
@@ -93,14 +99,12 @@ _SOURCE_DOC_ROWS: list[tuple[str, str]] = [
     ("E-Occupancy Assessment", "sources.e_occupancy_link"),
     ("School Approval Assessment", "sources.school_approval_link"),
     ("Opening Plan", "sources.opening_plan_link"),
-    ("Report Trace", "sources.trace_link"),
 ]
 
 _AI_GENERATED_SOURCE_TOKENS: frozenset[str] = frozenset({
     "sources.e_occupancy_link",
     "sources.school_approval_link",
     "sources.opening_plan_link",
-    "sources.trace_link",
 })
 
 _SOURCE_WARNING_PATTERNS: tuple[str, ...] = (
@@ -131,19 +135,54 @@ _SUMMARY_SOURCE_WARNING_GAPS: dict[str, str] = {
 
 _LINK_GAP_LABELS: dict[str, str] = {
     "sources.sir_link": "[Not found - SIR]",
-    "sources.inspection_link": "[Not found - Building Inspection]",
+    "sources.inspection_link": "[Not found - building inspection not yet in Drive folder]",
     "sources.block_plan_link": "[Not found - Block Plan]",
     "sources.rebl_link": "[Not found - REBL Site]",
-    "sources.e_occupancy_link": "[Not found - E-Occupancy Assessment]",
+    "sources.e_occupancy_link": "[Not found - E-Occupancy report not yet in Drive folder]",
     "sources.school_approval_link": "[Not found - School Approval Assessment]",
     "sources.opening_plan_link": "[Not found - Opening Plan]",
-    "sources.trace_link": "",
     "meta.drive_folder_url": "",
 }
 
 _HEADER_GAP_LABELS: dict[str, str] = {
     "meta.rebl_site_id": "[Not found - REBL site not resolved]",
 }
+
+_SUMMARY_TOKEN_LABELS: dict[str, str] = {
+    "exec.c_answer": "Opening timeline answer",
+    "exec.c_edreg": "Education Regulatory Approval",
+    "exec.c_occupancy": "Occupancy Path",
+    "exec.c_zoning": "Zoning",
+    "exec.c_permit_timeline": "Permit Timelines",
+    "exec.c_construction_timeline": "Construction Timelines",
+    "exec.direct_viable_buildout": "Direct Viable Buildout",
+    "exec.alpha_fit": "Alpha Fit",
+    "exec.acquisition_conditions": "Acquisition Conditions",
+    "exec.tradeoffs_and_deficiencies": "Tradeoffs and Deficiencies",
+}
+
+_TEMPLATE_TOKEN_LABELS: dict[str, str] = {
+    **{token: label for label, token in _HEADER_ROWS},
+    **_SUMMARY_TOKEN_LABELS,
+    **{token: label for label, token in _SOURCE_DOC_ROWS},
+}
+
+
+def _template_token_display_label(token: str) -> str:
+    """Return a report-facing label for an internal template token."""
+    label = _TEMPLATE_TOKEN_LABELS.get(token)
+    if label:
+        return label
+    return token.split(".", 1)[-1].replace("_", " ").title()
+
+
+def _replace_template_key_mentions(value: str) -> str:
+    """Remove internal template-key jargon from narrative report text."""
+    result = value
+    for token in sorted(TEMPLATE_TOKENS, key=len, reverse=True):
+        pattern = rf"(?<![A-Za-z0-9_.]){re.escape(token)}(?![A-Za-z0-9_.])"
+        result = re.sub(pattern, _template_token_display_label(token), result)
+    return result
 
 # ---------------------------------------------------------------------------
 # Internal request builder helpers
@@ -382,13 +421,23 @@ def _strip_field_footnote_block(value: str) -> str:
     """Remove trailing [N]-footnote definitions from a bulleted field.
 
     Used when a consolidated citations block is provided -- per-field
-    footnote definitions become noise. Inline [N] markers in bullet text
-    are preserved so they can resolve against the consolidated block.
+    footnote definitions and inline [N] markers become noise. Source notes
+    render once at the end of Supporting Notes instead.
     """
     bullets, _footnotes = _split_bullets_and_footnotes(value)
     if not bullets:
         return value.strip()
-    return "\n".join(f"- {bullet}" for bullet in bullets)
+    return "\n".join(f"- {_strip_inline_citation_markers(bullet)}" for bullet in bullets)
+
+
+def _strip_inline_citation_markers(value: str) -> str:
+    """Remove bracketed numeric citation markers from display text."""
+    return re.sub(r"\s*\[\d+\]", "", value).strip()
+
+
+def _format_source_note_line(value: str) -> str:
+    """Strip numeric citation prefixes from consolidated source-note lines."""
+    return re.sub(r"^\[\d+\]\s*", "", value.strip())
 
 
 def _normalize_bulleted_field(value: str) -> str:
@@ -418,10 +467,10 @@ def _normalize_bulleted_field(value: str) -> str:
     for bullet in bullets:
         for old_number_text in re.findall(r"\[(\d+)\]", bullet):
             old_number = int(old_number_text)
-            note_text = footnote_by_old_number.get(old_number)
-            if note_text and note_text not in seen_notes:
-                ordered_note_texts.append(note_text)
-                seen_notes.add(note_text)
+            referenced_note_text = footnote_by_old_number.get(old_number)
+            if referenced_note_text and referenced_note_text not in seen_notes:
+                ordered_note_texts.append(referenced_note_text)
+                seen_notes.add(referenced_note_text)
 
     for old_number in sorted(footnote_by_old_number):
         note_text = footnote_by_old_number[old_number]
@@ -480,7 +529,7 @@ def _normalize_summary_field(
             continue
         cleaned_lines.append(line)
 
-    cleaned = " ".join(cleaned_lines).strip()
+    cleaned = "\n".join(cleaned_lines).strip()
     if not cleaned and warnings:
         cleaned = _SUMMARY_SOURCE_WARNING_GAPS.get(
             token,
@@ -498,12 +547,12 @@ def _normalize_replacements_for_rendering(
     # Pass 1: ASCII-sanitize every non-link narrative value. Link tokens are
     # left untouched so URLs are not mangled.
     for key, value in list(normalized.items()):
-        if not isinstance(value, str):
-            continue
         if _is_link_token(key):
             continue
         if value:
-            normalized[key] = _sanitize_ascii_punctuation(value)
+            normalized[key] = _replace_template_key_mentions(
+                _sanitize_ascii_punctuation(value)
+            )
 
     source_quality_lines: list[str] = []
 
@@ -541,6 +590,10 @@ def _normalize_replacements_for_rendering(
         ).strip()
         normalized[SOURCE_QUALITY_NOTES_KEY] = _normalize_bulleted_field(merged)
 
+    open_items = normalized.get(VERIFICATION_OPEN_ITEMS_KEY, "").strip()
+    if open_items:
+        normalized[VERIFICATION_OPEN_ITEMS_KEY] = _normalize_bulleted_field(open_items)
+
     return normalized
 
 
@@ -566,6 +619,57 @@ def _insert_bulleted_field(builder: _DocBuilder, value: str) -> None:
         for fn in footnotes:
             fn_start, fn_end = builder.insert_paragraph(fn)
             builder.style_text(fn_start, fn_end - 1, font_size=8, font_family="Arial")
+
+
+def _summary_display_lines(value: str) -> list[str]:
+    """Return clean executive-summary display lines for a token value."""
+    lines: list[str] = []
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if not line or re.match(r"^\[\d+\]\s+", line):
+            continue
+        if line.startswith("- "):
+            line = line[2:].strip()
+        elif line.startswith("\u2022 "):
+            line = line[2:].strip()
+        line = _strip_inline_citation_markers(line)
+        if line:
+            lines.append(line)
+    if lines:
+        return lines
+    fallback = _strip_inline_citation_markers(value.strip())
+    return [fallback] if fallback else []
+
+
+def _insert_labeled_summary_field(
+    builder: _DocBuilder,
+    label: str,
+    value: str,
+) -> None:
+    """Insert a Greg-style executive-summary field.
+
+    The label is bold; the answer text is normal. Any additional lines are
+    rendered as support bullets under the labeled answer.
+    """
+    lines = _summary_display_lines(value)
+    answer = lines[0] if lines else ""
+
+    label_start, label_end = builder.insert_text(f"{label}: ")
+    builder.style_text(label_start, label_end, bold=True, font_size=10, font_family="Arial")
+    if answer:
+        value_start, value_end = builder.insert_text(f"{answer}\n")
+        builder.style_text(value_start, value_end - 1, font_size=10, font_family="Arial")
+    else:
+        builder.insert_text("\n")
+
+    support_lines = lines[1:]
+    if not support_lines:
+        return
+    bullet_start = builder.index
+    for support_line in support_lines:
+        line_start, line_end = builder.insert_paragraph(support_line)
+        builder.style_text(line_start, line_end - 1, font_size=10, font_family="Arial")
+    builder.apply_bullets(bullet_start, builder.index)
 
 
 # ---------------------------------------------------------------------------
@@ -727,15 +831,35 @@ def format_partial_banner_text(
         labels = ["pending data"]
     missing_str = ", ".join(labels)
 
-    if block_plan_submitted_display and block_plan_submitted_display.strip():
-        timestamp_clause = f"(Block Plan submitted {block_plan_submitted_display.strip()})"
+    if isinstance(reasons, dict) and RAYCON_PENDING_REASON in reasons:
+        if block_plan_submitted_display and block_plan_submitted_display.strip():
+            timestamp_clause = f" (Block Plan submitted {block_plan_submitted_display.strip()})"
+        else:
+            timestamp_clause = " (Block Plan submitted at unknown time)"
     else:
-        timestamp_clause = "(Block Plan submitted at unknown time)"
+        timestamp_clause = ""
+
+    triggers = completeness.get("auto_republish_on") or []
+    if not triggers and isinstance(reasons, dict):
+        triggers = sorted({
+            REASON_TRIGGER_FILES[reason]
+            for reason in reasons
+            if reason in REASON_TRIGGER_FILES
+        })
+    if isinstance(triggers, list) and triggers:
+        trigger_text = ", ".join(str(item) for item in triggers if str(item).strip())
+        follow_up = (
+            f"This report will republish automatically when pending inputs land: {trigger_text}."
+            if trigger_text
+            else "This report will republish automatically when pending inputs land."
+        )
+    else:
+        follow_up = "Review open items before treating this as a final DDR."
 
     return (
         "PARTIAL REPORT -- pending data\n"
-        f"Missing: {missing_str} {timestamp_clause}.\n"
-        "This report will republish automatically when the scenario lands.\n"
+        f"Missing: {missing_str}{timestamp_clause}.\n"
+        f"{follow_up}\n"
     )
 
 
@@ -1051,15 +1175,11 @@ def build_dd_report_doc(
     a_start, a_end = b3.insert_text(answer_text)
     b3.style_text(a_start, a_end - 1, bold=True, font_size=12, font_family="Arial")
 
-    checklist_text = (
-        f"Zoning: {c_zoning}\n"
-        f"Education Regulatory Approval: {c_edreg}\n"
-        f"Occupancy path: {c_occupancy}\n"
-        f"Permit Timeline: {c_permit_timeline}\n"
-        f"Construction Timeline: {c_construction_timeline}\n"
-    )
-    cl_start, cl_end = b3.insert_text(checklist_text)
-    b3.style_text(cl_start, cl_end - 1, font_size=10, font_family="Arial")
+    _insert_labeled_summary_field(b3, "Zoning", c_zoning)
+    _insert_labeled_summary_field(b3, "Education Regulatory Approval", c_edreg)
+    _insert_labeled_summary_field(b3, "Occupancy path", c_occupancy)
+    _insert_labeled_summary_field(b3, "Permit Timeline", c_permit_timeline)
+    _insert_labeled_summary_field(b3, "Construction Timeline", c_construction_timeline)
 
     # Direct Answer heading
     b3.insert_text("\n")
@@ -1328,58 +1448,19 @@ def build_dd_report_doc(
     b6.insert_text("\n")
     b6.insert_heading("Supporting Notes", level=1)
 
-    source_quality_val = _resolve_value(replacements, SOURCE_QUALITY_NOTES_KEY, "")
-    if source_quality_val.strip():
-        quality_label_start, quality_label_end = b6.insert_text("Source Quality Notes\n")
+    verification_open_items = _resolve_value(replacements, VERIFICATION_OPEN_ITEMS_KEY, "")
+    if verification_open_items.strip():
+        open_items_label_start, open_items_label_end = b6.insert_text(
+            "Open Items to Verify\n"
+        )
         b6.style_text(
-            quality_label_start,
-            quality_label_end - 1,
+            open_items_label_start,
+            open_items_label_end - 1,
             bold=True,
             font_size=11,
             font_family="Arial",
         )
-        _insert_bulleted_field(b6, source_quality_val)
-        b6.insert_text("\n")
-
-    # Lease Conditions
-    acq_label_start, acq_label_end = b6.insert_text("Lease Conditions\n")
-    b6.style_text(acq_label_start, acq_label_end - 1, bold=True, font_size=11, font_family="Arial")
-
-    acq_val = _resolve_value(replacements, "exec.acquisition_conditions", "[No lease conditions provided]")
-    _insert_bulleted_field(b6, acq_val)
-
-    b6.insert_text("\n")
-
-    # Trade-Offs and Deficiencies
-    risk_label_start, risk_label_end = b6.insert_text("Trade-Offs and Deficiencies\n")
-    b6.style_text(risk_label_start, risk_label_end - 1, bold=True, font_size=11, font_family="Arial")
-
-    risk_val = _resolve_value(
-        replacements,
-        "exec.tradeoffs_and_deficiencies",
-        "[No trade-offs or deficiencies noted]",
-    )
-    _insert_bulleted_field(b6, risk_val)
-
-    b6.insert_text("\n")
-
-    # Citations -- single consolidated block when the agent provides it
-    citations_val = _resolve_value(replacements, CITATIONS_BLOCK_KEY, "")
-    if citations_val.strip():
-        cite_label_start, cite_label_end = b6.insert_text("Citations\n")
-        b6.style_text(
-            cite_label_start,
-            cite_label_end - 1,
-            bold=True,
-            font_size=11,
-            font_family="Arial",
-        )
-        for raw_line in citations_val.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            line_start, line_end = b6.insert_paragraph(line)
-            b6.style_text(line_start, line_end - 1, font_size=8, font_family="Arial")
+        _insert_bulleted_field(b6, verification_open_items)
         b6.insert_text("\n")
 
     # Referenced Reports heading
@@ -1416,14 +1497,14 @@ def build_dd_report_doc(
     for row_idx in range(len(source_table_data) - 1, -1, -1):
         row = source_table_data[row_idx]
         for col_idx in range(2, -1, -1):
-            text = row[col_idx]
-            if not text:
+            cell_text = row[col_idx]
+            if not cell_text:
                 continue
             cell_idx = _cell_index(source_table, row_idx, col_idx)
             phase7_requests.append({
                 "insertText": {
                     "location": {"index": cell_idx},
-                    "text": text,
+                    "text": cell_text,
                 }
             })
             # Hyperlink only on the value column (col 2) when URL is present
@@ -1431,7 +1512,10 @@ def build_dd_report_doc(
                 url = row[3]
                 phase7_requests.append({
                     "updateTextStyle": {
-                        "range": {"startIndex": cell_idx, "endIndex": cell_idx + len(text)},
+                        "range": {
+                            "startIndex": cell_idx,
+                            "endIndex": cell_idx + len(cell_text),
+                        },
                         "textStyle": {
                             "link": {"url": url},
                             "foregroundColor": {"color": {"rgbColor": _LINK_BLUE}},
@@ -1515,6 +1599,31 @@ def build_dd_report_doc(
         if style_requests:
             _batch_update(docs_service, doc_id, style_requests)
 
+    # Source Notes render after the referenced-reports table so the executive
+    # and open-items sections stay focused on the answer and verification work.
+    citations_val = _resolve_value(replacements, CITATIONS_BLOCK_KEY, "")
+    if citations_val.strip():
+        doc = docs_service.documents().get(documentId=doc_id).execute()
+        body_content = doc.get("body", {}).get("content", [])
+        end_idx = _doc_end_index(body_content)
+        b8 = _DocBuilder(start_index=end_idx)
+        b8.insert_text("\n")
+        cite_label_start, cite_label_end = b8.insert_text("Source Notes\n")
+        b8.style_text(
+            cite_label_start,
+            cite_label_end - 1,
+            bold=True,
+            font_size=11,
+            font_family="Arial",
+        )
+        for raw_line in citations_val.splitlines():
+            line = _format_source_note_line(raw_line)
+            if not line:
+                continue
+            line_start, line_end = b8.insert_paragraph(line)
+            b8.style_text(line_start, line_end - 1, font_size=8, font_family="Arial")
+        _batch_update(docs_service, doc_id, b8.requests)
+
     # Track link tokens that were NOT found
     all_link_tokens_in_sources = {token for _, token in _SOURCE_DOC_ROWS}
     all_link_tokens_in_sources.add("meta.drive_folder_url")
@@ -1524,8 +1633,7 @@ def build_dd_report_doc(
             if value.startswith("http"):
                 # URL was provided but not hyperlinked — shouldn't happen in builder
                 pass
-            elif token != "sources.trace_link":
-                # Token was missing or non-URL
+            else:
                 hyperlink_trace["not_found_tokens"].append(token)
 
     logger.info(

@@ -36,8 +36,8 @@ class TestReportTrace:
         trace.add_event(TraceEvent(
             timestamp="2026-03-19T12:00:01Z",
             event_type="tool_call",
-            tool_name="get_site_record",
-            input_summary={"site_name_or_id": "Alpha Keller"},
+            tool_name="list_drive_documents",
+            input_summary={"site_name": "Alpha Keller"},
             output_summary={"status": "success"},
             duration_ms=150,
         ))
@@ -62,7 +62,7 @@ class TestReportTrace:
         assert parsed["tokens_unfilled"] == 6
         assert parsed["event_count"] == 1
         assert len(parsed["events"]) == 1
-        assert parsed["events"][0]["tool_name"] == "get_site_record"
+        assert parsed["events"][0]["tool_name"] == "list_drive_documents"
         assert parsed["events"][0]["duration_ms"] == 150
 
     def test_empty_trace(self):

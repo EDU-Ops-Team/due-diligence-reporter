@@ -11,7 +11,6 @@ Confirms:
 from __future__ import annotations
 
 import os
-
 from unittest.mock import patch
 
 from due_diligence_reporter.report_pipeline import (
@@ -108,7 +107,7 @@ class TestMissingRequiredDocsVendorGate:
 
 
 class TestReadinessResolution:
-    def test_tulsa_returns_waiting_on_docs_under_vendor_gate(self, monkeypatch):
+    def test_ai_sir_can_proceed_under_vendor_gate(self, monkeypatch):
         monkeypatch.setenv("VENDOR_GATE_ENABLED", "1")
         readiness = {
             "sir_found": True,
@@ -119,9 +118,24 @@ class TestReadinessResolution:
             "report_exists": False,
         }
         result = _resolve_readiness_result("Alpha School Tulsa", readiness)
+        # First-round publishing proceeds from AI SIR / research output.
+        # Full vendor readiness is still represented by _missing_required_docs.
+        assert result is None
+
+    def test_missing_sir_still_blocks_first_round(self, monkeypatch):
+        monkeypatch.setenv("VENDOR_GATE_ENABLED", "1")
+        readiness = {
+            "sir_found": False,
+            "sir_vendor": False,
+            "inspection_found": True,
+            "inspection_vendor": True,
+            "raycon_scenario_found": True,
+            "report_exists": False,
+        }
+        result = _resolve_readiness_result("Alpha School Tulsa", readiness)
         assert result is not None
         assert result.status == "waiting_on_docs"
-        assert "Vendor SIR" in result.missing_docs
+        assert result.missing_docs == ["SIR"]
 
     def test_tulsa_passes_under_legacy_gate_today(self, monkeypatch):
         # Confirms pre-cutover behavior is unchanged when flag is off.
