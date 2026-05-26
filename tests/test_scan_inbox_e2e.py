@@ -147,11 +147,51 @@ def _patch_externals(monkeypatch):
     monkeypatch.setenv("EMAIL_APP_PASSWORD", "apppass")
     monkeypatch.setenv("SIR_NOTIFICATION_RECIPIENTS", "team@example.com")
     monkeypatch.setenv("CDS_NOTIFICATION_RECIPIENTS", "cds@example.com")
+    monkeypatch.setattr(f"{_MODULE}.list_rhodes_site_records", lambda: [])
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+class TestRhodesSiteRecords:
+    @patch(f"{_MODULE}.scan_inbox")
+    @patch(f"{_MODULE}.GoogleClient")
+    @patch(f"{_MODULE}.get_settings")
+    def test_main_passes_rhodes_site_records_to_inbox_scan(
+        self,
+        mock_settings_fn,
+        mock_gc_cls,
+        mock_scan,
+        monkeypatch,
+    ):
+        settings = MagicMock()
+        settings.sir_notification_recipients = ""
+        settings.cds_notification_recipients = ""
+        settings.google_chat_webhook_url = ""
+        mock_settings_fn.return_value = settings
+
+        gc = MagicMock()
+        mock_gc_cls.from_oauth_config.return_value = gc
+        mock_scan.return_value = _make_scan_result(uploads=[])
+
+        rhodes_records = [
+            {
+                "id": "SITE1",
+                "title": "Alpha Keller",
+                "address": "123 Main St, Keller, TX 76248",
+                "drive_folder_url": "https://drive.google.com/drive/folders/root",
+            }
+        ]
+        monkeypatch.setattr(
+            f"{_MODULE}.list_rhodes_site_records",
+            lambda: rhodes_records,
+        )
+
+        main(scan_only=True)
+
+        assert mock_scan.call_args.args[1] == rhodes_records
 
 
 class TestHappyPathSIRWithCDS:

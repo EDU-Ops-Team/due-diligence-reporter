@@ -310,6 +310,8 @@ class TestClassification:
             file_name=upload["drive_filename"],
             file_bytes=b"pdf",
         )
+        first_resolve_call = mock_resolve_m1.call_args_list[0]
+        assert first_resolve_call.kwargs == {"allow_legacy_fallback": False}
 
     @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
@@ -364,6 +366,8 @@ class TestClassification:
         gc.upload_file_to_folder.assert_called_once()
         call_kwargs = gc.upload_file_to_folder.call_args.kwargs
         assert call_kwargs["folder_id"] == "m1_folder_id"
+        first_resolve_call = mock_resolve_m1.call_args_list[0]
+        assert first_resolve_call.kwargs == {"allow_legacy_fallback": False}
 
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
@@ -554,6 +558,8 @@ class TestClassification:
             file_name=upload["drive_filename"],
             file_bytes=b"pdf",
         )
+        first_resolve_call = mock_resolve_m1.call_args_list[0]
+        assert first_resolve_call.kwargs == {"allow_legacy_fallback": False}
         mock_downstream.assert_called_once()
 
     @patch("due_diligence_reporter.inbox_scanner._build_site_summary")

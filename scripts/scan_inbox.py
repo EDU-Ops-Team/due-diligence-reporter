@@ -2,13 +2,10 @@
 """
 scan_inbox.py — Scan edu.ops@trilogy.com inbox for DD documents.
 
-Finds emails with PDF attachments (SIR, Building Inspection, ISP), classifies
-them by filename using the three-tier classifier (regex → GPT-4o-mini), and
-uploads to the correct shared Drive folder by doc_type only (no site matching).
-
-Phase 2: Pipeline trigger for newly-uploaded sites. This stays disabled unless
-uploads carry site identity. Today the filename classifier does not match files
-to a site Drive folder, so report generation falls to the daily sweep instead.
+Finds emails with PDF attachments (SIR, Building Inspection, ISP, Block Plan),
+classifies them by filename using the three-tier classifier, matches them to a
+Rhodes site, and uploads vendor documents to that site's M1 Acquire Property
+Drive subfolder.
 
 Run:
     uv run python scripts/scan_inbox.py
@@ -59,6 +56,10 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
     post_pipeline_result,
     process_site_pipeline,
 )
+from due_diligence_reporter.rhodes import (  # noqa: E402
+    RhodesError,
+    list_rhodes_site_records,
+)
 from due_diligence_reporter.utils import (  # noqa: E402
     build_site_match_terms as _build_site_match_terms,
     escape_html_text,
@@ -107,7 +108,12 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
         scopes=settings.google_scopes,
     )
 
-    site_records: list[dict[str, Any]] = []
+    try:
+        site_records = list_rhodes_site_records()
+        logger.info("Loaded %d active Rhodes site record(s) for inbox matching", len(site_records))
+    except RhodesError as e:
+        logger.warning("Could not load Rhodes site records for inbox matching: %s", e)
+        site_records = []
 
     # Rec. 3: event-driven DD Report republish callback
     # When a vendor SIR or Building Inspection lands on a site that

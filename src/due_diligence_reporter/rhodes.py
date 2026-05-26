@@ -12,6 +12,7 @@ import requests
 DEFAULT_RHODES_MCP_URL = "https://location-os-mcp.ephor.workers.dev/mcp"
 MCP_PROTOCOL_VERSION = "2025-03-26"
 RHODES_TIMEOUT_SECONDS = 20.0
+DRIVE_FOLDER_URL_PREFIX = "https://drive.google.com/drive/folders/"
 
 
 class RhodesError(RuntimeError):
@@ -150,6 +151,22 @@ def _site_id(site: dict[str, Any]) -> str:
     return ""
 
 
+def _site_name(site: dict[str, Any]) -> str:
+    for key in ("name", "title", "marketingName", "marketing_name"):
+        value = site.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _site_address(site: dict[str, Any]) -> str:
+    for key in ("address", "siteAddress", "site_address", "propertyAddress"):
+        value = site.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _extract_p1_dri(site: dict[str, Any]) -> dict[str, str]:
     owner: dict[str, str] = {}
     p1_dri = site.get("p1Dri")
@@ -178,6 +195,59 @@ def _extract_p1_dri(site: dict[str, Any]) -> dict[str, str]:
                 owner[target] = value.strip()
                 break
     return owner
+
+
+def _drive_folder_url(folder_id: str) -> str:
+    return f"{DRIVE_FOLDER_URL_PREFIX}{folder_id.strip()}"
+
+
+def _extract_drive_folder(site: dict[str, Any]) -> tuple[str, str]:
+    """Return ``(folder_id, folder_url)`` from known Rhodes site fields."""
+    folder_id = ""
+    folder_url = ""
+    for key in (
+        "driveFolderId",
+        "googleDriveFolderId",
+        "drive_folder_id",
+        "google_drive_folder_id",
+    ):
+        value = site.get(key)
+        if isinstance(value, str) and value.strip():
+            folder_id = value.strip()
+            break
+
+    for key in (
+        "driveFolderUrl",
+        "googleDriveFolderUrl",
+        "drive_folder_url",
+        "google_drive_folder_url",
+        "driveUrl",
+    ):
+        value = site.get(key)
+        if isinstance(value, str) and value.strip():
+            folder_url = value.strip()
+            break
+
+    drive_folder = site.get("driveFolder") or site.get("googleDriveFolder")
+    if isinstance(drive_folder, dict):
+        if not folder_id:
+            for key in ("id", "folderId", "driveFolderId"):
+                value = drive_folder.get(key)
+                if isinstance(value, str) and value.strip():
+                    folder_id = value.strip()
+                    break
+        if not folder_url:
+            for key in ("url", "webViewLink", "driveFolderUrl"):
+                value = drive_folder.get(key)
+                if isinstance(value, str) and value.strip():
+                    folder_url = value.strip()
+                    break
+
+    if folder_id and not folder_url:
+        folder_url = _drive_folder_url(folder_id)
+    if folder_url and not folder_id and DRIVE_FOLDER_URL_PREFIX in folder_url:
+        folder_id = folder_url.rsplit("/", 1)[-1].split("?", 1)[0].strip()
+    return folder_id, folder_url
 
 
 class RhodesClient:
@@ -275,6 +345,24 @@ class RhodesClient:
             raise RhodesError("Rhodes site not found")
         return site
 
+    def resolve_drive_root(self, *, site_id: str) -> tuple[str, str]:
+        """Resolve the linked Rhodes site Drive root folder."""
+        if not site_id.strip():
+            raise RhodesError("site_id is required")
+        payload = self.call_tool(
+            "driveResolveSiteFolderPath",
+            {"siteId": site_id.strip(), "folderPath": ""},
+        )
+        if not isinstance(payload, dict):
+            raise RhodesError("Rhodes Drive resolver returned a non-object payload")
+        error = payload.get("error")
+        if isinstance(error, str) and error.strip():
+            raise RhodesError(error.strip())
+        folder_id = payload.get("folderId")
+        if not isinstance(folder_id, str) or not folder_id.strip():
+            raise RhodesError("Rhodes site has no linked Google Drive folder")
+        return folder_id.strip(), _drive_folder_url(folder_id)
+
     def resolve_site(self, *, name: str = "", address: str = "") -> dict[str, Any] | None:
         lookup = name.strip() or address.strip()
         if lookup:
@@ -292,6 +380,19 @@ class RhodesClient:
             matches = _coerce_site_list(self.call_tool("listSites", {"location": address.strip()}))
             return matches[0] if matches else None
         return None
+
+    def list_sites(
+        self,
+        *,
+        status: str | None = "active",
+        stage: str | None = None,
+    ) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {}
+        if status:
+            payload["status"] = status
+        if stage:
+            payload["stage"] = stage
+        return _coerce_site_list(self.call_tool("listSites", payload))
 
 
 def lookup_rhodes_site_owner(
@@ -342,6 +443,21 @@ def lookup_rhodes_site_owner(
         }
 
     owner = _extract_p1_dri(site)
+    resolved_site_id = _site_id(site)
+    drive_folder_id, drive_folder_url = _extract_drive_folder(site)
+    drive_folder_status = "missing"
+    drive_folder_message = ""
+    if drive_folder_url:
+        drive_folder_status = "found"
+    elif resolved_site_id:
+        try:
+            drive_folder_id, drive_folder_url = rhodes.resolve_drive_root(
+                site_id=resolved_site_id
+            )
+            drive_folder_status = "found"
+        except RhodesError as exc:
+            drive_folder_status = "missing"
+            drive_folder_message = str(exc)
     report_fields: dict[str, str] = {}
     owner_name = owner.get("name", "")
     owner_email = owner.get("email", "")
@@ -353,21 +469,91 @@ def lookup_rhodes_site_owner(
         report_fields["p1_assignee_email"] = owner_email
         report_fields["site.p1_assignee_email"] = owner_email
 
+    resolved_address = site.get("address")
+    if isinstance(resolved_address, str) and resolved_address.strip():
+        report_fields["site.address"] = resolved_address.strip()
+        report_fields["site.site_address"] = resolved_address.strip()
+
     created_date = site.get("createdDate")
     if isinstance(created_date, str) and created_date.strip():
         report_fields["site_created_at"] = created_date.strip()
+    if drive_folder_url:
+        report_fields["meta.drive_folder_url"] = drive_folder_url
+        report_fields["site.drive_folder_url"] = drive_folder_url
 
     result = {
         "status": "found" if owner_name or owner_email else "owner_missing",
-        "site_id": _site_id(site),
+        "site_id": resolved_site_id,
         "site_name": site.get("name") or site_name,
         "site_slug": site.get("slug") or slug,
         "site_address": site.get("address") or site_address,
+        "drive_folder_status": drive_folder_status,
+        "drive_folder_id": drive_folder_id,
+        "drive_folder_url": drive_folder_url,
         "p1_assignee_name": owner_name,
         "p1_assignee_email": owner_email,
         "p1_dri": owner,
         "report_data_fields": report_fields,
     }
+    if drive_folder_message:
+        result["drive_folder_message"] = drive_folder_message
     if result["status"] == "owner_missing":
         result["message"] = "Rhodes site exists, but p1Dri is not assigned."
     return result
+
+
+def list_rhodes_site_records(
+    *,
+    status: str = "active",
+    client: RhodesClient | None = None,
+) -> list[dict[str, Any]]:
+    """Return Rhodes site records shaped for inbox attachment matching.
+
+    The inbox scanner needs a compact local list to match filenames and email
+    subjects before it uploads vendor documents. Each returned record includes
+    the Rhodes site ID, title, address when available, and the linked Rhodes
+    Google Drive root folder URL.
+    """
+    try:
+        rhodes = client or RhodesClient()
+        site_summaries = rhodes.list_sites(status=status)
+    except RhodesError:
+        raise
+
+    records: list[dict[str, Any]] = []
+    for summary in site_summaries:
+        site_id = _site_id(summary)
+        if not site_id:
+            continue
+        try:
+            site = rhodes.get_site(site_id=site_id)
+        except RhodesError:
+            site = summary
+
+        drive_folder_id, drive_folder_url = _extract_drive_folder(site)
+        if not drive_folder_url:
+            try:
+                drive_folder_id, drive_folder_url = rhodes.resolve_drive_root(
+                    site_id=site_id
+                )
+            except RhodesError:
+                drive_folder_id = drive_folder_id or ""
+                drive_folder_url = ""
+
+        name = _site_name(site) or _site_name(summary)
+        if not name:
+            continue
+        records.append(
+            {
+                "id": site_id,
+                "site_id": site_id,
+                "title": name,
+                "name": name,
+                "slug": site.get("slug") or summary.get("slug") or "",
+                "address": _site_address(site) or _site_address(summary),
+                "drive_folder_id": drive_folder_id,
+                "drive_folder_url": drive_folder_url,
+                "rhodes_status": site.get("status") or summary.get("status") or "",
+            }
+        )
+    return records
