@@ -1,5 +1,55 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-26 - Rhodes Document Registration on Inbox Upload
+
+Implemented the arrival-time Rhodes document linking path for inbox-filed DD
+source documents.
+
+Current behavior:
+
+- `RhodesClient` now wraps `listDocuments`, `registerDocument`, and
+  Drive-file dedup lookup through the existing Rhodes MCP JSON-RPC transport.
+- `register_rhodes_document_for_upload` maps DDR inbox doc types to Rhodes:
+  `sir -> siteInvestigationReport`, `building_inspection ->
+  propertyConditionAssessment`, `block_plan -> floorPlan`, and `isp -> other`.
+  All four are associated with the `acquireProperty` milestone.
+- Inbox uploads now attach `uploads[].rhodes_registration` after a successful
+  Drive upload. This is non-blocking: Rhodes failures are recorded on the
+  upload row but do not undo the Drive filing or email processing.
+- `build_scan_summary` includes Rhodes registration counts and shows failed
+  Rhodes registration detail under the affected upload.
+- `docs/process/HOW-IT-WORKS.md` documents Rhodes document links as part of the
+  system-of-record contract and records the DDR-to-Rhodes document map.
+
+Verification completed:
+
+```powershell
+uv run pytest tests/test_rhodes.py tests/test_inbox_scanner.py -q
+uv run ruff check src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\inbox_scanner.py tests\test_rhodes.py tests\test_inbox_scanner.py
+uv run mypy src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\inbox_scanner.py
+uv run mypy src/
+```
+
+Results:
+
+- Focused Rhodes/inbox scanner tests: 74 passed.
+- Focused Ruff: all checks passed.
+- Targeted mypy for touched source files: no issues.
+- Full source mypy: no issues in 31 source files.
+
+Broader validation notes:
+
+- `uv run pytest` still fails during collection on inaccessible Windows pytest
+  cache/temp directories (`pytest-cache-files-o55d_4rl`,
+  `tests/_tmp/pytest-cache-files-lhmtb2lz`).
+- `uv run pytest tests --ignore=tests/_tmp --basetemp .pytest-tmp -q` runs the
+  suite but shows unrelated existing failures: 11 assignment API/signature
+  failures in `tests/test_assignment.py` and 2 `test_sender_filter.py` failures
+  patching a non-existent `inbox_scanner.build_site_summary` alias.
+- `uv run ruff check .` still reports unrelated baseline lint in
+  `scripts/reprocess_mislabeled.py`, `tests/test_cds_verification.py`,
+  `tests/test_opening_plan.py`, and `tests/test_sender_filter.py`.
+
 ## 2026-05-26 - Active DDR Open-Question Closure Workflow
 
 Implemented the partial-first, republish-in-place workflow for first-round DDRs.

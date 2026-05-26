@@ -1,4 +1,4 @@
-"""Read-only Rhodes/LocationOS lookup helpers for DDR generation."""
+"""Rhodes/LocationOS lookup and document registration helpers for DDR."""
 
 from __future__ import annotations
 
@@ -141,6 +141,68 @@ def _coerce_site_list(payload: Any) -> list[dict[str, Any]]:
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
     return []
+
+
+def _coerce_document(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, list):
+        first = next((item for item in payload if isinstance(item, dict)), {})
+        return first
+    if isinstance(payload, dict):
+        return _unwrap_single(payload, "document", "record", "data")
+    return {}
+
+
+def _coerce_document_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("documents", "data", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _document_id(document: dict[str, Any]) -> str:
+    for key in ("documentId", "_id", "id"):
+        value = document.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _document_drive_file_id(document: dict[str, Any]) -> str:
+    for key in ("driveFileId", "drive_file_id", "fileId", "googleDriveFileId"):
+        value = document.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    drive_file = document.get("driveFile") or document.get("googleDriveFile")
+    if isinstance(drive_file, dict):
+        for key in ("id", "fileId", "driveFileId"):
+            value = drive_file.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+@dataclass(frozen=True)
+class RhodesDocumentMapping:
+    """DDR inbox doc-type mapping to Rhodes document metadata."""
+
+    doc_type: str
+    milestone: str | None = None
+    quality_bar: str | None = None
+
+
+DDR_DOC_TYPE_TO_RHODES: dict[str, RhodesDocumentMapping] = {
+    "sir": RhodesDocumentMapping("siteInvestigationReport", milestone="acquireProperty"),
+    "building_inspection": RhodesDocumentMapping(
+        "propertyConditionAssessment",
+        milestone="acquireProperty",
+    ),
+    "block_plan": RhodesDocumentMapping("floorPlan", milestone="acquireProperty"),
+    "isp": RhodesDocumentMapping("other", milestone="acquireProperty"),
+}
 
 
 def _site_id(site: dict[str, Any]) -> str:
@@ -394,6 +456,82 @@ class RhodesClient:
             payload["stage"] = stage
         return _coerce_site_list(self.call_tool("listSites", payload))
 
+    def list_documents(
+        self,
+        *,
+        site_id: str,
+        doc_type: str | None = None,
+        milestone: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not site_id.strip():
+            raise RhodesError("site_id is required")
+        payload: dict[str, Any] = {"siteId": site_id.strip()}
+        if doc_type:
+            payload["docType"] = doc_type
+        if milestone:
+            payload["milestone"] = milestone
+        return _coerce_document_list(self.call_tool("listDocuments", payload))
+
+    def register_document(
+        self,
+        *,
+        site_id: str,
+        title: str,
+        doc_type: str,
+        drive_file_id: str,
+        drive_url: str = "",
+        mime_type: str = "",
+        milestone: str | None = None,
+        quality_bar: str | None = None,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        if not site_id.strip():
+            raise RhodesError("site_id is required")
+        if not title.strip():
+            raise RhodesError("title is required")
+        if not doc_type.strip():
+            raise RhodesError("doc_type is required")
+        if not drive_file_id.strip():
+            raise RhodesError("drive_file_id is required")
+
+        payload: dict[str, Any] = {
+            "siteId": site_id.strip(),
+            "title": title.strip(),
+            "docType": doc_type.strip(),
+            "driveFileId": drive_file_id.strip(),
+        }
+        if drive_url.strip():
+            payload["driveUrl"] = drive_url.strip()
+        if mime_type.strip():
+            payload["mimeType"] = mime_type.strip()
+        if milestone:
+            payload["milestone"] = milestone
+        if quality_bar:
+            payload["qualityBar"] = quality_bar
+        if notes.strip():
+            payload["notes"] = notes.strip()
+        return _coerce_document(self.call_tool("registerDocument", payload))
+
+    def find_document_by_drive_file_id(
+        self,
+        *,
+        site_id: str,
+        drive_file_id: str,
+        doc_type: str | None = None,
+        milestone: str | None = None,
+    ) -> dict[str, Any] | None:
+        target = drive_file_id.strip()
+        if not target:
+            return None
+        for document in self.list_documents(
+            site_id=site_id,
+            doc_type=doc_type,
+            milestone=milestone,
+        ):
+            if _document_drive_file_id(document) == target:
+                return document
+        return None
+
 
 def lookup_rhodes_site_owner(
     *,
@@ -500,6 +638,122 @@ def lookup_rhodes_site_owner(
     if result["status"] == "owner_missing":
         result["message"] = "Rhodes site exists, but p1Dri is not assigned."
     return result
+
+
+def map_ddr_doc_type_to_rhodes(ddr_doc_type: str) -> RhodesDocumentMapping | None:
+    return DDR_DOC_TYPE_TO_RHODES.get(ddr_doc_type.strip())
+
+
+def register_rhodes_document_for_upload(
+    *,
+    site_id: str,
+    ddr_doc_type: str,
+    title: str,
+    drive_file_id: str,
+    drive_url: str = "",
+    mime_type: str = "application/pdf",
+    original_filename: str = "",
+    source: str = "inbox_scanner",
+    message_id: str = "",
+    attachment_id: str = "",
+    client: RhodesClient | None = None,
+) -> dict[str, Any]:
+    """Idempotently register a DDR-uploaded Drive file on a Rhodes site.
+
+    This helper is intentionally non-raising for scanner callers: Drive filing
+    is the primary action, and Rhodes registration is a follow-on system-of-
+    record link. Failures are returned as structured status rows.
+    """
+    clean_site_id = site_id.strip()
+    clean_drive_file_id = drive_file_id.strip()
+    mapping = map_ddr_doc_type_to_rhodes(ddr_doc_type)
+    base = {
+        "rhodes_site_id": clean_site_id,
+        "drive_file_id": clean_drive_file_id,
+        "ddr_doc_type": ddr_doc_type,
+        "rhodes_doc_type": mapping.doc_type if mapping else "",
+        "rhodes_milestone": mapping.milestone if mapping else "",
+    }
+
+    if not clean_site_id:
+        return {**base, "status": "skipped", "reason": "missing_site_id"}
+    if not clean_drive_file_id:
+        return {**base, "status": "skipped", "reason": "missing_drive_file_id"}
+    if mapping is None:
+        return {**base, "status": "skipped", "reason": "unmapped_doc_type"}
+
+    try:
+        rhodes = client or RhodesClient()
+        existing = rhodes.find_document_by_drive_file_id(
+            site_id=clean_site_id,
+            drive_file_id=clean_drive_file_id,
+            doc_type=mapping.doc_type,
+            milestone=mapping.milestone,
+        )
+        if existing is not None:
+            return {
+                **base,
+                "status": "already_registered",
+                "reason": "already_linked",
+                "rhodes_document_id": _document_id(existing),
+            }
+
+        registered = rhodes.register_document(
+            site_id=clean_site_id,
+            title=title,
+            doc_type=mapping.doc_type,
+            drive_file_id=clean_drive_file_id,
+            drive_url=drive_url,
+            mime_type=mime_type,
+            milestone=mapping.milestone,
+            quality_bar=mapping.quality_bar,
+            notes=_build_registration_notes(
+                source=source,
+                ddr_doc_type=ddr_doc_type,
+                original_filename=original_filename,
+                drive_file_id=clean_drive_file_id,
+                drive_url=drive_url,
+                message_id=message_id,
+                attachment_id=attachment_id,
+            ),
+        )
+    except RhodesError as exc:
+        return {**base, "status": "failed", "reason": "rhodes_error", "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - non-fatal scanner side effect
+        return {**base, "status": "failed", "reason": "unexpected_error", "error": str(exc)}
+
+    return {
+        **base,
+        "status": "registered",
+        "reason": "ok",
+        "rhodes_document_id": _document_id(registered),
+    }
+
+
+def _build_registration_notes(
+    *,
+    source: str,
+    ddr_doc_type: str,
+    original_filename: str,
+    drive_file_id: str,
+    drive_url: str,
+    message_id: str,
+    attachment_id: str,
+) -> str:
+    parts = [
+        f"Registered by DDR {source}.",
+        f"DDR doc type: {ddr_doc_type}.",
+        f"Drive file ID: {drive_file_id}.",
+    ]
+    if original_filename.strip():
+        parts.append(f"Original filename: {original_filename.strip()}.")
+    if drive_url.strip():
+        parts.append(f"Drive URL: {drive_url.strip()}.")
+    if message_id.strip():
+        parts.append(f"Gmail message ID: {message_id.strip()}.")
+    if attachment_id.strip():
+        parts.append(f"Gmail attachment ID: {attachment_id.strip()}.")
+    return "\n".join(parts)
 
 
 def list_rhodes_site_records(
