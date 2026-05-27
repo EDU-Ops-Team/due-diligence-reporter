@@ -11,12 +11,12 @@ alert slice.
 
 Branch: `codex/ddr-raycon-alert-rhodes-events`
 
-Draft PR: pending
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/123
 
-Implementation commit: pending (`Record RayCon follow-up alerts in Rhodes`)
+Implementation commit: `a3ad6b0` (`Record RayCon follow-up alerts in Rhodes`)
 
-Current state: implementation complete locally; verification clean; commit,
-push, and draft PR still pending.
+Current state: branch pushed, draft PR open, GitHub reports merge state
+`CLEAN`. No checks were reported when checked.
 
 Changed:
 
@@ -57,7 +57,7 @@ Results:
 
 Next:
 
-- Commit, push, and open the DDR draft PR.
+- Wait for CI/review on PR #123.
 - After merge, continue with shared Rhodes adapter extraction or another
   remaining notification-only path.
 
