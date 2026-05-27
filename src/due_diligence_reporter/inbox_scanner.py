@@ -16,6 +16,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
+from .automation_event import (
+    build_document_registration_failed_event,
+    render_automation_event_note,
+)
 from .classifier import classify_by_content_llm, classify_document
 from .config import Settings
 from .google_client import GoogleClient
@@ -183,64 +187,11 @@ def _record_rhodes_registration_attempt(
     return attempts > RHODES_REGISTRATION_RETRY_LIMIT
 
 
-def _format_owner(site_summary: dict[str, Any]) -> str:
-    name = str(site_summary.get("p1_assignee_name") or "").strip()
-    email = str(site_summary.get("p1_assignee_email") or "").strip()
-    if name and email:
-        return f"{name} <{email}>"
-    return email or name or "No owner assigned"
-
-
 def _metadata_thread_id(metadata: Any, fallback_message_id: str) -> str:
     thread_id = getattr(metadata, "thread_id", "")
     if isinstance(thread_id, str) and thread_id.strip():
         return thread_id.strip()
     return fallback_message_id
-
-
-def _render_rhodes_registration_failure_event(
-    *,
-    site_summary: dict[str, Any],
-    registration: dict[str, Any],
-    doc_type: str,
-    drive_file: dict[str, Any],
-    drive_filename: str,
-    original_filename: str,
-    email_subject: str,
-    message_id: str,
-    thread_id: str,
-) -> str:
-    site_name = str(site_summary.get("title") or "Unknown site").strip()
-    reason = str(registration.get("reason") or "registration_failed").strip()
-    error = str(registration.get("error") or "").strip()
-    drive_link = str(drive_file.get("webViewLink") or "").strip()
-    drive_file_id = str(drive_file.get("id") or "").strip()
-    attempts = registration.get("retry_attempts") or "unknown"
-    retry_limit = registration.get("retry_limit") or RHODES_REGISTRATION_RETRY_LIMIT
-    lines = [
-        "AutomationEvent v1",
-        "Source: due-diligence-reporter",
-        "Kind: document_registration_failed",
-        f"Site: {site_name}",
-        f"Owner: {_format_owner(site_summary)}",
-        f"DDR doc type: {doc_type}",
-        f"Rhodes doc type: {registration.get('rhodes_doc_type') or 'unknown'}",
-        f"Rhodes milestone: {registration.get('rhodes_milestone') or 'unknown'}",
-        f"Retry attempts: {attempts}/{retry_limit}",
-        "Requested decision: repair or register the Rhodes document link for the Drive file.",
-        f"Reason: {reason}",
-        f"Drive file: {drive_filename}",
-        f"Original filename: {original_filename}",
-        f"Drive file ID: {drive_file_id}",
-        f"Gmail subject: {email_subject}",
-        f"Gmail message ID: {message_id}",
-        f"Gmail thread ID: {thread_id}",
-    ]
-    if error:
-        lines.append(f"Error: {error}")
-    if drive_link:
-        lines.append(f"Drive URL: {drive_link}")
-    return "\n".join(lines)
 
 
 def _post_google_chat_to_configured_webhooks(webhook_urls: str, text: str) -> dict[str, Any]:
@@ -281,7 +232,7 @@ def _record_rhodes_registration_failure_event(
 ) -> dict[str, Any]:
     """Write retry exhaustion to Rhodes and fall back to Chat when owner notify is absent."""
     entry = retry_state.get(retry_key) if retry_state is not None else None
-    body = _render_rhodes_registration_failure_event(
+    event = build_document_registration_failed_event(
         site_summary=site_summary,
         registration=registration,
         doc_type=doc_type,
@@ -292,6 +243,7 @@ def _record_rhodes_registration_failure_event(
         message_id=message_id,
         thread_id=thread_id,
     )
+    body = render_automation_event_note(event)
     existing_note_id = str((entry or {}).get("rhodes_failure_note_id") or "").strip()
     if existing_note_id:
         result: dict[str, Any] = {

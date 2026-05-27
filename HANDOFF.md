@@ -1,5 +1,43 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - DDR AutomationEvent Contract Module
+
+Started the next Phase 2 event-contract slice on branch
+`codex/ddr-automation-event-contract`.
+
+Current behavior in progress:
+
+- Added `src/due_diligence_reporter/automation_event.py` with a canonical
+  `AutomationEvent` dataclass and `render_automation_event_note(...)`.
+- Moved document-registration failure event construction out of
+  `inbox_scanner.py` into `build_document_registration_failed_event(...)`.
+- The rendered `AutomationEvent v1` note now carries shared contract fields:
+  source system, source ID, event kind, site ID, decision-required status,
+  requested decision, mutation status, retry state, artifact IDs, and
+  created-at timestamp.
+- DDR-specific details remain in the note body: owner, DDR/Rhodes doc types,
+  milestone, reason, Drive file name, original filename, Gmail subject, Drive
+  URL, and error.
+- Existing Rhodes note and Google Chat fallback behavior is unchanged.
+
+Verification in progress:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-automation-event-tests tests/test_automation_event.py tests/test_inbox_scanner.py::TestRhodesDocumentRegistration -q
+uv run ruff check src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\inbox_scanner.py tests\test_automation_event.py tests\test_inbox_scanner.py
+uv run mypy src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\inbox_scanner.py
+uv run pytest --basetemp C:\tmp\ddr-automation-event-broad tests/test_automation_event.py tests/test_inbox_scanner.py tests/test_scan_inbox_e2e.py tests/test_rhodes.py -q
+uv run mypy src/
+```
+
+Results:
+
+- Focused event/scanner tests: 8 passed.
+- Focused Ruff: passed.
+- Focused Mypy: no issues in 2 source files.
+- Broader inbox/Rhodes suite: 96 passed.
+- Full source Mypy: no issues in 33 source files.
+
 ## 2026-05-27 - Firestore Rhodes Registration Retry State
 
 Started the next Rhodes automation Phase 2 slice on branch
