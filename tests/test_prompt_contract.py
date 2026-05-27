@@ -48,7 +48,7 @@ def test_prompt_v4_keeps_first_round_contract() -> None:
     text = _prompt_text()
     required_phrases = [
         "Version:** 4.0.0",
-        "Last Updated:** 2026-05-26",
+        "Last Updated:** 2026-05-27",
         "V4 prompt contract",
         "first-round DDR",
         "current school year (8/12 or 9/8)",
@@ -61,6 +61,7 @@ def test_prompt_v4_keeps_first_round_contract() -> None:
         "exec.citations_block",
         "Source Notes",
         "one answer line",
+        "support fact on its own plain line",
         "Source notes render after the Referenced Reports",
         "does not render in",
         "After `create_dd_report` returns a document, stop.",

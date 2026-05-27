@@ -435,6 +435,51 @@ def _strip_inline_citation_markers(value: str) -> str:
     return re.sub(r"\s*\[\d+\]", "", value).strip()
 
 
+def _split_summary_prose_into_lines(value: str) -> list[str]:
+    """Split one-paragraph executive-summary prose into answer/support lines.
+
+    The agent is prompted to send one answer line followed by support lines, but
+    it sometimes sends a single paragraph with several sentences. The renderer
+    still needs to preserve the Boston-style answer-first display.
+    """
+    text = value.strip()
+    if not text:
+        return []
+
+    gap_match = re.match(r"^(\[[^\]]+\])\s+(.+)$", text)
+    if gap_match:
+        return [
+            gap_match.group(1),
+            *_split_summary_prose_into_lines(gap_match.group(2)),
+        ]
+
+    protected_abbreviations = {
+        "Ch.": "Ch<dot>",
+        "Sec.": "Sec<dot>",
+        "St.": "St<dot>",
+        "Dr.": "Dr<dot>",
+        "Ave.": "Ave<dot>",
+        "Rd.": "Rd<dot>",
+        "No.": "No<dot>",
+        "e.g.": "e<dot>g<dot>",
+        "i.e.": "i<dot>e<dot>",
+    }
+    protected = text
+    for source, replacement in protected_abbreviations.items():
+        protected = protected.replace(source, replacement)
+
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z])", protected)
+    lines: list[str] = []
+    for part in parts:
+        restored = part
+        for source, replacement in protected_abbreviations.items():
+            restored = restored.replace(replacement, source)
+        restored = restored.strip()
+        if restored:
+            lines.append(restored)
+    return lines
+
+
 def _format_source_note_line(value: str) -> str:
     """Strip numeric citation prefixes from consolidated source-note lines."""
     return re.sub(r"^\[\d+\]\s*", "", value.strip())
@@ -635,10 +680,14 @@ def _summary_display_lines(value: str) -> list[str]:
         line = _strip_inline_citation_markers(line)
         if line:
             lines.append(line)
+    if len(lines) == 1 and len(lines[0]) >= 140:
+        split_lines = _split_summary_prose_into_lines(lines[0])
+        if len(split_lines) > 1:
+            return split_lines
     if lines:
         return lines
     fallback = _strip_inline_citation_markers(value.strip())
-    return [fallback] if fallback else []
+    return _split_summary_prose_into_lines(fallback) if fallback else []
 
 
 def _insert_labeled_summary_field(

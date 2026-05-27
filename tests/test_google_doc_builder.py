@@ -828,6 +828,62 @@ class TestBuildDdReportDocRequestStructure:
             for request in requests
         )
 
+    def test_exec_summary_single_paragraph_support_is_bulleted(self) -> None:
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {
+            "meta.site_name": "Test",
+            "meta.report_date": "04/14/2026",
+            "exec.c_occupancy": (
+                "An existing Conditional Use Permit covers school use at this site, "
+                "capped at 180 students. Transferring the CUP to Alpha School "
+                "requires a Planning Board modification hearing. The historic "
+                "district review must also be cleared before permit issuance."
+            ),
+        }
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        requests = _all_batch_requests(docs_svc)
+        support_insert = next(
+            request["insertText"]
+            for request in requests
+            if request.get("insertText", {}).get("text")
+            == (
+                "Transferring the CUP to Alpha School requires a Planning Board "
+                "modification hearing.\n"
+            )
+        )
+        support_start = support_insert["location"]["index"]
+
+        assert any(
+            "createParagraphBullets" in request
+            and request["createParagraphBullets"]["range"]["startIndex"]
+            <= support_start
+            < request["createParagraphBullets"]["range"]["endIndex"]
+            for request in requests
+        )
+
+    def test_exec_summary_gap_prefix_stays_answer_line(self) -> None:
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = {
+            "meta.site_name": "Test",
+            "meta.report_date": "04/14/2026",
+            "exec.c_construction_timeline": (
+                "[Not found - RayCon scenario pending] Construction timeline cannot "
+                "be confirmed without a RayCon Scenario. Existing school use reduces "
+                "scope uncertainty, but historic review can still delay permits."
+            ),
+        }
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        inserted_text = _inserted_text(docs_svc)
+
+        assert "Construction Timeline: [Not found - RayCon scenario pending]\n" in inserted_text
+        assert "Construction timeline cannot be confirmed without a RayCon Scenario.\n" in inserted_text
+
 
 class TestGapLabelsForLinks:
     """Test that link tokens with no value get appropriate gap labels."""

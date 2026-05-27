@@ -1,5 +1,44 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - DDR Executive Summary Answer-First Rendering
+
+Implemented the Boston-style executive summary guardrail on `main`.
+
+Current behavior:
+
+- `docs/prompts/prompt_v4.md` now explicitly requires every executive-summary
+  field to use one answer line followed by plain-line support facts. The prompt
+  metadata was updated to `Last Updated: 2026-05-27`.
+- `src/due_diligence_reporter/google_doc_builder.py` now normalizes long
+  one-paragraph executive-summary fields into answer/support lines before
+  rendering. This preserves the Boston pattern even when the agent sends a
+  Miami-style multi-sentence paragraph.
+- Gap labels such as `[Not found - RayCon scenario pending]` stay on the answer
+  line; the explanatory sentences render as support bullets below.
+- Added builder tests for one-paragraph support bulleting and gap-label answer
+  preservation, plus updated the prompt contract test.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_google_doc_builder.py tests/test_prompt_contract.py
+uv run ruff check src\due_diligence_reporter\google_doc_builder.py tests\test_google_doc_builder.py tests\test_prompt_contract.py
+uv run mypy src/
+```
+
+Results:
+
+- Focused builder/prompt tests: 72 passed.
+- Focused Ruff on touched files: all checks passed.
+- Full source Mypy: no issues in 31 source files.
+- Raw `uv run pytest` is blocked on current checkout by inaccessible pytest
+  cache/temp directories. A broad rerun with cache folders ignored collected
+  963 tests and showed unrelated existing failures in assignment and
+  sender-filter tests plus temp-permission setup errors.
+- Repo-level `uv run ruff check .` still reports unrelated pre-existing lint in
+  `scripts/reprocess_mislabeled.py`, `tests/test_cds_verification.py`,
+  `tests/test_opening_plan.py`, and `tests/test_sender_filter.py`.
+
 ## 2026-05-27 - Rhodes Roster Performance: Hydration and Callback Fast Path
 
 Started the deferred performance slice from the DDR remediation plan on branch
