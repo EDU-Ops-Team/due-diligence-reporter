@@ -7,7 +7,7 @@ single ``raycon_scenario.json`` file back into the same M1 folder.
 
 This script runs on a 5-minute cadence (``raycon-followup.yml``) and:
 
-  1. Iterates every site folder under GOOGLE_DRIVE_ROOT_FOLDER_ID.
+  1. Iterates every active Rhodes site with a linked Drive folder.
   2. Looks in each site's M1 folder for ``raycon_scenario.json``.
   3. If the JSON exists and is newer than the corresponding
      ``RayCon Scenario Assessment - <site>`` Google Doc (or that Doc
@@ -89,6 +89,10 @@ from due_diligence_reporter.raycon_client import (  # noqa: E402
 from due_diligence_reporter.report_pipeline import (  # noqa: E402
     list_shared_folders_once,
     process_site_pipeline,
+)
+from due_diligence_reporter.rhodes import (  # noqa: E402
+    RhodesError,
+    list_rhodes_site_records,
 )
 from due_diligence_reporter.server import save_skill_report  # noqa: E402
 from due_diligence_reporter.utils import (  # noqa: E402
@@ -324,8 +328,84 @@ def _site_summary_from_folder(folder: dict[str, Any]) -> dict[str, Any]:
         "id": folder_id,
         "title": title,
         "address": "",
+        "drive_folder_id": folder_id,
         "drive_folder_url": _folder_url(folder),
+        "site_metadata_source": "drive_folder",
     }
+
+
+def _site_summary_from_rhodes_record(record: dict[str, Any]) -> dict[str, Any]:
+    drive_folder_url = str(record.get("drive_folder_url") or "").strip()
+    drive_folder_id = str(record.get("drive_folder_id") or "").strip()
+    if not drive_folder_id:
+        drive_folder_id = extract_folder_id_from_url(drive_folder_url) or ""
+    site_id = str(record.get("site_id") or record.get("id") or "").strip()
+    title = str(record.get("title") or record.get("name") or "").strip()
+    return {
+        "id": site_id,
+        "site_id": site_id,
+        "title": title,
+        "name": title,
+        "slug": str(record.get("slug") or "").strip(),
+        "address": str(record.get("address") or record.get("site_address") or "").strip(),
+        "drive_folder_id": drive_folder_id,
+        "drive_folder_url": drive_folder_url,
+        "p1_assignee_name": str(record.get("p1_assignee_name") or "").strip(),
+        "p1_assignee_email": str(record.get("p1_assignee_email") or "").strip(),
+        "created_date": str(record.get("created_date") or "").strip(),
+        "site_metadata_source": "rhodes",
+    }
+
+
+def _site_identity_values(site_summary: dict[str, Any]) -> set[str]:
+    values = {
+        str(site_summary.get("id") or "").strip(),
+        str(site_summary.get("site_id") or "").strip(),
+        str(site_summary.get("drive_folder_id") or "").strip(),
+    }
+    drive_folder_id = extract_folder_id_from_url(
+        str(site_summary.get("drive_folder_url") or "").strip()
+    )
+    if drive_folder_id:
+        values.add(drive_folder_id)
+    return {value for value in values if value}
+
+
+def _site_id_matches(site_summary: dict[str, Any], target_id: str) -> bool:
+    return target_id.strip() in _site_identity_values(site_summary)
+
+
+def _load_site_summaries(
+    gc: GoogleClient,
+    google_drive_root_folder_id: str,
+) -> list[dict[str, Any]]:
+    try:
+        rhodes_records = list_rhodes_site_records()
+    except RhodesError as exc:
+        logger.warning(
+            "Rhodes site inventory unavailable for RayCon follow-up; "
+            "falling back to Drive folder scan: %s",
+            exc,
+        )
+    else:
+        summaries = [
+            _site_summary_from_rhodes_record(record)
+            for record in rhodes_records
+            if str(record.get("drive_folder_url") or "").strip()
+        ]
+        if summaries:
+            logger.info(
+                "Loaded %d Rhodes site record(s) for RayCon follow-up",
+                len(summaries),
+            )
+            return summaries
+        logger.warning(
+            "Rhodes site inventory returned no Drive-linked sites; "
+            "falling back to Drive folder scan"
+        )
+
+    site_folders = gc.list_subfolders(google_drive_root_folder_id)
+    return [_site_summary_from_folder(folder) for folder in site_folders]
 
 
 def _find_block_plan(gc: GoogleClient, m1_folder_id: str) -> dict[str, Any] | None:
@@ -1087,8 +1167,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("GOOGLE_DRIVE_ROOT_FOLDER_ID is required for RayCon follow-up")
         return 1
 
-    site_folders = gc.list_subfolders(settings.google_drive_root_folder_id)
-    summaries = [_site_summary_from_folder(folder) for folder in site_folders]
+    summaries = _load_site_summaries(gc, settings.google_drive_root_folder_id)
     summaries = [s for s in summaries if _site_filter(s, args.site)]
 
     # Rec. 2: when the RayCon callback supplies a site_id, scope the run
@@ -1097,7 +1176,7 @@ def main(argv: list[str] | None = None) -> int:
     # the rest of the system uses.
     if args.site_id:
         target_id = str(args.site_id).strip()
-        scoped = [s for s in summaries if str(s.get("id", "")).strip() == target_id]
+        scoped = [s for s in summaries if _site_id_matches(s, target_id)]
         if not scoped:
             logger.warning(
                 "RayCon callback site_id=%s did not match any active site; "

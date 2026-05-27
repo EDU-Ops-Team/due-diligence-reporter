@@ -135,6 +135,7 @@ jobs:
           [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ]            || { echo "OAUTH_CLIENT_ID missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ]        || { echo "OAUTH_CLIENT_SECRET missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ]        || { echo "OAUTH_REFRESH_TOKEN missing"; exit 1; }
+          [ -n "${{ secrets.RHODES_API_KEY }}" ]             || { echo "RHODES_API_KEY missing"; exit 1; }
           echo "All required secrets are present"
 
       - name: Create .env file from secrets
