@@ -1,5 +1,44 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - RayCon Follow-up Rhodes Site Address Source
+
+Updated PR 107 after merging `origin/main` into
+`codex/rhodes-drive-folder-context`; the only merge conflict was in
+`HANDOFF.md` and was resolved by keeping the newer Rhodes document-registration
+validation details from `main`.
+
+Current behavior:
+
+- `scripts/raycon_followup.py` now loads active Rhodes site records with
+  `list_rhodes_site_records()` and uses those records as the primary RayCon
+  follow-up site inventory.
+- RayCon dispatch summaries now carry Rhodes site ID, linked Drive folder ID,
+  Drive folder URL, and site address, so failed-scenario retries can pass the
+  required `site_address` into `post_raycon_job`.
+- Drive root folder scanning remains as a fallback when Rhodes inventory is
+  unavailable or returns no Drive-linked sites, but fallback folder-derived
+  records still have no address and therefore fail closed before dispatch.
+- RayCon callback scoping now matches either the Rhodes site ID or the linked
+  Drive folder ID.
+- `.github/workflows/raycon-followup.yml` now fails fast when
+  `RHODES_API_KEY` is absent, matching the new Rhodes-backed address contract.
+
+Verification completed:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-pytest-raycon-address tests/test_raycon_followup.py -q
+uv run ruff check scripts/raycon_followup.py tests/test_raycon_followup.py
+uv run pytest --basetemp C:\tmp\ddr-pytest-raycon-rhodes tests/test_raycon_followup.py tests/test_rhodes.py tests/test_vendor_doc_sweep.py -q
+git diff --check
+```
+
+Results:
+
+- RayCon follow-up tests: 48 passed.
+- Focused RayCon/Rhodes/vendor sweep tests: 60 passed.
+- Focused Ruff: all checks passed.
+- `git diff --check`: no whitespace errors; only Windows LF-to-CRLF warnings.
+
 ## 2026-05-26 - Rhodes Document Registration on Inbox Upload
 
 Implemented the arrival-time Rhodes document linking path for inbox-filed DD
@@ -18,13 +57,15 @@ Current behavior:
   upload row but do not undo the Drive filing or email processing.
 - `build_scan_summary` includes Rhodes registration counts and shows failed
   Rhodes registration detail under the affected upload.
+- Inbox manual-review rows now carry explicit reason codes so high-confidence
+  items are reviewable by cause, not just by classifier confidence.
 - `docs/process/HOW-IT-WORKS.md` documents Rhodes document links as part of the
   system-of-record contract and records the DDR-to-Rhodes document map.
 
 Verification completed:
 
 ```powershell
-uv run pytest tests/test_rhodes.py tests/test_inbox_scanner.py -q
+uv run pytest tests/test_rhodes.py tests/test_inbox_scanner.py tests/test_scan_inbox_e2e.py -q
 uv run ruff check src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\inbox_scanner.py tests\test_rhodes.py tests\test_inbox_scanner.py
 uv run mypy src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\inbox_scanner.py
 uv run mypy src/
@@ -32,7 +73,7 @@ uv run mypy src/
 
 Results:
 
-- Focused Rhodes/inbox scanner tests: 74 passed.
+- Focused Rhodes/inbox scanner/e2e tests: 84 passed.
 - Focused Ruff: all checks passed.
 - Targeted mypy for touched source files: no issues.
 - Full source mypy: no issues in 31 source files.

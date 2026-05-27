@@ -13,8 +13,10 @@ from unittest.mock import MagicMock, patch
 from scripts.raycon_followup import (
     _dispatch_raycon_job,
     _filter_dedup_alerts,
+    _load_site_summaries,
     _process_site,
     _republish_dd_report_if_present,
+    _site_id_matches,
 )
 
 # ---------------------------------------------------------------------------
@@ -50,6 +52,61 @@ def _scenario_payload(json_modified: str | None = None) -> dict:
         "_drive_modified_time": json_modified
         or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Site inventory loading
+# ---------------------------------------------------------------------------
+
+
+@patch("scripts.raycon_followup.list_rhodes_site_records")
+def test_load_site_summaries_prefers_rhodes_records_with_site_address(mock_records):
+    mock_records.return_value = [
+        {
+            "id": "rhodes-site-1",
+            "site_id": "rhodes-site-1",
+            "title": "Alpha Keller",
+            "address": "123 Main St, Keller, TX 76248",
+            "drive_folder_id": "drive-root-1",
+            "drive_folder_url": "https://drive.google.com/drive/folders/drive-root-1",
+            "p1_assignee_name": "Devin Bates",
+            "p1_assignee_email": "devin@example.com",
+        }
+    ]
+
+    gc = MagicMock()
+    summaries = _load_site_summaries(gc, "all-locations-root")
+
+    assert summaries == [
+        {
+            "id": "rhodes-site-1",
+            "site_id": "rhodes-site-1",
+            "title": "Alpha Keller",
+            "name": "Alpha Keller",
+            "slug": "",
+            "address": "123 Main St, Keller, TX 76248",
+            "drive_folder_id": "drive-root-1",
+            "drive_folder_url": "https://drive.google.com/drive/folders/drive-root-1",
+            "p1_assignee_name": "Devin Bates",
+            "p1_assignee_email": "devin@example.com",
+            "created_date": "",
+            "site_metadata_source": "rhodes",
+        }
+    ]
+    gc.list_subfolders.assert_not_called()
+
+
+def test_site_id_matches_rhodes_site_id_or_drive_folder_id():
+    summary = {
+        "id": "rhodes-site-1",
+        "site_id": "rhodes-site-1",
+        "drive_folder_id": "drive-root-1",
+        "drive_folder_url": "https://drive.google.com/drive/folders/drive-root-1",
+    }
+
+    assert _site_id_matches(summary, "rhodes-site-1") is True
+    assert _site_id_matches(summary, "drive-root-1") is True
+    assert _site_id_matches(summary, "other") is False
 
 
 # ---------------------------------------------------------------------------
@@ -1361,7 +1418,7 @@ class TestCallbackReceiverScoping:
     """
 
     def _patch_integration_points(self, summaries):
-        """Return patches that stand in for Drive + Google.
+        """Return patches that stand in for site inventory + Google.
 
         Callers use this with ``contextlib.ExitStack`` to keep test bodies
         short. ``summaries`` is the list ``main()`` will iterate.
@@ -1369,20 +1426,16 @@ class TestCallbackReceiverScoping:
         from unittest.mock import patch as _patch
 
         fake_gc = MagicMock()
-        fake_gc.list_subfolders.return_value = [
-            {
-                "id": s["id"],
-                "name": s["title"],
-                "webViewLink": s["drive_folder_url"],
-            }
-            for s in summaries
-        ]
 
         return {
             "get_settings": _patch("scripts.raycon_followup.get_settings"),
             "google_client": _patch(
                 "scripts.raycon_followup.GoogleClient.from_oauth_config",
                 return_value=fake_gc,
+            ),
+            "load_site_summaries": _patch(
+                "scripts.raycon_followup._load_site_summaries",
+                return_value=summaries,
             ),
             "process_site": _patch(
                 "scripts.raycon_followup._process_site",
