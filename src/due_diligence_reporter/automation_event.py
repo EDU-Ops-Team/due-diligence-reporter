@@ -195,6 +195,43 @@ def build_source_review_required_event(
     )
 
 
+def build_vendor_gate_review_required_event(
+    *,
+    site_id: str,
+    site_name: str,
+    run_id: str,
+    failure_reason: str,
+    mutation_status: str,
+    drive_folder_url: str = "",
+    trace_url: str = "",
+    created_at: str | None = None,
+) -> AutomationEvent:
+    """Build the DDR complete-input vendor-gate review event."""
+
+    return AutomationEvent(
+        source_system="due-diligence-reporter",
+        source_id=run_id,
+        site_id=site_id.strip(),
+        site_name=site_name.strip() or "Unknown site",
+        event_type="vendor_gate_review_required",
+        artifact_ids={
+            "Run ID": run_id,
+        },
+        decision_required=True,
+        requested_decision="review complete vendor inputs and repair DDR generation",
+        mutation_status=mutation_status.strip() or "vendor_gate_review_required",
+        details={
+            "Required inputs": (
+                "vendor SIR, vendor Building Inspection, RayCon Scenario JSON"
+            ),
+            "Failure reason": failure_reason.strip()[:1000],
+            "Drive folder": drive_folder_url.strip(),
+            "Trace": trace_url.strip(),
+        },
+        created_at=created_at or datetime.now(UTC).isoformat(),
+    )
+
+
 def _format_owner(site_summary: dict[str, Any]) -> str:
     name = str(site_summary.get("p1_assignee_name") or "").strip()
     email = str(site_summary.get("p1_assignee_email") or "").strip()

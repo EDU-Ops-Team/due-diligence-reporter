@@ -4,6 +4,7 @@ from due_diligence_reporter.automation_event import (
     build_dd_report_summary_event,
     build_document_registration_failed_event,
     build_source_review_required_event,
+    build_vendor_gate_review_required_event,
     render_automation_event_note,
 )
 
@@ -179,5 +180,40 @@ def test_source_review_required_event_renders_source_issues() -> None:
         "Problem: Document returned no text"
         in note
     )
+    assert "Drive folder: https://drive.google.com/drive/folders/abc123" in note
+    assert "Trace: https://drive.google.com/file/d/trace123" in note
+
+
+def test_vendor_gate_review_required_event_renders_failure_context() -> None:
+    event = build_vendor_gate_review_required_event(
+        site_id="SITE1",
+        site_name="Alpha Tulsa 421 E 11th St",
+        run_id="run-1",
+        failure_reason="Report NOT ready to send. 1 raw template token(s).",
+        mutation_status="report_incomplete",
+        drive_folder_url="https://drive.google.com/drive/folders/abc123",
+        trace_url="https://drive.google.com/file/d/trace123",
+        created_at="2026-05-27T19:15:00+00:00",
+    )
+
+    assert event.event_type == "vendor_gate_review_required"
+    assert event.source_id == "run-1"
+    assert event.decision_required is True
+    assert (
+        event.requested_decision
+        == "review complete vendor inputs and repair DDR generation"
+    )
+
+    note = render_automation_event_note(event)
+
+    assert "Kind: vendor_gate_review_required" in note
+    assert "Decision required: yes" in note
+    assert "Mutation status: report_incomplete" in note
+    assert "Run ID: run-1" in note
+    assert (
+        "Required inputs: vendor SIR, vendor Building Inspection, RayCon Scenario JSON"
+        in note
+    )
+    assert "Failure reason: Report NOT ready to send. 1 raw template token(s)." in note
     assert "Drive folder: https://drive.google.com/drive/folders/abc123" in note
     assert "Trace: https://drive.google.com/file/d/trace123" in note

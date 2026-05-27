@@ -824,14 +824,106 @@ class TestProcessSitePipeline:
             {},
             "system prompt",
             settings,
+            p1_email="owner@example.com",
+            p1_name="Owner One",
         )
 
         assert result.status == "report_incomplete"
         mock_chat.assert_called()
         messages = [call.args[1] for call in mock_chat.call_args_list]
-        vendor_message = next(m for m in messages if "Human Intervention Needed" in m)
-        assert "Reason: Report NOT ready to send. 1 raw template token(s)." in vendor_message
+        vendor_message = next(m for m in messages if "vendor_gate_review_required" in m)
+        assert "Kind: vendor_gate_review_required" in vendor_message
+        assert (
+            "Failure reason: Report NOT ready to send. 1 raw template token(s)."
+            in vendor_message
+        )
         assert "0 tokens unresolved" not in vendor_message
+
+    @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_vendor_gate_alert_records_rhodes_note_when_owner_mentioned(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+        mock_rhodes_note,
+        mock_chat,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("VENDOR_GATE_ENABLED", "1")
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "sir_vendor": True,
+            "isp_found": False,
+            "inspection_found": True,
+            "inspection_vendor": True,
+            "raycon_scenario_found": True,
+            "report_exists": False,
+        }
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+            "trace": ReportTrace(
+                site_name="Alpha Tulsa 421 E 11th St",
+                started_at="2026-05-13T15:53:12+00:00",
+                events=[],
+                final_report_data={"exec.c_answer": "Yes"},
+            ),
+        }
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE-VENDOR",
+            "owner_notification": "mentioned",
+        }
+
+        async def fake_completeness(doc_id):
+            return {
+                "ready_to_send": False,
+                "unresolved_token_count": 0,
+                "unresolved_tokens": [],
+                "raw_template_token_count": 1,
+                "raw_template_tokens": ["INSERT_ANSWER"],
+                "pending_section_count": 0,
+                "summary": "Report NOT ready to send. 1 raw template token(s).",
+            }
+
+        mock_completeness.side_effect = fake_completeness
+        settings = _make_settings()
+        settings.google_chat_webhook_url = "https://chat.example/webhook"
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Tulsa 421 E 11th St",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Tulsa 421 E 11th St"],
+            {},
+            "system prompt",
+            settings,
+            p1_email="owner@example.com",
+            p1_name="Owner One",
+            site_id="SITE1",
+        )
+
+        assert result.status == "report_incomplete"
+        mock_rhodes_note.assert_called_once()
+        mock_chat.assert_not_called()
+        note_kwargs = mock_rhodes_note.call_args.kwargs
+        assert note_kwargs["site_id"] == "SITE1"
+        assert note_kwargs["owner_email"] == "owner@example.com"
+        assert "Kind: vendor_gate_review_required" in note_kwargs["body"]
+        assert (
+            "Failure reason: Report NOT ready to send. 1 raw template token(s)."
+            in note_kwargs["body"]
+        )
+        step = next(step for step in result.steps if step.step == "vendor_gate.alert")
+        assert step.status == "succeeded"
+        assert step.artifacts[0].metadata["event_type"] == "vendor_gate_review_required"
+        assert step.artifacts[0].metadata["rhodes_note_id"] == "NOTE-VENDOR"
 
     @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")

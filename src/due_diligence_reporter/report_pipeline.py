@@ -19,6 +19,7 @@ import anthropic
 from .automation_event import (
     build_dd_report_summary_event,
     build_source_review_required_event,
+    build_vendor_gate_review_required_event,
     render_automation_event_note,
 )
 from .classifier import (
@@ -1288,6 +1289,108 @@ def _notify_vendor_gate_extraction_failure(
             )
 
 
+def _record_vendor_gate_alert_step(
+    recorder: _RunRecorder,
+    settings: Settings,
+    site_title: str,
+    *,
+    drive_folder_url: str = "",
+    failure_reason: str = "",
+    trace_url: str = "",
+    site_id: str,
+    owner_user_id: str,
+    owner_email: str,
+    mutation_status: str,
+) -> None:
+    """Record a review event when complete vendor inputs fail to produce a report."""
+
+    started_at, started_monotonic = recorder.start()
+    event = build_vendor_gate_review_required_event(
+        site_id=site_id,
+        site_name=site_title,
+        run_id=recorder.run_id,
+        failure_reason=failure_reason,
+        mutation_status=mutation_status,
+        drive_folder_url=drive_folder_url,
+        trace_url=trace_url,
+    )
+    body = render_automation_event_note(event)
+    if event.site_id:
+        note_result = add_rhodes_site_note(
+            site_id=event.site_id,
+            body=body,
+            owner_user_id=owner_user_id,
+            owner_email=owner_email,
+        )
+    else:
+        note_result = {
+            "status": "skipped",
+            "reason": "missing_site_id",
+            "owner_notification": "none",
+        }
+
+    event_status: dict[str, Any] = {
+        "event_type": event.event_type,
+        "source_id": event.source_id,
+        "decision_required": event.decision_required,
+        **note_result,
+    }
+    should_alert_chat = (
+        note_result.get("status") != "created"
+        or note_result.get("owner_notification") != "mentioned"
+    )
+    chat_result: dict[str, Any] | None = None
+    if should_alert_chat:
+        chat_result = _post_google_chat_to_configured_webhooks(
+            settings.google_chat_webhook_url,
+            body,
+        )
+        event_status["google_chat"] = chat_result
+
+    artifact = ArtifactRef(
+        kind="rhodes_note",
+        name="DDR vendor gate AutomationEvent",
+        metadata=event_status,
+    )
+    note_status = str(note_result.get("status") or "")
+    chat_status = str((chat_result or {}).get("status") or "")
+    if note_status == "created" and chat_status not in {"failed", "skipped"}:
+        recorder.record(
+            "vendor_gate.alert",
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[artifact],
+        )
+        return
+    if note_status == "created" and not should_alert_chat:
+        recorder.record(
+            "vendor_gate.alert",
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[artifact],
+        )
+        return
+
+    message = str(note_result.get("error") or note_result.get("reason") or "unknown")
+    if should_alert_chat and chat_status in {"failed", "skipped"}:
+        message = f"{message}; Google Chat fallback {chat_status}"
+    recorder.record(
+        "vendor_gate.alert",
+        started_at,
+        started_monotonic,
+        "failed",
+        error=_pipeline_error(
+            recorder.run_id,
+            "vendor_gate.alert",
+            "vendor_gate_alert_failed",
+            message,
+        ),
+        artifacts=[artifact],
+    )
+
+
 def _resolve_readiness_result(
     site_title: str,
     readiness: dict[str, Any],
@@ -2156,12 +2259,17 @@ def process_site_pipeline(
             and full_report_inputs_present
             and generation_result.status == "generation_failed"
         ):
-            _notify_vendor_gate_extraction_failure(
-                settings.google_chat_webhook_url,
+            _record_vendor_gate_alert_step(
+                recorder,
+                settings,
                 site_title,
                 drive_folder_url=drive_folder_url,
                 failure_reason=generation_result.error or "",
                 trace_url=generation_result.trace_url or "",
+                site_id=recorder.site_id or site_id or "",
+                owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+                owner_email=p1_email or "",
+                mutation_status=generation_result.status,
             )
         _set_open_question_state(
             generation_result,
@@ -2245,12 +2353,17 @@ def process_site_pipeline(
                 f"{len(completeness_result.unresolved_tokens)} tokens "
                 "unresolved"
             )
-            _notify_vendor_gate_extraction_failure(
-                settings.google_chat_webhook_url,
+            _record_vendor_gate_alert_step(
+                recorder,
+                settings,
                 site_title,
                 drive_folder_url=drive_folder_url,
                 failure_reason=failure_reason,
                 trace_url=trace_url or "",
+                site_id=recorder.site_id or site_id or "",
+                owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+                owner_email=p1_email or "",
+                mutation_status=completeness_result.status,
             )
         _set_open_question_state(
             completeness_result,
