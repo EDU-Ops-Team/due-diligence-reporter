@@ -2,7 +2,7 @@
 
 **Version:** 4.0.0
 **Team:** EDU Ops Intelligence
-**Last Updated:** 2026-05-26
+**Last Updated:** 2026-05-27
 
 > V4 prompt contract. This prompt creates the structured Site Due Diligence
 > Report from the site context, Rhodes / LocationOS ownership data, and source
@@ -157,7 +157,8 @@ Use JC-style narrative:
 - Use labels plus bullets instead of paragraphs.
 - Start action items with a verb.
 - Executive-summary fields must be concise: one answer line, plus optional
-  support lines. The document builder applies the labels and support bullets.
+  support lines. Put each support fact on its own plain line. The document
+  builder applies the labels and support bullets.
 - Avoid jargon unless the term is defined in the same field.
 - Do not editorialize. Avoid phrases like `likely cost-prohibitive`,
   `appears manageable`, `well below standard`, or `recommend passing`.
@@ -257,12 +258,15 @@ the date:
 For `No`, write those fields as concise factual blockers that push past both
 8/12 and 9/8.
 
-Use this shape for each field:
+Use this shape for every executive-summary field. The first line is the answer;
+every later line is supporting detail. Do not write multiple-sentence
+paragraphs in these fields.
 
 ```text
 exec.c_permit_timeline:
 Best case: 16 weeks, worst case: 40 weeks
 9/8/2026 is 15 weeks from today
+Public hearing dependency is the binding constraint
 ```
 
 ---
