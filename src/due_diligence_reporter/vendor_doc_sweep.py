@@ -193,16 +193,12 @@ def _is_vendor_source(
     doc_type: str,
     m1_folder_id: str | None,
 ) -> bool:
-    try:
-        return is_vendor_sourced(
-            file_info,
-            gc=gc,
-            m1_folder_id=m1_folder_id,
-            doc_type=doc_type,
-        )
-    except Exception as exc:  # noqa: BLE001 - retry on next sweep
-        logger.warning("Provenance check failed for %s: %s", doc_type, exc)
-        return False
+    return is_vendor_sourced(
+        file_info,
+        gc=gc,
+        m1_folder_id=m1_folder_id,
+        doc_type=doc_type,
+    )
 
 
 def _folder_id_from_url(url: str) -> str:

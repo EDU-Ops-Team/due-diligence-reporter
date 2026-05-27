@@ -1,5 +1,66 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - DDR Remediation: Workflow Safety, Rhodes Retry, and Source-of-Truth Fixes
+
+Implemented the first remediation pass from the `$check` / `$qplan` review on
+branch `codex/inbox-rhodes-auto-resolve`.
+
+Current behavior:
+
+- Workflow dispatch inputs are passed through environment variables and Bash
+  argv arrays in `daily-dd-check.yml`, `vendor-doc-republish-sweep.yml`, and
+  `reprocess-mislabeled.yml`; run blocks no longer interpolate manual inputs
+  directly into shell command strings.
+- MCP Hive publish now verifies `ANTHROPIC_API_KEY` and `RHODES_API_KEY`,
+  advertises the runtime env names in the custom payload, and refuses to package
+  generated secret/state files such as `.env`, `.gcp-saved-tokens.json`,
+  `credentials/`, `.dd_republish_state.json`,
+  `.rhodes_registration_retry_state.json`, and RayCon runtime state.
+- Inbox Drive filing remains primary. Rhodes document registration failures are
+  recorded in `.rhodes_registration_retry_state.json`, retried on later scans,
+  and only become manual review after the original attempt plus two retries.
+- Inbox scan workflow restores/saves the Rhodes registration retry state via
+  Actions cache so scheduled runs can retry failed Rhodes links without
+  re-uploading the Drive file.
+- `scripts/daily_dd_check.py` now uses active Rhodes site records as the daily
+  roster, passes `site_address`, Rhodes site ID, P1 owner context, and created
+  date into `process_site_pipeline`, and fails closed when the Rhodes roster is
+  unavailable.
+- Open-question closures require the triggering source event type to match the
+  question's expected source type.
+- Vendor provenance errors surface as site error rows instead of being reported
+  as `no_core_sources_found`.
+- DD republish dedup state is written only after `report_created`; failed or
+  incomplete reruns retry on a later scan instead of being suppressed.
+- RayCon scenario publishing now requires Rhodes site identity and address, and
+  compares parsed Drive modified timestamps instead of raw strings.
+- `.env.example` and `docs/process/HOW-IT-WORKS.md` now list current
+  Rhodes/Anthropic/inbox-label requirements and remove stale Pricing/template
+  requirements.
+
+Verification completed:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-remediation-focused tests/test_workflow_contracts.py tests/test_docs_env_contract.py tests/test_daily_dd_check.py tests/test_inbox_scanner.py::TestRhodesDocumentRegistration tests/test_open_questions.py tests/test_vendor_doc_sweep.py tests/test_dd_republish.py::TestVendorSIRArrival tests/test_raycon_followup.py::TestSafetyNetDispatch -q
+uv run pytest --basetemp C:\tmp\ddr-remediation-affected tests/test_rhodes.py tests/test_inbox_scanner.py tests/test_scan_inbox_e2e.py tests/test_daily_dd_check.py tests/test_workflow_contracts.py tests/test_docs_env_contract.py tests/test_open_questions.py tests/test_vendor_doc_sweep.py tests/test_dd_republish.py tests/test_raycon_client.py tests/test_raycon_followup.py -q
+uv run ruff check src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\open_questions.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\dd_republish.py scripts\scan_inbox.py scripts\daily_dd_check.py scripts\raycon_followup.py tests\test_workflow_contracts.py tests\test_docs_env_contract.py tests\test_daily_dd_check.py tests\test_inbox_scanner.py tests\test_open_questions.py tests\test_vendor_doc_sweep.py tests\test_dd_republish.py tests\test_raycon_followup.py
+uv run mypy src/
+git diff --check
+```
+
+Results:
+
+- Focused remediation tests: 35 passed.
+- Affected suite: 246 passed.
+- Focused Ruff: all checks passed.
+- Mypy: no issues in 31 source files.
+- `git diff --check`: no whitespace errors; only Windows LF-to-CRLF warnings.
+
+Deferred:
+
+- Portfolio/Rhodes N+1 and full-roster performance cleanup is intentionally
+  out of scope for this branch per Greg's direction.
+
 ## 2026-05-27 - RayCon Follow-up Rhodes Site Address Source
 
 Updated PR 107 after merging `origin/main` into

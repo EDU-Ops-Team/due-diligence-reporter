@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1518,6 +1519,13 @@ class TestBlockPlanDownstream:
 class TestRhodesDocumentRegistration:
     """Successful Drive uploads should be linked to Rhodes without blocking filing."""
 
+    @staticmethod
+    def _settings() -> SimpleNamespace:
+        return SimpleNamespace(
+            inbox_internal_sender_addresses="",
+            inbox_internal_sender_domains="trilogy.com",
+        )
+
     @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
@@ -1573,7 +1581,7 @@ class TestRhodesDocumentRegistration:
         result = process_email(
             gc,
             "msg_rhodes",
-            MagicMock(),
+            self._settings(),
             "label_123",
             "review_123",
             site_records=[{"id": "SITE1", "title": "Alpha Keller", "customFields": []}],
@@ -1590,6 +1598,151 @@ class TestRhodesDocumentRegistration:
         assert kwargs["drive_file"]["id"] == "isp_drive_id"
         assert kwargs["message_id"] == "msg_rhodes"
         assert kwargs["attachment"]["attachment_id"] == "att_isp"
+
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
+    @patch("due_diligence_reporter.inbox_scanner._register_uploaded_document_in_rhodes")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_rhodes_registration_failure_records_retry_without_blocking_drive_filing(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_register,
+        mock_ping,
+        mock_resolve_m1,
+        mock_build_summary,
+    ):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_rhodes_retry",
+            subject="Alpha Keller ISP",
+            sender="vendor@example.com",
+            effective_sender="vendor@example.com",
+            body_snippet="",
+            label_ids=[],
+            attachments=[
+                {
+                    "filename": "Alpha Keller ISP.pdf",
+                    "attachment_id": "att_isp",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        mock_classify.return_value = ("isp", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "M1")
+        mock_build_summary.return_value = {
+            "id": "SITE1",
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+        }
+        mock_register.return_value = {
+            "status": "failed",
+            "reason": "rhodes_error",
+            "error": "timeout",
+        }
+        mock_ping.return_value = {"status": "accepted"}
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"pdf"
+        gc.upload_file_to_folder.return_value = {
+            "id": "isp_drive_id",
+            "webViewLink": "https://drive.google.com/file/d/isp_drive_id",
+        }
+        retry_state: dict[str, dict[str, object]] = {}
+
+        result = process_email(
+            gc,
+            "msg_rhodes_retry",
+            self._settings(),
+            "label_123",
+            "review_123",
+            site_records=[{"id": "SITE1", "title": "Alpha Keller", "customFields": []}],
+            rhodes_retry_state=retry_state,
+        )
+
+        assert result["uploaded"][0]["rhodes_registration"]["status"] == "failed"
+        assert result["manual_review"] == []
+        assert result["marked"] is True
+        assert list(retry_state.values())[0]["attempts"] == 1
+        assert list(retry_state.values())[0]["drive_file_id"] == "isp_drive_id"
+
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
+    @patch("due_diligence_reporter.inbox_scanner._register_uploaded_document_in_rhodes")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_rhodes_registration_retry_exhaustion_marks_manual_review(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_register,
+        mock_ping,
+        mock_resolve_m1,
+        mock_build_summary,
+    ):
+        drive_filename = f"{datetime.now().strftime('%b %d %Y')} - Alpha Keller ISP.pdf"
+        retry_state = {
+            "SITE1|isp|Alpha Keller ISP.pdf": {
+                "attempts": 2,
+                "site_id": "SITE1",
+                "site_title": "Alpha Keller",
+                "doc_type": "isp",
+                "drive_filename": drive_filename,
+                "original_filename": "Alpha Keller ISP.pdf",
+                "drive_file_id": "isp_drive_id",
+                "drive_link": "https://drive.google.com/file/d/isp_drive_id",
+            }
+        }
+        mock_extract.return_value = MagicMock(
+            message_id="msg_rhodes_retry_exhausted",
+            subject="Alpha Keller ISP",
+            sender="vendor@example.com",
+            effective_sender="vendor@example.com",
+            body_snippet="",
+            label_ids=[],
+            attachments=[
+                {
+                    "filename": "Alpha Keller ISP.pdf",
+                    "attachment_id": "att_isp",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        mock_classify.return_value = ("isp", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "M1")
+        mock_build_summary.return_value = {
+            "id": "SITE1",
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+        }
+        mock_register.return_value = {
+            "status": "failed",
+            "reason": "rhodes_error",
+            "error": "still down",
+        }
+        mock_ping.return_value = {"status": "accepted"}
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = True
+
+        result = process_email(
+            gc,
+            "msg_rhodes_retry_exhausted",
+            self._settings(),
+            "label_123",
+            "review_123",
+            site_records=[{"id": "SITE1", "title": "Alpha Keller", "customFields": []}],
+            rhodes_retry_state=retry_state,
+        )
+
+        assert result["uploaded"][0]["retry_existing_upload"] is True
+        assert result["manual_review"][0]["reason"] == "rhodes_registration_retry_exhausted"
+        assert list(retry_state.values())[0]["attempts"] == 3
 
     def test_build_scan_summary_includes_rhodes_registration_counts(self):
         from due_diligence_reporter.inbox_scanner import build_scan_summary

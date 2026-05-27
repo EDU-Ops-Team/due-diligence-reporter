@@ -9,10 +9,12 @@ or ISP). No site matching required — doc_type alone routes the file.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
 from .classifier import classify_by_content_llm, classify_document
@@ -56,6 +58,10 @@ AUTO_FILE_CONFIDENCE = 0.7
 SUPPORTED_DOC_TYPES = {"sir", "building_inspection", "isp", "block_plan"}
 
 SITE_MATCH_TEXT_LIMIT = 12_000
+RHODES_REGISTRATION_RETRY_LIMIT = 2
+RHODES_REGISTRATION_RETRY_STATE_PATH = (
+    Path(__file__).resolve().parents[2] / ".rhodes_registration_retry_state.json"
+)
 
 # Legacy: doc_type -> Settings attr for the dedicated shared Drive folder.
 # As of the M1-routing change, the live scanner uploads all supported doc
@@ -100,6 +106,93 @@ def _manual_review_item(
     if error:
         item["error"] = error
     return item
+
+
+def load_rhodes_retry_state(
+    path: Path = RHODES_REGISTRATION_RETRY_STATE_PATH,
+) -> dict[str, dict[str, Any]]:
+    """Load persisted Rhodes registration retry state."""
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - corrupt state should not block filing
+        logger.warning("Ignoring unreadable Rhodes retry state at %s: %s", path, exc)
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(key): value
+        for key, value in payload.items()
+        if isinstance(value, dict)
+    }
+
+
+def save_rhodes_retry_state(
+    state: dict[str, dict[str, Any]],
+    path: Path = RHODES_REGISTRATION_RETRY_STATE_PATH,
+) -> None:
+    """Persist Rhodes registration retry state."""
+    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _rhodes_retry_key(site_id: str | None, doc_type: str, original_filename: str) -> str:
+    return "|".join(
+        (
+            str(site_id or "").strip(),
+            str(doc_type or "").strip(),
+            str(original_filename or "").strip(),
+        )
+    )
+
+
+def _record_rhodes_registration_attempt(
+    retry_state: dict[str, dict[str, Any]] | None,
+    *,
+    retry_key: str,
+    registration: dict[str, Any],
+    site_summary: dict[str, Any],
+    doc_type: str,
+    drive_file: dict[str, Any],
+    drive_filename: str,
+    original_filename: str,
+) -> bool:
+    """Update retry state and return True when manual review is now required."""
+    if retry_state is None:
+        return False
+    status = str(registration.get("status") or "").strip()
+    if status in {"registered", "already_registered", "skipped"}:
+        retry_state.pop(retry_key, None)
+        return False
+    if status != "failed":
+        return False
+
+    previous = retry_state.get(retry_key) or {}
+    attempts = int(previous.get("attempts") or 0) + 1
+    retry_state[retry_key] = {
+        "attempts": attempts,
+        "site_id": str(site_summary.get("id") or site_summary.get("site_id") or "").strip(),
+        "site_title": str(site_summary.get("title") or "").strip(),
+        "doc_type": doc_type,
+        "drive_filename": drive_filename,
+        "original_filename": original_filename,
+        "drive_file_id": str(drive_file.get("id") or "").strip(),
+        "drive_link": str(drive_file.get("webViewLink") or "").strip(),
+        "last_reason": str(registration.get("reason") or "").strip(),
+        "last_error": str(registration.get("error") or "").strip(),
+        "last_attempt_at": datetime.now(UTC).isoformat(),
+    }
+    registration["retry_attempts"] = attempts
+    registration["retry_limit"] = RHODES_REGISTRATION_RETRY_LIMIT
+    registration["retry_exhausted"] = attempts > RHODES_REGISTRATION_RETRY_LIMIT
+    return attempts > RHODES_REGISTRATION_RETRY_LIMIT
+
+
+def _drive_file_from_retry_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(entry.get("drive_file_id") or "").strip(),
+        "webViewLink": str(entry.get("drive_link") or "").strip(),
+    }
 
 
 def _custom_field_value(record: dict[str, Any], names: set[str]) -> str:
@@ -663,6 +756,7 @@ def scan_inbox(
     *,
     dry_run: bool = False,
     dd_republish_callback: Any = None,
+    rhodes_retry_state: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Top-level orchestrator: scan Gmail, classify, upload, mark processed.
 
@@ -727,6 +821,7 @@ def scan_inbox(
                 dry_run=dry_run,
                 internal_skip_label_id=internal_skip_label_id,
                 dd_republish_callback=dd_republish_callback,
+                rhodes_retry_state=rhodes_retry_state,
             )
             if email_result.get("internal_skipped"):
                 results["internal_skipped"] += 1
@@ -772,6 +867,7 @@ def process_email(
     internal_skip_label_id: str | None = None,
     dry_run: bool = False,
     dd_republish_callback: Any = None,
+    rhodes_retry_state: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Process a single email: classify attachments by filename, upload, mark done.
 
@@ -1022,6 +1118,8 @@ def process_email(
             if site_title
             else _prefix_original_filename(filename)
         )
+        rhodes_retry_key = _rhodes_retry_key(matched_site_id, doc_type, filename)
+        pending_rhodes_retry = (rhodes_retry_state or {}).get(rhodes_retry_key)
 
         # Plumb the matched site's address into the upload payload so
         # downstream readiness flips can resolve the canonical Rebl slug
@@ -1047,6 +1145,56 @@ def process_email(
 
         drive_file: dict[str, Any] | None = None
         rerun_existing_block_plan = False
+        if pending_rhodes_retry and str(pending_rhodes_retry.get("drive_file_id") or "").strip():
+            drive_file = _drive_file_from_retry_entry(pending_rhodes_retry)
+            uploaded.append(
+                {
+                    "original_filename": filename,
+                    "drive_filename": str(
+                        pending_rhodes_retry.get("drive_filename") or drive_filename
+                    ),
+                    "doc_type": doc_type,
+                    "site_title": site_title,
+                    "site_address": site_address,
+                    "matched_site_id": matched_site_id,
+                    "drive_file_id": drive_file.get("id"),
+                    "drive_link": drive_file.get("webViewLink"),
+                    "retry_existing_upload": True,
+                }
+            )
+            registration = _register_uploaded_document_in_rhodes(
+                site_summary=site_summary,
+                ddr_doc_type=doc_type,
+                drive_file=drive_file,
+                drive_filename=str(pending_rhodes_retry.get("drive_filename") or drive_filename),
+                original_filename=filename,
+                message_id=message_id,
+                attachment=att,
+            )
+            uploaded[-1]["rhodes_registration"] = registration
+            if _record_rhodes_registration_attempt(
+                rhodes_retry_state,
+                retry_key=rhodes_retry_key,
+                registration=registration,
+                site_summary=site_summary,
+                doc_type=doc_type,
+                drive_file=drive_file,
+                drive_filename=str(pending_rhodes_retry.get("drive_filename") or drive_filename),
+                original_filename=filename,
+            ):
+                manual_review.append(
+                    _manual_review_item(
+                        filename=filename,
+                        doc_type=doc_type,
+                        confidence=confidence,
+                        email_subject=metadata.subject,
+                        site_title=site_title,
+                        reason="rhodes_registration_retry_exhausted",
+                        error=str(registration.get("error") or registration.get("reason") or ""),
+                    )
+                )
+                review_needed = True
+            continue
         if gc.file_exists_in_folder(target_folder_id, drive_filename):
             if doc_type != "block_plan":
                 logger.info("File '%s' already exists in folder - skipping upload", drive_filename)
@@ -1144,6 +1292,32 @@ def process_email(
                     message_id=message_id,
                     attachment=att,
                 )
+                if _record_rhodes_registration_attempt(
+                    rhodes_retry_state,
+                    retry_key=rhodes_retry_key,
+                    registration=uploaded[-1]["rhodes_registration"],
+                    site_summary=site_summary,
+                    doc_type=doc_type,
+                    drive_file=drive_file,
+                    drive_filename=drive_filename,
+                    original_filename=filename,
+                ):
+                    manual_review.append(
+                        _manual_review_item(
+                            filename=filename,
+                            doc_type=doc_type,
+                            confidence=confidence,
+                            email_subject=metadata.subject,
+                            site_title=site_title,
+                            reason="rhodes_registration_retry_exhausted",
+                            error=str(
+                                uploaded[-1]["rhodes_registration"].get("error")
+                                or uploaded[-1]["rhodes_registration"].get("reason")
+                                or ""
+                            ),
+                        )
+                    )
+                    review_needed = True
 
                 folder_ping = _run_doc_arrival_folder_ping(
                     gc,
