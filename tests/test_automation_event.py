@@ -3,6 +3,7 @@ from __future__ import annotations
 from due_diligence_reporter.automation_event import (
     build_dd_report_summary_event,
     build_document_registration_failed_event,
+    build_source_review_required_event,
     render_automation_event_note,
 )
 
@@ -133,3 +134,50 @@ def test_dd_report_summary_event_renders_open_and_closed_items() -> None:
     assert "Open item 1: Confirm zoning use from the vendor SIR" in note
     assert "Closed item count: 1" in note
     assert "Closed item 1: Resolve construction timeline from RayCon" in note
+
+
+def test_source_review_required_event_renders_source_issues() -> None:
+    event = build_source_review_required_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        run_id="run-1",
+        issues=[
+            {
+                "doc_type": "SIR",
+                "file_name": "Alpha Keller SIR.pdf",
+                "problem": "Failed to read document",
+            },
+            {
+                "doc_type": "Building Inspection",
+                "file_name": "Alpha Keller Building Inspection.pdf",
+                "problem": "Document returned no text",
+            },
+        ],
+        drive_folder_url="https://drive.google.com/drive/folders/abc123",
+        trace_url="https://drive.google.com/file/d/trace123",
+        created_at="2026-05-27T18:45:00+00:00",
+    )
+
+    assert event.event_type == "source_review_required"
+    assert event.source_id == "run-1"
+    assert event.decision_required is True
+    assert event.requested_decision == "review unreadable DDR source documents"
+
+    note = render_automation_event_note(event)
+
+    assert "Kind: source_review_required" in note
+    assert "Decision required: yes" in note
+    assert "Mutation status: source_read_issue" in note
+    assert "Run ID: run-1" in note
+    assert "Source issue count: 2" in note
+    assert (
+        "Source issue 1: SIR | Alpha Keller SIR.pdf | Problem: Failed to read document"
+        in note
+    )
+    assert (
+        "Source issue 2: Building Inspection | Alpha Keller Building Inspection.pdf | "
+        "Problem: Document returned no text"
+        in note
+    )
+    assert "Drive folder: https://drive.google.com/drive/folders/abc123" in note
+    assert "Trace: https://drive.google.com/file/d/trace123" in note

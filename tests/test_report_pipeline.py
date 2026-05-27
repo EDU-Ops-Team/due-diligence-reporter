@@ -1398,12 +1398,86 @@ class TestSourceReadAlerts:
             {},
             "system prompt",
             settings,
+            p1_email="owner@example.com",
+            p1_name="Owner One",
         )
 
         assert result.status == "generation_failed"
         assert result.trace_url is None
         mock_chat.assert_called_once()
         message = mock_chat.call_args.args[1]
-        assert "DD Source Review Needed -- Alpha Keller" in message
-        assert "SIR" in message
+        assert "Kind: source_review_required" in message
+        assert "Site ID: unknown" in message
+        assert "Source issue 1: SIR | Alpha Keller SIR.pdf" in message
         assert "Failed to read document" in message
+
+    @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_generation_failure_records_source_review_in_rhodes(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_rhodes_note,
+        mock_chat,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        mock_agent.return_value = {
+            "success": False,
+            "error": "Agent completed without creating a report",
+            "trace": ReportTrace(
+                site_name="Alpha Keller",
+                started_at="2026-04-01T00:00:00+00:00",
+                events=[
+                    TraceEvent(
+                        timestamp="2026-04-01T00:00:01+00:00",
+                        event_type="tool_call",
+                        tool_name="read_drive_document",
+                        input_summary={"file_name": "Alpha Keller SIR.pdf"},
+                        output_summary={"status": "error", "error": "Failed to read document"},
+                    ),
+                ],
+            ),
+        }
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE-SOURCE",
+            "owner_notification": "mentioned",
+        }
+        settings = _make_settings()
+        settings.google_chat_webhook_url = "https://chat.example/webhook"
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            settings,
+            p1_email="owner@example.com",
+            p1_name="Owner One",
+            site_id="SITE1",
+        )
+
+        assert result.status == "generation_failed"
+        mock_rhodes_note.assert_called_once()
+        mock_chat.assert_not_called()
+        note_kwargs = mock_rhodes_note.call_args.kwargs
+        assert note_kwargs["site_id"] == "SITE1"
+        assert note_kwargs["owner_email"] == "owner@example.com"
+        assert "Kind: source_review_required" in note_kwargs["body"]
+        assert "Decision required: yes" in note_kwargs["body"]
+        assert "Source issue 1: SIR | Alpha Keller SIR.pdf" in note_kwargs["body"]
+        assert "Failed to read document" in note_kwargs["body"]
+        step = next(step for step in result.steps if step.step == "source.alert")
+        assert step.status == "failed"
+        assert step.artifacts[0].metadata["event_type"] == "source_review_required"
+        assert step.artifacts[0].metadata["rhodes_note_id"] == "NOTE-SOURCE"

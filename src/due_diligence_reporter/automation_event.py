@@ -159,6 +159,42 @@ def build_dd_report_summary_event(
     )
 
 
+def build_source_review_required_event(
+    *,
+    site_id: str,
+    site_name: str,
+    run_id: str,
+    issues: list[dict[str, str]],
+    drive_folder_url: str = "",
+    trace_url: str = "",
+    created_at: str | None = None,
+) -> AutomationEvent:
+    """Build the DDR source-read manual review event."""
+
+    details = {
+        "Source issue count": str(len(issues)),
+        "Drive folder": drive_folder_url.strip(),
+        "Trace": trace_url.strip(),
+    }
+    details.update(_indexed_source_issue_details(issues))
+
+    return AutomationEvent(
+        source_system="due-diligence-reporter",
+        source_id=run_id,
+        site_id=site_id.strip(),
+        site_name=site_name.strip() or "Unknown site",
+        event_type="source_review_required",
+        artifact_ids={
+            "Run ID": run_id,
+        },
+        decision_required=True,
+        requested_decision="review unreadable DDR source documents",
+        mutation_status="source_read_issue",
+        details=details,
+        created_at=created_at or datetime.now(UTC).isoformat(),
+    )
+
+
 def _format_owner(site_summary: dict[str, Any]) -> str:
     name = str(site_summary.get("p1_assignee_name") or "").strip()
     email = str(site_summary.get("p1_assignee_email") or "").strip()
@@ -187,4 +223,23 @@ def _indexed_item_details(
         text = str(item.get("display_text") or item.get("text") or "").strip()
         if text:
             details[f"{label} {index}"] = text
+    return details
+
+
+def _indexed_source_issue_details(
+    issues: list[dict[str, str]],
+    *,
+    limit: int = 5,
+) -> dict[str, str]:
+    details: dict[str, str] = {}
+    for index, issue in enumerate(issues[:limit], start=1):
+        doc_type = str(issue.get("doc_type") or "Source document").strip()
+        file_name = str(issue.get("file_name") or "").strip()
+        problem = str(issue.get("problem") or "").strip()
+        parts = [doc_type]
+        if file_name and file_name != doc_type:
+            parts.append(file_name)
+        if problem:
+            parts.append(f"Problem: {problem}")
+        details[f"Source issue {index}"] = " | ".join(parts)
     return details

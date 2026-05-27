@@ -16,7 +16,11 @@ from typing import Any, cast
 
 import anthropic
 
-from .automation_event import build_dd_report_summary_event, render_automation_event_note
+from .automation_event import (
+    build_dd_report_summary_event,
+    build_source_review_required_event,
+    render_automation_event_note,
+)
 from .classifier import (
     AI_GENERATED_DOC_TYPES,
     SOURCE_FOLDER_DOC_TYPES,
@@ -1284,44 +1288,6 @@ def _notify_vendor_gate_extraction_failure(
             )
 
 
-def _notify_source_read_issues(
-    webhook_url: str,
-    site_title: str,
-    trace: ReportTrace | None,
-    *,
-    drive_folder_url: str = "",
-    trace_url: str = "",
-) -> None:
-    """Alert the team when SIR or Building Inspection reads fail."""
-    issues = _extract_source_read_issues(trace)
-    if not webhook_url or not issues:
-        return
-
-    lines = [
-        f"DD Source Review Needed -- {site_title}",
-        "Issue reading required source document(s). Please review.",
-    ]
-    for issue in issues:
-        lines.append(f"- {issue['doc_type']}: {issue['file_name']}")
-        lines.append(f"  Problem: {issue['problem']}")
-    if drive_folder_url:
-        lines.append(f"Drive: {drive_folder_url}")
-    if trace_url:
-        lines.append(f"Trace: {trace_url}")
-    msg = "\n".join(lines)
-
-    for url in [u.strip() for u in webhook_url.split(",") if u.strip()]:
-        try:
-            post_google_chat_message(url, msg)
-        except Exception as e:
-            logger.error(
-                "Failed to post source review alert for '%s' to %s: %s",
-                site_title,
-                url[:60],
-                e,
-            )
-
-
 def _resolve_readiness_result(
     site_title: str,
     readiness: dict[str, Any],
@@ -1650,17 +1616,54 @@ def _record_source_alert_step(
     *,
     drive_folder_url: str,
     trace_url: str,
+    site_id: str,
+    owner_user_id: str,
+    owner_email: str,
 ) -> None:
     started_at, started_monotonic = recorder.start()
     issues = _extract_source_read_issues(trace)
-    _notify_source_read_issues(
-        settings.google_chat_webhook_url,
-        site_title,
-        trace,
-        drive_folder_url=drive_folder_url,
-        trace_url=trace_url,
-    )
     if issues:
+        event = build_source_review_required_event(
+            site_id=site_id,
+            site_name=site_title,
+            run_id=recorder.run_id,
+            issues=issues,
+            drive_folder_url=drive_folder_url,
+            trace_url=trace_url,
+        )
+        body = render_automation_event_note(event)
+        if event.site_id:
+            note_result = add_rhodes_site_note(
+                site_id=event.site_id,
+                body=body,
+                owner_user_id=owner_user_id,
+                owner_email=owner_email,
+            )
+        else:
+            note_result = {
+                "status": "skipped",
+                "reason": "missing_site_id",
+                "owner_notification": "none",
+            }
+        event_status: dict[str, Any] = {
+            "event_type": event.event_type,
+            "source_id": event.source_id,
+            "decision_required": event.decision_required,
+            **note_result,
+        }
+        if (
+            note_result.get("status") != "created"
+            or note_result.get("owner_notification") != "mentioned"
+        ):
+            event_status["google_chat"] = _post_google_chat_to_configured_webhooks(
+                settings.google_chat_webhook_url,
+                body,
+            )
+        artifact = ArtifactRef(
+            kind="rhodes_note",
+            name="DDR source review AutomationEvent",
+            metadata=event_status,
+        )
         recorder.record(
             "source.alert",
             started_at,
@@ -1672,6 +1675,7 @@ def _record_source_alert_step(
                 "source_read_issue",
                 f"{len(issues)} required source document read issue(s)",
             ),
+            artifacts=[artifact],
         )
     else:
         recorder.record("source.alert", started_at, started_monotonic, "succeeded")
@@ -2140,6 +2144,9 @@ def process_site_pipeline(
             generation_result.trace,
             drive_folder_url=drive_folder_url,
             trace_url=generation_result.trace_url or "",
+            site_id=recorder.site_id or site_id or "",
+            owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+            owner_email=p1_email or "",
         )
         # First-round publishing can proceed before every full-report
         # vendor/RayCon input is present. Escalate only when the full input
@@ -2197,6 +2204,9 @@ def process_site_pipeline(
         agent_result.get("trace"),
         drive_folder_url=drive_folder_url,
         trace_url=trace_url or "",
+        site_id=recorder.site_id or site_id or "",
+        owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+        owner_email=p1_email or "",
     )
 
     started_at, started_monotonic = recorder.start()

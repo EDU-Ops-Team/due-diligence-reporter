@@ -1,5 +1,63 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - DDR Source Review Rhodes Events
+
+Confirmed the previous report-outcome PR was merged:
+
+- `due-diligence-reporter` PR #120 merged at `d14acd3`.
+
+Continued Phase 4 record-completion work with a narrow source-read alert
+slice.
+
+Branch: `codex/ddr-source-alert-rhodes-events`
+
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/121
+
+Implementation commit: `d2a3582` (`Record source review alerts in Rhodes`)
+
+Changed:
+
+- Added a DDR `source_review_required` `AutomationEvent v1` builder for
+  unreadable SIR / Building Inspection traces.
+- `source.alert` now writes the source-review event to a Rhodes site note when
+  the pipeline knows the site ID.
+- The note mentions the P1 DRI when Rhodes can resolve the owner from context
+  or email.
+- Google Chat remains the fallback when the site is unknown, the Rhodes note
+  write fails, or no owner can be mentioned.
+- The failed `source.alert` step now carries a Rhodes-event artifact so the run
+  manifest points back to the system-of-record write attempt.
+- Updated `docs/process/HOW-IT-WORKS.md`.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-source-alert-events-focused2 tests/test_automation_event.py tests/test_report_pipeline.py -q
+uv run ruff check src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\report_pipeline.py tests\test_automation_event.py tests\test_report_pipeline.py
+uv run mypy src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\report_pipeline.py
+uv run pytest --basetemp C:\tmp\ddr-source-alert-events-broad2 tests/test_automation_event.py tests/test_report_pipeline.py tests/test_dd_republish.py tests/test_rhodes.py -q
+uv run mypy src/
+git diff --check
+git diff --cached --check
+```
+
+Results:
+
+- Focused event/report pipeline suite: 45 passed.
+- Focused Ruff: passed.
+- Focused Mypy: no issues in 2 source files.
+- Broader event/report/republish/Rhodes suite: 94 passed.
+- Full source Mypy: no issues in 37 source files.
+- Diff checks: passed with expected Windows LF-to-CRLF warnings and the
+  existing user-level ignore permission warning only.
+
+Next:
+
+- Wait for CI/review on PR #121.
+- After merge, continue with the next alert-only/manual-review path, likely the
+  vendor-gate extraction failure alert, or start the shared Rhodes adapter
+  extraction now that the event patterns are repeated.
+
 ## 2026-05-27 - DDR Report Outcome Rhodes Events
 
 Confirmed the previous Drive-to-Rhodes reconciliation PR was merged:
