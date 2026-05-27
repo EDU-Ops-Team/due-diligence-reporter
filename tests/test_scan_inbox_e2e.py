@@ -147,7 +147,7 @@ def _patch_externals(monkeypatch):
     monkeypatch.setenv("EMAIL_APP_PASSWORD", "apppass")
     monkeypatch.setenv("SIR_NOTIFICATION_RECIPIENTS", "team@example.com")
     monkeypatch.setenv("CDS_NOTIFICATION_RECIPIENTS", "cds@example.com")
-    monkeypatch.setattr(f"{_MODULE}.list_rhodes_site_records", lambda: [])
+    monkeypatch.setattr(f"{_MODULE}.list_rhodes_site_records", lambda status="active": [])
 
 
 # ---------------------------------------------------------------------------
@@ -184,13 +184,12 @@ class TestRhodesSiteRecords:
                 "drive_folder_url": "https://drive.google.com/drive/folders/root",
             }
         ]
-        monkeypatch.setattr(
-            f"{_MODULE}.list_rhodes_site_records",
-            lambda: rhodes_records,
-        )
+        mock_list_rhodes = MagicMock(return_value=rhodes_records)
+        monkeypatch.setattr(f"{_MODULE}.list_rhodes_site_records", mock_list_rhodes)
 
         main(scan_only=True)
 
+        mock_list_rhodes.assert_called_once_with(status=None)
         assert mock_scan.call_args.args[1] == rhodes_records
 
 

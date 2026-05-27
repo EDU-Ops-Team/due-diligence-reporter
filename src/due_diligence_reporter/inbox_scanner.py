@@ -25,8 +25,8 @@ from .m1_lookup import (
 from .rhodes import register_rhodes_document_for_upload
 from .utils import (
     escape_html_text,
-    extract_city_from_address,
     extract_text_from_pdf_bytes,
+    score_site_match_strength,
     send_email,
 )
 
@@ -54,6 +54,8 @@ AUTO_FILE_CONFIDENCE = 0.7
 
 # Doc types we handle (others are skipped silently)
 SUPPORTED_DOC_TYPES = {"sir", "building_inspection", "isp", "block_plan"}
+
+SITE_MATCH_TEXT_LIMIT = 12_000
 
 # Legacy: doc_type -> Settings attr for the dedicated shared Drive folder.
 # As of the M1-routing change, the live scanner uploads all supported doc
@@ -629,6 +631,31 @@ def _classify_inbox_attachment(
     return doc_type, confidence, file_bytes
 
 
+def _is_summer_camp_document(filename: str, metadata: EmailMetadata) -> bool:
+    haystack = f"{filename} {metadata.subject} {metadata.body_snippet}".lower()
+    return "summer camp" in haystack
+
+
+def _extract_attachment_text_for_site_match(
+    gc: GoogleClient,
+    message_id: str,
+    attachment: dict[str, Any],
+    file_bytes: bytes | None,
+) -> tuple[str, bytes | None]:
+    """Return PDF text for fallback site matching without failing the scan."""
+    filename = str(attachment.get("filename") or "")
+    if not filename.lower().endswith(".pdf"):
+        return "", file_bytes
+    try:
+        if file_bytes is None:
+            file_bytes = _get_attachment_bytes(gc, message_id, attachment)
+        text = extract_text_from_pdf_bytes(file_bytes)
+    except Exception as e:
+        logger.warning("Inbox PDF site-match text extraction failed for '%s': %s", filename, e)
+        return "", file_bytes
+    return text[:SITE_MATCH_TEXT_LIMIT], file_bytes
+
+
 def scan_inbox(
     gc: GoogleClient,
     site_records: list[dict[str, Any]] | None,
@@ -857,6 +884,31 @@ def process_email(
             skipped += 1
             review_needed = True
             continue
+
+        if matched_record is None and _is_summer_camp_document(filename, metadata):
+            logger.info(
+                "Skipping summer camp document '%s' - summer camps do not have Rhodes sites",
+                filename,
+            )
+            skipped += 1
+            continue
+
+        if matched_record is None:
+            attachment_text, file_bytes = _extract_attachment_text_for_site_match(
+                gc,
+                message_id,
+                att,
+                file_bytes,
+            )
+            if attachment_text:
+                matched_record = _match_attachment_to_site(
+                    filename,
+                    metadata,
+                    site_records,
+                    attachment_text=attachment_text,
+                )
+                site_title = matched_record.get("title") if matched_record else None
+                matched_site_id = matched_record.get("id") if matched_record else None
 
         if matched_record is None:
             logger.warning(
@@ -1226,46 +1278,29 @@ def _prefix_original_filename(filename: str) -> str:
     return f"{date_str} - {filename}"
 
 
-# _extract_city_from_address moved to utils.py (imported above)
-
-
-def _site_match_score(filename: str, subject: str, record: dict[str, Any]) -> int:
+def _site_match_score(
+    filename: str,
+    subject: str,
+    record: dict[str, Any],
+    *,
+    body_snippet: str = "",
+    attachment_text: str = "",
+) -> int:
     """Compute a deterministic match score between an attachment and a site record."""
-    haystack = f"{filename} {subject}".lower()
+    haystack = f"{filename} {subject} {body_snippet} {attachment_text}"
     title = str(record.get("title") or record.get("name") or "").strip()
     if not title:
         return 0
-
-    score = 0
-    title_lower = title.lower()
-    if title_lower in haystack:
-        score += 100
-
     address = _record_address(record)
-    city = extract_city_from_address(address)
-    if city and city.lower() in haystack:
-        score += 25
-
-    stop_words = {"alpha", "school", "campus", "microschool"}
-    for word in title_lower.replace("/", " ").split():
-        token = word.strip(",.()")
-        if len(token) < 3 or token in stop_words:
-            continue
-        if token in haystack:
-            score += 12
-
-    if address:
-        zip_match = address.strip().split()[-1]
-        if zip_match.isdigit() and zip_match in haystack:
-            score += 10
-
-    return score
+    return score_site_match_strength(haystack, title, address)
 
 
 def _match_attachment_to_site(
     filename: str,
     metadata: EmailMetadata,
     site_records: list[dict[str, Any]],
+    *,
+    attachment_text: str = "",
 ) -> dict[str, Any] | None:
     """Match an attachment to a site summary using deterministic rules."""
     if not site_records:
@@ -1273,7 +1308,13 @@ def _match_attachment_to_site(
 
     scored: list[tuple[int, dict[str, Any]]] = []
     for record in site_records:
-        score = _site_match_score(filename, metadata.subject, record)
+        score = _site_match_score(
+            filename,
+            metadata.subject,
+            record,
+            body_snippet=metadata.body_snippet,
+            attachment_text=attachment_text,
+        )
         if score > 0:
             scored.append((score, record))
     scored.sort(key=lambda item: item[0], reverse=True)

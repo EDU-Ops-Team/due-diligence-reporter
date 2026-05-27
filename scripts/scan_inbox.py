@@ -109,8 +109,8 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     )
 
     try:
-        site_records = list_rhodes_site_records()
-        logger.info("Loaded %d active Rhodes site record(s) for inbox matching", len(site_records))
+        site_records = list_rhodes_site_records(status=None)
+        logger.info("Loaded %d Rhodes site record(s) for inbox matching", len(site_records))
     except RhodesError as e:
         logger.warning("Could not load Rhodes site records for inbox matching: %s", e)
         site_records = []

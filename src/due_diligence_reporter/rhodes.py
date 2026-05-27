@@ -758,15 +758,17 @@ def _build_registration_notes(
 
 def list_rhodes_site_records(
     *,
-    status: str = "active",
+    status: str | None = "active",
     client: RhodesClient | None = None,
 ) -> list[dict[str, Any]]:
     """Return Rhodes site records shaped for inbox attachment matching.
 
     The inbox scanner needs a compact local list to match filenames and email
-    subjects before it uploads vendor documents. Each returned record includes
-    the Rhodes site ID, title, address when available, and the linked Rhodes
-    Google Drive root folder URL.
+    subjects before it uploads vendor documents. By default this returns active
+    sites; pass ``status=None`` when historical/cancelled Rhodes records should
+    also be eligible for matching. Each returned record includes the Rhodes site
+    ID, title, address when available, and the linked Rhodes Google Drive root
+    folder URL.
     """
     try:
         rhodes = client or RhodesClient()
