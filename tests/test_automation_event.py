@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from due_diligence_reporter.automation_event import (
+    build_dd_report_summary_event,
     build_document_registration_failed_event,
     render_automation_event_note,
 )
@@ -85,3 +86,50 @@ def test_document_registration_event_handles_missing_owner() -> None:
     note = render_automation_event_note(event)
 
     assert "Owner: No owner assigned" in note
+
+
+def test_dd_report_summary_event_renders_open_and_closed_items() -> None:
+    event = build_dd_report_summary_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        run_id="run-1",
+        doc_id="doc-1",
+        doc_url="https://docs.google.com/document/d/doc-1",
+        source_event={
+            "source_type": "vendor_sir",
+            "drive_file_id": "drive-file-1",
+            "file_name": "Alpha Keller SIR.pdf",
+        },
+        open_questions=[
+            {
+                "display_text": "Confirm zoning use from the vendor SIR",
+                "expected_source_type": "vendor_sir",
+            }
+        ],
+        closed_open_questions=[
+            {
+                "display_text": "Resolve construction timeline from RayCon",
+                "expected_source_type": "raycon_scenario",
+            }
+        ],
+        created_at="2026-05-27T18:15:00+00:00",
+    )
+
+    assert event.event_type == "dd_report_updated"
+    assert event.source_id == "run-1"
+    assert event.decision_required is True
+    assert event.requested_decision == "review and resolve DDR open verification items"
+
+    note = render_automation_event_note(event)
+
+    assert "Kind: dd_report_updated" in note
+    assert "Mutation status: report_created" in note
+    assert "Run ID: run-1" in note
+    assert "DD report ID: doc-1" in note
+    assert "Source Drive file ID: drive-file-1" in note
+    assert "DD report URL: https://docs.google.com/document/d/doc-1" in note
+    assert "Trigger source: vendor_sir" in note
+    assert "Open item count: 1" in note
+    assert "Open item 1: Confirm zoning use from the vendor SIR" in note
+    assert "Closed item count: 1" in note
+    assert "Closed item 1: Resolve construction timeline from RayCon" in note

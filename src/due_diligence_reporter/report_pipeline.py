@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import anthropic
 
+from .automation_event import build_dd_report_summary_event, render_automation_event_note
 from .classifier import (
     AI_GENERATED_DOC_TYPES,
     SOURCE_FOLDER_DOC_TYPES,
@@ -44,7 +45,7 @@ from .pipeline_contracts import (
 from .pipeline_manifest import manifest_has_secret_like_value, persist_run_manifest
 from .pipeline_quality import evaluate_run_quality
 from .provenance import classify_provenance
-from .rhodes import lookup_rhodes_site_owner
+from .rhodes import add_rhodes_site_note, lookup_rhodes_site_owner
 from .sir_learning import build_sir_learning_review
 from .utils import (
     escape_html_text,
@@ -786,6 +787,7 @@ class PipelineResult:
     open_questions: list[dict[str, Any]] = field(default_factory=list)
     closed_open_questions: list[dict[str, Any]] = field(default_factory=list)
     republish_summary: dict[str, Any] | None = None
+    rhodes_report_event: dict[str, Any] | None = None
     steps: list[StepResult] = field(default_factory=list)
 
 
@@ -958,6 +960,7 @@ def _attach_result_metadata(run: PipelineRun, result: PipelineResult) -> None:
     run.open_questions = result.open_questions
     run.closed_open_questions = result.closed_open_questions
     run.republish_summary = result.republish_summary
+    run.rhodes_report_event = result.rhodes_report_event
 
 
 def _get_payload_error(result: dict[str, Any]) -> str | None:
@@ -1560,6 +1563,43 @@ def _first_text(*values: Any) -> str | None:
     return None
 
 
+def _owner_user_id_from_context(context: dict[str, Any] | None) -> str:
+    if not isinstance(context, dict):
+        return ""
+    for key in ("p1_assignee_user_id", "owner_user_id", "p1_user_id"):
+        value = context.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    owner = context.get("p1_dri")
+    if isinstance(owner, dict):
+        for key in ("userId", "user_id", "_id", "id"):
+            value = owner.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _post_google_chat_to_configured_webhooks(webhook_urls: str, text: str) -> dict[str, Any]:
+    urls = [url.strip() for url in webhook_urls.split(",") if url.strip()]
+    if not urls:
+        return {"status": "skipped", "reason": "missing_google_chat_webhook_url"}
+    posted = 0
+    error_count = 0
+    for url in urls:
+        try:
+            post_google_chat_message(url, text)
+            posted += 1
+        except Exception:  # noqa: BLE001 - non-fatal notification side effect
+            error_count += 1
+    if error_count:
+        return {
+            "status": "failed" if posted == 0 else "partial",
+            "posted": posted,
+            "error_count": error_count,
+        }
+    return {"status": "sent", "posted": posted}
+
+
 def _report_data_from_trace(trace: ReportTrace | None) -> dict[str, Any]:
     if trace is None:
         return {}
@@ -1716,6 +1756,114 @@ def _record_email_step(
         )
     else:
         recorder.record("notify.email", started_at, started_monotonic, "succeeded")
+
+
+def _record_rhodes_report_event_step(
+    recorder: _RunRecorder,
+    settings: Settings,
+    result: PipelineResult,
+    *,
+    site_id: str,
+    owner_user_id: str,
+    owner_email: str,
+) -> None:
+    started_at, started_monotonic = recorder.start()
+    event = build_dd_report_summary_event(
+        site_id=site_id,
+        site_name=result.site_title,
+        run_id=recorder.run_id,
+        doc_id=result.doc_id,
+        doc_url=result.doc_url,
+        source_event=result.source_event,
+        open_questions=result.open_questions,
+        closed_open_questions=result.closed_open_questions,
+    )
+    body = render_automation_event_note(event)
+    note_result: dict[str, Any]
+    if not event.site_id:
+        note_result = {
+            "status": "skipped",
+            "reason": "missing_site_id",
+            "owner_notification": "none",
+        }
+    else:
+        note_result = add_rhodes_site_note(
+            site_id=event.site_id,
+            body=body,
+            owner_user_id=owner_user_id,
+            owner_email=owner_email,
+        )
+
+    event_status: dict[str, Any] = {
+        "event_type": event.event_type,
+        "source_id": event.source_id,
+        "decision_required": event.decision_required,
+        **note_result,
+    }
+    should_alert_chat = event.decision_required and (
+        note_result.get("status") != "created"
+        or note_result.get("owner_notification") != "mentioned"
+    )
+    chat_result: dict[str, Any] | None = None
+    if should_alert_chat:
+        chat_result = _post_google_chat_to_configured_webhooks(
+            settings.google_chat_webhook_url,
+            body,
+        )
+        event_status["google_chat"] = chat_result
+
+    result.rhodes_report_event = event_status
+    artifact = ArtifactRef(
+        kind="rhodes_note",
+        name="DDR report AutomationEvent",
+        metadata=event_status,
+    )
+    note_status = str(note_result.get("status") or "")
+    chat_status = str((chat_result or {}).get("status") or "")
+    if note_status == "created" and chat_status not in {"failed", "skipped"}:
+        recorder.record(
+            "rhodes.report_event",
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[artifact],
+        )
+        return
+    if note_status == "created" and not should_alert_chat:
+        recorder.record(
+            "rhodes.report_event",
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[artifact],
+        )
+        return
+    if note_status == "skipped" and not event.decision_required:
+        recorder.record(
+            "rhodes.report_event",
+            started_at,
+            started_monotonic,
+            "skipped",
+            skipped_reason=str(note_result.get("reason") or "skipped"),
+        )
+        return
+
+    message = str(note_result.get("error") or note_result.get("reason") or "unknown")
+    if should_alert_chat and chat_status in {"failed", "skipped"}:
+        message = f"{message}; Google Chat fallback {chat_status}"
+    recorder.record(
+        "rhodes.report_event",
+        started_at,
+        started_monotonic,
+        "failed",
+        error=_pipeline_error(
+            recorder.run_id,
+            "rhodes.report_event",
+            "rhodes_report_event_failed",
+            message,
+        ),
+        artifacts=[artifact],
+    )
 
 
 def process_site_pipeline(
@@ -2133,6 +2281,14 @@ def process_site_pipeline(
         source_event=source_event,
         open_questions_before=open_questions_before,
         validated=True,
+    )
+    _record_rhodes_report_event_step(
+        recorder,
+        settings,
+        final_result,
+        site_id=recorder.site_id or site_id or "",
+        owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+        owner_email=p1_email or "",
     )
     _record_email_step(
         recorder,

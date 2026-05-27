@@ -1,5 +1,64 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - DDR Report Outcome Rhodes Events
+
+Confirmed the previous Drive-to-Rhodes reconciliation PR was merged:
+
+- `due-diligence-reporter` PR #119 merged at `4244aea`.
+
+Continued the Phase 4 record-completion work with a narrow report-outcome
+slice.
+
+Branch: `codex/ddr-rhodes-report-summary-events`
+
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/120
+
+Implementation commit: `3f79154` (`Record DD report outcomes in Rhodes`)
+
+Changed:
+
+- Added a DDR report summary `AutomationEvent v1` builder for
+  `dd_report_created` and `dd_report_updated`.
+- `process_site_pipeline` now writes a Rhodes site note after a report reaches
+  `report_created`.
+- The Rhodes note records the DD report ID/URL, run ID, trigger source for
+  updates, still-open verification items, and newly closed verification items.
+- The note mentions the P1 DRI when a Rhodes user can be resolved from owner
+  context. If open items require a decision and no owner mention is possible,
+  the same event body is posted to the configured Google Chat webhook.
+- The result is stored on `PipelineResult.rhodes_report_event` and in the run
+  manifest as `rhodes_report_event`.
+- Updated `docs/process/HOW-IT-WORKS.md`.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-rhodes-report-events-focused tests/test_automation_event.py tests/test_report_pipeline.py -q
+uv run ruff check src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\pipeline_contracts.py src\due_diligence_reporter\report_pipeline.py tests\test_automation_event.py tests\test_report_pipeline.py
+uv run mypy src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\pipeline_contracts.py src\due_diligence_reporter\report_pipeline.py
+uv run pytest --basetemp C:\tmp\ddr-rhodes-report-events-broad tests/test_automation_event.py tests/test_report_pipeline.py tests/test_dd_republish.py tests/test_rhodes.py -q
+uv run mypy src/
+git diff --check
+uv run pytest --basetemp C:\tmp\ddr-rhodes-report-events-affected tests/test_automation_event.py tests/test_report_pipeline.py tests/test_dd_republish.py tests/test_rhodes.py tests/test_inbox_scanner.py -q
+```
+
+Results:
+
+- Focused event/report pipeline suite: 43 passed.
+- Focused Ruff: passed.
+- Focused Mypy: no issues in 3 source files.
+- Broader event/report/republish/Rhodes suite: 92 passed.
+- Full source Mypy: no issues in 37 source files.
+- Diff check: passed; Git emitted expected Windows LF-to-CRLF warnings only.
+- Affected event/report/republish/Rhodes/inbox suite: 163 passed.
+
+Next:
+
+- Wait for CI/review on PR #120.
+- After merge, continue with the shared Rhodes adapter extraction design, or
+  the next concrete record-completion path that still posts only to
+  notification surfaces instead of Rhodes.
+
 ## 2026-05-27 - Drive-to-Rhodes Document Reconciliation
 
 Started the remaining Phase 2 Drive-to-Rhodes reconciliation slice on branch

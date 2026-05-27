@@ -440,6 +440,140 @@ class TestProcessSitePipeline:
         assert result.doc_url == "https://docs.google.com/document/d/doc123"
         mock_agent.assert_called_once()
 
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_report_created_records_rhodes_summary_event(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+        mock_rhodes_note,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": False,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-05-27T18:00:00+00:00",
+            events=[],
+            final_report_data={
+                "verification.open_items": "- Confirm zoning use from the vendor SIR",
+            },
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+            "trace": trace,
+        }
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            p1_email="owner@example.com",
+            site_id="SITE1",
+        )
+
+        assert result.status == "report_created"
+        assert result.rhodes_report_event is not None
+        assert result.rhodes_report_event["status"] == "created"
+        assert result.rhodes_report_event["rhodes_note_id"] == "NOTE1"
+        note_kwargs = mock_rhodes_note.call_args.kwargs
+        assert note_kwargs["site_id"] == "SITE1"
+        assert note_kwargs["owner_email"] == "owner@example.com"
+        assert "Kind: dd_report_created" in note_kwargs["body"]
+        assert "Decision required: yes" in note_kwargs["body"]
+        assert "Open item 1: Confirm zoning use from the vendor SIR" in note_kwargs["body"]
+        step = next(step for step in result.steps if step.step == "rhodes.report_event")
+        assert step.status == "succeeded"
+
+    @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_report_created_with_open_items_alerts_chat_when_owner_not_mentioned(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+        mock_rhodes_note,
+        mock_chat,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": False,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-05-27T18:00:00+00:00",
+            events=[],
+            final_report_data={
+                "verification.open_items": "- Confirm education approval path",
+            },
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+            "trace": trace,
+        }
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "none",
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+        settings = _make_settings()
+        settings.google_chat_webhook_url = "https://chat.example/webhook"
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            settings,
+            site_id="SITE1",
+        )
+
+        assert result.rhodes_report_event is not None
+        assert result.rhodes_report_event["google_chat"]["status"] == "sent"
+        mock_chat.assert_called_once()
+        assert mock_chat.call_args.args[0] == "https://chat.example/webhook"
+        assert "Requested decision: review and resolve DDR open verification items" in (
+            mock_chat.call_args.args[1]
+        )
+
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
     def test_agent_failure(self, mock_readiness, mock_agent):
