@@ -3,6 +3,7 @@ from __future__ import annotations
 from due_diligence_reporter.automation_event import (
     build_dd_report_summary_event,
     build_document_registration_failed_event,
+    build_raycon_followup_alert_event,
     build_source_review_required_event,
     build_vendor_gate_review_required_event,
     render_automation_event_note,
@@ -217,3 +218,36 @@ def test_vendor_gate_review_required_event_renders_failure_context() -> None:
     assert "Failure reason: Report NOT ready to send. 1 raw template token(s)." in note
     assert "Drive folder: https://drive.google.com/drive/folders/abc123" in note
     assert "Trace: https://drive.google.com/file/d/trace123" in note
+
+
+def test_raycon_followup_alert_event_renders_review_context() -> None:
+    event = build_raycon_followup_alert_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        run_id="raycon-followup-20260527213000",
+        alert_type="stuck_site",
+        message="no raycon_scenario.json after 1:00:00",
+        drive_folder_url="https://drive.google.com/drive/folders/abc123",
+        block_plan_file_id="block-plan-1",
+        raycon_run_id="raycon-run-1",
+        created_at="2026-05-27T21:30:00+00:00",
+    )
+
+    assert event.event_type == "raycon_followup_alert"
+    assert event.source_id == "raycon-followup-20260527213000"
+    assert event.decision_required is True
+    assert (
+        event.requested_decision
+        == "review RayCon follow-up alert and unblock scenario generation"
+    )
+
+    note = render_automation_event_note(event)
+
+    assert "Kind: raycon_followup_alert" in note
+    assert "Decision required: yes" in note
+    assert "Mutation status: stuck_site" in note
+    assert "Run ID: raycon-followup-20260527213000" in note
+    assert "Block Plan file ID: block-plan-1" in note
+    assert "RayCon run ID: raycon-run-1" in note
+    assert "Message: no raycon_scenario.json after 1:00:00" in note
+    assert "Drive folder: https://drive.google.com/drive/folders/abc123" in note

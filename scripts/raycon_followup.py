@@ -23,7 +23,8 @@ This script runs on a 5-minute cadence (``raycon-followup.yml``) and:
      integration spec, so a re-fire is safe.
   5. Tracks staleness for alerting: if a Block Plan exists but no
      scenario JSON has been written within ``--alert-after-minutes``
-     (default 60), posts a Google Chat alert listing the stuck sites.
+     (default 60), records a Rhodes AutomationEvent for the site owner
+     and falls back to Google Chat when no owner can be notified.
 
 The script is idempotent and safe to re-run. Re-runs only re-publish the
 RayCon Scenario Doc when the JSON's ``modifiedTime`` is newer than the
@@ -37,7 +38,7 @@ Run:
 Env:
     OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET / OAUTH_REFRESH_TOKEN
     GOOGLE_DRIVE_ROOT_FOLDER_ID
-    GOOGLE_CHAT_WEBHOOK_URL  (optional; alert sink)
+    GOOGLE_CHAT_WEBHOOK_URL  (optional; fallback alert sink)
 """
 
 from __future__ import annotations
@@ -61,6 +62,10 @@ load_dotenv(_project_root / ".env")
 
 import requests  # noqa: E402
 
+from due_diligence_reporter.automation_event import (  # noqa: E402
+    build_raycon_followup_alert_event,
+    render_automation_event_note,
+)
 from due_diligence_reporter.config import get_settings  # noqa: E402
 from due_diligence_reporter.dd_republish import (  # noqa: E402
     DD_REPUBLISH_STATE_PATH,
@@ -93,6 +98,7 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
 )
 from due_diligence_reporter.rhodes import (  # noqa: E402
     RhodesError,
+    add_rhodes_site_note,
     list_rhodes_site_records,
 )
 from due_diligence_reporter.server import save_skill_report  # noqa: E402
@@ -168,7 +174,7 @@ def _filename_matches_block_plan(name: str) -> bool:
         return True
     return any(pat.search(name) for pat in BLOCK_PLAN_PFP_PATTERNS)
 
-# Persisted map of {site_name: ISO8601 timestamp of last Chat alert}.
+# Persisted map of {dedupe_key: ISO8601 timestamp of last owner/Chat alert}.
 # Prevents the 5-minute cron from spamming ~96 alerts/day for a stuck site.
 ALERT_DEDUP_PATH = _project_root / ".raycon_followup_alerts.json"
 ALERT_DEDUP_WINDOW = timedelta(hours=24)
@@ -261,25 +267,42 @@ def _filter_dedup_alerts(
     now: datetime | None = None,
     window: timedelta = ALERT_DEDUP_WINDOW,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Drop alerts for sites alerted within ``window``. Return (fresh_alerts, updated_state).
+    """Drop alerts recently notified within ``window``.
 
-    The updated state records ``now`` as the last-alert time for every site we
-    are about to notify on, so the next run within the window is suppressed.
+    Return ``(fresh_alerts, updated_state)``. Rows may provide
+    ``alert_dedup_key``; otherwise the site name remains the key for backward
+    compatibility with the existing stuck-site suppression file.
     """
     now = now or datetime.now(UTC)
     fresh: list[dict[str, Any]] = []
     new_state = dict(state)
     for row in alerts:
         site = str(row.get("site", "")).strip()
-        if not site:
+        dedupe_key = _alert_dedup_key(row)
+        if not site or not dedupe_key:
             continue
-        last_iso = state.get(site)
+        last_iso = state.get(dedupe_key)
         last_dt = _parse_iso(last_iso) if last_iso else None
         if last_dt is not None and (now - last_dt) < window:
             continue
         fresh.append(row)
-        new_state[site] = now.isoformat()
+        new_state[dedupe_key] = now.isoformat()
     return fresh, new_state
+
+
+def _alert_dedup_key(row: dict[str, Any]) -> str:
+    explicit_key = str(row.get("alert_dedup_key") or "").strip()
+    if explicit_key:
+        return explicit_key
+    return str(row.get("site") or "").strip()
+
+
+def _error_alert_dedup_key(row: dict[str, Any]) -> str:
+    site = str(row.get("site") or "").strip()
+    message = str(row.get("error") or "").strip()
+    if not site or not message:
+        return ""
+    return f"{site}:error:{message[:250]}"
 
 
 def _site_filter(site_summary: dict[str, Any], needle: str | None) -> bool:
@@ -330,6 +353,7 @@ def _site_summary_from_rhodes_record(record: dict[str, Any]) -> dict[str, Any]:
         "drive_folder_url": drive_folder_url,
         "p1_assignee_name": str(record.get("p1_assignee_name") or "").strip(),
         "p1_assignee_email": str(record.get("p1_assignee_email") or "").strip(),
+        "p1_assignee_user_id": str(record.get("p1_assignee_user_id") or "").strip(),
         "created_date": str(record.get("created_date") or "").strip(),
         "site_metadata_source": "rhodes",
     }
@@ -457,6 +481,134 @@ def _post_chat(webhook_url: str, text: str) -> None:
         requests.post(webhook_url, json={"text": text}, timeout=15).raise_for_status()
     except Exception as e:
         logger.warning("Failed to post Google Chat alert: %s", e)
+
+
+def _with_site_context(
+    row: dict[str, Any],
+    site_summary: dict[str, Any],
+) -> dict[str, Any]:
+    enriched = dict(row)
+    site_name = str(site_summary.get("title") or site_summary.get("name") or "").strip()
+    if site_name:
+        enriched.setdefault("site", site_name)
+
+    site_id = str(site_summary.get("site_id") or "").strip()
+    if not site_id and site_summary.get("site_metadata_source") == "rhodes":
+        site_id = str(site_summary.get("id") or "").strip()
+    if site_id:
+        enriched.setdefault("site_id", site_id)
+
+    for key in (
+        "drive_folder_url",
+        "drive_folder_id",
+        "p1_assignee_user_id",
+        "p1_assignee_email",
+        "p1_assignee_name",
+    ):
+        value = str(site_summary.get(key) or "").strip()
+        if value:
+            enriched.setdefault(key, value)
+    return enriched
+
+
+def _raycon_followup_run_id(
+    callback_run_id: str | None,
+    *,
+    now: datetime | None = None,
+) -> str:
+    clean_run_id = str(callback_run_id or "").strip()
+    if clean_run_id:
+        return clean_run_id
+    stamp = (now or datetime.now(UTC)).strftime("%Y%m%d%H%M%S")
+    return f"raycon-followup-{stamp}"
+
+
+def _record_raycon_followup_event(
+    row: dict[str, Any],
+    *,
+    run_id: str,
+    alert_type: str,
+    message: str,
+) -> tuple[dict[str, Any], str]:
+    event = build_raycon_followup_alert_event(
+        site_id=str(row.get("site_id") or "").strip(),
+        site_name=str(row.get("site") or "").strip(),
+        run_id=run_id,
+        alert_type=alert_type,
+        message=message,
+        drive_folder_url=str(row.get("drive_folder_url") or "").strip(),
+        block_plan_file_id=str(row.get("block_plan_file_id") or "").strip(),
+        raycon_run_id=str(row.get("raycon_run_id") or "").strip(),
+    )
+    body = render_automation_event_note(event)
+    if event.site_id:
+        note_result = add_rhodes_site_note(
+            site_id=event.site_id,
+            body=body,
+            owner_user_id=str(row.get("p1_assignee_user_id") or "").strip(),
+            owner_email=str(row.get("p1_assignee_email") or "").strip(),
+        )
+    else:
+        note_result = {
+            "status": "skipped",
+            "reason": "missing_site_id",
+            "owner_notification": "none",
+        }
+
+    return (
+        {
+            "event_type": event.event_type,
+            "source_id": event.source_id,
+            "decision_required": event.decision_required,
+            **note_result,
+        },
+        body,
+    )
+
+
+def _notify_raycon_followup_rows(
+    rows: list[dict[str, Any]],
+    settings: Any,
+    *,
+    run_id: str,
+    alert_type: str,
+    message_field: str,
+    heading: str,
+) -> None:
+    chat_bodies: list[str] = []
+    chat_rows: list[dict[str, Any]] = []
+    for row in rows:
+        message = str(row.get(message_field) or "").strip()
+        if not message:
+            continue
+        event_status, body = _record_raycon_followup_event(
+            row,
+            run_id=run_id,
+            alert_type=alert_type,
+            message=message,
+        )
+        row["raycon_followup_event"] = event_status
+        if (
+            event_status.get("status") != "created"
+            or event_status.get("owner_notification") != "mentioned"
+        ):
+            chat_bodies.append(body)
+            chat_rows.append(row)
+
+    if not chat_bodies:
+        return
+
+    webhook_url = str(getattr(settings, "google_chat_webhook_url", "") or "").strip()
+    if webhook_url:
+        _post_chat(webhook_url, "\n\n".join([heading, *chat_bodies]))
+        chat_result = {"status": "posted"}
+    else:
+        chat_result = {"status": "skipped", "reason": "missing_webhook"}
+
+    for row in chat_rows:
+        event_status = row.get("raycon_followup_event")
+        if isinstance(event_status, dict):
+            event_status["google_chat"] = chat_result
 
 
 def _dispatch_raycon_job(
@@ -1240,6 +1392,7 @@ def main(argv: list[str] | None = None) -> int:
 
     alert_after = timedelta(minutes=args.alert_after_minutes)
     redispatch_after = timedelta(minutes=args.redispatch_after_minutes)
+    event_run_id = _raycon_followup_run_id(args.run_id)
 
     dispatch_state = _load_dispatch_state()
     republish_state = _load_republish_state()
@@ -1300,6 +1453,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             logger.exception("Unhandled error for site '%s'", site_summary.get("title"))
             row = {"site": site_summary.get("title"), "error": str(e)}
+        row = _with_site_context(row, site_summary)
         results.append(row)
         logger.info("%s", json.dumps(row, default=str))
 
@@ -1314,15 +1468,22 @@ def main(argv: list[str] | None = None) -> int:
     alerts = [r for r in results if r.get("alert")]
     errors = [r for r in results if r.get("error")]
 
-    if alerts and settings.google_chat_webhook_url:
-        dedup_state = _load_alert_state()
+    alert_state_changed = False
+    dedup_state = _load_alert_state() if alerts or errors else {}
+
+    if alerts:
         fresh_alerts, new_state = _filter_dedup_alerts(alerts, dedup_state)
+        dedup_state = new_state
         if fresh_alerts:
-            lines = ["RayCon scenario follow-up: stuck sites"]
-            for row in fresh_alerts:
-                lines.append(f"- {row['site']}: {row['alert']}")
-            _post_chat(settings.google_chat_webhook_url, "\n".join(lines))
-            _save_alert_state(new_state)
+            _notify_raycon_followup_rows(
+                fresh_alerts,
+                settings,
+                run_id=event_run_id,
+                alert_type="stuck_site",
+                message_field="alert",
+                heading="RayCon scenario follow-up: stuck sites",
+            )
+            alert_state_changed = True
         suppressed = len(alerts) - len(fresh_alerts)
         if suppressed:
             logger.info(
@@ -1331,11 +1492,31 @@ def main(argv: list[str] | None = None) -> int:
                 ALERT_DEDUP_WINDOW,
             )
 
-    if errors and settings.google_chat_webhook_url:
-        lines = ["RayCon scenario follow-up: errors"]
+    if errors:
         for row in errors:
-            lines.append(f"- {row['site']}: {row['error']}")
-        _post_chat(settings.google_chat_webhook_url, "\n".join(lines))
+            row["alert_dedup_key"] = _error_alert_dedup_key(row)
+        fresh_errors, new_state = _filter_dedup_alerts(errors, dedup_state)
+        dedup_state = new_state
+        if fresh_errors:
+            _notify_raycon_followup_rows(
+                fresh_errors,
+                settings,
+                run_id=event_run_id,
+                alert_type="error",
+                message_field="error",
+                heading="RayCon scenario follow-up: errors",
+            )
+            alert_state_changed = True
+        suppressed = len(errors) - len(fresh_errors)
+        if suppressed:
+            logger.info(
+                "Suppressed %d RayCon error alert(s) within %s dedup window",
+                suppressed,
+                ALERT_DEDUP_WINDOW,
+            )
+
+    if alert_state_changed:
+        _save_alert_state(dedup_state)
 
     logger.info(
         "Run complete: published=%d dispatched=%d alerts=%d errors=%d total_sites=%d",

@@ -1,5 +1,66 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - DDR RayCon Follow-up Rhodes Events
+
+Confirmed the previous vendor-gate PR was merged:
+
+- `due-diligence-reporter` PR #122 merged at `7972ec3`.
+
+Continued Phase 4 record-completion work with a narrow RayCon follow-up
+alert slice.
+
+Branch: `codex/ddr-raycon-alert-rhodes-events`
+
+Draft PR: pending
+
+Implementation commit: pending (`Record RayCon follow-up alerts in Rhodes`)
+
+Current state: implementation complete locally; verification clean; commit,
+push, and draft PR still pending.
+
+Changed:
+
+- Added a DDR `raycon_followup_alert` `AutomationEvent v1` builder for
+  RayCon stuck-site and error follow-up items.
+- `scripts/raycon_followup.py` now enriches per-site alert/error rows with
+  Rhodes site ID, Drive folder, and P1 DRI context from the Rhodes site
+  inventory.
+- Fresh RayCon follow-up alerts now write a Rhodes site note first and mention
+  the P1 DRI when Rhodes can resolve a user ID.
+- Google Chat remains the fallback when the site cannot be written to Rhodes,
+  the Rhodes note write fails, or no P1 DRI can be mentioned.
+- RayCon error rows now use the same notification path and a message-specific
+  dedupe key so repeated cron failures do not spam owners or Chat every five
+  minutes.
+- Updated RayCon runtime-state docs, workflow comments, and regression
+  coverage.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-raycon-alert-events-focused tests/test_automation_event.py tests/test_raycon_followup.py -q
+uv run ruff check src\due_diligence_reporter\automation_event.py scripts\raycon_followup.py tests\test_automation_event.py tests\test_raycon_followup.py
+uv run python -m py_compile scripts\raycon_followup.py
+uv run pytest --basetemp C:\tmp\ddr-raycon-alert-events-broad tests/test_automation_event.py tests/test_raycon_followup.py tests/test_raycon_runtime_state_store.py tests/test_workflow_contracts.py tests/test_dd_republish.py tests/test_rhodes.py -q
+uv run mypy src/
+git diff --check
+```
+
+Results:
+
+- Focused event/RayCon suite: 60 passed.
+- Focused Ruff: passed.
+- Script compile: passed.
+- Broader affected suite: 124 passed.
+- Full source Mypy: no issues in 37 source files.
+- Diff check: passed with expected Windows LF-to-CRLF warnings only.
+
+Next:
+
+- Commit, push, and open the DDR draft PR.
+- After merge, continue with shared Rhodes adapter extraction or another
+  remaining notification-only path.
+
 ## 2026-05-27 - DDR Vendor Gate Rhodes Events
 
 Confirmed the previous source-review PR was merged:

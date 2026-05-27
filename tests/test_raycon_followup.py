@@ -8,6 +8,7 @@ Google client, Drive folder scanning, and ``save_skill_report``.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from scripts.raycon_followup import (
@@ -16,6 +17,7 @@ from scripts.raycon_followup import (
     _find_block_plan,
     _find_published_doc,
     _load_site_summaries,
+    _notify_raycon_followup_rows,
     _process_site,
     _republish_dd_report_if_present,
     _site_id_matches,
@@ -73,6 +75,7 @@ def test_load_site_summaries_prefers_rhodes_records_with_site_address(mock_recor
             "drive_folder_url": "https://drive.google.com/drive/folders/drive-root-1",
             "p1_assignee_name": "Devin Bates",
             "p1_assignee_email": "devin@example.com",
+            "p1_assignee_user_id": "user-1",
         }
     ]
 
@@ -91,6 +94,7 @@ def test_load_site_summaries_prefers_rhodes_records_with_site_address(mock_recor
             "drive_folder_url": "https://drive.google.com/drive/folders/drive-root-1",
             "p1_assignee_name": "Devin Bates",
             "p1_assignee_email": "devin@example.com",
+            "p1_assignee_user_id": "user-1",
             "created_date": "",
             "site_metadata_source": "rhodes",
         }
@@ -1052,6 +1056,93 @@ class TestFilterDedupAlerts:
 
         assert len(fresh) == 1
         assert new_state["Alpha Keller"] == now.isoformat()
+
+
+class TestRayConFollowupEventNotification:
+    @patch("scripts.raycon_followup._post_chat")
+    @patch("scripts.raycon_followup.add_rhodes_site_note")
+    def test_owner_mentioned_in_rhodes_skips_chat_fallback(
+        self,
+        mock_add_note,
+        mock_post_chat,
+    ):
+        mock_add_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "note-1",
+            "owner_user_id": "user-1",
+            "owner_notification": "mentioned",
+        }
+        rows = [
+            {
+                "site": "Alpha Keller",
+                "site_id": "SITE1",
+                "alert": "no raycon_scenario.json after 1:00:00",
+                "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                "block_plan_file_id": "block-plan-1",
+                "p1_assignee_user_id": "user-1",
+                "p1_assignee_email": "owner@example.com",
+            }
+        ]
+
+        _notify_raycon_followup_rows(
+            rows,
+            SimpleNamespace(google_chat_webhook_url="https://chat.example/hook"),
+            run_id="raycon-followup-20260527213000",
+            alert_type="stuck_site",
+            message_field="alert",
+            heading="RayCon scenario follow-up: stuck sites",
+        )
+
+        mock_add_note.assert_called_once()
+        assert mock_add_note.call_args.kwargs["site_id"] == "SITE1"
+        assert mock_add_note.call_args.kwargs["owner_user_id"] == "user-1"
+        assert "Kind: raycon_followup_alert" in mock_add_note.call_args.kwargs["body"]
+        mock_post_chat.assert_not_called()
+        assert rows[0]["raycon_followup_event"]["rhodes_note_id"] == "note-1"
+        assert rows[0]["raycon_followup_event"]["owner_notification"] == "mentioned"
+
+    @patch("scripts.raycon_followup._post_chat")
+    @patch("scripts.raycon_followup.add_rhodes_site_note")
+    def test_missing_owner_posts_same_event_to_chat(
+        self,
+        mock_add_note,
+        mock_post_chat,
+    ):
+        mock_add_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "note-2",
+            "owner_notification": "none",
+        }
+        rows = [
+            {
+                "site": "Alpha Keller",
+                "site_id": "SITE1",
+                "error": "raycon dispatch: RayCon 503",
+                "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+            }
+        ]
+
+        _notify_raycon_followup_rows(
+            rows,
+            SimpleNamespace(google_chat_webhook_url="https://chat.example/hook"),
+            run_id="raycon-followup-20260527213000",
+            alert_type="error",
+            message_field="error",
+            heading="RayCon scenario follow-up: errors",
+        )
+
+        mock_add_note.assert_called_once()
+        mock_post_chat.assert_called_once()
+        chat_body = mock_post_chat.call_args.args[1]
+        assert "RayCon scenario follow-up: errors" in chat_body
+        assert "Kind: raycon_followup_alert" in chat_body
+        assert "Mutation status: error" in chat_body
+        assert "Message: raycon dispatch: RayCon 503" in chat_body
+        assert rows[0]["raycon_followup_event"]["google_chat"] == {
+            "status": "posted"
+        }
 
 
 # ---------------------------------------------------------------------------
