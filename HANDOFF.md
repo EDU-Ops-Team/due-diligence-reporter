@@ -5,7 +5,14 @@
 Started the next Phase 2 durable-state item on branch
 `codex/ddr-firestore-raycon-runtime-state`.
 
-Current behavior in progress:
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/118
+
+Commit: `72927e0` (`Persist RayCon runtime state through Firestore`)
+
+Current state: branch pushed, draft PR open and mergeable. No status checks were
+reported yet when checked.
+
+Changed:
 
 - Added `raycon_runtime_state_store.py` with:
   - existing local JSON stores for `.raycon_dispatch_state.json` and
@@ -51,7 +58,6 @@ Results:
 
 Next:
 
-- Commit, push, and open the DDR PR.
 - After merge, continue with a shared Rhodes adapter skeleton or downstream
   AutomationEvent ledger alignment.
 
