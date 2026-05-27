@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -310,6 +311,72 @@ def _extract_drive_folder(site: dict[str, Any]) -> tuple[str, str]:
     if folder_url and not folder_id and DRIVE_FOLDER_URL_PREFIX in folder_url:
         folder_id = folder_url.rsplit("/", 1)[-1].split("?", 1)[0].strip()
     return folder_id, folder_url
+
+
+def _site_created_date(site: dict[str, Any], summary: dict[str, Any]) -> str:
+    return str(site.get("createdDate") or summary.get("createdDate") or "")
+
+
+def _site_status(
+    site: dict[str, Any],
+    summary: dict[str, Any],
+    fallback_status: str | None,
+) -> str:
+    return str(site.get("status") or summary.get("status") or fallback_status or "")
+
+
+def _site_custom_fields(site: dict[str, Any]) -> list[Any]:
+    custom_fields = site.get("customFields")
+    return custom_fields if isinstance(custom_fields, list) else []
+
+
+def _site_summary_is_drive_ready(summary: dict[str, Any]) -> bool:
+    """Return True when a listSites row already has the fields callers need.
+
+    This avoids paying a getSite call for APIs that already return rich site
+    summaries while preserving hydration for older/leaner listSites payloads.
+    """
+    _folder_id, folder_url = _extract_drive_folder(summary)
+    owner = _extract_p1_dri(summary)
+    return bool(
+        _site_id(summary)
+        and _site_name(summary)
+        and _site_address(summary)
+        and folder_url
+        and (owner.get("name") or owner.get("email"))
+    )
+
+
+def _record_from_site_payload(
+    site: dict[str, Any],
+    *,
+    summary: dict[str, Any] | None = None,
+    status: str | None,
+) -> dict[str, Any] | None:
+    summary = summary or {}
+    site_id = _site_id(site) or _site_id(summary)
+    name = _site_name(site) or _site_name(summary)
+    if not site_id or not name:
+        return None
+    drive_folder_id, drive_folder_url = _extract_drive_folder(site)
+    owner = _extract_p1_dri(site)
+    return {
+        "id": site_id,
+        "site_id": site_id,
+        "title": name,
+        "name": name,
+        "slug": site.get("slug") or summary.get("slug") or "",
+        "address": _site_address(site) or _site_address(summary),
+        "drive_folder_id": drive_folder_id,
+        "drive_folder_url": drive_folder_url,
+        "p1_assignee_name": owner.get("name", ""),
+        "p1_assignee_email": owner.get("email", ""),
+        "p1_assignee_user_id": owner.get("userId", ""),
+        "created_date": _site_created_date(site, summary),
+        "status": _site_status(site, summary, status),
+        "rhodes_status": site.get("status") or summary.get("status") or "",
+        "customFields": _site_custom_fields(site),
+    }
 
 
 class RhodesClient:
@@ -759,6 +826,7 @@ def _build_registration_notes(
 def list_rhodes_site_records(
     *,
     status: str | None = "active",
+    site_ids: Iterable[str] | None = None,
     client: RhodesClient | None = None,
 ) -> list[dict[str, Any]]:
     """Return Rhodes site records shaped for inbox attachment matching.
@@ -772,7 +840,17 @@ def list_rhodes_site_records(
     """
     try:
         rhodes = client or RhodesClient()
-        site_summaries = rhodes.list_sites(status=status)
+        target_site_ids = [
+            str(site_id).strip()
+            for site_id in (site_ids or [])
+            if str(site_id).strip()
+        ]
+        if target_site_ids:
+            site_summaries = [
+                rhodes.get_site(site_id=site_id) for site_id in target_site_ids
+            ]
+        else:
+            site_summaries = rhodes.list_sites(status=status)
     except RhodesError:
         raise
 
@@ -781,10 +859,12 @@ def list_rhodes_site_records(
         site_id = _site_id(summary)
         if not site_id:
             continue
-        try:
-            site = rhodes.get_site(site_id=site_id)
-        except RhodesError:
-            site = summary
+        site = summary
+        if not target_site_ids and not _site_summary_is_drive_ready(summary):
+            try:
+                site = rhodes.get_site(site_id=site_id)
+            except RhodesError:
+                site = summary
 
         drive_folder_id, drive_folder_url = _extract_drive_folder(site)
         if not drive_folder_url:
@@ -796,27 +876,13 @@ def list_rhodes_site_records(
                 drive_folder_id = drive_folder_id or ""
                 drive_folder_url = ""
 
-        name = _site_name(site) or _site_name(summary)
-        if not name:
+        enriched_site = dict(site)
+        if drive_folder_id:
+            enriched_site.setdefault("driveFolderId", drive_folder_id)
+        if drive_folder_url:
+            enriched_site.setdefault("driveFolderUrl", drive_folder_url)
+        record = _record_from_site_payload(enriched_site, summary=summary, status=status)
+        if record is None:
             continue
-        owner = _extract_p1_dri(site)
-        records.append(
-            {
-                "id": site_id,
-                "site_id": site_id,
-                "title": name,
-                "name": name,
-                "slug": site.get("slug") or summary.get("slug") or "",
-                "address": _site_address(site) or _site_address(summary),
-                "drive_folder_id": drive_folder_id,
-                "drive_folder_url": drive_folder_url,
-                "p1_assignee_name": owner.get("name", ""),
-                "p1_assignee_email": owner.get("email", ""),
-                "p1_assignee_user_id": owner.get("userId", ""),
-                "created_date": str(site.get("createdDate") or summary.get("createdDate") or ""),
-                "status": str(site.get("status") or summary.get("status") or status),
-                "rhodes_status": site.get("status") or summary.get("status") or "",
-                "customFields": site.get("customFields") if isinstance(site.get("customFields"), list) else [],
-            }
-        )
+        records.append(record)
     return records

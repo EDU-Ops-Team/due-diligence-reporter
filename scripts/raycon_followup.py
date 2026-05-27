@@ -378,7 +378,37 @@ def _site_id_matches(site_summary: dict[str, Any], target_id: str) -> bool:
 def _load_site_summaries(
     gc: GoogleClient,
     google_drive_root_folder_id: str,
+    *,
+    target_site_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    if target_site_id:
+        try:
+            rhodes_records = list_rhodes_site_records(site_ids=[target_site_id])
+        except RhodesError as exc:
+            logger.warning(
+                "Direct Rhodes lookup failed for RayCon callback site_id=%s; "
+                "falling back to full inventory: %s",
+                target_site_id,
+                exc,
+            )
+        else:
+            summaries = [
+                _site_summary_from_rhodes_record(record)
+                for record in rhodes_records
+                if str(record.get("drive_folder_url") or "").strip()
+            ]
+            if summaries:
+                logger.info(
+                    "Loaded Rhodes site record for RayCon callback site_id=%s",
+                    target_site_id,
+                )
+                return summaries
+            logger.warning(
+                "Direct Rhodes lookup for RayCon callback site_id=%s returned "
+                "no Drive-linked site; falling back to full inventory",
+                target_site_id,
+            )
+
     try:
         rhodes_records = list_rhodes_site_records()
     except RhodesError as exc:
@@ -408,10 +438,16 @@ def _load_site_summaries(
     return [_site_summary_from_folder(folder) for folder in site_folders]
 
 
-def _find_block_plan(gc: GoogleClient, m1_folder_id: str) -> dict[str, Any] | None:
+def _find_block_plan(
+    gc: GoogleClient,
+    m1_folder_id: str,
+    *,
+    m1_files: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """Return the most recently modified Block Plan PDF in M1, or None."""
     candidate: dict[str, Any] | None = None
-    for f in gc.list_files_in_folder(m1_folder_id):
+    files = m1_files if m1_files is not None else gc.list_files_in_folder(m1_folder_id)
+    for f in files:
         name = str(f.get("name", "")).lower()
         if not _filename_matches_block_plan(name):
             continue
@@ -422,10 +458,17 @@ def _find_block_plan(gc: GoogleClient, m1_folder_id: str) -> dict[str, Any] | No
     return candidate
 
 
-def _find_published_doc(gc: GoogleClient, m1_folder_id: str, site_name: str) -> dict[str, Any] | None:
+def _find_published_doc(
+    gc: GoogleClient,
+    m1_folder_id: str,
+    site_name: str,
+    *,
+    m1_files: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """Return the existing RayCon Scenario Doc for a site, or None."""
     target = f"{PUBLISHED_DOC_PREFIX} - {site_name}"
-    for f in gc.list_files_in_folder(m1_folder_id):
+    files = m1_files if m1_files is not None else gc.list_files_in_folder(m1_folder_id)
+    for f in files:
         if str(f.get("name", "")).strip() == target:
             return f
     return None
@@ -874,12 +917,19 @@ def _process_site(
     if not m1_folder_id:
         return {"site": site_name, "skipped": "no M1 folder"}
 
-    block_plan = _find_block_plan(gc, m1_folder_id)
+    m1_files = gc.list_files_in_folder(m1_folder_id)
+
+    block_plan = _find_block_plan(gc, m1_folder_id, m1_files=m1_files)
     if block_plan is None:
         return {"site": site_name, "skipped": "no block plan in M1"}
 
     try:
-        scenario = read_raycon_scenario_from_m1(gc, drive_folder_url)
+        scenario = read_raycon_scenario_from_m1(
+            gc,
+            drive_folder_url,
+            m1_folder_id=m1_folder_id,
+            m1_files=m1_files,
+        )
     except RayConSchemaError as e:
         logger.error("[%s] %s", site_name, e)
         return {"site": site_name, "error": f"schema error: {e}"}
@@ -1005,7 +1055,7 @@ def _process_site(
             "error": "missing Rhodes site identity/address for RayCon scenario publish",
         }
 
-    published = _find_published_doc(gc, m1_folder_id, site_name)
+    published = _find_published_doc(gc, m1_folder_id, site_name, m1_files=m1_files)
     json_modified = scenario.get("_drive_modified_time", "")
     doc_modified = (published or {}).get("modifiedTime", "") if published else ""
     json_modified_dt = _parse_iso(str(json_modified))
@@ -1182,7 +1232,11 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("GOOGLE_DRIVE_ROOT_FOLDER_ID is required for RayCon follow-up")
         return 1
 
-    summaries = _load_site_summaries(gc, settings.google_drive_root_folder_id)
+    summaries = _load_site_summaries(
+        gc,
+        settings.google_drive_root_folder_id,
+        target_site_id=args.site_id,
+    )
     summaries = [s for s in summaries if _site_filter(s, args.site)]
 
     # Rec. 2: when the RayCon callback supplies a site_id, scope the run

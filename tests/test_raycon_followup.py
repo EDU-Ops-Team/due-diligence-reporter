@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 from scripts.raycon_followup import (
     _dispatch_raycon_job,
     _filter_dedup_alerts,
+    _find_block_plan,
+    _find_published_doc,
     _load_site_summaries,
     _process_site,
     _republish_dd_report_if_present,
@@ -96,6 +98,66 @@ def test_load_site_summaries_prefers_rhodes_records_with_site_address(mock_recor
     gc.list_subfolders.assert_not_called()
 
 
+@patch("scripts.raycon_followup.list_rhodes_site_records")
+def test_load_site_summaries_uses_direct_rhodes_lookup_for_callback_site_id(
+    mock_records,
+):
+    mock_records.return_value = [
+        {
+            "id": "rhodes-site-1",
+            "site_id": "rhodes-site-1",
+            "title": "Alpha Keller",
+            "address": "123 Main St, Keller, TX 76248",
+            "drive_folder_id": "drive-root-1",
+            "drive_folder_url": "https://drive.google.com/drive/folders/drive-root-1",
+        }
+    ]
+
+    gc = MagicMock()
+    summaries = _load_site_summaries(
+        gc,
+        "all-locations-root",
+        target_site_id="rhodes-site-1",
+    )
+
+    assert summaries[0]["id"] == "rhodes-site-1"
+    mock_records.assert_called_once_with(site_ids=["rhodes-site-1"])
+    gc.list_subfolders.assert_not_called()
+
+
+@patch("scripts.raycon_followup.list_rhodes_site_records")
+def test_load_site_summaries_falls_back_to_full_inventory_for_drive_folder_id(
+    mock_records,
+):
+    mock_records.side_effect = [
+        [],
+        [
+            {
+                "id": "rhodes-site-1",
+                "site_id": "rhodes-site-1",
+                "title": "Alpha Keller",
+                "address": "123 Main St, Keller, TX 76248",
+                "drive_folder_id": "drive-root-1",
+                "drive_folder_url": (
+                    "https://drive.google.com/drive/folders/drive-root-1"
+                ),
+            }
+        ],
+    ]
+
+    gc = MagicMock()
+    summaries = _load_site_summaries(
+        gc,
+        "all-locations-root",
+        target_site_id="drive-root-1",
+    )
+
+    assert summaries[0]["drive_folder_id"] == "drive-root-1"
+    assert mock_records.call_args_list[0].kwargs == {"site_ids": ["drive-root-1"]}
+    assert mock_records.call_args_list[1].kwargs == {}
+    gc.list_subfolders.assert_not_called()
+
+
 def test_site_id_matches_rhodes_site_id_or_drive_folder_id():
     summary = {
         "id": "rhodes-site-1",
@@ -107,6 +169,41 @@ def test_site_id_matches_rhodes_site_id_or_drive_folder_id():
     assert _site_id_matches(summary, "rhodes-site-1") is True
     assert _site_id_matches(summary, "drive-root-1") is True
     assert _site_id_matches(summary, "other") is False
+
+
+def test_m1_file_helpers_use_prelisted_files_without_drive_relist():
+    gc = MagicMock()
+    files = [
+        {
+            "id": "older-bp",
+            "name": "Block Plan old.pdf",
+            "modifiedTime": "2026-05-27T08:00:00Z",
+        },
+        {
+            "id": "newer-bp",
+            "name": "Block Plan current.pdf",
+            "modifiedTime": "2026-05-27T09:00:00Z",
+        },
+        {
+            "id": "published-doc",
+            "name": "RayCon Scenario Assessment - Alpha Keller",
+            "modifiedTime": "2026-05-27T10:00:00Z",
+        },
+    ]
+
+    block_plan = _find_block_plan(gc, "m1-id", m1_files=files)
+    published = _find_published_doc(
+        gc,
+        "m1-id",
+        "Alpha Keller",
+        m1_files=files,
+    )
+
+    assert block_plan is not None
+    assert block_plan["id"] == "newer-bp"
+    assert published is not None
+    assert published["id"] == "published-doc"
+    gc.list_files_in_folder.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

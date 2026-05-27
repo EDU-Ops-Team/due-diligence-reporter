@@ -1,5 +1,47 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - Rhodes Roster Performance: Hydration and Callback Fast Path
+
+Started the deferred performance slice from the DDR remediation plan on branch
+`codex/rhodes-performance-roster`.
+
+Current behavior:
+
+- `list_rhodes_site_records()` now skips the per-site `getSite` hydration call
+  when a `listSites` summary already includes the fields full-roster callers
+  need: site ID, name, address, Drive folder URL, and P1 owner context.
+- `list_rhodes_site_records(site_ids=[...])` can load specific Rhodes site IDs
+  directly with `getSite`, bypassing the full `listSites` inventory.
+- `scripts/raycon_followup.py` uses the direct site-ID path for callback runs
+  (`--site-id`) before falling back to the full inventory. The fallback remains
+  in place so legacy callback values that are Drive folder IDs can still match
+  through the existing full-roster identity check.
+- RayCon per-site processing now lists the M1 folder once and reuses that file
+  list for Block Plan detection, `raycon_scenario.json` lookup, and published
+  RayCon Scenario Doc freshness checks.
+- Full-roster behavior remains unchanged for daily DD, vendor sweeps, inbox
+  scans, and RayCon cron sweeps when no callback site ID is provided.
+
+Verification completed so far:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-performance-roster tests/test_rhodes.py tests/test_raycon_followup.py tests/test_daily_dd_check.py tests/test_vendor_doc_sweep.py -q
+uv run pytest --basetemp C:\tmp\ddr-performance-raycon tests/test_raycon_client.py tests/test_raycon_followup.py tests/test_rhodes.py -q
+uv run pytest --basetemp C:\tmp\ddr-performance-affected tests/test_rhodes.py tests/test_raycon_followup.py tests/test_raycon_client.py tests/test_daily_dd_check.py tests/test_vendor_doc_sweep.py tests/test_scan_inbox_e2e.py tests/test_inbox_scanner.py -q
+uv run ruff check src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\raycon_client.py scripts\raycon_followup.py tests\test_rhodes.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_daily_dd_check.py tests\test_vendor_doc_sweep.py
+uv run mypy src/
+git diff --check
+```
+
+Results:
+
+- Focused roster/RayCon/daily/vendor tests: 68 passed.
+- Focused RayCon client/follow-up/Rhodes tests: 122 passed.
+- Broader affected inbox/Rhodes/RayCon suite: 207 passed.
+- Focused Ruff: all checks passed.
+- Full source Mypy: no issues in 31 source files.
+- `git diff --check`: no whitespace errors; only Windows LF-to-CRLF warnings.
+
 ## 2026-05-27 - DDR Remediation: Workflow Safety, Rhodes Retry, and Source-of-Truth Fixes
 
 Implemented the first remediation pass from the `$check` / `$qplan` review on

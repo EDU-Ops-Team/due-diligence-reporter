@@ -709,6 +709,29 @@ class TestReadRayConScenarioFromM1:
         assert result["_drive_file_id"] == "f1"
         assert result["_drive_modified_time"] == "2026-04-30T10:00:00Z"
 
+    def test_uses_prelisted_m1_files_without_relisting_folder(self) -> None:
+        payload = {"schema_version": "1.0"}
+        gc = MagicMock()
+        gc.download_file_bytes.return_value = json.dumps(payload).encode("utf-8")
+
+        result = read_raycon_scenario_from_m1(
+            gc,
+            "https://drive.google.com/folder/abc",
+            m1_folder_id="m1-id",
+            m1_files=[
+                {
+                    "id": "f1",
+                    "name": RAYCON_SCENARIO_FILENAME,
+                    "modifiedTime": "2026-04-30T10:00:00Z",
+                }
+            ],
+        )
+
+        assert result is not None
+        assert result["_drive_file_id"] == "f1"
+        gc.list_files_in_folder.assert_not_called()
+        gc.download_file_bytes.assert_called_once_with("f1")
+
     def test_unsupported_schema_version_raises(self) -> None:
         payload = {"schema_version": "9.9", "fastest_open": {}}
         gc = MagicMock()

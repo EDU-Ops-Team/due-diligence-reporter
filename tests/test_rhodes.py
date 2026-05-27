@@ -33,7 +33,7 @@ class FakeRhodesClient:
         self.calls.append(("get_site", {"site_id": site_id or "", "slug": slug or ""}))
         return self.site
 
-    def list_sites(self, *, status: str = "active") -> list[dict[str, Any]]:
+    def list_sites(self, *, status: str | None = "active") -> list[dict[str, Any]]:
         self.calls.append(("list_sites", {"status": status}))
         return self.sites
 
@@ -250,6 +250,56 @@ def test_list_rhodes_site_records_returns_drive_ready_inbox_records() -> None:
         ("list_sites", {"status": "active"}),
         ("get_site", {"site_id": "SITE1", "slug": ""}),
     ]
+
+
+def test_list_rhodes_site_records_skips_hydration_for_complete_summaries() -> None:
+    client = FakeRhodesClient(
+        sites=[
+            {
+                "_id": "SITE1",
+                "name": "Alpha Keller",
+                "slug": "alpha-keller",
+                "address": "123 Main St, Keller, TX 76248",
+                "status": "active",
+                "createdDate": "2026-05-20",
+                "p1Dri": {"name": "Devin Bates", "email": "devin.bates@trilogy.com"},
+                "driveFolderUrl": "https://drive.google.com/drive/folders/drive-root-1",
+            }
+        ],
+    )
+
+    records = list_rhodes_site_records(client=client)  # type: ignore[arg-type]
+
+    assert records[0]["id"] == "SITE1"
+    assert records[0]["address"] == "123 Main St, Keller, TX 76248"
+    assert records[0]["drive_folder_id"] == "drive-root-1"
+    assert records[0]["drive_folder_url"].endswith("/drive-root-1")
+    assert records[0]["p1_assignee_email"] == "devin.bates@trilogy.com"
+    assert client.calls == [("list_sites", {"status": "active"})]
+
+
+def test_list_rhodes_site_records_can_load_specific_site_ids_without_listing() -> None:
+    client = FakeRhodesClient(
+        {
+            "_id": "SITE1",
+            "name": "Alpha Keller",
+            "slug": "alpha-keller",
+            "address": "123 Main St, Keller, TX 76248",
+            "status": "active",
+            "createdDate": "2026-05-20",
+            "p1Dri": {"name": "Devin Bates", "email": "devin.bates@trilogy.com"},
+            "driveFolderId": "drive-root-1",
+        },
+    )
+
+    records = list_rhodes_site_records(
+        site_ids=["SITE1"],
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert records[0]["id"] == "SITE1"
+    assert records[0]["drive_folder_url"].endswith("/drive-root-1")
+    assert client.calls == [("get_site", {"site_id": "SITE1", "slug": ""})]
 
 
 def test_ddr_doc_type_mapping_covers_inbox_supported_docs() -> None:
