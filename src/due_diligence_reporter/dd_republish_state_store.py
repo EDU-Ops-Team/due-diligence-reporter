@@ -1,15 +1,20 @@
-"""Rhodes registration retry state storage with optional Firestore durability."""
+"""DD Report republish dedupe state storage with optional Firestore durability."""
 
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote
 
+from .dd_republish import (
+    DD_REPUBLISH_STATE_PATH,
+    LEGACY_DD_REPUBLISH_STATE_PATH,
+    load_state,
+    save_state,
+)
 from .firestore_state import (
     DEFAULT_FIRESTORE_DATABASE,
     build_authorized_session,
@@ -19,56 +24,48 @@ from .firestore_state import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_FIRESTORE_COLLECTION = "ddrRhodesRegistrationRetryState"
+DEFAULT_FIRESTORE_COLLECTION = "ddrDDRepublishState"
 
-RhodesRetryState = dict[str, dict[str, Any]]
-
-
-class RhodesRetryStateStore(Protocol):
-    """Storage boundary for Rhodes document-registration retry state."""
-
-    def load(self) -> RhodesRetryState:
-        """Return persisted retry state."""
-
-    def save(self, state: RhodesRetryState) -> None:
-        """Persist retry state."""
+DDRepublishState = dict[str, str]
 
 
-class JsonRhodesRetryStateStore:
-    """Retry-state store backed by the existing local JSON file."""
+class DDRepublishStateStore(Protocol):
+    """Storage boundary for DD Report republish dedupe state."""
 
-    def __init__(self, path: Path) -> None:
+    def load(self) -> DDRepublishState:
+        """Return persisted dedupe state."""
+
+    def save(self, state: DDRepublishState) -> None:
+        """Persist dedupe state."""
+
+
+class JsonDDRepublishStateStore:
+    """Republish-state store backed by the existing local JSON file."""
+
+    def __init__(
+        self,
+        path: Path = DD_REPUBLISH_STATE_PATH,
+        *,
+        legacy_path: Path = LEGACY_DD_REPUBLISH_STATE_PATH,
+    ) -> None:
         self.path = path
+        self.legacy_path = legacy_path
 
-    def load(self) -> RhodesRetryState:
-        if not self.path.exists():
-            return {}
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001 - corrupt state should not block filing
-            logger.warning("Ignoring unreadable Rhodes retry state at %s: %s", self.path, exc)
-            return {}
-        return _coerce_retry_state(payload)
+    def load(self) -> DDRepublishState:
+        return load_state(self.path, legacy_path=self.legacy_path)
 
-    def save(self, state: RhodesRetryState) -> None:
-        self.path.write_text(
-            json.dumps(state, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+    def save(self, state: DDRepublishState) -> None:
+        save_state(state, self.path)
 
 
-class FirestoreRhodesRetryStateStore:
-    """Firestore-backed retry-state store with local JSON fallback.
-
-    The scanner still mutates one in-memory dict during a run. This store makes
-    that dict durable at run boundaries without changing the filing code path.
-    """
+class FirestoreDDRepublishStateStore:
+    """Firestore-backed republish-state store with local JSON fallback."""
 
     def __init__(
         self,
         *,
         project_id: str,
-        fallback: JsonRhodesRetryStateStore,
+        fallback: JsonDDRepublishStateStore,
         collection: str = DEFAULT_FIRESTORE_COLLECTION,
         database: str = DEFAULT_FIRESTORE_DATABASE,
         session: Any | None = None,
@@ -79,46 +76,49 @@ class FirestoreRhodesRetryStateStore:
         self.fallback = fallback
         self.session = session or build_authorized_session()
 
-    def load(self) -> RhodesRetryState:
+    def load(self) -> DDRepublishState:
         try:
             firestore_state = self._load_firestore_state()
         except Exception as exc:  # noqa: BLE001 - local JSON remains the safe fallback
-            logger.warning("Failed to load Rhodes retry state from Firestore: %s", exc)
+            logger.warning("Failed to load DD republish state from Firestore: %s", exc)
             return self.fallback.load()
         if firestore_state:
             return firestore_state
         return self.fallback.load()
 
-    def save(self, state: RhodesRetryState) -> None:
+    def save(self, state: DDRepublishState) -> None:
         try:
             self._save_firestore_state(state)
         except Exception as exc:  # noqa: BLE001 - preserve progress locally
-            logger.warning("Failed to save Rhodes retry state to Firestore: %s", exc)
+            logger.warning("Failed to save DD republish state to Firestore: %s", exc)
             self.fallback.save(state)
             return
         self.fallback.save(state)
 
-    def _load_firestore_state(self) -> RhodesRetryState:
+    def _load_firestore_state(self) -> DDRepublishState:
         documents = self._list_documents()
-        state: RhodesRetryState = {}
+        state: DDRepublishState = {}
         for document in documents:
             fields = document.get("fields")
             if not isinstance(fields, dict):
                 continue
             entry = decode_firestore_fields(fields)
-            key = str(entry.pop("retry_key", "") or "").strip()
-            if key:
-                state[key] = entry
+            key = str(entry.get("state_key") or "").strip()
+            last_republish = str(entry.get("last_republish") or "").strip()
+            if key and last_republish:
+                state[key] = last_republish
         return state
 
-    def _save_firestore_state(self, state: RhodesRetryState) -> None:
+    def _save_firestore_state(self, state: DDRepublishState) -> None:
         existing_ids = self._list_document_ids()
         desired_ids: set[str] = set()
-        for retry_key, entry in state.items():
-            document_id = _document_id_for_retry_key(retry_key)
+        for state_key, last_republish in state.items():
+            document_id = _document_id_for_state_key(state_key)
             desired_ids.add(document_id)
-            fields = dict(entry)
-            fields["retry_key"] = retry_key
+            fields = {
+                "state_key": state_key,
+                "last_republish": last_republish,
+            }
             response = self.session.patch(
                 self._document_url(document_id),
                 json={"fields": encode_firestore_fields(fields)},
@@ -162,54 +162,42 @@ class FirestoreRhodesRetryStateStore:
         return f"{self._collection_url()}/{quote(document_id, safe='')}"
 
 
-def build_rhodes_retry_state_store(
-    path: Path,
-) -> RhodesRetryStateStore:
-    """Return the configured Rhodes retry-state store.
-
-    Firestore is opt-in. Local development and tests keep the existing JSON
-    behavior unless production explicitly enables the durable store.
-    """
-    fallback = JsonRhodesRetryStateStore(path)
-    mode = os.getenv("RHODES_RETRY_STATE_STORE", "json").strip().lower()
+def build_dd_republish_state_store(
+    path: Path = DD_REPUBLISH_STATE_PATH,
+    *,
+    legacy_path: Path = LEGACY_DD_REPUBLISH_STATE_PATH,
+) -> DDRepublishStateStore:
+    """Return the configured DD republish-state store."""
+    fallback = JsonDDRepublishStateStore(path, legacy_path=legacy_path)
+    mode = os.getenv("DD_REPUBLISH_STATE_STORE", "json").strip().lower()
     if mode != "firestore":
         return fallback
 
-    project_id = os.getenv("RHODES_RETRY_STATE_FIRESTORE_PROJECT_ID", "").strip()
+    project_id = os.getenv("DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID", "").strip()
     if not project_id:
         logger.warning(
-            "RHODES_RETRY_STATE_STORE=firestore but "
-            "RHODES_RETRY_STATE_FIRESTORE_PROJECT_ID is unset"
+            "DD_REPUBLISH_STATE_STORE=firestore but "
+            "DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID is unset"
         )
         return fallback
 
     try:
-        return FirestoreRhodesRetryStateStore(
+        return FirestoreDDRepublishStateStore(
             project_id=project_id,
             fallback=fallback,
             collection=os.getenv(
-                "RHODES_RETRY_STATE_FIRESTORE_COLLECTION",
+                "DD_REPUBLISH_STATE_FIRESTORE_COLLECTION",
                 DEFAULT_FIRESTORE_COLLECTION,
             ),
             database=os.getenv(
-                "RHODES_RETRY_STATE_FIRESTORE_DATABASE",
+                "DD_REPUBLISH_STATE_FIRESTORE_DATABASE",
                 DEFAULT_FIRESTORE_DATABASE,
             ),
         )
-    except Exception as exc:  # noqa: BLE001 - scanner must still run with JSON fallback
-        logger.warning("Falling back to JSON Rhodes retry state store: %s", exc)
+    except Exception as exc:  # noqa: BLE001 - scheduled runs must keep JSON fallback
+        logger.warning("Falling back to JSON DD republish state store: %s", exc)
         return fallback
 
 
-def _coerce_retry_state(payload: Any) -> RhodesRetryState:
-    if not isinstance(payload, dict):
-        return {}
-    return {
-        str(key): value
-        for key, value in payload.items()
-        if isinstance(value, dict)
-    }
-
-
-def _document_id_for_retry_key(retry_key: str) -> str:
-    return hashlib.sha256(retry_key.strip().encode("utf-8")).hexdigest()
+def _document_id_for_state_key(state_key: str) -> str:
+    return hashlib.sha256(state_key.strip().encode("utf-8")).hexdigest()

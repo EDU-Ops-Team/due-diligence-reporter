@@ -1,5 +1,68 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - Firestore DD Republish State Store
+
+Started the next Phase 2 durable-state item on branch
+`codex/ddr-firestore-republish-state`.
+
+Current behavior in progress:
+
+- Added `dd_republish_state_store.py` with the existing local JSON republish
+  dedupe store, optional Firestore-backed write-through storage, stale remote
+  document deletion, and safe local JSON fallback.
+- Added `firestore_state.py` to share Firestore REST field encode/decode and
+  authenticated session helpers across automation state stores.
+- Refactored `rhodes_retry_state_store.py` to use the shared Firestore helpers
+  without changing its external behavior.
+- `scan_inbox.py`, `raycon_followup.py`, and
+  `vendor_doc_republish_sweep.py` now load/save DD republish dedupe state
+  through the configured store while preserving the existing in-memory dict
+  contract used by `maybe_republish_dd_report`.
+- Production can set `DD_REPUBLISH_STATE_STORE=firestore` and
+  `DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID=<project>` plus optional database
+  and collection variables.
+- The three scheduled workflows forward those repository variables and can use
+  the existing optional `GCP_FIRESTORE_SERVICE_ACCOUNT_JSON` secret. Successful
+  Firestore saves refresh `.dd_republish_state.json`, so the GitHub Actions
+  cache remains a current fallback.
+- Updated `.env.example`, workflow contract tests, and
+  `docs/process/HOW-IT-WORKS.md`.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-republish-store-focused tests/test_dd_republish_state_store.py tests/test_rhodes_retry_state_store.py tests/test_workflow_contracts.py -q
+uv run ruff check src\due_diligence_reporter\firestore_state.py src\due_diligence_reporter\dd_republish_state_store.py src\due_diligence_reporter\rhodes_retry_state_store.py scripts\scan_inbox.py scripts\raycon_followup.py scripts\vendor_doc_republish_sweep.py tests\test_dd_republish_state_store.py tests\test_rhodes_retry_state_store.py tests\test_workflow_contracts.py
+uv run mypy src/
+uv run python -m py_compile scripts\scan_inbox.py scripts\raycon_followup.py scripts\vendor_doc_republish_sweep.py
+uv run pytest --basetemp C:\tmp\ddr-republish-store-broad tests/test_dd_republish_state_store.py tests/test_rhodes_retry_state_store.py tests/test_dd_republish.py tests/test_raycon_followup.py tests/test_inbox_scanner.py tests/test_vendor_doc_sweep.py tests/test_workflow_contracts.py -q
+git diff --check
+```
+
+Results:
+
+- Focused state/workflow tests: 20 passed.
+- Ruff on touched code/tests: passed.
+- Full source Mypy: no issues in 35 source files.
+- Script compile checks: passed.
+- Broader affected DDR suite: 183 passed.
+- Diff check: passed, with expected Windows LF-to-CRLF warnings only.
+
+Note:
+
+- A targeted mypy invocation that included `scripts/*.py` directly hit the
+  repo's duplicate-module import shape
+  (`src.due_diligence_reporter.dd_republish` vs
+  `due_diligence_reporter.dd_republish`). The repo-standard `uv run mypy src/`
+  is clean, and the touched scripts compile.
+
+Next:
+
+- Commit, push, and open the DDR PR.
+- Email-router PR #22 was still open/draft when checked from GitHub, despite
+  the user saying it had merged. Do not treat it as merged until GitHub reports
+  a merge commit.
+
 ## 2026-05-27 - DDR AutomationEvent Contract Module
 
 Started the next Phase 2 event-contract slice on branch

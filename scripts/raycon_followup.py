@@ -68,11 +68,8 @@ from due_diligence_reporter.dd_republish import (  # noqa: E402
     find_existing_dd_report,
     maybe_republish_dd_report,
 )
-from due_diligence_reporter.dd_republish import (  # noqa: E402
-    load_state as _load_dd_republish_state_shared,
-)
-from due_diligence_reporter.dd_republish import (  # noqa: E402
-    save_state as _save_dd_republish_state_shared,
+from due_diligence_reporter.dd_republish_state_store import (  # noqa: E402
+    build_dd_republish_state_store,
 )
 from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.m1_lookup import _resolve_m1_folder  # noqa: E402
@@ -266,14 +263,14 @@ def _load_republish_state(
     ``scripts.raycon_followup._load_republish_state`` still observe
     the call.
     """
-    return _load_dd_republish_state_shared(path, legacy_path=legacy_path)
+    return build_dd_republish_state_store(path, legacy_path=legacy_path).load()
 
 
 def _save_republish_state(
     state: dict[str, str], path: Path = DD_REPUBLISH_DEDUP_PATH
 ) -> None:
     """Persist the DD republish dedup map. Best-effort; logs but does not raise."""
-    _save_dd_republish_state_shared(state, path)
+    build_dd_republish_state_store(path).save(state)
 
 
 def _filter_dedup_alerts(
