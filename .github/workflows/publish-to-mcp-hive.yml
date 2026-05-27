@@ -255,6 +255,7 @@ jobs:
             "Vendor Doc Republish Sweep"
             "Daily DD Check"
             "RayCon Follow-up"
+            "Drive Rhodes Reconciliation"
           )
           for workflow in "${workflows[@]}"; do
             gh run list \

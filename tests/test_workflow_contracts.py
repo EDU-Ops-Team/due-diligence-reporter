@@ -39,6 +39,7 @@ def test_workflow_dispatch_site_inputs_are_not_interpolated_in_shell() -> None:
         "daily-dd-check.yml",
         "vendor-doc-republish-sweep.yml",
         "reprocess-mislabeled.yml",
+        "drive-rhodes-reconciliation.yml",
     ):
         shell = "\n".join(_run_blocks(_workflow_text(workflow)))
         assert "${{ inputs.site }}" not in shell
@@ -81,6 +82,7 @@ def test_publish_to_mcp_hive_cancels_stale_mutating_runs() -> None:
         '"Vendor Doc Republish Sweep"',
         '"Daily DD Check"',
         '"RayCon Follow-up"',
+        '"Drive Rhodes Reconciliation"',
     ):
         assert workflow in text
 
@@ -88,6 +90,7 @@ def test_publish_to_mcp_hive_cancels_stale_mutating_runs() -> None:
 def test_long_running_mutating_workflows_have_timeouts() -> None:
     assert "timeout-minutes: 60" in _workflow_text("inbox-scan.yml")
     assert "timeout-minutes: 60" in _workflow_text("vendor-doc-republish-sweep.yml")
+    assert "timeout-minutes: 60" in _workflow_text("drive-rhodes-reconciliation.yml")
 
 
 def test_inbox_scan_can_enable_firestore_retry_state_without_required_secret() -> None:

@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import MagicMock
+
+from due_diligence_reporter.drive_rhodes_reconciliation import (
+    run_drive_rhodes_reconciliation,
+)
+
+
+class FakeRhodesClient:
+    def __init__(self) -> None:
+        self.documents: list[dict[str, Any]] = []
+        self.registered_documents: list[dict[str, Any]] = []
+
+    def find_document_by_drive_file_id(
+        self,
+        *,
+        site_id: str,
+        drive_file_id: str,
+        doc_type: str | None = None,
+        milestone: str | None = None,
+    ) -> dict[str, Any] | None:
+        for document in self.documents:
+            if document.get("driveFileId") == drive_file_id:
+                return document
+        return None
+
+    def register_document(
+        self,
+        *,
+        site_id: str,
+        title: str,
+        doc_type: str,
+        drive_file_id: str,
+        drive_url: str = "",
+        mime_type: str = "",
+        milestone: str | None = None,
+        quality_bar: str | None = None,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        document = {
+            "_id": f"DOC{len(self.registered_documents) + 1}",
+            "siteId": site_id,
+            "title": title,
+            "docType": doc_type,
+            "driveFileId": drive_file_id,
+            "driveUrl": drive_url,
+            "mimeType": mime_type,
+            "milestone": milestone,
+            "qualityBar": quality_bar,
+            "notes": notes,
+        }
+        self.registered_documents.append(document)
+        return document
+
+
+def _site() -> dict[str, str]:
+    return {
+        "id": "SITE1",
+        "title": "Alpha Test",
+        "drive_folder_url": "https://drive.google.com/drive/folders/root",
+    }
+
+
+def _gc(files: list[dict[str, Any]]) -> MagicMock:
+    gc = MagicMock()
+    gc.list_subfolders.return_value = [
+        {
+            "id": "m1",
+            "name": "M1 - Acquire Property",
+            "webViewLink": "https://drive/m1",
+        }
+    ]
+    gc.list_files_in_folder.return_value = files
+    return gc
+
+
+def test_reconciliation_registers_unlinked_m1_source_docs() -> None:
+    rhodes = FakeRhodesClient()
+    gc = _gc(
+        [
+            {
+                "id": "sir-1",
+                "name": "Alpha Test SIR.pdf",
+                "mimeType": "application/pdf",
+                "modifiedTime": "2026-05-27T10:00:00Z",
+                "webViewLink": "https://drive/sir-1",
+            },
+            {
+                "id": "school-1",
+                "name": "Alpha Test School Approval Report.pdf",
+                "mimeType": "application/pdf",
+                "modifiedTime": "2026-05-27T11:00:00Z",
+                "webViewLink": "https://drive/school-1",
+            },
+        ]
+    )
+
+    result = run_drive_rhodes_reconciliation(
+        gc,
+        site_records=[_site()],
+        rhodes_client=rhodes,  # type: ignore[arg-type]
+    )
+
+    assert result["registered"] == 1
+    assert result["skipped"] == 1
+    assert rhodes.registered_documents[0]["docType"] == "siteInvestigationReport"
+    assert rhodes.registered_documents[0]["milestone"] == "acquireProperty"
+    assert "Registered by DDR drive_rhodes_reconciliation." in (
+        rhodes.registered_documents[0]["notes"]
+    )
+    skipped = [row for row in result["rows"] if row["status"] == "skipped"]
+    assert skipped[0]["reason"] == "unmapped_doc_type"
+
+
+def test_reconciliation_skips_already_registered_drive_file() -> None:
+    rhodes = FakeRhodesClient()
+    rhodes.documents = [{"_id": "DOC_EXISTING", "driveFileId": "sir-1"}]
+    gc = _gc(
+        [
+            {
+                "id": "sir-1",
+                "name": "Alpha Test SIR.pdf",
+                "mimeType": "application/pdf",
+                "webViewLink": "https://drive/sir-1",
+            }
+        ]
+    )
+
+    result = run_drive_rhodes_reconciliation(
+        gc,
+        site_records=[_site()],
+        rhodes_client=rhodes,  # type: ignore[arg-type]
+    )
+
+    assert result["already_registered"] == 1
+    assert result["registered"] == 0
+    assert rhodes.registered_documents == []
+    assert result["rows"][0]["rhodes_document_id"] == "DOC_EXISTING"
+
+
+def test_reconciliation_dry_run_reports_would_register_without_writing() -> None:
+    rhodes = FakeRhodesClient()
+    gc = _gc(
+        [
+            {
+                "id": "inspection-1",
+                "name": "Alpha Test Building Inspection Report.pdf",
+                "mimeType": "application/pdf",
+                "webViewLink": "https://drive/inspection-1",
+            }
+        ]
+    )
+
+    result = run_drive_rhodes_reconciliation(
+        gc,
+        site_records=[_site()],
+        dry_run=True,
+        rhodes_client=rhodes,  # type: ignore[arg-type]
+    )
+
+    assert result["would_register"] == 1
+    assert result["registered"] == 0
+    assert rhodes.registered_documents == []
+    assert result["rows"][0]["rhodes_doc_type"] == "propertyConditionAssessment"
+
+
+def test_reconciliation_skips_site_without_m1_folder() -> None:
+    gc = MagicMock()
+    gc.list_subfolders.return_value = []
+
+    result = run_drive_rhodes_reconciliation(gc, site_records=[_site()])
+
+    assert result["recognized_files"] == 0
+    assert result["skipped"] == 1
+    assert result["rows"][0]["reason"] == "m1_folder_missing"
