@@ -1,5 +1,49 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - Inbox Missing-Folder Cleanup: Linked Active Rhodes Folders, Suppressed Cancelled Torrance
+
+Context:
+
+- Inbox manual review showed `missing_drive_folder` for Port Chester, Torrance,
+  Malibu, Los Angeles Beethoven, Tulsa 421 E 11th, and Santa Clara.
+- Live LocationOS records resolved for all six sites, but the active five had no
+  linked Rhodes Google Drive folder. Torrance is cancelled and its Drive folder
+  is under `G:\Shared drives\Education Ops\All Locations\0.Archive`.
+
+Actions completed:
+
+- Renamed the synced shared-drive folder
+  `Alpha Los Angeles 5400 Beethoven St` to
+  `Alpha Los Angeles 5401 Beethoven St`.
+- Linked existing Drive folder roots in LocationOS/Rhodes:
+  - Port Chester: `1KhzTP0O2-oA0ZS5JIko0LRmB3RKarch2`
+  - Malibu: `1YFji_KxEGOY38jXhxxRNNeLKn0OzqNUs`
+  - Tulsa 421 E 11th: `1aECCszKKUydifS6nx23fEV5LZWEn3seh`
+  - Santa Clara: `1RRF-_nxBMMvdcSXZsBj-qUAx_xYGKao1`
+  - Los Angeles 5401 Beethoven: `1G8fc0sX3dP83A7uMF5Bhz2pXnhRpaRJz`
+- Confirmed LocationOS `driveResolveSiteFolderPath(..., "M1 - Acquire Property")`
+  now resolves for all five active sites.
+- Updated `src/due_diligence_reporter/inbox_scanner.py` so a matched cancelled
+  Rhodes site with no Drive folder URL is skipped instead of emitted as
+  `missing_drive_folder` manual review. Active matched sites without a Drive
+  folder still emit manual review.
+- Added regression coverage in `tests/test_inbox_scanner.py` for the cancelled
+  no-folder suppression path.
+
+Verification:
+
+- `uv run pytest tests/test_inbox_scanner.py -q` -> `72 passed`
+- `uv run ruff check src/due_diligence_reporter/inbox_scanner.py tests/test_inbox_scanner.py`
+  -> `All checks passed`
+
+Notes:
+
+- Google Drive search now shows the renamed
+  `Alpha Los Angeles 5401 Beethoven St` folder for the original folder ID that
+  contained the DD report, not the empty duplicate skeleton.
+- Torrance was not linked because the Rhodes site is cancelled and its folder is
+  archived.
+
 ## 2026-05-27 - DDR RayCon Follow-up Rhodes Events
 
 Confirmed the previous vendor-gate PR was merged:
@@ -509,7 +553,6 @@ Results:
 - Full source Mypy: no issues in 32 source files.
 - Broader inbox/Rhodes/workflow suite: 107 passed.
 - Diff check: no whitespace errors; only expected Windows LF-to-CRLF warnings.
-
 ## 2026-05-27 - Lexington DDR Follow-up: Stale Automation and Stronger Summary Splitter
 
 Follow-up after `Alpha Lexington 92 Hayden Ave DD Report - 05_27_2026.docx`

@@ -369,6 +369,8 @@ def _build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
         "id": str(record.get("id") or record.get("site_id") or "").strip(),
         "title": str(record.get("title") or record.get("name") or "").strip(),
         "address": _record_address(record),
+        "status": str(record.get("status") or "").strip(),
+        "rhodes_status": str(record.get("rhodes_status") or "").strip(),
         "drive_folder_url": _record_value(
             record,
             ("drive_folder_url", "google_folder", "folder_url"),
@@ -401,6 +403,13 @@ def _build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
             {"total building sf", "building square feet", "total building square feet"},
         ),
     }
+
+
+def _is_cancelled_site(site_summary: dict[str, Any]) -> bool:
+    status = str(
+        site_summary.get("rhodes_status") or site_summary.get("status") or ""
+    ).strip()
+    return status.casefold() == "cancelled"
 
 
 @dataclass
@@ -1192,6 +1201,14 @@ def process_email(
         # configured only so the migration script can read from them.
         drive_folder_url = str(site_summary.get("drive_folder_url", "")).strip()
         if not drive_folder_url:
+            if _is_cancelled_site(site_summary):
+                logger.info(
+                    "Skipping '%s' for cancelled Rhodes site '%s' with no Drive folder URL",
+                    filename,
+                    site_title or "unknown",
+                )
+                skipped += 1
+                continue
             error_message = "Matched site has no Google Drive folder URL"
             errors.append(
                 {

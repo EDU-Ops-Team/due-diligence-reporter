@@ -600,6 +600,60 @@ class TestClassification:
         mock_resolve_m1.assert_not_called()
         gc.upload_file_to_folder.assert_not_called()
 
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_cancelled_site_with_no_drive_folder_is_suppressed(
+        self, mock_extract, mock_classify, mock_resolve_m1, mock_build_summary
+    ):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_cancelled_no_drive",
+            subject="RE: New Site Kickoff: 22600 Crenshaw Blvd, Torrance, CA",
+            sender="test@example.com",
+            effective_sender="test@example.com",
+            body_snippet="May 6 Alpha Torrance Building Inspection",
+            attachments=[
+                {
+                    "filename": "May 6 Alpha Torrance Building Inspection.pdf",
+                    "attachment_id": "nd1",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        mock_classify.return_value = ("building_inspection", 0.95)
+        mock_build_summary.return_value = {
+            "title": "Alpha Torrance 22600 Crenshaw Blvd",
+            "drive_folder_url": "",
+            "rhodes_status": "cancelled",
+        }
+
+        gc = MagicMock()
+        site_records = [
+            {
+                "id": "IETORRANCE",
+                "title": "Alpha Torrance 22600 Crenshaw Blvd",
+                "rhodes_status": "cancelled",
+                "customFields": [],
+            }
+        ]
+        result = process_email(
+            gc,
+            "msg_cancelled_no_drive",
+            MagicMock(),
+            "label_123",
+            "review_123",
+            site_records=site_records,
+        )
+
+        assert result["uploaded"] == []
+        assert result["skipped"] == 1
+        assert result["errors"] == []
+        assert result["manual_review"] == []
+        assert result["marked"] is True
+        mock_resolve_m1.assert_not_called()
+        gc.upload_file_to_folder.assert_not_called()
+
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
     def test_unmatched_block_plan_goes_to_manual_review(self, mock_extract, mock_classify):
