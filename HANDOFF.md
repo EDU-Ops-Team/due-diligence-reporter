@@ -1,5 +1,66 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - DDR Vendor Gate Rhodes Events
+
+Confirmed the previous source-review PR was merged:
+
+- `due-diligence-reporter` PR #121 merged at `c17e670`.
+
+Continued Phase 4 record-completion work with a narrow vendor-gate alert
+slice.
+
+Branch: `codex/ddr-vendor-gate-rhodes-events`
+
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/122
+
+Implementation commit: `aaaeec9` (`Record vendor gate alerts in Rhodes`)
+
+Current state: branch pushed, draft PR open, GitHub reports merge state
+`CLEAN`. No checks were reported when checked.
+
+Changed:
+
+- Added a DDR `vendor_gate_review_required` `AutomationEvent v1` builder for
+  complete-input vendor-gate failures.
+- When vendor SIR, vendor Building Inspection, and RayCon Scenario JSON are all
+  present but generation still fails or the generated report remains
+  incomplete, the pipeline writes a Rhodes site note before Chat fallback.
+- The note mentions the P1 DRI when Rhodes can resolve the owner from context
+  or email.
+- Google Chat remains the fallback when the site is unknown, the Rhodes note
+  write fails, or no owner can be mentioned.
+- Added a `vendor_gate.alert` run step so manifests show the Rhodes/Chat event
+  status.
+- Updated `docs/process/HOW-IT-WORKS.md`.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-vendor-gate-events-focused tests/test_automation_event.py tests/test_report_pipeline.py -q
+uv run ruff check src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\report_pipeline.py tests\test_automation_event.py tests\test_report_pipeline.py
+uv run mypy src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\report_pipeline.py
+uv run pytest --basetemp C:\tmp\ddr-vendor-gate-events-broad tests/test_automation_event.py tests/test_report_pipeline.py tests/test_dd_republish.py tests/test_rhodes.py -q
+uv run mypy src/
+git diff --check
+git diff --cached --check
+```
+
+Results:
+
+- Focused event/report pipeline suite: 47 passed.
+- Focused Ruff: passed.
+- Focused Mypy: no issues in 2 source files.
+- Broader event/report/republish/Rhodes suite: 96 passed.
+- Full source Mypy: no issues in 37 source files.
+- Diff checks: passed with expected Windows LF-to-CRLF warnings and the
+  existing user-level ignore permission warning only.
+
+Next:
+
+- Wait for CI/review on PR #122.
+- After merge, continue with shared Rhodes adapter extraction or review the
+  remaining alert-only/manual-review paths across the three repos.
+
 ## 2026-05-27 - DDR Source Review Rhodes Events
 
 Confirmed the previous report-outcome PR was merged:
