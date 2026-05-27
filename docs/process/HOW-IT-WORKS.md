@@ -206,6 +206,8 @@ Registration retry state is persisted through a store boundary. Local developmen
 
 DD Report republish dedupe state uses the same store pattern. Local development defaults to `.dd_republish_state.json`; scheduled/production runs should set `DD_REPUBLISH_STATE_STORE=firestore` and `DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID=<project>` so inbox-scan, RayCon follow-up, and vendor-source sweeps share durable dedupe state across runner changes. Successful Firestore saves refresh the local JSON file so the existing GitHub Actions cache remains a current fallback. If Firestore is unconfigured or unavailable, the workflows continue with the local JSON/cache state.
 
+RayCon follow-up runtime state is also behind a store boundary. Local development defaults to `.raycon_dispatch_state.json` and `.raycon_followup_alerts.json`; scheduled/production runs should set `RAYCON_RUNTIME_STATE_STORE=firestore` and `RAYCON_RUNTIME_STATE_FIRESTORE_PROJECT_ID=<project>` so RayCon dispatch dedupe and stuck-site alert suppression survive runner changes. Successful Firestore saves refresh the local JSON files so the existing GitHub Actions cache remains a current fallback.
+
 Material automation outcomes render through `src/due_diligence_reporter/automation_event.py`. The shared `AutomationEvent v1` note body includes source system, source ID, event kind, site ID, decision-required status, mutation status, retry state, and artifact IDs before adding DDR-specific details. This keeps Rhodes notes and Google Chat fallback alerts aligned with the cross-repo automation-event contract.
 
 ### Phase 2 â€” Per-Site Pipeline

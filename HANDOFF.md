@@ -1,5 +1,64 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - Firestore RayCon Runtime State
+
+Started the next Phase 2 durable-state item on branch
+`codex/ddr-firestore-raycon-runtime-state`.
+
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/118
+
+Current state: branch pushed, draft PR open and mergeable. No status checks were
+reported yet when checked.
+
+Changed:
+
+- Added `raycon_runtime_state_store.py` with:
+  - existing local JSON stores for `.raycon_dispatch_state.json` and
+    `.raycon_followup_alerts.json`
+  - optional Firestore-backed write-through stores for both state maps
+  - stale remote document deletion when local keys are removed
+  - safe local JSON fallback when Firestore is unconfigured or unavailable
+- `scripts/raycon_followup.py` now loads/saves RayCon dispatch dedupe and
+  stuck-site alert suppression through the configured stores while preserving
+  the existing in-memory dict contracts.
+- Production can set:
+  - `RAYCON_RUNTIME_STATE_STORE=firestore`
+  - `RAYCON_RUNTIME_STATE_FIRESTORE_PROJECT_ID=<project>`
+  - optional `RAYCON_RUNTIME_STATE_FIRESTORE_DATABASE`
+  - optional `RAYCON_RUNTIME_STATE_DISPATCH_FIRESTORE_COLLECTION`
+  - optional `RAYCON_RUNTIME_STATE_ALERT_FIRESTORE_COLLECTION`
+- The RayCon follow-up workflow forwards those repository variables and can
+  use the existing optional `GCP_FIRESTORE_SERVICE_ACCOUNT_JSON` secret.
+  Successful Firestore saves refresh the local JSON files, so the GitHub
+  Actions cache remains a current fallback.
+- Updated `.env.example`, workflow contract tests, and
+  `docs/process/HOW-IT-WORKS.md`.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-raycon-runtime-focused tests/test_raycon_runtime_state_store.py tests/test_workflow_contracts.py tests/test_raycon_followup.py -q
+uv run ruff check src\due_diligence_reporter\raycon_runtime_state_store.py scripts\raycon_followup.py tests\test_raycon_runtime_state_store.py tests\test_workflow_contracts.py
+uv run mypy src/
+uv run python -m py_compile scripts\raycon_followup.py
+uv run pytest --basetemp C:\tmp\ddr-raycon-runtime-broad tests/test_raycon_runtime_state_store.py tests/test_raycon_followup.py tests/test_dd_republish_state_store.py tests/test_dd_republish.py tests/test_rhodes_retry_state_store.py tests/test_workflow_contracts.py -q
+git diff --check
+```
+
+Results:
+
+- Focused RayCon runtime/workflow tests: 67 passed.
+- Ruff on touched code/tests: passed.
+- Full source Mypy: no issues in 36 source files.
+- Script compile checks: passed.
+- Broader affected DDR suite: 117 passed.
+- Diff check: passed, with expected Windows LF-to-CRLF warnings only.
+
+Next:
+
+- After merge, continue with a shared Rhodes adapter skeleton or downstream
+  AutomationEvent ledger alignment.
+
 ## 2026-05-27 - Firestore DD Republish State Store
 
 Started the next Phase 2 durable-state item on branch
