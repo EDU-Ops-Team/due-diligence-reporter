@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Standalone daily cron script for DD report readiness checking.
 
-Scans the configured Google Drive root folder for site folders, checks each
-folder for first-round DDR readiness, and triggers report generation when a SIR
-is present and no report exists yet.
+Loads active Rhodes site records, checks each linked Drive folder for
+first-round DDR readiness, and triggers report generation when a SIR is present
+and no report exists yet.
 
 Run:
     uv run python scripts/daily_dd_check.py
@@ -11,7 +11,7 @@ Run:
 Environment:
     GOOGLE_CLIENT_CONFIG, GOOGLE_TOKEN_FILE, ANTHROPIC_API_KEY,
     GOOGLE_CHAT_WEBHOOK_URL, DD_REPORT_EMAIL_RECIPIENTS, EMAIL_SENDER,
-    EMAIL_APP_PASSWORD, GOOGLE_DRIVE_ROOT_FOLDER_ID, OPENAI_API_KEY
+    EMAIL_APP_PASSWORD, RHODES_API_KEY, OPENAI_API_KEY
 """
 # ruff: noqa: E402
 
@@ -36,6 +36,7 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
     post_pipeline_result,
     process_site_pipeline,
 )
+from due_diligence_reporter.rhodes import RhodesError, list_rhodes_site_records  # noqa: E402
 from due_diligence_reporter.utils import (
     build_site_match_terms as _build_site_match_terms,  # noqa: E402
 )
@@ -48,19 +49,8 @@ logging.basicConfig(
 logger = logging.getLogger("daily_dd_check")
 
 
-def _folder_url(folder: dict[str, object]) -> str:
-    link = folder.get("webViewLink")
-    if isinstance(link, str) and link.strip():
-        return link.strip()
-    folder_id = str(folder.get("id") or "").strip()
-    return f"https://drive.google.com/drive/folders/{folder_id}" if folder_id else ""
-
-
 def main(site_filter: str | None = None) -> None:
     settings = get_settings()
-    if not settings.google_drive_root_folder_id:
-        logger.error("GOOGLE_DRIVE_ROOT_FOLDER_ID is required for the daily sweep")
-        sys.exit(1)
 
     prompt_path = _project_root / "docs" / "prompts" / "prompt_v4.md"
     if not prompt_path.exists():
@@ -75,9 +65,12 @@ def main(site_filter: str | None = None) -> None:
         scopes=settings.google_scopes,
     )
 
-    logger.info("Listing site folders under Drive root %s", settings.google_drive_root_folder_id)
-    site_folders = gc.list_subfolders(settings.google_drive_root_folder_id)
-    logger.info("Found %d site folders", len(site_folders))
+    try:
+        site_records = list_rhodes_site_records()
+    except RhodesError as exc:
+        logger.error("Could not load Rhodes site records for daily DD check: %s", exc)
+        sys.exit(1)
+    logger.info("Loaded %d Rhodes site record(s) for daily DD check", len(site_records))
 
     logger.info("Listing shared Drive folders (SIR, ISP, Building Inspection)")
     shared_cache = list_shared_folders_once(gc)
@@ -85,17 +78,20 @@ def main(site_filter: str | None = None) -> None:
     results: list[PipelineResult] = []
     skipped = 0
 
-    for folder in site_folders:
-        site_title = str(folder.get("name") or "").strip()
-        drive_folder_url = _folder_url(folder)
+    for record in site_records:
+        site_title = str(record.get("title") or record.get("name") or "").strip()
+        site_address = str(record.get("address") or record.get("site_address") or "").strip()
+        site_id = str(record.get("id") or record.get("site_id") or "").strip()
+        drive_folder_url = str(record.get("drive_folder_url") or "").strip()
 
         if not site_title or not drive_folder_url:
             skipped += 1
             continue
-        if site_filter and site_filter.lower() not in site_title.lower():
+        filter_haystack = f"{site_title} {site_address} {site_id}".lower()
+        if site_filter and site_filter.lower() not in filter_haystack:
             continue
 
-        match_terms = _build_site_match_terms(site_title, None)
+        match_terms = _build_site_match_terms(site_title, site_address or None)
         logger.info("Checking site folder: %s (match terms: %s)", site_title, match_terms)
 
         try:
@@ -107,6 +103,11 @@ def main(site_filter: str | None = None) -> None:
                 shared_cache,
                 system_prompt,
                 settings,
+                p1_email=str(record.get("p1_assignee_email") or "").strip() or None,
+                site_address=site_address or None,
+                p1_name=str(record.get("p1_assignee_name") or "").strip() or None,
+                site_created_at=str(record.get("created_date") or "").strip() or None,
+                site_id=site_id or None,
             )
         except Exception as e:
             logger.exception("Unexpected pipeline failure for '%s'", site_title)

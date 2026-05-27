@@ -42,7 +42,7 @@ jobs:
           [ -n "${{ secrets.OPENAI_API_KEY }}" ]             || { echo "[ERROR] OPENAI_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]          || { echo "[ERROR] ANTHROPIC_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}" ] || { echo "[ERROR] _GOOGLE_DOC_ID missing"; exit 1; }
-          [ -n "${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}" ] || { echo "[ERROR] GOOGLE_DRIVE_ROOT_FOLDER_ID missing"; exit 1; }
+          [ -n "${{ secrets.RHODES_API_KEY }}" ]             || { echo "[ERROR] RHODES_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ]            || { echo "[ERROR] OAUTH_CLIENT_ID missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ]        || { echo "[ERROR] OAUTH_CLIENT_SECRET missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ]        || { echo "[ERROR] OAUTH_REFRESH_TOKEN missing"; exit 1; }
@@ -63,6 +63,8 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           GLOBAL_EMAIL_CC: ${{ secrets.GLOBAL_EMAIL_CC }}
+          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
+          RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
 
           SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
           ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
@@ -81,6 +83,8 @@ jobs:
           echo "EMAIL_SENDER=${EMAIL_SENDER}" >> .env
           echo "EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}" >> .env
           echo "GLOBAL_EMAIL_CC=${GLOBAL_EMAIL_CC}" >> .env
+          echo "RHODES_API_KEY=${RHODES_API_KEY}" >> .env
+          echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
 
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
@@ -135,12 +139,15 @@ jobs:
           echo "[OK] Wrote .gcp-saved-tokens.json"
 
       - name: Run daily DD check
+        env:
+          INPUT_SITE: ${{ inputs.site }}
         run: |
-          if [ -n "${{ inputs.site }}" ]; then
-            uv run python scripts/daily_dd_check.py --site "${{ inputs.site }}"
-          else
-            uv run python scripts/daily_dd_check.py
+          set -euo pipefail
+          ARGS=()
+          if [ -n "${INPUT_SITE:-}" ]; then
+            ARGS+=(--site "$INPUT_SITE")
           fi
+          uv run python scripts/daily_dd_check.py "${ARGS[@]}"
 
       - name: Done
         run: echo "Daily DD check completed"

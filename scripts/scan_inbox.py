@@ -49,7 +49,9 @@ from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.inbox_scanner import (  # noqa: E402
     build_scan_summary,
     has_site_identity,
+    load_rhodes_retry_state,
     scan_inbox,
+    save_rhodes_retry_state,
 )
 from due_diligence_reporter.report_pipeline import (  # noqa: E402
     list_shared_folders_once,
@@ -129,6 +131,8 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     _shared_cache: dict[str, list[dict[str, Any]]] | None = None
     _system_prompt: str | None = None
     _republish_state = _load_dd_republish_state()
+    _rhodes_retry_state = load_rhodes_retry_state()
+    _had_rhodes_retry_state = bool(_rhodes_retry_state)
 
     def _dd_republish_callback(
         *,
@@ -172,6 +176,7 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
         settings,
         dry_run=dry_run,
         dd_republish_callback=_dd_republish_callback,
+        rhodes_retry_state=_rhodes_retry_state,
     )
 
     # Persist republish dedup state once after the scan (mirrors how
@@ -181,6 +186,8 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     # repo root for runs that never fired the callback.
     if not dry_run and _republish_state:
         _save_dd_republish_state(_republish_state)
+    if not dry_run and (_rhodes_retry_state or _had_rhodes_retry_state):
+        save_rhodes_retry_state(_rhodes_retry_state)
 
     # Build summary
     summary = build_scan_summary(results)

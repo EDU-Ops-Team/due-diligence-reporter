@@ -558,11 +558,12 @@ def maybe_republish_dd_report(
             source_event=event_dict,
         )
 
-    # Record the attempt regardless of result.status so a permanently
-    # waiting_on_docs site doesn't re-enter the pipeline on every cron
-    # tick. A future fingerprint will get a fresh state_key and try
-    # again. Matches the RayCon-followup pre-refactor behavior exactly.
-    republish_state[state_key] = now.isoformat()
+    # Record only successful report creation as the dedup boundary. Failed,
+    # incomplete, or still-waiting runs need another chance on a later scan
+    # with the same fingerprint instead of being suppressed for the force
+    # window.
+    if result.status == "report_created":
+        republish_state[state_key] = now.isoformat()
     logger.info(
         "DD republish ran: reason=%s site_id=%s site=%s fingerprint=%s status=%s",
         reason,

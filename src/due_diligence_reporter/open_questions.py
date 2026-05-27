@@ -237,9 +237,14 @@ def close_open_questions(
         if _coerce_question(q).open_question_id
     }
     evidence_source = _evidence_source(source_event)
+    event_source_type = _event_source_type(source_event)
+    if not event_source_type:
+        return []
     closures: list[OpenQuestionClosure] = []
     for question in previous:
         if not question.open_question_id or question.open_question_id in current_ids:
+            continue
+        if str(question.expected_source_type or "").strip() != event_source_type:
             continue
         closures.append(
             OpenQuestionClosure(
@@ -252,6 +257,14 @@ def close_open_questions(
             )
         )
     return closures
+
+
+def _event_source_type(source_event: dict[str, Any] | SourceEvent | None) -> str:
+    if isinstance(source_event, SourceEvent):
+        return str(source_event.source_type).strip()
+    if isinstance(source_event, dict):
+        return str(source_event.get("source_type") or "").strip()
+    return ""
 
 
 def load_latest_open_questions(

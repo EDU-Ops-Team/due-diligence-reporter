@@ -58,6 +58,26 @@ def test_close_open_questions_requires_absence_after_rerun() -> None:
     assert closed[0].closed_run == "run-2"
 
 
+def test_close_open_questions_requires_matching_source_type() -> None:
+    previous = [
+        {
+            "open_question_id": "oq_raycon",
+            "display_text": "Confirm construction cost.",
+            "affected_ddr_field": "Construction Timeline",
+            "expected_source_type": "raycon_scenario",
+        }
+    ]
+
+    closed = close_open_questions(
+        previous,
+        [],
+        source_event={"source_type": "vendor_sir", "drive_url": "https://drive/sir"},
+        closed_run="run-2",
+    )
+
+    assert closed == []
+
+
 def test_source_event_uses_drive_id_modified_time_fingerprint() -> None:
     event = source_event_from_drive_file(
         "school_approval_report",

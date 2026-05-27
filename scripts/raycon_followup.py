@@ -997,11 +997,26 @@ def _process_site(
 
     # Scenario JSON is here and the run succeeded — publish the report
     # Doc if missing or stale.
+    site_id = str(site_summary.get("id") or site_summary.get("site_id") or "").strip()
+    site_address = str(site_summary.get("address") or site_summary.get("site_address") or "").strip()
+    if not site_id or not site_address:
+        return {
+            "site": site_name,
+            "error": "missing Rhodes site identity/address for RayCon scenario publish",
+        }
+
     published = _find_published_doc(gc, m1_folder_id, site_name)
     json_modified = scenario.get("_drive_modified_time", "")
     doc_modified = (published or {}).get("modifiedTime", "") if published else ""
+    json_modified_dt = _parse_iso(str(json_modified))
+    if json_modified_dt is None:
+        return {
+            "site": site_name,
+            "error": "raycon_scenario.json missing Drive modifiedTime",
+        }
+    doc_modified_dt = _parse_iso(str(doc_modified))
 
-    if published is not None and str(doc_modified) >= str(json_modified):
+    if published is not None and doc_modified_dt is not None and doc_modified_dt >= json_modified_dt:
         return {"site": site_name, "skipped": "report doc up to date"}
 
     if dry_run:

@@ -524,23 +524,22 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 
 | Variable | Purpose |
 |----------|---------|
-| `GOOGLE_DRIVE_ROOT_FOLDER_ID` | Parent Drive folder containing all site folders |
 | `OPENAI_API_KEY` | GPT-4o-mini for inbox classification (Tier 2/3) and fuzzy site name matching |
 | `ANTHROPIC_API_KEY` | Claude API for automated report generation agent |
-| `RHODES_API_KEY` | Rhodes / LocationOS MCP token for read-only P1 DRI lookup |
+| `RHODES_API_KEY` | Rhodes / LocationOS MCP token for site roster, Drive-folder context, P1 DRI lookup, and document registration |
 | `RHODES_MCP_URL` | Optional Rhodes / LocationOS MCP endpoint override |
-| `DD_TEMPLATE_GOOGLE_DOC_ID` | Master DD report template Google Doc ID |
-| `GOOGLE_DRIVE_ROOT_FOLDER_ID` | Parent Drive folder containing all site folders |
+| `DD_TEMPLATE_V3_GOOGLE_DOC_ID` | Master DD report template Google Doc ID |
+| `GOOGLE_DRIVE_ROOT_FOLDER_ID` | Legacy/root fallback Drive folder ID; not the source of truth for daily site roster |
 | `SIR_FOLDER_ID` | Shared SIR folder in Google Drive |
 | `ISP_FOLDER_ID` | Shared ISP folder in Google Drive |
 | `BUILDING_INSPECTION_FOLDER_ID` | Shared Building Inspection folder |
 | `GOOGLE_CLIENT_CONFIG` | Path to OAuth client secrets JSON |
 | `GOOGLE_TOKEN_FILE` | Path to saved OAuth token file |
-| `PRICING_API_KEY` | Building Optimizer API key |
 | `EMAIL_SENDER` | Gmail address for sending reports |
 | `EMAIL_APP_PASSWORD` | Gmail App Password for the sender account |
 | `DD_REPORT_EMAIL_RECIPIENTS` | Comma-separated recipient email addresses |
 | `GOOGLE_CHAT_WEBHOOK_URL` | Google Chat incoming webhook for alerts |
+| `INBOX_INTERNAL_SKIP_LABEL` | Gmail label for internally generated attachments skipped by sender filtering |
 
 ---
 
@@ -575,15 +574,10 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 
 ---
 
-## GitHub Secrets (18 total)
+## GitHub Secrets
 
-**Publish workflow (9):** `MCP_HIVE_API_KEY`, `MCP_HIVE_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OPENAI_API_KEY`, `DD_TEMPLATE_GOOGLE_DOC_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_REFRESH_TOKEN`
+**Publish workflow:** `MCP_HIVE_API_KEY`, `MCP_HIVE_ID`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DD_TEMPLATE_V3_GOOGLE_DOC_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_REFRESH_TOKEN`, `RHODES_API_KEY`, optional `RHODES_MCP_URL`, and optional RayCon secrets.
 
-**Cron + Inbox workflows (9 additional):** `ANTHROPIC_API_KEY`, `GOOGLE_CHAT_WEBHOOK_URL`, `DD_REPORT_EMAIL_RECIPIENTS`, `EMAIL_SENDER`, `EMAIL_APP_PASSWORD`, `SIR_FOLDER_ID`, `ISP_FOLDER_ID`, `BUILDING_INSPECTION_FOLDER_ID`, `PRICING_API_KEY`
-
-
-ENT_SECRET`, `OAUTH_REFRESH_TOKEN`
-
-**Cron + Inbox workflows (9 additional):** `ANTHROPIC_API_KEY`, `GOOGLE_CHAT_WEBHOOK_URL`, `DD_REPORT_EMAIL_RECIPIENTS`, `EMAIL_SENDER`, `EMAIL_APP_PASSWORD`, `SIR_FOLDER_ID`, `ISP_FOLDER_ID`, `BUILDING_INSPECTION_FOLDER_ID`, `PRICING_API_KEY`
+**Cron + inbox workflows:** OAuth secrets, shared Drive folder IDs, `ANTHROPIC_API_KEY`, `RHODES_API_KEY`, optional `RHODES_MCP_URL`, notification/email secrets, and optional RayCon secrets. `PRICING_API_KEY` is not a current DDR workflow requirement.
 
 

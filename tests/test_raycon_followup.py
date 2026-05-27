@@ -700,6 +700,38 @@ class TestSafetyNetDispatch:
         assert dispatch_state == {}
 
     @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup._find_published_doc")
+    @patch("scripts.raycon_followup.save_skill_report")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_existing_scenario_does_not_publish_without_rhodes_address(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_save,
+        mock_find_doc,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = _scenario_payload()
+        mock_find_doc.return_value = None
+
+        row = _process_site(
+            MagicMock(),
+            {**_site(), "address": ""},
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state={},
+        )
+
+        assert "missing Rhodes site identity/address" in row["error"]
+        mock_save.assert_not_called()
+        mock_post.assert_not_called()
+
+    @patch("scripts.raycon_followup.post_raycon_job")
     @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
     @patch("scripts.raycon_followup._find_block_plan")
     @patch("scripts.raycon_followup._resolve_m1_folder")

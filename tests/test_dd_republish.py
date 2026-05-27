@@ -145,6 +145,20 @@ class TestVendorSIRArrival:
         assert outcome.decision == "skip_no_prior_report"
         runner.assert_not_called()
 
+    def test_failed_pipeline_does_not_update_success_dedup_state(self):
+        """Failed reruns must retry on the next scan instead of being suppressed."""
+        runner = _pipeline_runner_factory(status="generation_failed")
+        state: dict = {}
+        outcome = _call_helper(
+            reason=REASON_VENDOR_SIR,
+            fingerprint="sir-file-1:2026-05-05T10:00:00Z",
+            state=state,
+            runner=runner,
+        )
+        assert outcome.decision == "republish"
+        assert outcome.pipeline_status == "generation_failed"
+        assert state == {}
+
     def test_same_fingerprint_inside_force_after_skips(self):
         """Same SIR fingerprint repeated within 12h → no diff, no republish."""
         runner = _pipeline_runner_factory()

@@ -102,18 +102,25 @@ jobs:
           "
 
       - name: Run reprocess
+        env:
+          INPUT_APPLY: ${{ inputs.apply }}
+          INPUT_SINCE: ${{ inputs.since }}
+          INPUT_MAX_RESULTS: ${{ inputs.max_results }}
         run: |
-          ARGS=""
-          if [ "${{ inputs.apply }}" = "true" ]; then
-            ARGS="--apply"
+          set -euo pipefail
+          ARGS=()
+          if [ "${INPUT_APPLY:-}" = "true" ]; then
+            ARGS+=(--apply)
           fi
-          if [ -n "${{ inputs.since }}" ]; then
-            ARGS="$ARGS --since ${{ inputs.since }}"
+          if [ -n "${INPUT_SINCE:-}" ]; then
+            ARGS+=(--since "$INPUT_SINCE")
           fi
-          if [ -n "${{ inputs.max_results }}" ]; then
-            ARGS="$ARGS --max-results ${{ inputs.max_results }}"
+          if [ -n "${INPUT_MAX_RESULTS:-}" ]; then
+            ARGS+=(--max-results "$INPUT_MAX_RESULTS")
           fi
-          uv run python scripts/reprocess_mislabeled.py $ARGS
+          uv run python scripts/reprocess_mislabeled.py "${ARGS[@]}"
 
       - name: Done
-        run: echo "Reprocess completed (apply=${{ inputs.apply }})"
+        env:
+          INPUT_APPLY: ${{ inputs.apply }}
+        run: echo "Reprocess completed (apply=${INPUT_APPLY:-false})"

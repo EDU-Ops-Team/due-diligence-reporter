@@ -131,3 +131,39 @@ def test_sweep_skips_site_with_no_prior_report_without_error() -> None:
     assert result["republished"] == 0
     assert result["errors"] == 0
     assert result["rows"][0]["dd_report_republish"] == "skip_no_prior_report"
+
+
+def test_provenance_error_surfaces_as_site_error() -> None:
+    gc = MagicMock()
+    gc.list_subfolders.return_value = [
+        {
+            "id": "m1",
+            "name": "M1 - Acquire Property",
+            "webViewLink": "https://drive/m1",
+        }
+    ]
+    gc.list_files_in_folder.return_value = [
+        {
+            "id": "sir-1",
+            "name": "Alpha Test SIR.pdf",
+            "modifiedTime": "2026-05-26T10:00:00Z",
+            "webViewLink": "https://drive/sir-1",
+        }
+    ]
+
+    with patch(
+        "due_diligence_reporter.vendor_doc_sweep.is_vendor_sourced",
+        side_effect=RuntimeError("provenance timeout"),
+    ):
+        result = run_vendor_doc_republish_sweep(
+            gc,
+            settings=MagicMock(),
+            system_prompt="prompt",
+            shared_cache={},
+            republish_state={},
+            site_records=[_site()],
+        )
+
+    assert result["errors"] == 1
+    assert result["rows"][0]["status"] == "error"
+    assert "provenance timeout" in result["rows"][0]["reason"]

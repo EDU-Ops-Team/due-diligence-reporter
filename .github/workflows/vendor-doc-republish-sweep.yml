@@ -131,10 +131,14 @@ jobs:
           "
 
       - name: Run vendor doc republish sweep
+        env:
+          INPUT_SITE: ${{ inputs.site }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
+          set -euo pipefail
           args=()
-          if [ "${{ inputs.dry_run }}" = "true" ]; then args+=(--dry-run); fi
-          if [ -n "${{ inputs.site }}" ]; then args+=(--site "${{ inputs.site }}"); fi
+          if [ "${INPUT_DRY_RUN:-}" = "true" ]; then args+=(--dry-run); fi
+          if [ -n "${INPUT_SITE:-}" ]; then args+=(--site "$INPUT_SITE"); fi
           uv run python scripts/vendor_doc_republish_sweep.py "${args[@]}"
 
       - name: Save DD republish dedup state

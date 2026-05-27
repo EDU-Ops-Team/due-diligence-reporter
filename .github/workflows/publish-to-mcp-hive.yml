@@ -36,6 +36,8 @@ jobs:
           [ -n "${{ secrets.MCP_HIVE_API_KEY }}" ] || { echo "MCP_HIVE_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.MCP_HIVE_ID }}" ] || { echo "MCP_HIVE_ID missing"; exit 1; }
           [ -n "${{ secrets.OPENAI_API_KEY }}" ] || { echo "OPENAI_API_KEY missing"; exit 1; }
+          [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ] || { echo "ANTHROPIC_API_KEY missing"; exit 1; }
+          [ -n "${{ secrets.RHODES_API_KEY }}" ] || { echo "RHODES_API_KEY missing"; exit 1; }
           if [ -z "${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}" ] && [ -z "${{ secrets.DD_TEMPLATE_GOOGLE_DOC_ID }}" ]; then
             echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID or DD_TEMPLATE_GOOGLE_DOC_ID must be set"
             exit 1
@@ -68,6 +70,7 @@ jobs:
       - name: Create .env file from GitHub secrets
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DD_TEMPLATE_GOOGLE_DOC_ID: ${{ secrets.DD_TEMPLATE_GOOGLE_DOC_ID }}
           DD_TEMPLATE_V3_GOOGLE_DOC_ID: ${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}
           GOOGLE_DRIVE_ROOT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}
@@ -82,6 +85,8 @@ jobs:
           OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
           OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
           OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
+          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
+          RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
           RAYCON_WEBHOOK_SECRET: ${{ secrets.RAYCON_WEBHOOK_SECRET }}
           RAYCON_API_KEY: ${{ secrets.RAYCON_API_KEY }}
         run: |
@@ -91,6 +96,7 @@ jobs:
           fi
           touch .env
           echo "OPENAI_API_KEY=${OPENAI_API_KEY}" >> .env
+          echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> .env
           echo "DD_TEMPLATE_GOOGLE_DOC_ID=${DD_TEMPLATE_GOOGLE_DOC_ID}" >> .env
           echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID=${TEMPLATE_DOC_ID}" >> .env
           echo "GOOGLE_DRIVE_ROOT_FOLDER_ID=${GOOGLE_DRIVE_ROOT_FOLDER_ID}" >> .env
@@ -105,6 +111,8 @@ jobs:
           echo "OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID}" >> .env
           echo "OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}" >> .env
           echo "OAUTH_REFRESH_TOKEN=${OAUTH_REFRESH_TOKEN}" >> .env
+          echo "RHODES_API_KEY=${RHODES_API_KEY}" >> .env
+          echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
           echo "RAYCON_WEBHOOK_SECRET=${RAYCON_WEBHOOK_SECRET}" >> .env
           echo "RAYCON_API_KEY=${RAYCON_API_KEY}" >> .env
           echo "Created .env file with secrets"
@@ -119,7 +127,27 @@ jobs:
             "version": "${{ steps.get_version.outputs.version }}",
             "tags": ["alpha-due-diligence", "google-docs"],
             "homePage": "${REPO_URL}",
-            "env": [],
+            "env": [
+              "OPENAI_API_KEY",
+              "ANTHROPIC_API_KEY",
+              "DD_TEMPLATE_V3_GOOGLE_DOC_ID",
+              "GOOGLE_DRIVE_ROOT_FOLDER_ID",
+              "SIR_FOLDER_ID",
+              "ISP_FOLDER_ID",
+              "BUILDING_INSPECTION_FOLDER_ID",
+              "EMAIL_SENDER",
+              "EMAIL_APP_PASSWORD",
+              "DD_REPORT_EMAIL_RECIPIENTS",
+              "GLOBAL_EMAIL_CC",
+              "GOOGLE_CHAT_WEBHOOK_URL",
+              "OAUTH_CLIENT_ID",
+              "OAUTH_CLIENT_SECRET",
+              "OAUTH_REFRESH_TOKEN",
+              "RHODES_API_KEY",
+              "RHODES_MCP_URL",
+              "RAYCON_WEBHOOK_SECRET",
+              "RAYCON_API_KEY"
+            ],
             "securitySchemes": [
               {
                 "id": "oauth2",
@@ -170,7 +198,14 @@ jobs:
             "build/*" \
             "*.egg-info/*" \
             ".venv/*" \
-            ".ruff_cache/*"
+            ".ruff_cache/*" \
+            ".env" \
+            ".gcp-saved-tokens.json" \
+            "credentials/*" \
+            ".dd_republish_state.json" \
+            ".rhodes_registration_retry_state.json" \
+            ".raycon_dispatch_state.json" \
+            ".raycon_followup_alerts.json"
           echo "Created zip: $ZIP_PATH"
           ls -la "$ZIP_PATH"
           # Sanity check: confirm uv.lock made it into the zip.
@@ -179,6 +214,18 @@ jobs:
             exit 1
           }
           echo "Confirmed uv.lock is inside publish zip"
+          if unzip -l "$ZIP_PATH" | grep -q ' .env$'; then
+            echo "ERROR: .env must not be packaged in the MCP Hive zip"
+            exit 1
+          fi
+          if unzip -l "$ZIP_PATH" | grep -q ' .gcp-saved-tokens.json$'; then
+            echo "ERROR: .gcp-saved-tokens.json must not be packaged in the MCP Hive zip"
+            exit 1
+          fi
+          if unzip -l "$ZIP_PATH" | grep -q ' credentials/'; then
+            echo "ERROR: credentials/ must not be packaged in the MCP Hive zip"
+            exit 1
+          fi
 
       - name: Publish to MCP Hive
         env:
