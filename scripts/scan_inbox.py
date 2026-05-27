@@ -47,11 +47,10 @@ from due_diligence_reporter.dd_republish import (  # noqa: E402
 )
 from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.inbox_scanner import (  # noqa: E402
+    RHODES_REGISTRATION_RETRY_STATE_PATH,
     build_scan_summary,
     has_site_identity,
-    load_rhodes_retry_state,
     scan_inbox,
-    save_rhodes_retry_state,
 )
 from due_diligence_reporter.report_pipeline import (  # noqa: E402
     list_shared_folders_once,
@@ -61,6 +60,9 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
 from due_diligence_reporter.rhodes import (  # noqa: E402
     RhodesError,
     list_rhodes_site_records,
+)
+from due_diligence_reporter.rhodes_retry_state_store import (  # noqa: E402
+    build_rhodes_retry_state_store,
 )
 from due_diligence_reporter.utils import (  # noqa: E402
     build_site_match_terms as _build_site_match_terms,
@@ -131,7 +133,10 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     _shared_cache: dict[str, list[dict[str, Any]]] | None = None
     _system_prompt: str | None = None
     _republish_state = _load_dd_republish_state()
-    _rhodes_retry_state = load_rhodes_retry_state()
+    _rhodes_retry_store = build_rhodes_retry_state_store(
+        RHODES_REGISTRATION_RETRY_STATE_PATH
+    )
+    _rhodes_retry_state = _rhodes_retry_store.load()
     _had_rhodes_retry_state = bool(_rhodes_retry_state)
 
     def _dd_republish_callback(
@@ -187,7 +192,7 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     if not dry_run and _republish_state:
         _save_dd_republish_state(_republish_state)
     if not dry_run and (_rhodes_retry_state or _had_rhodes_retry_state):
-        save_rhodes_retry_state(_rhodes_retry_state)
+        _rhodes_retry_store.save(_rhodes_retry_state)
 
     # Build summary
     summary = build_scan_summary(results)
