@@ -208,7 +208,7 @@ DD Report republish dedupe state uses the same store pattern. Local development 
 
 RayCon follow-up runtime state is also behind a store boundary. Local development defaults to `.raycon_dispatch_state.json` and `.raycon_followup_alerts.json`; scheduled/production runs should set `RAYCON_RUNTIME_STATE_STORE=firestore` and `RAYCON_RUNTIME_STATE_FIRESTORE_PROJECT_ID=<project>` so RayCon dispatch dedupe and stuck-site alert suppression survive runner changes. Successful Firestore saves refresh the local JSON files so the existing GitHub Actions cache remains a current fallback.
 
-Material automation outcomes render through `src/due_diligence_reporter/automation_event.py`. The shared `AutomationEvent v1` note body includes source system, source ID, event kind, site ID, decision-required status, mutation status, retry state, and artifact IDs before adding DDR-specific details. This keeps Rhodes notes and Google Chat fallback alerts aligned with the cross-repo automation-event contract.
+Material automation outcomes render through `src/due_diligence_reporter/automation_event.py`. The shared `AutomationEvent v1` note body includes source system, source ID, event kind, site ID, decision-required status, mutation status, retry state, and artifact IDs before adding DDR-specific details. This keeps Rhodes notes and Google Chat fallback alerts aligned with the cross-repo automation-event contract. Report generation also writes a Rhodes `dd_report_created` or `dd_report_updated` note when a DD report is created. That note carries the report URL, run ID, still-open verification items, and newly closed verification items. If open items require a decision and no Rhodes owner mention is possible, the same event is posted to the configured Google Chat webhook.
 
 **Drive-to-Rhodes reconciliation:** `scripts/drive_rhodes_reconciliation.py` is the safety sweep for files that already exist in a site's `M1 - Acquire Property` folder. It loads Rhodes-linked sites, scans each M1 folder, classifies recognized DDR source files, and idempotently registers missing Rhodes document records by Drive file ID. The scheduled `Drive Rhodes Reconciliation` workflow runs this backfill on weekdays; manual runs can pass `--dry-run` / workflow `dry_run=true` to report what would be registered without writing to Rhodes. Generated or unmapped reports are surfaced as skipped rows instead of being forced into unsafe Rhodes document types.
 
@@ -431,7 +431,17 @@ Three skill tools analyze the source data and produce structured outputs. The fi
 
 ---
 
-### Step 8 â€” Send Email Notification
+### Step 8 -- Record Rhodes Report Event
+
+**Tool:** `addNote` through the Rhodes MCP client
+
+**Activity:** When the report reaches `report_created`, the pipeline records an `AutomationEvent v1` site note in Rhodes. The note includes the generated DD report ID/URL, run ID, trigger source for updates, open verification item count, closed verification item count, and up to five open/closed item summaries. It mentions the P1 DRI when a Rhodes user can be resolved from the owner context.
+
+**Fallback:** If open verification items require a decision and the P1 DRI cannot be mentioned in Rhodes, the pipeline posts the same event body to the configured Google Chat webhook. If Rhodes cannot be written at all, the run records a failed `rhodes.report_event` step so the manifest shows that the system of record was not updated.
+
+---
+
+### Step 9 â€” Send Email Notification
 
 **Tool:** `send_dd_report_email(site_name, report_url, key_findings, additional_recipients)`
 

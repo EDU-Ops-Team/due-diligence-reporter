@@ -142,6 +142,7 @@ class PipelineRun:
     open_questions: list[dict[str, Any]] = field(default_factory=list)
     closed_open_questions: list[dict[str, Any]] = field(default_factory=list)
     republish_summary: dict[str, Any] | None = None
+    rhodes_report_event: dict[str, Any] | None = None
     manifest_path: str | None = None
     manifest_url: str | None = None
 
@@ -160,6 +161,7 @@ class PipelineRun:
             "open_questions": self.open_questions,
             "closed_open_questions": self.closed_open_questions,
             "republish_summary": self.republish_summary,
+            "rhodes_report_event": self.rhodes_report_event,
             "manifest_path": self.manifest_path,
             "manifest_url": self.manifest_url,
             "failed_step": failed_step_name(self.steps),

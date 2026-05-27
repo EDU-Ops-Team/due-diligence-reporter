@@ -105,6 +105,60 @@ def build_document_registration_failed_event(
     return event
 
 
+def build_dd_report_summary_event(
+    *,
+    site_id: str,
+    site_name: str,
+    run_id: str,
+    doc_id: str | None,
+    doc_url: str | None,
+    source_event: dict[str, Any] | None = None,
+    open_questions: list[dict[str, Any]] | None = None,
+    closed_open_questions: list[dict[str, Any]] | None = None,
+    created_at: str | None = None,
+) -> AutomationEvent:
+    """Build the DDR generated/updated report summary event."""
+
+    open_items = open_questions or []
+    closed_items = closed_open_questions or []
+    source = source_event or {}
+    is_update = bool(source)
+    artifact_ids = {
+        "Run ID": run_id,
+    }
+    if doc_id:
+        artifact_ids["DD report ID"] = doc_id
+    source_drive_file_id = str(source.get("drive_file_id") or "").strip()
+    if source_drive_file_id:
+        artifact_ids["Source Drive file ID"] = source_drive_file_id
+
+    details = {
+        "DD report URL": str(doc_url or "").strip(),
+        "Trigger source": str(source.get("source_type") or "").strip(),
+        "Source file": str(source.get("file_name") or "").strip(),
+        "Open item count": str(len(open_items)),
+        "Closed item count": str(len(closed_items)),
+    }
+    details.update(_indexed_item_details("Open item", open_items))
+    details.update(_indexed_item_details("Closed item", closed_items))
+
+    return AutomationEvent(
+        source_system="due-diligence-reporter",
+        source_id=run_id,
+        site_id=site_id.strip(),
+        site_name=site_name.strip() or "Unknown site",
+        event_type="dd_report_updated" if is_update else "dd_report_created",
+        artifact_ids=artifact_ids,
+        decision_required=bool(open_items),
+        requested_decision=(
+            "review and resolve DDR open verification items" if open_items else None
+        ),
+        mutation_status="report_created",
+        details=details,
+        created_at=created_at or datetime.now(UTC).isoformat(),
+    )
+
+
 def _format_owner(site_summary: dict[str, Any]) -> str:
     name = str(site_summary.get("p1_assignee_name") or "").strip()
     email = str(site_summary.get("p1_assignee_email") or "").strip()
@@ -120,3 +174,17 @@ def _format_retry_state(retry_state: dict[str, Any]) -> str:
     if exhausted is None:
         return f"attempts={attempts}/{limit}"
     return f"attempts={attempts}/{limit}; exhausted={str(bool(exhausted)).lower()}"
+
+
+def _indexed_item_details(
+    label: str,
+    items: list[dict[str, Any]],
+    *,
+    limit: int = 5,
+) -> dict[str, str]:
+    details: dict[str, str] = {}
+    for index, item in enumerate(items[:limit], start=1):
+        text = str(item.get("display_text") or item.get("text") or "").strip()
+        if text:
+            details[f"{label} {index}"] = text
+    return details
