@@ -1,5 +1,52 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - Firestore Rhodes Registration Retry State
+
+Started the next Rhodes automation Phase 2 slice on branch
+`codex/ddr-firestore-rhodes-retry-state`.
+
+Current behavior in progress:
+
+- Rhodes document-registration retry state now has a storage boundary:
+  `JsonRhodesRetryStateStore` for the existing local file and
+  `FirestoreRhodesRetryStateStore` for durable scheduled runs.
+- `scripts/scan_inbox.py` loads/saves retry state through
+  `build_rhodes_retry_state_store(...)`.
+- JSON remains the default for local/dev and as the fallback when Firestore is
+  not configured or unavailable.
+- Firestore mode is opt-in with:
+  - `RHODES_RETRY_STATE_STORE=firestore`
+  - `RHODES_RETRY_STATE_FIRESTORE_PROJECT_ID=<project>`
+  - optional `RHODES_RETRY_STATE_FIRESTORE_DATABASE`
+  - optional `RHODES_RETRY_STATE_FIRESTORE_COLLECTION`
+- Firestore documents include the retry key and the retry entry payload, so
+  retry attempts, Rhodes note IDs, owner-notification metadata, and Google Chat
+  fallback dedupe survive runner changes.
+- Successful Firestore saves also refresh the local JSON fallback so the
+  existing GitHub Actions cache never lags behind the durable store.
+- `inbox-scan.yml` forwards the optional Firestore repository variables and
+  writes `GCP_FIRESTORE_SERVICE_ACCOUNT_JSON` to
+  `GOOGLE_APPLICATION_CREDENTIALS` when that secret is present. Without it, the
+  workflow keeps the existing local JSON/cache fallback.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-retry-store-final tests/test_rhodes_retry_state_store.py tests/test_workflow_contracts.py -q
+uv run ruff check src\due_diligence_reporter\rhodes_retry_state_store.py src\due_diligence_reporter\inbox_scanner.py scripts\scan_inbox.py tests\test_rhodes_retry_state_store.py tests\test_workflow_contracts.py
+uv run mypy src/
+uv run pytest --basetemp C:\tmp\ddr-retry-store-broad-final tests/test_rhodes_retry_state_store.py tests/test_inbox_scanner.py tests/test_scan_inbox_e2e.py tests/test_rhodes.py tests/test_workflow_contracts.py -q
+git diff --check
+```
+
+Results:
+
+- Focused store/workflow tests: 13 passed.
+- Ruff on touched code/tests: passed.
+- Full source Mypy: no issues in 32 source files.
+- Broader inbox/Rhodes/workflow suite: 107 passed.
+- Diff check: no whitespace errors; only expected Windows LF-to-CRLF warnings.
+
 ## 2026-05-27 - Lexington DDR Follow-up: Stale Automation and Stronger Summary Splitter
 
 Follow-up after `Alpha Lexington 92 Hayden Ave DD Report - 05_27_2026.docx`

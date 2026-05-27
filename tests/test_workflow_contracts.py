@@ -88,3 +88,15 @@ def test_publish_to_mcp_hive_cancels_stale_mutating_runs() -> None:
 def test_long_running_mutating_workflows_have_timeouts() -> None:
     assert "timeout-minutes: 60" in _workflow_text("inbox-scan.yml")
     assert "timeout-minutes: 60" in _workflow_text("vendor-doc-republish-sweep.yml")
+
+
+def test_inbox_scan_can_enable_firestore_retry_state_without_required_secret() -> None:
+    text = _workflow_text("inbox-scan.yml")
+
+    assert "RHODES_RETRY_STATE_STORE" in text
+    assert "RHODES_RETRY_STATE_FIRESTORE_PROJECT_ID" in text
+    assert "RHODES_RETRY_STATE_FIRESTORE_DATABASE" in text
+    assert "RHODES_RETRY_STATE_FIRESTORE_COLLECTION" in text
+    assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON" in text
+    assert "No Firestore service account configured" in text
+    assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing" not in text

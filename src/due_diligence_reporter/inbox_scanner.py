@@ -9,7 +9,6 @@ or ISP). No site matching required — doc_type alone routes the file.
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -25,6 +24,7 @@ from .m1_lookup import (
     _resolve_m1_folder,
 )
 from .rhodes import add_rhodes_site_note, register_rhodes_document_for_upload
+from .rhodes_retry_state_store import JsonRhodesRetryStateStore, RhodesRetryState
 from .utils import (
     escape_html_text,
     extract_text_from_pdf_bytes,
@@ -111,30 +111,17 @@ def _manual_review_item(
 
 def load_rhodes_retry_state(
     path: Path = RHODES_REGISTRATION_RETRY_STATE_PATH,
-) -> dict[str, dict[str, Any]]:
+) -> RhodesRetryState:
     """Load persisted Rhodes registration retry state."""
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 - corrupt state should not block filing
-        logger.warning("Ignoring unreadable Rhodes retry state at %s: %s", path, exc)
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    return {
-        str(key): value
-        for key, value in payload.items()
-        if isinstance(value, dict)
-    }
+    return JsonRhodesRetryStateStore(path).load()
 
 
 def save_rhodes_retry_state(
-    state: dict[str, dict[str, Any]],
+    state: RhodesRetryState,
     path: Path = RHODES_REGISTRATION_RETRY_STATE_PATH,
 ) -> None:
     """Persist Rhodes registration retry state."""
-    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    JsonRhodesRetryStateStore(path).save(state)
 
 
 def _rhodes_retry_key(site_id: str | None, doc_type: str, original_filename: str) -> str:

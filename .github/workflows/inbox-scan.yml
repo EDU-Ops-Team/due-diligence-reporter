@@ -96,6 +96,10 @@ jobs:
           GLOBAL_EMAIL_CC: ${{ secrets.GLOBAL_EMAIL_CC }}
           RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
           RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
+          RHODES_RETRY_STATE_STORE: ${{ vars.RHODES_RETRY_STATE_STORE }}
+          RHODES_RETRY_STATE_FIRESTORE_PROJECT_ID: ${{ vars.RHODES_RETRY_STATE_FIRESTORE_PROJECT_ID }}
+          RHODES_RETRY_STATE_FIRESTORE_DATABASE: ${{ vars.RHODES_RETRY_STATE_FIRESTORE_DATABASE }}
+          RHODES_RETRY_STATE_FIRESTORE_COLLECTION: ${{ vars.RHODES_RETRY_STATE_FIRESTORE_COLLECTION }}
 
           SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
           ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
@@ -121,6 +125,10 @@ jobs:
           echo "GLOBAL_EMAIL_CC=${GLOBAL_EMAIL_CC}" >> .env
           echo "RHODES_API_KEY=${RHODES_API_KEY}" >> .env
           echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
+          echo "RHODES_RETRY_STATE_STORE=${RHODES_RETRY_STATE_STORE}" >> .env
+          echo "RHODES_RETRY_STATE_FIRESTORE_PROJECT_ID=${RHODES_RETRY_STATE_FIRESTORE_PROJECT_ID}" >> .env
+          echo "RHODES_RETRY_STATE_FIRESTORE_DATABASE=${RHODES_RETRY_STATE_FIRESTORE_DATABASE}" >> .env
+          echo "RHODES_RETRY_STATE_FIRESTORE_COLLECTION=${RHODES_RETRY_STATE_FIRESTORE_COLLECTION}" >> .env
 
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
@@ -176,6 +184,19 @@ jobs:
               json.dump(data, f, indent=2)
           "
           echo "Wrote .gcp-saved-tokens.json"
+
+      - name: Write Firestore service account credentials
+        env:
+          GCP_FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON}" ]; then
+            echo "No Firestore service account configured; Rhodes retry state will use JSON/cache fallback"
+            exit 0
+          fi
+          mkdir -p credentials
+          printf '%s' "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON}" > credentials/firestore-service-account.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=${GITHUB_WORKSPACE}/credentials/firestore-service-account.json" >> "$GITHUB_ENV"
+          echo "Firestore service account credentials configured"
 
       - name: Run inbox scan
         env:
