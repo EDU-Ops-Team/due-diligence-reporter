@@ -446,34 +446,37 @@ def _split_summary_prose_into_lines(value: str) -> list[str]:
     if not text:
         return []
 
-    gap_match = re.match(r"^(\[[^\]]+\])\s+(.+)$", text)
+    gap_match = re.match(r"^(\[[^\]]+\])(?:[.:])?\s+(.+)$", text)
     if gap_match:
         return [
             gap_match.group(1),
             *_split_summary_prose_into_lines(gap_match.group(2)),
         ]
 
-    protected_abbreviations = {
-        "Ch.": "Ch<dot>",
-        "Sec.": "Sec<dot>",
-        "St.": "St<dot>",
-        "Dr.": "Dr<dot>",
-        "Ave.": "Ave<dot>",
-        "Rd.": "Rd<dot>",
-        "No.": "No<dot>",
-        "e.g.": "e<dot>g<dot>",
-        "i.e.": "i<dot>e<dot>",
-    }
+    protected_abbreviations = (
+        (r"\bCh\.", "Ch<dot>", "Ch."),
+        (r"\bSec\.", "Sec<dot>", "Sec."),
+        (r"\bSt\.", "St<dot>", "St."),
+        (r"\bDr\.", "Dr<dot>", "Dr."),
+        (r"\bAve\.", "Ave<dot>", "Ave."),
+        (r"\bRd\.", "Rd<dot>", "Rd."),
+        (r"\bNo\.", "No<dot>", "No."),
+        (r"\bin\.", "in<dot>", "in."),
+        (r"\bft\.", "ft<dot>", "ft."),
+        (r"\bsq\.", "sq<dot>", "sq."),
+        (r"\be\.g\.", "e<dot>g<dot>", "e.g."),
+        (r"\bi\.e\.", "i<dot>e<dot>", "i.e."),
+    )
     protected = text
-    for source, replacement in protected_abbreviations.items():
-        protected = protected.replace(source, replacement)
+    for pattern, replacement, _restored in protected_abbreviations:
+        protected = re.sub(pattern, replacement, protected)
 
-    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z])", protected)
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", protected)
     lines: list[str] = []
     for part in parts:
         restored = part
-        for source, replacement in protected_abbreviations.items():
-            restored = restored.replace(replacement, source)
+        for _pattern, replacement, original in protected_abbreviations:
+            restored = restored.replace(replacement, original)
         restored = restored.strip()
         if restored:
             lines.append(restored)
@@ -680,7 +683,7 @@ def _summary_display_lines(value: str) -> list[str]:
         line = _strip_inline_citation_markers(line)
         if line:
             lines.append(line)
-    if len(lines) == 1 and len(lines[0]) >= 140:
+    if len(lines) == 1:
         split_lines = _split_summary_prose_into_lines(lines[0])
         if len(split_lines) > 1:
             return split_lines

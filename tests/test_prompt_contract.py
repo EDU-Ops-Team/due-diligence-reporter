@@ -62,6 +62,7 @@ def test_prompt_v4_keeps_first_round_contract() -> None:
         "Source Notes",
         "one answer line",
         "support fact on its own plain line",
+        "Never pack support facts",
         "Source notes render after the Referenced Reports",
         "does not render in",
         "After `create_dd_report` returns a document, stop.",

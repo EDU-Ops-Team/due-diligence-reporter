@@ -158,7 +158,8 @@ Use JC-style narrative:
 - Start action items with a verb.
 - Executive-summary fields must be concise: one answer line, plus optional
   support lines. Put each support fact on its own plain line. The document
-  builder applies the labels and support bullets.
+  builder applies the labels and support bullets. Never pack support facts
+  into one paragraph.
 - Avoid jargon unless the term is defined in the same field.
 - Do not editorialize. Avoid phrases like `likely cost-prohibitive`,
   `appears manageable`, `well below standard`, or `recommend passing`.

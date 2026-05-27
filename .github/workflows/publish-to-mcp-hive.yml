@@ -16,6 +16,10 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -239,6 +243,34 @@ jobs:
             -F "zipFile=@${ZIP_PATH};type=application/zip" \
             --form-string "data=${CONFIG_JSON}"
           echo "Publish request sent"
+
+      - name: Cancel stale mutating workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          workflows=(
+            "Inbox Scan"
+            "Vendor Doc Republish Sweep"
+            "Daily DD Check"
+            "RayCon Follow-up"
+          )
+          for workflow in "${workflows[@]}"; do
+            gh run list \
+              --workflow "$workflow" \
+              --status in_progress \
+              --limit 20 \
+              --json databaseId,headSha,url \
+              --jq ".[] | select(.headSha != \"${CURRENT_SHA}\") | [.databaseId, .headSha, .url] | @tsv" |
+            while IFS=$'\t' read -r run_id head_sha run_url; do
+              if [ -z "${run_id:-}" ]; then
+                continue
+              fi
+              echo "Canceling stale ${workflow} run ${run_id} (${head_sha}): ${run_url}"
+              gh run cancel "$run_id" || true
+            done
+          done
 
       - name: Done
         run: |

@@ -68,3 +68,23 @@ def test_publish_to_mcp_hive_never_packages_generated_secret_files() -> None:
         assert excluded in zip_block
 
     assert "grep -q ' .env$'" in zip_block
+
+
+def test_publish_to_mcp_hive_cancels_stale_mutating_runs() -> None:
+    text = _workflow_text("publish-to-mcp-hive.yml")
+
+    assert "actions: write" in text
+    assert "Cancel stale mutating workflow runs" in text
+    assert 'select(.headSha != \\"${CURRENT_SHA}\\")' in text
+    for workflow in (
+        '"Inbox Scan"',
+        '"Vendor Doc Republish Sweep"',
+        '"Daily DD Check"',
+        '"RayCon Follow-up"',
+    ):
+        assert workflow in text
+
+
+def test_long_running_mutating_workflows_have_timeouts() -> None:
+    assert "timeout-minutes: 60" in _workflow_text("inbox-scan.yml")
+    assert "timeout-minutes: 60" in _workflow_text("vendor-doc-republish-sweep.yml")

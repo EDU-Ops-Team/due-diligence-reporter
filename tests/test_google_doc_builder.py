@@ -23,6 +23,7 @@ from due_diligence_reporter.google_doc_builder import (
     _resolve_value,
     _sanitize_ascii_punctuation,
     _split_bullets_and_footnotes,
+    _summary_display_lines,
     build_dd_report_doc,
 )
 from due_diligence_reporter.report_schema import (
@@ -976,6 +977,50 @@ class TestSplitBulletsAndFootnotes:
 
 
 class TestNarrativeNormalization:
+    def test_summary_display_lines_splits_lexington_paragraph_cleanly(self) -> None:
+        value = (
+            "Change-of-use permit required. Building is currently office use (CRO-1). "
+            "Building Commissioner confirmed change-of-use is required for any school "
+            "or tutoring center use. IBC E-occupancy conversion path needed. Wet "
+            "sprinkler system and addressable fire alarm are in place. Right-side "
+            "exit door measured at 34 in. -- below 36 in. IBC criterion -- must be "
+            "resolved. No E-Occupancy assessment in Drive folder."
+        )
+
+        assert _summary_display_lines(value) == [
+            "Change-of-use permit required.",
+            "Building is currently office use (CRO-1).",
+            "Building Commissioner confirmed change-of-use is required for any school or tutoring center use.",
+            "IBC E-occupancy conversion path needed.",
+            "Wet sprinkler system and addressable fire alarm are in place.",
+            "Right-side exit door measured at 34 in. -- below 36 in. IBC criterion -- must be resolved.",
+            "No E-Occupancy assessment in Drive folder.",
+        ]
+
+    def test_summary_display_lines_preserves_gap_label_without_trailing_period(self) -> None:
+        value = (
+            "[Not found - RayCon scenario pending]. Building Inspection notes a "
+            "plug-and-play Class A base. Full school-conversion TI schedule is "
+            "not yet sourced."
+        )
+
+        assert _summary_display_lines(value) == [
+            "[Not found - RayCon scenario pending]",
+            "Building Inspection notes a plug-and-play Class A base.",
+            "Full school-conversion TI schedule is not yet sourced.",
+        ]
+
+    def test_summary_display_lines_splits_before_numeric_support_sentence(self) -> None:
+        value = (
+            "No expedited review available from Lexington Building Department. "
+            "9/8/26 is approximately 15 weeks from today."
+        )
+
+        assert _summary_display_lines(value) == [
+            "No expedited review available from Lexington Building Department.",
+            "9/8/26 is approximately 15 weeks from today.",
+        ]
+
     def test_dedupes_identical_footnotes_and_renumbers_markers(self) -> None:
         value = (
             "- Landlord must repair roof [2]\n"
