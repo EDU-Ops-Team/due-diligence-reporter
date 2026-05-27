@@ -1605,6 +1605,94 @@ class TestRhodesDocumentRegistration:
     @patch("due_diligence_reporter.inbox_scanner._register_uploaded_document_in_rhodes")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_existing_duplicate_drive_file_records_rhodes_registration(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_register,
+        mock_ping,
+        mock_resolve_m1,
+        mock_build_summary,
+    ):
+        drive_filename = f"{datetime.now().strftime('%b %d %Y')} - Alpha Keller ISP.pdf"
+        mock_extract.return_value = MagicMock(
+            message_id="msg_rhodes_existing",
+            subject="Alpha Keller ISP",
+            sender="vendor@example.com",
+            effective_sender="vendor@example.com",
+            body_snippet="",
+            attachments=[
+                {
+                    "filename": "Alpha Keller ISP.pdf",
+                    "attachment_id": "att_isp",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        mock_classify.return_value = ("isp", 0.95)
+        mock_resolve_m1.return_value = ("m1_folder_id", "M1")
+        mock_build_summary.return_value = {
+            "id": "SITE1",
+            "title": "Alpha Keller",
+            "address": "123 Main St",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+        }
+        mock_register.return_value = {
+            "status": "already_registered",
+            "rhodes_doc_type": "other",
+            "rhodes_document_id": "DOC1",
+        }
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = True
+        gc.list_files_in_folder.return_value = [
+            {
+                "id": "isp_drive_id_old",
+                "name": drive_filename,
+                "webViewLink": "https://drive.google.com/file/d/isp_drive_id_old",
+                "modifiedTime": "2026-05-26T10:00:00Z",
+            },
+            {
+                "id": "isp_drive_id_existing",
+                "name": drive_filename,
+                "webViewLink": "https://drive.google.com/file/d/isp_drive_id_existing",
+                "modifiedTime": "2026-05-27T10:00:00Z",
+            },
+        ]
+
+        result = process_email(
+            gc,
+            "msg_rhodes_existing",
+            self._settings(),
+            "label_123",
+            "review_123",
+            site_records=[{"id": "SITE1", "title": "Alpha Keller", "customFields": []}],
+            rhodes_retry_state={},
+        )
+
+        assert result["skipped"] == 0
+        assert result["manual_review"] == []
+        assert result["uploaded"][0]["existing_drive_file"] is True
+        assert result["uploaded"][0]["drive_file_id"] == "isp_drive_id_existing"
+        assert result["uploaded"][0]["rhodes_registration"] == {
+            "status": "already_registered",
+            "rhodes_doc_type": "other",
+            "rhodes_document_id": "DOC1",
+        }
+        gc.gmail_get_attachment.assert_not_called()
+        gc.upload_file_to_folder.assert_not_called()
+        mock_ping.assert_not_called()
+        kwargs = mock_register.call_args.kwargs
+        assert kwargs["drive_file"]["id"] == "isp_drive_id_existing"
+        assert kwargs["drive_filename"] == drive_filename
+        assert kwargs["message_id"] == "msg_rhodes_existing"
+
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
+    @patch("due_diligence_reporter.inbox_scanner._register_uploaded_document_in_rhodes")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
     def test_rhodes_registration_failure_records_retry_without_blocking_drive_filing(
         self,
         mock_extract,

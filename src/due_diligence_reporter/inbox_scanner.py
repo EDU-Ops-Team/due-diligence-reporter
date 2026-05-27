@@ -195,6 +195,25 @@ def _drive_file_from_retry_entry(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _find_existing_drive_file_by_name(
+    gc: GoogleClient,
+    folder_id: str,
+    file_name: str,
+) -> dict[str, Any] | None:
+    """Return the newest direct child Drive file with an exact name match."""
+    candidate: dict[str, Any] | None = None
+    for file_info in gc.list_files_in_folder(folder_id):
+        name = str(file_info.get("name") or "").strip()
+        if name != file_name:
+            continue
+        if candidate is None:
+            candidate = file_info
+            continue
+        if str(file_info.get("modifiedTime") or "") > str(candidate.get("modifiedTime") or ""):
+            candidate = file_info
+    return candidate
+
+
 def _custom_field_value(record: dict[str, Any], names: set[str]) -> str:
     for field in record.get("customFields", []) or []:
         if not isinstance(field, dict):
@@ -1197,8 +1216,89 @@ def process_email(
             continue
         if gc.file_exists_in_folder(target_folder_id, drive_filename):
             if doc_type != "block_plan":
-                logger.info("File '%s' already exists in folder - skipping upload", drive_filename)
-                skipped += 1
+                drive_file = _find_existing_drive_file_by_name(
+                    gc,
+                    target_folder_id,
+                    drive_filename,
+                )
+                if drive_file is None:
+                    error_message = "Existing Drive file could not be found in M1"
+                    errors.append(
+                        {
+                            "message_id": message_id,
+                            "filename": filename,
+                            "doc_type": doc_type,
+                            "error": error_message,
+                        }
+                    )
+                    manual_review.append(
+                        _manual_review_item(
+                            filename=filename,
+                            doc_type=doc_type,
+                            confidence=confidence,
+                            email_subject=metadata.subject,
+                            site_title=site_title,
+                            reason="existing_drive_file_missing",
+                            error=error_message,
+                        )
+                    )
+                    all_succeeded = False
+                    review_needed = True
+                    keep_unprocessed = True
+                    continue
+                logger.info(
+                    "File '%s' already exists in folder - registering existing Drive file",
+                    drive_filename,
+                )
+                uploaded.append(
+                    {
+                        "original_filename": filename,
+                        "drive_filename": drive_filename,
+                        "doc_type": doc_type,
+                        "site_title": site_title,
+                        "site_address": site_address,
+                        "matched_site_id": matched_site_id,
+                        "drive_file_id": drive_file.get("id"),
+                        "drive_link": drive_file.get("webViewLink"),
+                        "existing_drive_file": True,
+                    }
+                )
+                registration = _register_uploaded_document_in_rhodes(
+                    site_summary=site_summary,
+                    ddr_doc_type=doc_type,
+                    drive_file=drive_file,
+                    drive_filename=drive_filename,
+                    original_filename=filename,
+                    message_id=message_id,
+                    attachment=att,
+                )
+                uploaded[-1]["rhodes_registration"] = registration
+                if _record_rhodes_registration_attempt(
+                    rhodes_retry_state,
+                    retry_key=rhodes_retry_key,
+                    registration=registration,
+                    site_summary=site_summary,
+                    doc_type=doc_type,
+                    drive_file=drive_file,
+                    drive_filename=drive_filename,
+                    original_filename=filename,
+                ):
+                    manual_review.append(
+                        _manual_review_item(
+                            filename=filename,
+                            doc_type=doc_type,
+                            confidence=confidence,
+                            email_subject=metadata.subject,
+                            site_title=site_title,
+                            reason="rhodes_registration_retry_exhausted",
+                            error=str(
+                                registration.get("error")
+                                or registration.get("reason")
+                                or ""
+                            ),
+                        )
+                    )
+                    review_needed = True
                 continue
             existing_docs = _list_m1_documents_by_type(gc, target_folder_id)
             if "raycon_scenario_json" in existing_docs:
