@@ -17,9 +17,8 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(_project_root / ".env")
 
 from due_diligence_reporter.config import get_settings  # noqa: E402
-from due_diligence_reporter.dd_republish import (  # noqa: E402
-    load_state as load_republish_state,
-    save_state as save_republish_state,
+from due_diligence_reporter.dd_republish_state_store import (  # noqa: E402
+    build_dd_republish_state_store,
 )
 from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.report_pipeline import (  # noqa: E402
@@ -48,7 +47,8 @@ def main(*, dry_run: bool = False, site: str = "") -> None:
     prompt_path = _project_root / "docs" / "prompts" / "prompt_v4.md"
     system_prompt = prompt_path.read_text(encoding="utf-8")
     shared_cache = list_shared_folders_once(gc)
-    republish_state = load_republish_state()
+    republish_state_store = build_dd_republish_state_store()
+    republish_state = republish_state_store.load()
     site_records = list_rhodes_site_records()
     if site.strip():
         needle = site.strip().lower()
@@ -73,7 +73,7 @@ def main(*, dry_run: bool = False, site: str = "") -> None:
         pipeline_runner=process_site_pipeline,
     )
     if not dry_run:
-        save_republish_state(republish_state)
+        republish_state_store.save(republish_state)
 
     print(
         "Vendor doc republish sweep: "

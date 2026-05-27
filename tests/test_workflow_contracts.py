@@ -100,3 +100,20 @@ def test_inbox_scan_can_enable_firestore_retry_state_without_required_secret() -
     assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON" in text
     assert "No Firestore service account configured" in text
     assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing" not in text
+
+
+def test_dd_republish_workflows_can_enable_firestore_state_without_required_secret() -> None:
+    for workflow in (
+        "inbox-scan.yml",
+        "raycon-followup.yml",
+        "vendor-doc-republish-sweep.yml",
+    ):
+        text = _workflow_text(workflow)
+
+        assert "DD_REPUBLISH_STATE_STORE" in text
+        assert "DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID" in text
+        assert "DD_REPUBLISH_STATE_FIRESTORE_DATABASE" in text
+        assert "DD_REPUBLISH_STATE_FIRESTORE_COLLECTION" in text
+        assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON" in text
+        assert "No Firestore service account configured" in text
+        assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing" not in text

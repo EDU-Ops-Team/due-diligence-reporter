@@ -150,6 +150,10 @@ jobs:
           BUILDING_INSPECTION_FOLDER_ID: ${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}
           RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
           RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
+          DD_REPUBLISH_STATE_STORE: ${{ vars.DD_REPUBLISH_STATE_STORE }}
+          DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID: ${{ vars.DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID }}
+          DD_REPUBLISH_STATE_FIRESTORE_DATABASE: ${{ vars.DD_REPUBLISH_STATE_FIRESTORE_DATABASE }}
+          DD_REPUBLISH_STATE_FIRESTORE_COLLECTION: ${{ vars.DD_REPUBLISH_STATE_FIRESTORE_COLLECTION }}
         run: |
           touch .env
           echo "OPENAI_API_KEY=${OPENAI_API_KEY}" >> .env
@@ -162,6 +166,10 @@ jobs:
           echo "BUILDING_INSPECTION_FOLDER_ID=${BUILDING_INSPECTION_FOLDER_ID}" >> .env
           echo "RHODES_API_KEY=${RHODES_API_KEY}" >> .env
           echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
+          echo "DD_REPUBLISH_STATE_STORE=${DD_REPUBLISH_STATE_STORE}" >> .env
+          echo "DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID=${DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID}" >> .env
+          echo "DD_REPUBLISH_STATE_FIRESTORE_DATABASE=${DD_REPUBLISH_STATE_FIRESTORE_DATABASE}" >> .env
+          echo "DD_REPUBLISH_STATE_FIRESTORE_COLLECTION=${DD_REPUBLISH_STATE_FIRESTORE_COLLECTION}" >> .env
           echo "Created .env file"
 
       - name: Write Google OAuth client secrets
@@ -208,6 +216,19 @@ jobs:
           with open('.gcp-saved-tokens.json', 'w') as f:
               json.dump(data, f, indent=2)
           "
+
+      - name: Write Firestore service account credentials
+        env:
+          GCP_FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON}" ]; then
+            echo "No Firestore service account configured; DD republish state will use JSON/cache fallback"
+            exit 0
+          fi
+          mkdir -p credentials
+          printf '%s' "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON}" > credentials/firestore-service-account.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=${GITHUB_WORKSPACE}/credentials/firestore-service-account.json" >> "$GITHUB_ENV"
+          echo "Firestore service account credentials configured"
 
       - name: Run RayCon follow-up
         env:

@@ -41,9 +41,10 @@ from due_diligence_reporter.cds_verification import (  # noqa: E402
 )
 from due_diligence_reporter.config import get_settings  # noqa: E402
 from due_diligence_reporter.dd_republish import (  # noqa: E402
-    load_state as _load_dd_republish_state,
     maybe_republish_dd_report,
-    save_state as _save_dd_republish_state,
+)
+from due_diligence_reporter.dd_republish_state_store import (  # noqa: E402
+    build_dd_republish_state_store,
 )
 from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.inbox_scanner import (  # noqa: E402
@@ -132,7 +133,8 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     # nothing.
     _shared_cache: dict[str, list[dict[str, Any]]] | None = None
     _system_prompt: str | None = None
-    _republish_state = _load_dd_republish_state()
+    _republish_state_store = build_dd_republish_state_store()
+    _republish_state = _republish_state_store.load()
     _rhodes_retry_store = build_rhodes_retry_state_store(
         RHODES_REGISTRATION_RETRY_STATE_PATH
     )
@@ -190,7 +192,7 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
     # write when there are entries to avoid leaving an empty {} file at
     # repo root for runs that never fired the callback.
     if not dry_run and _republish_state:
-        _save_dd_republish_state(_republish_state)
+        _republish_state_store.save(_republish_state)
     if not dry_run and (_rhodes_retry_state or _had_rhodes_retry_state):
         _rhodes_retry_store.save(_rhodes_retry_state)
 
