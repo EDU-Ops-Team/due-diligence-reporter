@@ -7,7 +7,10 @@ Started the remaining Phase 2 Drive-to-Rhodes reconciliation slice on branch
 
 Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/119
 
-Commit: `f7be81d` (`Reconcile Drive documents into Rhodes`)
+Implementation commit: `f7be81d` (`Reconcile Drive documents into Rhodes`)
+
+This handoff entry is included on the same PR branch after the implementation
+commit.
 
 Current state: branch pushed, draft PR open and mergeable. No status checks were
 reported yet when checked.
