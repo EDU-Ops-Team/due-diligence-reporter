@@ -110,7 +110,7 @@ jobs:
 
       - name: Restore RayCon runtime state
         # Persists dispatch and alert dedup state across cron ticks.
-        # Without this, failed-scenario retries and Chat alert suppression
+        # Without this, failed-scenario retries and owner/Chat alert suppression
         # reset on every clean Actions checkout.
         id: restore-raycon-runtime-state
         uses: actions/cache/restore@v4
@@ -291,7 +291,7 @@ jobs:
           key: dd-republish-state-${{ github.run_id }}
 
       - name: Save RayCon runtime state
-        # Always run so recovery dispatches and alert suppression survive
+        # Always run so recovery dispatches and owner/Chat alert suppression survive
         # the next scheduled checkout.
         if: always()
         uses: actions/cache/save@v4

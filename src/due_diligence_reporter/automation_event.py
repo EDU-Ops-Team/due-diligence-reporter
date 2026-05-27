@@ -232,6 +232,46 @@ def build_vendor_gate_review_required_event(
     )
 
 
+def build_raycon_followup_alert_event(
+    *,
+    site_id: str,
+    site_name: str,
+    run_id: str,
+    alert_type: str,
+    message: str,
+    drive_folder_url: str = "",
+    block_plan_file_id: str = "",
+    raycon_run_id: str = "",
+    created_at: str | None = None,
+) -> AutomationEvent:
+    """Build the DDR RayCon follow-up review event."""
+
+    artifact_ids = {
+        "Run ID": run_id,
+    }
+    if block_plan_file_id:
+        artifact_ids["Block Plan file ID"] = block_plan_file_id
+    if raycon_run_id:
+        artifact_ids["RayCon run ID"] = raycon_run_id
+
+    return AutomationEvent(
+        source_system="due-diligence-reporter",
+        source_id=run_id,
+        site_id=site_id.strip(),
+        site_name=site_name.strip() or "Unknown site",
+        event_type="raycon_followup_alert",
+        artifact_ids=artifact_ids,
+        decision_required=True,
+        requested_decision="review RayCon follow-up alert and unblock scenario generation",
+        mutation_status=alert_type.strip() or "raycon_followup_alert",
+        details={
+            "Message": message.strip()[:1000],
+            "Drive folder": drive_folder_url.strip(),
+        },
+        created_at=created_at or datetime.now(UTC).isoformat(),
+    )
+
+
 def _format_owner(site_summary: dict[str, Any]) -> str:
     name = str(site_summary.get("p1_assignee_name") or "").strip()
     email = str(site_summary.get("p1_assignee_email") or "").strip()
