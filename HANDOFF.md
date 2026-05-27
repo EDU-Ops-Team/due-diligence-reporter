@@ -51,6 +51,44 @@ Results:
 - Focused Ruff: all checks passed.
 - Full source Mypy: no issues in 31 source files.
 
+## 2026-05-27 - DDR Rhodes Registration Failure Events
+
+Started the next Rhodes automation Phase 2 slice on branch
+`codex/ddr-rhodes-registration-events`.
+
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/114
+
+Current behavior:
+
+- When inbox-filed document registration fails, DDR still preserves the Drive
+  filing and records retry state as before.
+- After the original attempt plus two retries, retry exhaustion now writes an
+  `AutomationEvent v1` note to the matched Rhodes site.
+- The Rhodes note mentions the P1 DRI when `p1_assignee_user_id` is present, or
+  resolves a Rhodes user ID from the P1 DRI email before adding the note.
+- If no owner can be notified in Rhodes, or the note write fails, DDR posts the
+  same event body to the configured Google Chat webhook.
+- Retry state stores `rhodes_failure_note_id` and Chat-notification metadata so
+  repeated scans do not duplicate notes or Chat alerts.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-rhodes-events-tests tests/test_inbox_scanner.py::TestRhodesDocumentRegistration tests/test_rhodes.py -q
+uv run ruff check src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\rhodes.py tests\test_inbox_scanner.py tests\test_rhodes.py
+uv run mypy src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\rhodes.py
+uv run pytest --basetemp C:\tmp\ddr-rhodes-events-broad tests/test_inbox_scanner.py tests/test_rhodes.py tests/test_scan_inbox_e2e.py -q
+git diff --check
+```
+
+Results:
+
+- Focused Rhodes/inbox tests: 19 passed.
+- Focused Ruff: all checks passed.
+- Focused Mypy: no issues in 2 source files.
+- Broader inbox/Rhodes/e2e scanner suite: 94 passed.
+- Diff check: no whitespace errors; only expected Windows LF-to-CRLF warnings.
+
 ## 2026-05-27 - DDR Executive Summary Answer-First Rendering
 
 Implemented the Boston-style executive summary guardrail on `main`.

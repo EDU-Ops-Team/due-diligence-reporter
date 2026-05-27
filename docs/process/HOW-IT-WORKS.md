@@ -200,7 +200,7 @@ For each unprocessed email with PDF attachments:
 
 Current Phase 2 behavior uses the matched Rhodes site record from Phase 1 (`site_title`, `matched_site_id`, address, and Drive folder URL). Older references below to site matching being inactive are stale and retained only until this process doc is fully cleaned up.
 
-Rhodes registration is a non-blocking post-upload side effect. If registration fails or Rhodes is unavailable, the Drive upload remains successful and the scan summary records the Rhodes registration failure for operator follow-up.
+Rhodes registration is a non-blocking post-upload side effect. If registration fails or Rhodes is unavailable, the Drive upload remains successful and the scan summary records the Rhodes registration failure for operator follow-up. The scanner retries Rhodes registration on later runs; after the original attempt plus two retries, it writes an `AutomationEvent v1` note to the Rhodes site. The note mentions the P1 DRI when a Rhodes user ID can be resolved. If no owner can be notified in Rhodes, or the note write fails, the same event is posted to the configured Google Chat webhook.
 
 ### Phase 2 â€” Per-Site Pipeline
 

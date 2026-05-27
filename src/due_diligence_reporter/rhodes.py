@@ -164,6 +164,24 @@ def _coerce_document_list(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _coerce_note(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, list):
+        first = next((item for item in payload if isinstance(item, dict)), {})
+        return first
+    if isinstance(payload, dict):
+        return _unwrap_single(payload, "note", "record", "data")
+    return {}
+
+
+def _coerce_user(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, list):
+        first = next((item for item in payload if isinstance(item, dict)), {})
+        return first
+    if isinstance(payload, dict):
+        return _unwrap_single(payload, "user", "record", "data")
+    return {}
+
+
 def _document_id(document: dict[str, Any]) -> str:
     for key in ("documentId", "_id", "id"):
         value = document.get(key)
@@ -183,6 +201,22 @@ def _document_drive_file_id(document: dict[str, Any]) -> str:
             value = drive_file.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
+    return ""
+
+
+def _note_id(note: dict[str, Any]) -> str:
+    for key in ("noteId", "_id", "id"):
+        value = note.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _user_id(user: dict[str, Any]) -> str:
+    for key in ("userId", "_id", "id"):
+        value = user.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return ""
 
 
@@ -579,6 +613,40 @@ class RhodesClient:
             payload["notes"] = notes.strip()
         return _coerce_document(self.call_tool("registerDocument", payload))
 
+    def add_site_note(
+        self,
+        *,
+        site_id: str,
+        body: str,
+        mentions: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
+        if not site_id.strip():
+            raise RhodesError("site_id is required")
+        if not body.strip():
+            raise RhodesError("body is required")
+
+        payload: dict[str, Any] = {"siteId": site_id.strip(), "body": body.strip()}
+        clean_mentions = [m.strip() for m in (mentions or []) if m.strip()]
+        if clean_mentions:
+            payload["mentions"] = clean_mentions
+        return _coerce_note(self.call_tool("addNote", payload))
+
+    def get_user(
+        self,
+        *,
+        email: str = "",
+        user_id: str = "",
+    ) -> dict[str, Any] | None:
+        payload: dict[str, Any] = {}
+        if user_id.strip():
+            payload["userId"] = user_id.strip()
+        elif email.strip():
+            payload["email"] = email.strip()
+        else:
+            raise RhodesError("email or user_id is required")
+        user = _coerce_user(self.call_tool("getUser", payload))
+        return user or None
+
     def find_document_by_drive_file_id(
         self,
         *,
@@ -705,6 +773,64 @@ def lookup_rhodes_site_owner(
     if result["status"] == "owner_missing":
         result["message"] = "Rhodes site exists, but p1Dri is not assigned."
     return result
+
+
+def add_rhodes_site_note(
+    *,
+    site_id: str,
+    body: str,
+    owner_user_id: str = "",
+    owner_email: str = "",
+    client: RhodesClient | None = None,
+) -> dict[str, Any]:
+    """Create a Rhodes site note and mention the owner when possible."""
+    clean_site_id = site_id.strip()
+    clean_body = body.strip()
+    clean_owner_user_id = owner_user_id.strip()
+    clean_owner_email = owner_email.strip()
+    base = {
+        "rhodes_site_id": clean_site_id,
+        "owner_user_id": clean_owner_user_id,
+        "owner_email": clean_owner_email,
+        "owner_notification": "none",
+    }
+    if not clean_site_id:
+        return {**base, "status": "skipped", "reason": "missing_site_id"}
+    if not clean_body:
+        return {**base, "status": "skipped", "reason": "missing_body"}
+
+    try:
+        rhodes = client or RhodesClient()
+        resolved_owner_user_id = clean_owner_user_id
+        owner_resolution = "provided" if resolved_owner_user_id else "none"
+        if not resolved_owner_user_id and clean_owner_email:
+            try:
+                user = rhodes.get_user(email=clean_owner_email)
+            except RhodesError:
+                user = None
+                owner_resolution = "lookup_failed"
+            else:
+                resolved_owner_user_id = _user_id(user or {})
+                owner_resolution = "resolved_from_email" if resolved_owner_user_id else "not_found"
+        note = rhodes.add_site_note(
+            site_id=clean_site_id,
+            body=clean_body,
+            mentions=[resolved_owner_user_id] if resolved_owner_user_id else [],
+        )
+    except RhodesError as exc:
+        return {**base, "status": "failed", "reason": "rhodes_error", "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - non-fatal scanner side effect
+        return {**base, "status": "failed", "reason": "unexpected_error", "error": str(exc)}
+
+    return {
+        **base,
+        "status": "created",
+        "reason": "ok",
+        "rhodes_note_id": _note_id(note),
+        "owner_user_id": resolved_owner_user_id,
+        "owner_resolution": owner_resolution,
+        "owner_notification": "mentioned" if resolved_owner_user_id else "none",
+    }
 
 
 def map_ddr_doc_type_to_rhodes(ddr_doc_type: str) -> RhodesDocumentMapping | None:

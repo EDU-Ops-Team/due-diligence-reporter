@@ -24,10 +24,11 @@ from .m1_lookup import (
     _list_m1_documents_by_type,
     _resolve_m1_folder,
 )
-from .rhodes import register_rhodes_document_for_upload
+from .rhodes import add_rhodes_site_note, register_rhodes_document_for_upload
 from .utils import (
     escape_html_text,
     extract_text_from_pdf_bytes,
+    post_google_chat_message,
     score_site_match_strength,
     send_email,
 )
@@ -181,11 +182,188 @@ def _record_rhodes_registration_attempt(
         "last_reason": str(registration.get("reason") or "").strip(),
         "last_error": str(registration.get("error") or "").strip(),
         "last_attempt_at": datetime.now(UTC).isoformat(),
+        "rhodes_failure_note_id": str(previous.get("rhodes_failure_note_id") or "").strip(),
+        "rhodes_failure_notified_at": str(
+            previous.get("rhodes_failure_notified_at") or ""
+        ).strip(),
+        "rhodes_failure_chat_notified_at": str(
+            previous.get("rhodes_failure_chat_notified_at") or ""
+        ).strip(),
     }
     registration["retry_attempts"] = attempts
     registration["retry_limit"] = RHODES_REGISTRATION_RETRY_LIMIT
     registration["retry_exhausted"] = attempts > RHODES_REGISTRATION_RETRY_LIMIT
     return attempts > RHODES_REGISTRATION_RETRY_LIMIT
+
+
+def _format_owner(site_summary: dict[str, Any]) -> str:
+    name = str(site_summary.get("p1_assignee_name") or "").strip()
+    email = str(site_summary.get("p1_assignee_email") or "").strip()
+    if name and email:
+        return f"{name} <{email}>"
+    return email or name or "No owner assigned"
+
+
+def _metadata_thread_id(metadata: Any, fallback_message_id: str) -> str:
+    thread_id = getattr(metadata, "thread_id", "")
+    if isinstance(thread_id, str) and thread_id.strip():
+        return thread_id.strip()
+    return fallback_message_id
+
+
+def _render_rhodes_registration_failure_event(
+    *,
+    site_summary: dict[str, Any],
+    registration: dict[str, Any],
+    doc_type: str,
+    drive_file: dict[str, Any],
+    drive_filename: str,
+    original_filename: str,
+    email_subject: str,
+    message_id: str,
+    thread_id: str,
+) -> str:
+    site_name = str(site_summary.get("title") or "Unknown site").strip()
+    reason = str(registration.get("reason") or "registration_failed").strip()
+    error = str(registration.get("error") or "").strip()
+    drive_link = str(drive_file.get("webViewLink") or "").strip()
+    drive_file_id = str(drive_file.get("id") or "").strip()
+    attempts = registration.get("retry_attempts") or "unknown"
+    retry_limit = registration.get("retry_limit") or RHODES_REGISTRATION_RETRY_LIMIT
+    lines = [
+        "AutomationEvent v1",
+        "Source: due-diligence-reporter",
+        "Kind: document_registration_failed",
+        f"Site: {site_name}",
+        f"Owner: {_format_owner(site_summary)}",
+        f"DDR doc type: {doc_type}",
+        f"Rhodes doc type: {registration.get('rhodes_doc_type') or 'unknown'}",
+        f"Rhodes milestone: {registration.get('rhodes_milestone') or 'unknown'}",
+        f"Retry attempts: {attempts}/{retry_limit}",
+        "Requested decision: repair or register the Rhodes document link for the Drive file.",
+        f"Reason: {reason}",
+        f"Drive file: {drive_filename}",
+        f"Original filename: {original_filename}",
+        f"Drive file ID: {drive_file_id}",
+        f"Gmail subject: {email_subject}",
+        f"Gmail message ID: {message_id}",
+        f"Gmail thread ID: {thread_id}",
+    ]
+    if error:
+        lines.append(f"Error: {error}")
+    if drive_link:
+        lines.append(f"Drive URL: {drive_link}")
+    return "\n".join(lines)
+
+
+def _post_google_chat_to_configured_webhooks(webhook_urls: str, text: str) -> dict[str, Any]:
+    urls = [url.strip() for url in webhook_urls.split(",") if url.strip()]
+    if not urls:
+        return {"status": "skipped", "reason": "missing_google_chat_webhook_url"}
+    posted = 0
+    errors: list[str] = []
+    for url in urls:
+        try:
+            post_google_chat_message(url, text)
+            posted += 1
+        except Exception as exc:  # noqa: BLE001 - non-fatal notification side effect
+            errors.append(str(exc))
+    if errors:
+        return {
+            "status": "failed" if posted == 0 else "partial",
+            "posted": posted,
+            "errors": errors,
+        }
+    return {"status": "sent", "posted": posted}
+
+
+def _record_rhodes_registration_failure_event(
+    *,
+    settings: Settings,
+    retry_state: dict[str, dict[str, Any]] | None,
+    retry_key: str,
+    site_summary: dict[str, Any],
+    registration: dict[str, Any],
+    doc_type: str,
+    drive_file: dict[str, Any],
+    drive_filename: str,
+    original_filename: str,
+    email_subject: str,
+    message_id: str,
+    thread_id: str,
+) -> dict[str, Any]:
+    """Write retry exhaustion to Rhodes and fall back to Chat when owner notify is absent."""
+    entry = retry_state.get(retry_key) if retry_state is not None else None
+    body = _render_rhodes_registration_failure_event(
+        site_summary=site_summary,
+        registration=registration,
+        doc_type=doc_type,
+        drive_file=drive_file,
+        drive_filename=drive_filename,
+        original_filename=original_filename,
+        email_subject=email_subject,
+        message_id=message_id,
+        thread_id=thread_id,
+    )
+    existing_note_id = str((entry or {}).get("rhodes_failure_note_id") or "").strip()
+    if existing_note_id:
+        result: dict[str, Any] = {
+            "status": "skipped",
+            "reason": "already_recorded",
+            "rhodes_note_id": existing_note_id,
+            "owner_notification": str(
+                (entry or {}).get("rhodes_failure_owner_notification") or "none"
+            ),
+        }
+        if (
+            result["owner_notification"] != "mentioned"
+            and entry is not None
+            and not entry.get("rhodes_failure_chat_notified_at")
+        ):
+            repeat_chat_result = _post_google_chat_to_configured_webhooks(
+                settings.google_chat_webhook_url,
+                body,
+            )
+            entry["rhodes_failure_chat_status"] = repeat_chat_result.get("status")
+            if repeat_chat_result.get("status") in {"sent", "partial"}:
+                entry["rhodes_failure_chat_notified_at"] = datetime.now(UTC).isoformat()
+            result["google_chat"] = repeat_chat_result
+        return result
+
+    owner_user_id = str(site_summary.get("p1_assignee_user_id") or "").strip()
+    owner_email = str(site_summary.get("p1_assignee_email") or "").strip()
+    note_result = add_rhodes_site_note(
+        site_id=str(site_summary.get("id") or "").strip(),
+        body=body,
+        owner_user_id=owner_user_id,
+        owner_email=owner_email,
+    )
+    if entry is not None:
+        entry["rhodes_failure_event_status"] = note_result.get("status")
+        entry["rhodes_failure_event_reason"] = note_result.get("reason")
+        if note_result.get("status") == "created":
+            entry["rhodes_failure_note_id"] = str(note_result.get("rhodes_note_id") or "")
+            entry["rhodes_failure_notified_at"] = datetime.now(UTC).isoformat()
+            entry["rhodes_failure_owner_notification"] = note_result.get("owner_notification")
+
+    should_alert_chat = note_result.get("status") != "created" or (
+        note_result.get("owner_notification") != "mentioned"
+    )
+    chat_result: dict[str, Any] | None = None
+    if should_alert_chat and not (entry and entry.get("rhodes_failure_chat_notified_at")):
+        chat_result = _post_google_chat_to_configured_webhooks(
+            settings.google_chat_webhook_url,
+            body,
+        )
+        if entry is not None:
+            entry["rhodes_failure_chat_status"] = chat_result.get("status")
+            if chat_result.get("status") in {"sent", "partial"}:
+                entry["rhodes_failure_chat_notified_at"] = datetime.now(UTC).isoformat()
+
+    result = dict(note_result)
+    if chat_result is not None:
+        result["google_chat"] = chat_result
+    return result
 
 
 def _drive_file_from_retry_entry(entry: dict[str, Any]) -> dict[str, Any]:
@@ -257,6 +435,26 @@ def _build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
             ("drive_folder_url", "google_folder", "folder_url"),
             {"google folder", "drive folder", "drive folder url"},
         ),
+        "p1_assignee_name": _record_value(
+            record,
+            ("p1_assignee_name", "p1_dri_name", "p1DriName", "p1AssigneeName"),
+            {"p1 assignee name", "p1 dri name", "p1 owner name", "site owner name"},
+        ),
+        "p1_assignee_email": _record_value(
+            record,
+            ("p1_assignee_email", "p1_dri_email", "p1DriEmail", "p1AssigneeEmail"),
+            {"p1 assignee email", "p1 dri email", "p1 owner email", "site owner email"},
+        ),
+        "p1_assignee_user_id": _record_value(
+            record,
+            (
+                "p1_assignee_user_id",
+                "p1_dri_user_id",
+                "p1DriUserId",
+                "p1AssigneeUserId",
+            ),
+            {"p1 assignee user id", "p1 dri user id", "p1 owner user id"},
+        ),
         "total_building_sf": record.get("total_building_sf")
         or record.get("building_square_feet")
         or _custom_field_value(
@@ -276,6 +474,7 @@ class EmailMetadata:
     body_snippet: str
     label_ids: list[str]
     attachments: list[dict[str, Any]]  # [{filename, attachment_id?, body_data?, mime_type}]
+    thread_id: str = ""
     # X-Original-Sender header set by Google Groups when an email is rerouted
     # through a group. Holds the actual external sender's address. Empty when
     # the email did not pass through a Google Group.
@@ -1212,6 +1411,22 @@ def process_email(
                         error=str(registration.get("error") or registration.get("reason") or ""),
                     )
                 )
+                failure_event = _record_rhodes_registration_failure_event(
+                    settings=settings,
+                    retry_state=rhodes_retry_state,
+                    retry_key=rhodes_retry_key,
+                    site_summary=site_summary,
+                    registration=registration,
+                    doc_type=doc_type,
+                    drive_file=drive_file,
+                    drive_filename=str(pending_rhodes_retry.get("drive_filename") or drive_filename),
+                    original_filename=filename,
+                    email_subject=metadata.subject,
+                    message_id=message_id,
+                    thread_id=_metadata_thread_id(metadata, message_id),
+                )
+                uploaded[-1]["rhodes_failure_event"] = failure_event
+                manual_review[-1]["rhodes_failure_event"] = failure_event
                 review_needed = True
             continue
         if gc.file_exists_in_folder(target_folder_id, drive_filename):
@@ -1298,6 +1513,22 @@ def process_email(
                             ),
                         )
                     )
+                    failure_event = _record_rhodes_registration_failure_event(
+                        settings=settings,
+                        retry_state=rhodes_retry_state,
+                        retry_key=rhodes_retry_key,
+                        site_summary=site_summary,
+                        registration=registration,
+                        doc_type=doc_type,
+                        drive_file=drive_file,
+                        drive_filename=drive_filename,
+                        original_filename=filename,
+                        email_subject=metadata.subject,
+                        message_id=message_id,
+                        thread_id=_metadata_thread_id(metadata, message_id),
+                    )
+                    uploaded[-1]["rhodes_failure_event"] = failure_event
+                    manual_review[-1]["rhodes_failure_event"] = failure_event
                     review_needed = True
                 continue
             existing_docs = _list_m1_documents_by_type(gc, target_folder_id)
@@ -1417,6 +1648,22 @@ def process_email(
                             ),
                         )
                     )
+                    failure_event = _record_rhodes_registration_failure_event(
+                        settings=settings,
+                        retry_state=rhodes_retry_state,
+                        retry_key=rhodes_retry_key,
+                        site_summary=site_summary,
+                        registration=uploaded[-1]["rhodes_registration"],
+                        doc_type=doc_type,
+                        drive_file=drive_file,
+                        drive_filename=drive_filename,
+                        original_filename=filename,
+                        email_subject=metadata.subject,
+                        message_id=message_id,
+                        thread_id=_metadata_thread_id(metadata, message_id),
+                    )
+                    uploaded[-1]["rhodes_failure_event"] = failure_event
+                    manual_review[-1]["rhodes_failure_event"] = failure_event
                     review_needed = True
 
                 folder_ping = _run_doc_arrival_folder_ping(
@@ -1632,6 +1879,7 @@ def _extract_email_metadata(gc: GoogleClient, message_id: str) -> EmailMetadata:
         body_snippet=snippet,
         label_ids=list(message.get("labelIds", [])),
         attachments=attachments,
+        thread_id=str(message.get("threadId", "") or ""),
         original_sender=original_sender,
     )
 

@@ -4,6 +4,7 @@ from typing import Any
 
 from due_diligence_reporter.rhodes import (
     RhodesError,
+    add_rhodes_site_note,
     list_rhodes_site_records,
     lookup_rhodes_site_owner,
     map_ddr_doc_type_to_rhodes,
@@ -23,6 +24,8 @@ class FakeRhodesClient:
         self.drive_root = drive_root
         self.documents: list[dict[str, Any]] = []
         self.registered_documents: list[dict[str, Any]] = []
+        self.notes: list[dict[str, Any]] = []
+        self.users_by_email: dict[str, dict[str, Any]] = {}
         self.calls: list[tuple[str, dict[str, str]]] = []
 
     def resolve_site(self, *, name: str = "", address: str = "") -> dict[str, Any] | None:
@@ -110,6 +113,43 @@ class FakeRhodesClient:
         }
         self.registered_documents.append(document)
         return document
+
+    def get_user(
+        self,
+        *,
+        email: str = "",
+        user_id: str = "",
+    ) -> dict[str, Any] | None:
+        self.calls.append(("get_user", {"email": email, "user_id": user_id}))
+        if user_id:
+            return {"_id": user_id, "email": email}
+        return self.users_by_email.get(email)
+
+    def add_site_note(
+        self,
+        *,
+        site_id: str,
+        body: str,
+        mentions: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "add_site_note",
+                {
+                    "site_id": site_id,
+                    "body": body,
+                    "mentions": ",".join(mentions or []),
+                },
+            )
+        )
+        note = {
+            "_id": f"NOTE{len(self.notes) + 1}",
+            "siteId": site_id,
+            "body": body,
+            "mentions": mentions or [],
+        }
+        self.notes.append(note)
+        return note
 
 
 def test_lookup_rhodes_site_owner_returns_p1_report_fields() -> None:
@@ -367,3 +407,39 @@ def test_register_rhodes_document_for_upload_handles_missing_config(monkeypatch)
     assert result["status"] == "failed"
     assert result["reason"] == "rhodes_error"
     assert "RHODES_API_KEY" in result["error"]
+
+
+def test_add_rhodes_site_note_mentions_owner_user_id() -> None:
+    client = FakeRhodesClient()
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body="AutomationEvent v1\nKind: document_registration_failed",
+        owner_user_id="USER1",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "created"
+    assert result["rhodes_note_id"] == "NOTE1"
+    assert result["owner_notification"] == "mentioned"
+    assert client.notes[0]["mentions"] == ["USER1"]
+
+
+def test_add_rhodes_site_note_resolves_owner_email() -> None:
+    client = FakeRhodesClient()
+    client.users_by_email["owner@example.com"] = {
+        "_id": "USER2",
+        "email": "owner@example.com",
+    }
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body="AutomationEvent v1\nKind: document_registration_failed",
+        owner_email="owner@example.com",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "created"
+    assert result["owner_user_id"] == "USER2"
+    assert result["owner_resolution"] == "resolved_from_email"
+    assert client.notes[0]["mentions"] == ["USER2"]

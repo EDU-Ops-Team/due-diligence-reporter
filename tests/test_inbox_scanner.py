@@ -16,6 +16,7 @@ from due_diligence_reporter.inbox_scanner import (
     EmailMetadata,
     _generate_drive_filename,
     _is_internal_sender,
+    _record_rhodes_registration_failure_event,
     _run_block_plan_downstream,
     _run_doc_arrival_folder_ping,
     _walk_parts,
@@ -1524,6 +1525,7 @@ class TestRhodesDocumentRegistration:
         return SimpleNamespace(
             inbox_internal_sender_addresses="",
             inbox_internal_sender_domains="trilogy.com",
+            google_chat_webhook_url="",
         )
 
     @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
@@ -1757,6 +1759,8 @@ class TestRhodesDocumentRegistration:
         assert list(retry_state.values())[0]["attempts"] == 1
         assert list(retry_state.values())[0]["drive_file_id"] == "isp_drive_id"
 
+    @patch("due_diligence_reporter.inbox_scanner._post_google_chat_to_configured_webhooks")
+    @patch("due_diligence_reporter.inbox_scanner.add_rhodes_site_note")
     @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
@@ -1771,6 +1775,8 @@ class TestRhodesDocumentRegistration:
         mock_ping,
         mock_resolve_m1,
         mock_build_summary,
+        mock_add_note,
+        mock_chat,
     ):
         drive_filename = f"{datetime.now().strftime('%b %d %Y')} - Alpha Keller ISP.pdf"
         retry_state = {
@@ -1807,6 +1813,9 @@ class TestRhodesDocumentRegistration:
             "title": "Alpha Keller",
             "address": "123 Main St",
             "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+            "p1_assignee_name": "Owner One",
+            "p1_assignee_email": "owner@example.com",
+            "p1_assignee_user_id": "USER1",
         }
         mock_register.return_value = {
             "status": "failed",
@@ -1814,6 +1823,11 @@ class TestRhodesDocumentRegistration:
             "error": "still down",
         }
         mock_ping.return_value = {"status": "accepted"}
+        mock_add_note.return_value = {
+            "status": "created",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        }
 
         gc = MagicMock()
         gc.file_exists_in_folder.return_value = True
@@ -1830,7 +1844,69 @@ class TestRhodesDocumentRegistration:
 
         assert result["uploaded"][0]["retry_existing_upload"] is True
         assert result["manual_review"][0]["reason"] == "rhodes_registration_retry_exhausted"
+        assert result["manual_review"][0]["rhodes_failure_event"]["rhodes_note_id"] == "NOTE1"
+        assert result["uploaded"][0]["rhodes_failure_event"]["owner_notification"] == "mentioned"
         assert list(retry_state.values())[0]["attempts"] == 3
+        assert list(retry_state.values())[0]["rhodes_failure_note_id"] == "NOTE1"
+        mock_add_note.assert_called_once()
+        note_kwargs = mock_add_note.call_args.kwargs
+        assert note_kwargs["site_id"] == "SITE1"
+        assert note_kwargs["owner_user_id"] == "USER1"
+        assert "AutomationEvent v1" in note_kwargs["body"]
+        assert "Kind: document_registration_failed" in note_kwargs["body"]
+        mock_chat.assert_not_called()
+
+    @patch("due_diligence_reporter.inbox_scanner._post_google_chat_to_configured_webhooks")
+    @patch("due_diligence_reporter.inbox_scanner.add_rhodes_site_note")
+    def test_registration_failure_event_posts_chat_when_owner_missing(
+        self,
+        mock_add_note,
+        mock_chat,
+    ):
+        retry_state: dict[str, dict[str, object]] = {"SITE1|isp|Alpha Keller ISP.pdf": {}}
+        mock_add_note.return_value = {
+            "status": "created",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "none",
+        }
+        mock_chat.return_value = {"status": "sent", "posted": 1}
+
+        result = _record_rhodes_registration_failure_event(
+            settings=SimpleNamespace(google_chat_webhook_url="https://chat.example/hook"),
+            retry_state=retry_state,
+            retry_key="SITE1|isp|Alpha Keller ISP.pdf",
+            site_summary={"id": "SITE1", "title": "Alpha Keller"},
+            registration={
+                "status": "failed",
+                "reason": "rhodes_error",
+                "error": "timeout",
+                "rhodes_doc_type": "other",
+                "rhodes_milestone": "acquireProperty",
+                "retry_attempts": 3,
+                "retry_limit": 2,
+            },
+            doc_type="isp",
+            drive_file={
+                "id": "isp_drive_id",
+                "webViewLink": "https://drive.google.com/file/d/isp_drive_id",
+            },
+            drive_filename="May 27 2026 - Alpha Keller ISP.pdf",
+            original_filename="Alpha Keller ISP.pdf",
+            email_subject="Alpha Keller ISP",
+            message_id="msg_rhodes_retry_exhausted",
+            thread_id="thread_rhodes_retry_exhausted",
+        )
+
+        assert result["status"] == "created"
+        assert result["google_chat"] == {"status": "sent", "posted": 1}
+        mock_add_note.assert_called_once()
+        assert mock_add_note.call_args.kwargs["owner_user_id"] == ""
+        assert mock_add_note.call_args.kwargs["owner_email"] == ""
+        mock_chat.assert_called_once()
+        assert mock_chat.call_args.args[0] == "https://chat.example/hook"
+        assert "Owner: No owner assigned" in mock_chat.call_args.args[1]
+        assert retry_state["SITE1|isp|Alpha Keller ISP.pdf"]["rhodes_failure_note_id"] == "NOTE1"
+        assert retry_state["SITE1|isp|Alpha Keller ISP.pdf"]["rhodes_failure_chat_status"] == "sent"
 
     def test_build_scan_summary_includes_rhodes_registration_counts(self):
         from due_diligence_reporter.inbox_scanner import build_scan_summary
