@@ -204,6 +204,8 @@ Rhodes registration is a non-blocking post-upload side effect. If registration f
 
 Registration retry state is persisted through a store boundary. Local development defaults to `.rhodes_registration_retry_state.json`; scheduled/production runs should set `RHODES_RETRY_STATE_STORE=firestore` and `RHODES_RETRY_STATE_FIRESTORE_PROJECT_ID=<project>` so retry attempts, Rhodes note IDs, and Google Chat fallback metadata survive runner changes. GitHub Actions can provide those values through repository variables plus the optional `GCP_FIRESTORE_SERVICE_ACCOUNT_JSON` secret, which is written to `GOOGLE_APPLICATION_CREDENTIALS` for the scan step. If Firestore is unconfigured or unavailable, the scanner falls back to the local JSON file and keeps filing documents.
 
+Material automation outcomes render through `src/due_diligence_reporter/automation_event.py`. The shared `AutomationEvent v1` note body includes source system, source ID, event kind, site ID, decision-required status, mutation status, retry state, and artifact IDs before adding DDR-specific details. This keeps Rhodes notes and Google Chat fallback alerts aligned with the cross-repo automation-event contract.
+
 ### Phase 2 â€” Per-Site Pipeline
 
 After all uploads complete, the scanner attempts to run the report pipeline for each site that received a new document. Phase 2 requires a `site_title` to look up the site context. The current classifier routes by `doc_type` only and does not match files to sites, so `site_title` is `None` in all uploads â€” **Phase 2 is currently inactive** and report generation falls to the daily sweep.
