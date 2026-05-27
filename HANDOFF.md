@@ -7,8 +7,6 @@ Started the next Phase 2 durable-state item on branch
 
 Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/118
 
-Commit: `72927e0` (`Persist RayCon runtime state through Firestore`)
-
 Current state: branch pushed, draft PR open and mergeable. No status checks were
 reported yet when checked.
 
