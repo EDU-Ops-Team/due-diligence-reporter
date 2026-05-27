@@ -83,6 +83,10 @@ from due_diligence_reporter.raycon_client import (  # noqa: E402
     raycon_scenario_to_report_fields,
     read_raycon_scenario_from_m1,
 )
+from due_diligence_reporter.raycon_runtime_state_store import (  # noqa: E402
+    build_raycon_alert_state_store,
+    build_raycon_dispatch_state_store,
+)
 from due_diligence_reporter.report_pipeline import (  # noqa: E402
     list_shared_folders_once,
     process_site_pipeline,
@@ -201,22 +205,12 @@ DD_REPUBLISH_FORCE_AFTER = timedelta(hours=12)
 
 def _load_alert_state(path: Path = ALERT_DEDUP_PATH) -> dict[str, str]:
     """Load the {site_name: last_alert_iso} dedup map. Returns {} on any error."""
-    try:
-        if not path.exists():
-            return {}
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception as e:
-        logger.warning("Failed to read alert dedup state at %s: %s", path, e)
-        return {}
+    return build_raycon_alert_state_store(path).load()
 
 
 def _save_alert_state(state: dict[str, str], path: Path = ALERT_DEDUP_PATH) -> None:
     """Persist the dedup map. Best-effort; logs but does not raise."""
-    try:
-        path.write_text(json.dumps(state, sort_keys=True, indent=2), encoding="utf-8")
-    except Exception as e:
-        logger.warning("Failed to write alert dedup state at %s: %s", path, e)
+    build_raycon_alert_state_store(path).save(state)
 
 
 def _load_dispatch_state(
@@ -227,27 +221,14 @@ def _load_dispatch_state(
     Returns ``{}`` on missing file or any read/parse error so a corrupt
     state file never blocks the run.
     """
-    try:
-        if not path.exists():
-            return {}
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return {}
-        # Defensive: drop any non-dict entries from a malformed file.
-        return {k: v for k, v in data.items() if isinstance(v, dict)}
-    except Exception as e:
-        logger.warning("Failed to read dispatch dedup state at %s: %s", path, e)
-        return {}
+    return build_raycon_dispatch_state_store(path).load()
 
 
 def _save_dispatch_state(
     state: dict[str, dict[str, Any]], path: Path = DISPATCH_DEDUP_PATH
 ) -> None:
     """Persist the dispatch dedup map. Best-effort; logs but does not raise."""
-    try:
-        path.write_text(json.dumps(state, sort_keys=True, indent=2), encoding="utf-8")
-    except Exception as e:
-        logger.warning("Failed to write dispatch dedup state at %s: %s", path, e)
+    build_raycon_dispatch_state_store(path).save(state)
 
 
 def _load_republish_state(

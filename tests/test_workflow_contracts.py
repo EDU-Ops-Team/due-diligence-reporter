@@ -117,3 +117,16 @@ def test_dd_republish_workflows_can_enable_firestore_state_without_required_secr
         assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON" in text
         assert "No Firestore service account configured" in text
         assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing" not in text
+
+
+def test_raycon_followup_can_enable_firestore_runtime_state_without_required_secret() -> None:
+    text = _workflow_text("raycon-followup.yml")
+
+    assert "RAYCON_RUNTIME_STATE_STORE" in text
+    assert "RAYCON_RUNTIME_STATE_FIRESTORE_PROJECT_ID" in text
+    assert "RAYCON_RUNTIME_STATE_FIRESTORE_DATABASE" in text
+    assert "RAYCON_RUNTIME_STATE_DISPATCH_FIRESTORE_COLLECTION" in text
+    assert "RAYCON_RUNTIME_STATE_ALERT_FIRESTORE_COLLECTION" in text
+    assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON" in text
+    assert "No Firestore service account configured" in text
+    assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing" not in text
