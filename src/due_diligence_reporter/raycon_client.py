@@ -536,6 +536,9 @@ def post_raycon_folder_ping(
 def read_raycon_scenario_from_m1(
     gc: GoogleClient,
     drive_folder_url: str,
+    *,
+    m1_folder_id: str | None = None,
+    m1_files: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Return the parsed ``raycon_scenario.json`` from the site's M1 folder.
 
@@ -546,12 +549,14 @@ def read_raycon_scenario_from_m1(
     """
     if not drive_folder_url:
         return None
-    m1_folder_id, _ = _resolve_m1_folder(gc, drive_folder_url)
+    if m1_folder_id is None:
+        m1_folder_id, _ = _resolve_m1_folder(gc, drive_folder_url)
     if not m1_folder_id:
         return None
 
     candidate = None
-    for file_info in gc.list_files_in_folder(m1_folder_id):
+    files = m1_files if m1_files is not None else gc.list_files_in_folder(m1_folder_id)
+    for file_info in files:
         name = str(file_info.get("name", "")).strip()
         if name == RAYCON_SCENARIO_FILENAME:
             # Pick the most recently modified copy if there's somehow more
