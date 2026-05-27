@@ -1,5 +1,69 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-27 - Drive-to-Rhodes Document Reconciliation
+
+Started the remaining Phase 2 Drive-to-Rhodes reconciliation slice on branch
+`codex/ddr-drive-rhodes-reconcile`.
+
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/119
+
+Implementation commit: `f7be81d` (`Reconcile Drive documents into Rhodes`)
+
+This handoff entry is included on the same PR branch after the implementation
+commit.
+
+Current state: branch pushed, draft PR open and mergeable. No status checks were
+reported yet when checked.
+
+Changed:
+
+- Added `src/due_diligence_reporter/drive_rhodes_reconciliation.py`.
+  The sweep loads Rhodes-linked site records, resolves each site's canonical
+  `M1 - Acquire Property` folder without creating folders, classifies recognized
+  M1 files, and registers missing Rhodes document links by Drive file ID.
+- Registration reuses `register_rhodes_document_for_upload`, preserving the
+  existing DDR -> Rhodes doc type mapping and idempotent `listDocuments`
+  pre-check.
+- Generated or unmapped M1 files are reported as skipped rows rather than
+  forced into unsafe Rhodes document types.
+- Added `scripts/drive_rhodes_reconciliation.py` with `--dry-run` and `--site`
+  controls.
+- Added the weekday `Drive Rhodes Reconciliation` GitHub Actions workflow and
+  included it in stale mutating run cancellation/timeout contract tests.
+- Updated `docs/process/HOW-IT-WORKS.md`.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-drive-rhodes-focused tests/test_drive_rhodes_reconciliation.py -q
+uv run pytest --basetemp C:\tmp\ddr-drive-rhodes-broad tests/test_drive_rhodes_reconciliation.py tests/test_rhodes.py tests/test_m1_lookup.py tests/test_workflow_contracts.py tests/test_vendor_doc_sweep.py -q
+uv run pytest --basetemp C:\tmp\ddr-drive-rhodes-affected tests/test_drive_rhodes_reconciliation.py tests/test_rhodes.py tests/test_m1_lookup.py tests/test_workflow_contracts.py tests/test_vendor_doc_sweep.py tests/test_inbox_scanner.py -q
+uv run ruff check src\due_diligence_reporter\drive_rhodes_reconciliation.py scripts\drive_rhodes_reconciliation.py tests\test_drive_rhodes_reconciliation.py tests\test_workflow_contracts.py
+uv run mypy src\due_diligence_reporter\drive_rhodes_reconciliation.py
+uv run mypy src/
+uv run python -m py_compile scripts\drive_rhodes_reconciliation.py
+git diff --check
+git diff --cached --check
+```
+
+Results:
+
+- Focused reconciliation tests: 4 passed.
+- Broader Rhodes/M1/workflow/vendor sweep tests: 33 passed.
+- Affected inbox/Rhodes/M1/workflow/vendor suite: 104 passed.
+- Ruff on touched code/tests: passed.
+- Focused Mypy: no issues in 1 source file.
+- Full source Mypy: no issues in 37 source files.
+- Script compile: passed.
+- Diff checks: passed; Git emitted the existing user-level ignore permission
+  warning and expected Windows LF-to-CRLF warnings only.
+
+Next:
+
+- Wait for CI/review on PR #119.
+- After merge, continue with a shared Rhodes adapter skeleton or DDR generated
+  report/open-item/closed-item Rhodes summary events.
+
 ## 2026-05-27 - Firestore RayCon Runtime State
 
 Started the next Phase 2 durable-state item on branch

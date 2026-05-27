@@ -1,0 +1,115 @@
+name: Drive Rhodes Reconciliation
+
+on:
+  schedule:
+    - cron: '45 10 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      site:
+        description: 'Optional site filter'
+        required: false
+        type: string
+      dry_run:
+        description: 'Detect only; do not register Rhodes documents'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+concurrency:
+  group: drive-rhodes-reconciliation
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  drive-rhodes-reconciliation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.14"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Verify required secrets
+        run: |
+          [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ] || { echo "OAUTH_CLIENT_ID missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ] || { echo "OAUTH_CLIENT_SECRET missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ] || { echo "OAUTH_REFRESH_TOKEN missing"; exit 1; }
+          [ -n "${{ secrets.RHODES_API_KEY }}" ] || { echo "RHODES_API_KEY missing"; exit 1; }
+
+      - name: Create .env file from secrets
+        env:
+          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
+          RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
+        run: |
+          touch .env
+          echo "RHODES_API_KEY=${RHODES_API_KEY}" >> .env
+          echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
+
+      - name: Write Google OAuth client secrets
+        env:
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+        run: |
+          mkdir -p credentials
+          python -c "
+          import json, os
+          data = {
+              'installed': {
+                  'client_id': os.environ['OAUTH_CLIENT_ID'],
+                  'client_secret': os.environ['OAUTH_CLIENT_SECRET'],
+                  'redirect_uris': ['http://localhost'],
+                  'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+                  'token_uri': 'https://oauth2.googleapis.com/token',
+              }
+          }
+          with open('credentials/client_secrets.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+
+      - name: Write Google OAuth refresh token
+        env:
+          OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+        run: |
+          python -c "
+          import json, os
+          data = {
+              'token': None,
+              'refresh_token': os.environ['OAUTH_REFRESH_TOKEN'],
+              'token_uri': 'https://oauth2.googleapis.com/token',
+              'client_id': os.environ['OAUTH_CLIENT_ID'],
+              'client_secret': os.environ['OAUTH_CLIENT_SECRET'],
+              'scopes': [
+                  'https://www.googleapis.com/auth/drive',
+                  'https://www.googleapis.com/auth/documents',
+                  'https://www.googleapis.com/auth/gmail.modify',
+              ],
+          }
+          with open('.gcp-saved-tokens.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+
+      - name: Run Drive Rhodes reconciliation
+        env:
+          INPUT_SITE: ${{ inputs.site }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "${INPUT_DRY_RUN:-}" = "true" ]; then args+=(--dry-run); fi
+          if [ -n "${INPUT_SITE:-}" ]; then args+=(--site "$INPUT_SITE"); fi
+          uv run python scripts/drive_rhodes_reconciliation.py "${args[@]}"
