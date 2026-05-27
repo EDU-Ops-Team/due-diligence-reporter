@@ -847,3 +847,47 @@ Important operational lesson:
 Global lesson note added:
 
 - `C:\Users\foote\.codex\memories\extensions\ad_hoc\notes\20260521-203015-google-workspace-mcp-auth-loopback.md`
+
+## 2026-05-27 - Inbox Scanner Rhodes Auto-Resolve Follow-Up
+
+Greg reviewed a manual-review list where most `unmatched_site` rows had real Rhodes
+sites. Summer-camp SIRs should not create/manual-review Rhodes work because summer
+camps do not have Rhodes entries.
+
+What changed:
+
+- `scripts/scan_inbox.py` now loads Rhodes site records with `status=None`, so
+  cancelled/historical Rhodes sites are eligible for inbox matching. This is
+  needed for rows like `Alpha Torrance 22600 Crenshaw Blvd`, which exists in
+  Rhodes but is not active.
+- `process_email()` skips recognized summer-camp documents when no site matches
+  instead of adding them to `manual_review`.
+- Unmatched supported PDFs now get one fallback site-match pass using extracted
+  PDF text. This lets address text inside inspections/permit forms disambiguate
+  otherwise generic subjects such as `May 8 Alpha Miami Beach Building Inspection`.
+- Shared site-match terms now include the street-address line and street tokens,
+  so PDF text like `1021 Biarritz Dr` or `4260 El Camino Real` contributes to the
+  deterministic score.
+
+Files changed:
+
+- `scripts/scan_inbox.py`
+- `src/due_diligence_reporter/inbox_scanner.py`
+- `src/due_diligence_reporter/rhodes.py`
+- `src/due_diligence_reporter/utils.py`
+- `tests/test_inbox_scanner.py`
+- `tests/test_scan_inbox_e2e.py`
+
+Verification:
+
+```powershell
+uv run pytest tests/test_inbox_scanner.py tests/test_rhodes.py tests/test_scan_inbox_e2e.py -q
+uv run ruff check src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\utils.py scripts\scan_inbox.py tests\test_inbox_scanner.py tests\test_scan_inbox_e2e.py
+uv run mypy src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\utils.py
+```
+
+Results:
+
+- Focused pytest: 86 passed.
+- Ruff: all checks passed.
+- Mypy: success for 3 touched source files.

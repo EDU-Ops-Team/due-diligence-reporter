@@ -415,7 +415,8 @@ def build_site_match_terms(
     Returns terms ordered most-specific first:
       1. Full site title (backward compat)
       2. City extracted from address
-      3. Significant words from title (excluding stop words, short words, small numbers)
+      3. Street-address line and tokens
+      4. Significant words from title (excluding stop words, short words, small numbers)
     """
     stop_words = {"alpha", "school", "the", "a", "an"}
     terms: list[str] = []
@@ -433,6 +434,21 @@ def build_site_match_terms(
     city = extract_city_from_address(address)
     if city:
         _add(city)
+
+    if address:
+        street_line = address.split(",", 1)[0].strip()
+        if street_line:
+            _add(street_line)
+            for word in street_line.split():
+                token = word.strip(",.()#")
+                low = token.lower()
+                if not low:
+                    continue
+                if low in {"street", "st", "avenue", "ave", "road", "rd", "drive", "dr"}:
+                    continue
+                if len(low) < 3 and not low.isdigit():
+                    continue
+                _add(token)
 
     for word in site_title.split():
         w = word.strip()

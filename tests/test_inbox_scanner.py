@@ -437,6 +437,119 @@ class TestClassification:
         # The scanner must NOT have tried to upload anything when site is unmatched.
         gc.upload_file_to_folder.assert_not_called()
 
+    @patch("due_diligence_reporter.inbox_scanner.extract_text_from_pdf_bytes")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_unmatched_summer_camp_is_skipped_without_review(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_pdf_text,
+    ):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_summer_camp",
+            subject="Chicago, IL Summer Camp SIR",
+            sender="test@example.com",
+            effective_sender="test@example.com",
+            body_snippet="",
+            attachments=[
+                {
+                    "filename": "Alpha School (Summer Camp) - Chicago, IL SIR.pdf",
+                    "attachment_id": "sc1",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        mock_classify.return_value = ("sir", 0.95)
+
+        gc = MagicMock()
+        result = process_email(gc, "msg_summer_camp", MagicMock(), "label_123", "review_123")
+
+        assert result["uploaded"] == []
+        assert result["skipped"] == 1
+        assert result["manual_review"] == []
+        assert result["low_confidence"] == []
+        assert result["marked"] is True
+        mock_pdf_text.assert_not_called()
+        gc.upload_file_to_folder.assert_not_called()
+
+    @patch("due_diligence_reporter.inbox_scanner._register_uploaded_document_in_rhodes")
+    @patch("due_diligence_reporter.inbox_scanner._run_doc_arrival_folder_ping")
+    @patch("due_diligence_reporter.inbox_scanner.extract_text_from_pdf_bytes")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_pdf_text_fallback_can_resolve_ambiguous_site(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_resolve_m1,
+        mock_pdf_text,
+        mock_ping,
+        mock_register,
+    ):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_bi_ambiguous",
+            subject="May 8 Alpha Miami Beach Building Inspection",
+            sender="test@example.com",
+            effective_sender="test@example.com",
+            body_snippet="",
+            attachments=[
+                {
+                    "filename": "May 8 Alpha Miami Beach Building Inspection.pdf",
+                    "attachment_id": "bi_mb",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        mock_classify.return_value = ("building_inspection", 0.95)
+        mock_pdf_text.return_value = "Inspection address: 1021 Biarritz Dr, Miami Beach, FL"
+        mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
+        mock_ping.return_value = {"status": "accepted"}
+        mock_register.return_value = {"status": "registered"}
+
+        gc = MagicMock()
+        gc.file_exists_in_folder.return_value = False
+        gc.gmail_get_attachment.return_value = b"%PDF-fake"
+        gc.upload_file_to_folder.return_value = {
+            "id": "bi_drive_id",
+            "webViewLink": "https://drive.google.com/file/d/bi_drive_id",
+        }
+
+        site_records = [
+            {
+                "id": "SITE300",
+                "title": "Alpha Miami Beach 300 71st St",
+                "address": "300 71st St, Miami Beach, FL",
+                "drive_folder_url": "https://drive.google.com/drive/folders/site300",
+                "customFields": [],
+            },
+            {
+                "id": "SITE1021",
+                "title": "Alpha Miami Beach 1021 Biarritz Dr",
+                "address": "1021 Biarritz Dr, Miami Beach, FL",
+                "drive_folder_url": "https://drive.google.com/drive/folders/site1021",
+                "customFields": [],
+            },
+        ]
+
+        result = process_email(
+            gc,
+            "msg_bi_ambiguous",
+            MagicMock(),
+            "label_123",
+            "review_123",
+            site_records=site_records,
+        )
+
+        assert result["manual_review"] == []
+        assert len(result["uploaded"]) == 1
+        assert result["uploaded"][0]["site_title"] == "Alpha Miami Beach 1021 Biarritz Dr"
+        assert result["uploaded"][0]["matched_site_id"] == "SITE1021"
+        assert result["uploaded"][0]["drive_filename"].endswith(
+            "Alpha Miami Beach 1021 Biarritz Dr Building Inspection Report.pdf"
+        )
+
     @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
