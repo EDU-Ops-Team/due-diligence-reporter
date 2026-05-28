@@ -58,6 +58,8 @@ jobs:
 
       - name: Build portfolio gap snapshot
         env:
+          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
+          RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
           INPUT_MAX_SITES: ${{ inputs.max_sites }}
           INPUT_INCLUDE_CLEAN: ${{ inputs.include_clean }}
         run: |

@@ -100,6 +100,11 @@ def test_portfolio_gap_snapshot_is_read_only_rhodes_workflow() -> None:
     text = _workflow_text("portfolio-automation-gaps.yml")
 
     assert "RHODES_API_KEY" in text
+    assert (
+        "name: Build portfolio gap snapshot\n"
+        "        env:\n"
+        "          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}"
+    ) in text
     assert "GOOGLE_CHAT_WEBHOOK_URL" in text
     assert "portfolio-gaps" in text
     assert "portfolio-automation-gaps.json" in text
