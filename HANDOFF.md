@@ -1,5 +1,65 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - RayCon Explicit Rhodes Note Anchor
+
+Confirmed PR #132 merged at `98d31ad` and retested on `main`.
+
+Live test:
+
+- Deleted only the two stale RayCon runtime caches from the failed PR #131
+  retest runs:
+  - `raycon-runtime-state-26581936544`
+  - `raycon-runtime-state-26581936500`
+- Santa Clara run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26583402921
+- Tulsa run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26583402885
+- Both runs failed closed with `missing_note_id`.
+- Both runs included Devin Bates plus Greg Foote in `mentioned_user_ids`.
+- Both runs posted the Google Chat fallback.
+- Live Rhodes `listNotes` and audit-log readback still showed no new RayCon
+  note on either site.
+- The failure now survives site-ID write, readback recovery, and site-slug
+  retry. That points to the hosted Rhodes MCP `addNote` write path rather than
+  RayCon alert dedupe.
+
+Branch: `codex/raycon-explicit-note-anchor`
+
+Changed:
+
+- `RhodesClient.add_site_note` now sends explicit site anchoring in the MCP
+  payload:
+  - `anchorType: "site"`
+  - `anchorId: <siteId>` when a Rhodes site ID is available
+- Added a client-level regression test for the exact `addNote` payload shape.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_rhodes.py tests/test_rhodes_events.py tests/test_raycon_followup.py --basetemp C:\tmp\pytest-raycon-explicit-note-anchor
+uv run ruff check src\due_diligence_reporter\rhodes.py tests\test_rhodes.py tests\test_rhodes_events.py tests\test_raycon_followup.py scripts\raycon_followup.py src\due_diligence_reporter\rhodes_events.py
+uv run mypy src/
+uv run mypy scripts/raycon_followup.py
+```
+
+Results:
+
+- Focused Rhodes/RayCon suite: 83 passed.
+- Ruff on touched code/tests: passed.
+- Source Mypy: no issues in 38 source files.
+- Script Mypy: no issues.
+
+Next:
+
+- Open PR for `codex/raycon-explicit-note-anchor`.
+- After merge, clear the fresh RayCon runtime caches from the failed PR #132
+  retest runs if they would suppress the new test:
+  - `raycon-runtime-state-26583402921`
+  - `raycon-runtime-state-26583402885`
+- Rerun RayCon Follow-up for Tulsa/Santa Clara.
+- If explicit anchoring still produces `missing_note_id` and no Rhodes audit
+  entry, the fix needs to move to the deployed Rhodes MCP/API write surface.
+
 ## 2026-05-28 - RayCon Rhodes Note Readback / Slug Fallback
 
 Confirmed PR #131 merged at `c71de5e` and retested the merged fail-closed

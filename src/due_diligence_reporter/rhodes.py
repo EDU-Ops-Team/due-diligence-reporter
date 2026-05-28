@@ -639,9 +639,13 @@ class RhodesClient:
         if not body.strip():
             raise RhodesError("body is required")
 
-        payload: dict[str, Any] = {"body": body.strip()}
+        payload: dict[str, Any] = {
+            "anchorType": "site",
+            "body": body.strip(),
+        }
         if clean_site_id:
             payload["siteId"] = clean_site_id
+            payload["anchorId"] = clean_site_id
         else:
             payload["siteSlug"] = clean_site_slug
         clean_mentions = [m.strip() for m in (mentions or []) if m.strip()]
