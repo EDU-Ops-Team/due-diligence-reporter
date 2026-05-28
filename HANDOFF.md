@@ -1,5 +1,69 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - RayCon Rhodes Note Readback / Slug Fallback
+
+Confirmed PR #131 merged at `c71de5e` and retested the merged fail-closed
+behavior on `main`.
+
+Live test:
+
+- Cleared only the relevant `raycon-runtime-state-*` cache entries from the
+  prior false-green test runs.
+- Tulsa run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26581936544
+- Santa Clara run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26581936500
+- Both runs failed closed with `missing_note_id`.
+- Both runs included Devin Bates plus Greg Foote in `mentioned_user_ids`.
+- Both runs posted the Google Chat fallback.
+- Live Rhodes `listNotes` and audit-log readback still showed no new RayCon
+  note on either site.
+
+Branch: `codex/raycon-rhodes-note-readback`
+
+Changed:
+
+- `RhodesClient` can now create/list notes by either `siteId` or `siteSlug`.
+- `add_rhodes_site_note` now attempts to recover a note ID from `listNotes`
+  after an `addNote` response with no ID.
+- If the site-ID write path still returns no ID and a slug is available, the
+  helper retries the note write with `siteSlug`, then reads back by slug.
+- RayCon follow-up now carries Rhodes `site_slug` through site context and into
+  the Rhodes note helper.
+- Regression tests cover no-ID failure, readback recovery, slug retry, and the
+  RayCon caller passing `site_slug`.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_rhodes.py tests/test_rhodes_events.py tests/test_raycon_followup.py --basetemp C:\tmp\pytest-raycon-note-readback
+uv run ruff check src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\rhodes_events.py scripts\raycon_followup.py tests\test_rhodes.py tests\test_rhodes_events.py tests\test_raycon_followup.py
+uv run mypy src/
+uv run mypy scripts/raycon_followup.py
+```
+
+Results:
+
+- Focused Rhodes/RayCon suite: 82 passed.
+- Ruff on touched code/tests: passed.
+- Source Mypy: no issues in 38 source files.
+- Script Mypy: no issues.
+
+Next:
+
+- Open PR for `codex/raycon-rhodes-note-readback`.
+- After merge, clear the fresh `raycon-runtime-state-*` cache entries for the
+  failed PR #131 retest runs if they would suppress the new test.
+- Rerun RayCon Follow-up for Tulsa/Santa Clara.
+- Expected outcomes:
+  - If `addNote` created a note but returned no ID, readback should recover the
+    ID and the workflow should succeed.
+  - If the `siteId` write path is the issue, the `siteSlug` retry may create the
+    note.
+  - If the remote MCP/API note-write path is truly no-op, confirmation-gated, or
+    blocked, the workflow should still fail with `missing_note_id` and post Chat
+    fallback; that would move the remaining fix to the Rhodes MCP/write surface.
+
 ## 2026-05-28 - RayCon Note ID Verification
 
 Confirmed PR #130 was merged at `e7227be` and tested the merged RayCon

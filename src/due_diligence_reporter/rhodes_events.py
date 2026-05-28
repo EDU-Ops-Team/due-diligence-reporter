@@ -18,6 +18,7 @@ def record_rhodes_automation_event(
     *,
     owner_user_id: str = "",
     owner_email: str = "",
+    site_slug: str = "",
     extra_mention_user_ids: Iterable[str] | None = None,
     body: str | None = None,
     add_note: AddRhodesSiteNote = add_rhodes_site_note,
@@ -32,6 +33,8 @@ def record_rhodes_automation_event(
             "owner_user_id": owner_user_id,
             "owner_email": owner_email,
         }
+        if site_slug.strip():
+            note_kwargs["site_slug"] = site_slug.strip()
         extra_ids = [uid.strip() for uid in (extra_mention_user_ids or []) if uid.strip()]
         if extra_ids:
             note_kwargs["extra_mention_user_ids"] = extra_ids

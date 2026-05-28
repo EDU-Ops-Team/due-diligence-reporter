@@ -408,12 +408,14 @@ def _site_summary_from_rhodes_record(record: dict[str, Any]) -> dict[str, Any]:
         drive_folder_id = extract_folder_id_from_url(drive_folder_url) or ""
     site_id = str(record.get("site_id") or record.get("id") or "").strip()
     title = str(record.get("title") or record.get("name") or "").strip()
+    slug = str(record.get("slug") or "").strip()
     return {
         "id": site_id,
         "site_id": site_id,
         "title": title,
         "name": title,
-        "slug": str(record.get("slug") or "").strip(),
+        "slug": slug,
+        "site_slug": slug,
         "address": str(record.get("address") or record.get("site_address") or "").strip(),
         "drive_folder_id": drive_folder_id,
         "drive_folder_url": drive_folder_url,
@@ -567,6 +569,7 @@ def _with_site_context(
     for key in (
         "drive_folder_url",
         "drive_folder_id",
+        "site_slug",
         "p1_assignee_user_id",
         "p1_assignee_email",
         "p1_assignee_name",
@@ -611,6 +614,7 @@ def _record_raycon_followup_event(
         event,
         owner_user_id=str(row.get("p1_assignee_user_id") or "").strip(),
         owner_email=str(row.get("p1_assignee_email") or "").strip(),
+        site_slug=str(row.get("site_slug") or "").strip(),
         extra_mention_user_ids=extra_mention_user_ids,
         add_note=add_rhodes_site_note,
     )

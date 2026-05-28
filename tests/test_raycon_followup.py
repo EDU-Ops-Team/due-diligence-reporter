@@ -91,6 +91,7 @@ def test_load_site_summaries_prefers_rhodes_records_with_site_address(mock_recor
             "title": "Alpha Keller",
             "name": "Alpha Keller",
             "slug": "",
+            "site_slug": "",
             "address": "123 Main St, Keller, TX 76248",
             "drive_folder_id": "drive-root-1",
             "drive_folder_url": "https://drive.google.com/drive/folders/drive-root-1",
@@ -1231,6 +1232,7 @@ class TestRayConFollowupEventNotification:
             {
                 "site": "Alpha Keller",
                 "site_id": "SITE1",
+                "site_slug": "alpha-keller",
                 "alert": "raycon run failed: validation rejected capacity",
                 "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
                 "p1_assignee_user_id": "user-1",
@@ -1254,6 +1256,7 @@ class TestRayConFollowupEventNotification:
             "greg-user",
             "other-user",
         ]
+        assert mock_add_note.call_args.kwargs["site_slug"] == "alpha-keller"
         mock_post_chat.assert_not_called()
         assert failures == []
 
