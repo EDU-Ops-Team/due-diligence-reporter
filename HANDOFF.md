@@ -12,6 +12,8 @@ Goal:
 
 Branch: `codex/raycon-test-extra-mention`
 
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/130
+
 Changed:
 
 - Added `RAYCON_FOLLOWUP_EXTRA_MENTION_USER_IDS` as a configurable
@@ -46,7 +48,7 @@ Results:
 
 Next:
 
-- Open PR for `codex/raycon-test-extra-mention`.
+- Wait for CI/review on PR #130.
 - After merge, rerun RayCon Follow-up for `6940 S Utica` and
   `2340 Calle de Luna`; expected Rhodes note mentions Devin Bates plus Greg.
 - After Greg confirms the notification behavior, remove or clear the extra
