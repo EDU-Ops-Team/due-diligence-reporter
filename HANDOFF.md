@@ -1,5 +1,65 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - Inbox Manual Review Rhodes Events
+
+Confirmed the previous shared-helper PR was merged:
+
+- `due-diligence-reporter` PR #125 merged at `e96ab90`.
+
+Continued Phase 2/3 record-completion work with a narrow inbox manual-review
+slice.
+
+Branch: `codex/ddr-inbox-manual-review-events`
+
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/126
+
+Implementation commit: `520a03a` (`Record inbox manual review events in Rhodes`)
+
+Current state: branch pushed, draft PR open, GitHub reports merge state
+`CLEAN`. No checks were reported when checked.
+
+Changed:
+
+- Added a DDR `inbox_manual_review_required` `AutomationEvent v1` builder.
+- Matched-site inbox manual-review rows now write a Rhodes decision note before
+  the email is labeled for manual review.
+- The note mentions the P1 DRI when Rhodes can resolve a user ID.
+- If the note cannot mention an owner, the same event body is posted to the
+  configured Google Chat webhook.
+- Existing `DD-Manual-Review` labels suppress duplicate Rhodes/Chat event
+  creation on repeated scans.
+- Google Chat scan summaries include the Rhodes decision-note reference when a
+  manual-review event created one.
+- Updated `docs/process/HOW-IT-WORKS.md`.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-inbox-manual-review-events-focused tests/test_automation_event.py tests/test_inbox_scanner.py::TestRhodesDocumentRegistration tests/test_inbox_scanner.py::test_scan_summary_includes_manual_review_reason -q
+uv run ruff check src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\inbox_scanner.py tests\test_automation_event.py tests\test_inbox_scanner.py
+uv run mypy src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\inbox_scanner.py
+uv run pytest --basetemp C:\tmp\ddr-inbox-manual-review-events-broad tests/test_automation_event.py tests/test_inbox_scanner.py tests/test_scan_inbox_e2e.py tests/test_rhodes_events.py tests/test_rhodes.py -q
+uv run mypy src/
+git diff --check
+git diff --cached --check
+```
+
+Results:
+
+- Focused event/inbox suite: 17 passed.
+- Ruff on touched code/tests: passed.
+- Focused Mypy: no issues in 2 source files.
+- Broader inbox/Rhodes suite: 110 passed.
+- Full source Mypy: no issues in 38 source files.
+- Diff checks: passed with expected Windows LF-to-CRLF warnings and the
+  existing user-level ignore permission warning only.
+
+Next:
+
+- Wait for CI/review on PR #126.
+- After merge, continue with the next notification-only/record-completion path,
+  likely DDR republish failure events or broader manual-review task semantics.
+
 ## 2026-05-28 - DDR Shared Rhodes Event Helper
 
 Confirmed the previous downstream helper PR was merged:
