@@ -1,5 +1,65 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - DDR Shared Rhodes Event Helper
+
+Confirmed the previous downstream helper PR was merged:
+
+- `alpha-analysis-downstream-processing` PR #51 merged at `aae32a1`.
+
+Continued Phase 3 adapter-efficiency work with a narrow DDR helper extraction.
+
+Branch: `codex/ddr-shared-rhodes-events`
+
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/125
+
+Implementation commit: `7ed5b40` (`Share DDR Rhodes event helper`)
+
+Current state: branch pushed, draft PR open, GitHub reports merge state
+`CLEAN`. No checks were reported when checked.
+
+Changed:
+
+- Added `src/due_diligence_reporter/rhodes_events.py` as the shared DDR
+  boundary for `AutomationEvent` Rhodes note creation, owner-notification Chat
+  fallback decisions, and configured Google Chat posting.
+- Reused the helper from inbox document-registration failure events, report
+  pipeline source-review/vendor-gate/report-summary events, and RayCon
+  follow-up events.
+- Preserved existing event status shapes and test patch points while removing
+  duplicated note/fallback logic from the call sites.
+- Added direct helper regression coverage for owner context, missing site IDs,
+  Chat fallback decisioning, and partial Chat send failures.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-shared-rhodes-events-focused tests/test_rhodes_events.py tests/test_automation_event.py tests/test_report_pipeline.py tests/test_inbox_scanner.py::TestRhodesDocumentRegistration tests/test_raycon_followup.py -q
+uv run ruff check src\due_diligence_reporter\rhodes_events.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\inbox_scanner.py scripts\raycon_followup.py tests\test_rhodes_events.py tests\test_report_pipeline.py tests\test_inbox_scanner.py tests\test_raycon_followup.py
+uv run mypy src\due_diligence_reporter\rhodes_events.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\inbox_scanner.py
+uv run python -m py_compile scripts\raycon_followup.py
+uv run pytest --basetemp C:\tmp\ddr-shared-rhodes-events-broad tests/test_rhodes_events.py tests/test_automation_event.py tests/test_report_pipeline.py tests/test_inbox_scanner.py tests/test_scan_inbox_e2e.py tests/test_raycon_followup.py tests/test_raycon_runtime_state_store.py tests/test_dd_republish.py tests/test_rhodes.py -q
+uv run mypy src/
+git diff --check
+git diff --cached --check
+```
+
+Results:
+
+- Focused helper/event/report/inbox/RayCon suite: 113 passed.
+- Ruff on touched code/tests: passed.
+- Focused Mypy: no issues in 3 source files.
+- Script compile: passed.
+- Broader affected DDR suite: 246 passed.
+- Full source Mypy: no issues in 38 source files.
+- Diff checks: passed with expected Windows LF-to-CRLF warnings and the
+  existing user-level ignore permission warning only.
+
+Next:
+
+- Wait for CI/review on PR #125.
+- After merge, continue with the next remaining adapter consolidation or
+  notification-only path that still lacks a Rhodes-owned record.
+
 ## 2026-05-27 - Inbox Missing-Folder Cleanup: Linked Active Rhodes Folders, Suppressed Cancelled Torrance
 
 Context:
