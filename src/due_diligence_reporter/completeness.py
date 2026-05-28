@@ -5,8 +5,9 @@ Computes a structured ``completeness`` block that downstream consumers
 to decide whether a report is "complete" or
 "partial-on-purpose -- waiting on a known input".
 
-Known pending reasons include missing RayCon scenario data and first-round
-reports that intentionally carry open vendor-verification items.
+Known pending reasons include missing RayCon scenario data, failed RayCon
+validation, and first-round reports that intentionally carry open
+vendor-verification items.
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ from .raycon_client import RAYCON_BREAKDOWN_ROWS
 
 RAYCON_PENDING_REASON = "raycon_scenario_pending"
 RAYCON_PENDING_TRIGGER_FILE = "raycon_scenario.json"
+RAYCON_FAILED_REASON = "raycon_scenario_failed"
+RAYCON_FAILED_TRIGGER_FILE = "valid raycon_scenario.json"
 VENDOR_VERIFICATION_PENDING_REASON = "vendor_verification_pending"
 VENDOR_VERIFICATION_TRIGGER_FILE = "vendor source documents"
 VERIFICATION_OPEN_ITEMS_TOKEN = "_internal.verification_open_items"
@@ -29,6 +32,7 @@ VERIFICATION_OPEN_ITEMS_TOKEN = "_internal.verification_open_items"
 # renderer in the document builder. New reason keys must add an entry here
 # or the banner falls back to the raw key.
 REASON_DISPLAY_LABELS: dict[str, str] = {
+    RAYCON_FAILED_REASON: "RayCon validation failed",
     RAYCON_PENDING_REASON: "RayCon cost & capacity",
     VENDOR_VERIFICATION_PENDING_REASON: "Vendor verification",
 }
@@ -36,6 +40,7 @@ REASON_DISPLAY_LABELS: dict[str, str] = {
 # Trigger files keyed by reason — drives the ``auto_republish_on``
 # array on the completeness block.
 REASON_TRIGGER_FILES: dict[str, str] = {
+    RAYCON_FAILED_REASON: RAYCON_FAILED_TRIGGER_FILE,
     RAYCON_PENDING_REASON: RAYCON_PENDING_TRIGGER_FILE,
     VENDOR_VERIFICATION_PENDING_REASON: VENDOR_VERIFICATION_TRIGGER_FILE,
 }
@@ -72,16 +77,31 @@ _RAYCON_TOKEN_PATHS: frozenset[str] = frozenset(raycon_token_paths())
 _RAYCON_PENDING_PLACEHOLDER_PREFIXES: tuple[str, ...] = (
     "[Not found - Fastest Open scenario not extracted",
     "[Not found - Max Capacity scenario not extracted",
+    "[Not found - RayCon scenario pending",
 )
+
+_RAYCON_FAILED_PLACEHOLDER_PREFIXES: tuple[str, ...] = (
+    "[Not found - RayCon validation failed",
+    "[Not found - RayCon scenario failed",
+)
+
+
+def raycon_placeholder_reason(value: Any) -> str | None:
+    """Return the completeness reason represented by a RayCon placeholder."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if any(text.startswith(prefix) for prefix in _RAYCON_FAILED_PLACEHOLDER_PREFIXES):
+        return RAYCON_FAILED_REASON
+    if any(text.startswith(prefix) for prefix in _RAYCON_PENDING_PLACEHOLDER_PREFIXES):
+        return RAYCON_PENDING_REASON
+    return None
 
 
 def is_raycon_pending_placeholder(value: Any) -> bool:
     """Return True if *value* is the placeholder server.py installs when
     a RayCon-derived field has no real data yet."""
-    if not isinstance(value, str):
-        return False
-    text = value.strip()
-    return any(text.startswith(prefix) for prefix in _RAYCON_PENDING_PLACEHOLDER_PREFIXES)
+    return raycon_placeholder_reason(value) == RAYCON_PENDING_REASON
 
 
 def _is_filled(value: Any) -> bool:
@@ -91,7 +111,7 @@ def _is_filled(value: Any) -> bool:
     text = value.strip()
     if not text:
         return False
-    if is_raycon_pending_placeholder(text):
+    if raycon_placeholder_reason(text) is not None:
         return False
     return True
 
@@ -101,7 +121,11 @@ def _is_filled(value: Any) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def compute_completeness_block(replacements: dict[str, str]) -> dict[str, Any]:
+def compute_completeness_block(
+    replacements: dict[str, str],
+    *,
+    raycon_failure_reason: str = "",
+) -> dict[str, Any]:
     """Compute the ``report_metadata.completeness`` block for a report.
 
     Walks the final populated token map and counts filled vs. pending
@@ -124,6 +148,7 @@ def compute_completeness_block(replacements: dict[str, str]) -> dict[str, Any]:
             }
     """
     pending_by_reason: dict[str, list[str]] = {}
+    raycon_failed = bool(str(raycon_failure_reason or "").strip())
     filled = 0
     pending = 0
 
@@ -133,9 +158,15 @@ def compute_completeness_block(replacements: dict[str, str]) -> dict[str, Any]:
                 VENDOR_VERIFICATION_PENDING_REASON, []
             ).append(token)
             pending += 1
-        elif token in _RAYCON_TOKEN_PATHS and not _is_filled(value):
-            pending_by_reason.setdefault(RAYCON_PENDING_REASON, []).append(token)
-            pending += 1
+        elif token in _RAYCON_TOKEN_PATHS:
+            reason = raycon_placeholder_reason(value)
+            if reason is None and not _is_filled(value):
+                reason = RAYCON_FAILED_REASON if raycon_failed else RAYCON_PENDING_REASON
+            if reason is not None:
+                pending_by_reason.setdefault(reason, []).append(token)
+                pending += 1
+            elif _is_filled(value):
+                filled += 1
         elif _is_filled(value):
             filled += 1
 
@@ -155,18 +186,23 @@ def compute_completeness_block(replacements: dict[str, str]) -> dict[str, Any]:
 
     stage = "partial" if pending > 0 else "complete"
 
-    return {
+    block: dict[str, Any] = {
         "stage": stage,
         "filled_token_count": filled,
         "pending_token_count": pending,
         "pending_reasons": pending_reasons_sorted,
         "auto_republish_on": auto_republish_on,
     }
+    if RAYCON_FAILED_REASON in pending_reasons_sorted and raycon_failure_reason:
+        block["raycon_failure_reason"] = str(raycon_failure_reason).strip()
+    return block
 
 
 def project_completeness_from_readiness(
     *,
     raycon_scenario_found: bool,
+    raycon_scenario_failed: bool = False,
+    raycon_failure_reason: str = "",
     verification_open_items_pending: bool = False,
 ) -> dict[str, Any]:
     """Project what the completeness block will look like *before* the
@@ -180,7 +216,9 @@ def project_completeness_from_readiness(
     open items will be logged.
     """
     pending_reasons_unsorted: dict[str, list[str]] = {}
-    if not raycon_scenario_found:
+    if raycon_scenario_failed:
+        pending_reasons_unsorted[RAYCON_FAILED_REASON] = sorted(_RAYCON_TOKEN_PATHS)
+    elif not raycon_scenario_found:
         pending_reasons_unsorted[RAYCON_PENDING_REASON] = sorted(_RAYCON_TOKEN_PATHS)
     if verification_open_items_pending:
         pending_reasons_unsorted[VENDOR_VERIFICATION_PENDING_REASON] = [
@@ -201,7 +239,7 @@ def project_completeness_from_readiness(
     pending_count = sum(len(paths) for paths in pending_reasons.values())
     stage = "partial" if pending_count > 0 else "complete"
 
-    return {
+    block: dict[str, Any] = {
         "stage": stage,
         # Filled count is unknown pre-generation — caller is asking what
         # the *shape* would look like. Surface the projected pending
@@ -211,3 +249,6 @@ def project_completeness_from_readiness(
         "pending_reasons": pending_reasons,
         "auto_republish_on": auto_republish_on,
     }
+    if RAYCON_FAILED_REASON in pending_reasons and raycon_failure_reason:
+        block["raycon_failure_reason"] = str(raycon_failure_reason).strip()
+    return block

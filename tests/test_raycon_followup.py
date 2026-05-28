@@ -470,8 +470,11 @@ class TestFailedScenarioAlerts:
 
         assert row["dispatched"] is True
         assert row["dispatch_reason"] == "failed_scenario_retry"
+        assert "raycon run failed" in row["alert"]
         assert "microschool tier" in row["previous_failure"]
         assert row["job_id"] == "job-retry"
+        assert row["raycon_run_id"] == "rc_old"
+        assert "failed_scenario:rc_old" in row["alert_dedup_key"]
         assert dispatch_state["bp_file_1"]["job_id"] == "job-retry"
         mock_post.assert_called_once()
         mock_save.assert_not_called()

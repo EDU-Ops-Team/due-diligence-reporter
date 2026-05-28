@@ -1,5 +1,56 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - RayCon Failed Scenario State
+
+Confirmed PR #126 was merged at `8dc8b16` and continued on a clean branch:
+
+- Branch: `codex/ddr-raycon-failed-state`
+
+Changed:
+
+- Readiness now distinguishes a present `raycon_scenario.json` from a usable
+  RayCon scenario. Payloads with `status: failed`, `status:
+  validation_failed`, `status: error`, or `validation.passed: false` surface as
+  `failed_validation` instead of satisfying the full-report RayCon slot.
+- Failed RayCon report fields are carried into report generation as
+  authoritative cached fields. If the agent supplies RayCon values anyway, the
+  failed RayCon state overrides the RayCon-sourced cost/CAPEX/open-date tokens.
+- Partial DDR completeness now has a separate `raycon_scenario_failed` reason,
+  renders `RayCon validation failed` in the banner, preserves the RayCon
+  failure reason, and treats generic `[Not found - RayCon scenario pending]`
+  labels as pending instead of filled values.
+- RayCon follow-up failed-scenario retry rows remain alert rows, so Rhodes
+  owner-note / Google Chat fallback notification happens even when the workflow
+  also dispatches an automatic recovery job.
+- Updated `docs/process/HOW-IT-WORKS.md` with the failed-validation contract.
+
+Verification:
+
+```powershell
+uv run python -m py_compile src\due_diligence_reporter\raycon_client.py src\due_diligence_reporter\completeness.py src\due_diligence_reporter\google_doc_builder.py src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py scripts\raycon_followup.py
+uv run pytest --basetemp C:\tmp\ddr-raycon-failed-state-focused tests/test_completeness.py tests/test_dd_output_fixes.py tests/test_vendor_gate.py tests/test_report_pipeline.py::TestCheckSiteReadinessDirect tests/test_diagnose_site_readiness.py tests/test_raycon_followup.py::TestFailedScenarioAlerts -q
+uv run pytest --basetemp C:\tmp\ddr-raycon-failed-state-final2 tests/test_raycon_client.py tests/test_completeness.py tests/test_dd_output_fixes.py tests/test_vendor_gate.py tests/test_report_pipeline.py tests/test_diagnose_site_readiness.py tests/test_raycon_followup.py tests/test_google_doc_builder.py tests/test_dd_republish.py tests/test_rhodes_events.py -q
+uv run ruff check src\due_diligence_reporter\raycon_client.py src\due_diligence_reporter\completeness.py src\due_diligence_reporter\google_doc_builder.py src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py scripts\raycon_followup.py tests\test_raycon_client.py tests\test_completeness.py tests\test_dd_output_fixes.py tests\test_vendor_gate.py tests\test_report_pipeline.py tests\test_diagnose_site_readiness.py tests\test_raycon_followup.py
+uv run mypy src/
+git diff --check
+```
+
+Results:
+
+- Focused RayCon failed-state suite: 126 passed.
+- Affected RayCon/report/Rhodes suite: 388 passed.
+- Ruff on touched code/tests: passed.
+- Full source Mypy: no issues in 38 source files.
+- Diff check: passed with expected Windows LF-to-CRLF warnings only.
+
+Next:
+
+- Commit, push, and open the PR for `codex/ddr-raycon-failed-state`.
+- After merge, rerun RayCon follow-up or the DDR republish path against Tulsa
+  6940 S Utica Ave and Santa Clara 2340 Calle de Luna so Rhodes gets the
+  failed-validation owner note and the DDRs render explicit RayCon validation
+  failure instead of pending/filled placeholders.
+
 ## 2026-05-28 - Inbox Manual Review Rhodes Events
 
 Confirmed the previous shared-helper PR was merged:

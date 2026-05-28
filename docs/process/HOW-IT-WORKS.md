@@ -279,6 +279,13 @@ and RayCon scenario readiness. Missing vendor inputs no longer block the
 first publish; they are logged as open verification items and the report
 republishes as authoritative inputs arrive. ISP remains informational.
 
+RayCon readiness distinguishes a physically present `raycon_scenario.json`
+from a usable one. A JSON with `status: failed` or `validation.passed: false`
+is treated as `failed_validation`, not as a successful RayCon input. Failed
+RayCon fields render as `RayCon validation failed` in the partial DDR banner
+and table cells, and full-report readiness waits for a valid replacement
+`raycon_scenario.json`.
+
 ### SIR Learning Loop
 
 Readiness also records non-blocking SIR comparison metadata. When both an
@@ -439,9 +446,15 @@ Three skill tools analyze the source data and produce structured outputs. The fi
 
 **Source-read fallback:** If the pipeline does not know the Rhodes site ID, Rhodes cannot create the note, or the P1 DRI cannot be mentioned, the same `source_review_required` event body is posted to the configured Google Chat webhook.
 
-**Vendor-gate activity:** When the full vendor input set is present (vendor SIR, vendor Building Inspection, and RayCon Scenario JSON) but report generation still fails or the generated report remains incomplete, the pipeline records a `vendor_gate_review_required` `AutomationEvent v1` site note in Rhodes. The note includes the run ID, required input set, failure reason, Drive folder, and trace link when available.
+**Vendor-gate activity:** When the full vendor input set is present (vendor SIR, vendor Building Inspection, and a usable RayCon Scenario JSON) but report generation still fails or the generated report remains incomplete, the pipeline records a `vendor_gate_review_required` `AutomationEvent v1` site note in Rhodes. The note includes the run ID, required input set, failure reason, Drive folder, and trace link when available.
 
 **Vendor-gate fallback:** If the pipeline does not know the Rhodes site ID, Rhodes cannot create the note, or the P1 DRI cannot be mentioned, the same `vendor_gate_review_required` event body is posted to the configured Google Chat webhook.
+
+**RayCon failed-validation activity:** When RayCon follow-up sees a failed
+`raycon_scenario.json`, it records a `raycon_followup_alert` note in Rhodes
+even if it also starts an automatic retry. The note carries the RayCon failure
+reason and run ID. If no site owner can be mentioned, the same event body goes
+to the configured Google Chat webhook.
 
 **Activity:** When the report reaches `report_created`, the pipeline records an `AutomationEvent v1` site note in Rhodes. The note includes the generated DD report ID/URL, run ID, trigger source for updates, open verification item count, closed verification item count, and up to five open/closed item summaries. It mentions the P1 DRI when a Rhodes user can be resolved from the owner context.
 

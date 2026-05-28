@@ -27,6 +27,7 @@ from .classifier import (
     classify_document_type,
     match_file_to_site_llm,
 )
+from .completeness import raycon_token_paths
 from .config import Settings, get_settings
 from .google_client import GoogleClient
 from .m1_lookup import _list_m1_documents_by_type, _resolve_m1_folder
@@ -49,6 +50,14 @@ from .pipeline_contracts import (
 from .pipeline_manifest import manifest_has_secret_like_value, persist_run_manifest
 from .pipeline_quality import evaluate_run_quality
 from .provenance import classify_provenance
+from .raycon_client import (
+    RAYCON_FAILED_STATUSES,
+    RayConSchemaError,
+    raycon_payload_failed,
+    raycon_payload_status,
+    raycon_scenario_to_report_fields,
+    read_raycon_scenario_from_m1,
+)
 from .rhodes import add_rhodes_site_note, lookup_rhodes_site_owner
 from .rhodes_events import (
     post_google_chat_to_configured_webhooks,
@@ -66,6 +75,8 @@ from .utils import (
 )
 
 logger = logging.getLogger("report_pipeline")
+
+_RAYCON_REPORT_FIELD_PATHS: frozenset[str] = frozenset(raycon_token_paths())
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tool definitions for the Claude API call (mirrors the MCP tools)
@@ -402,6 +413,86 @@ def match_site_in_shared_cache(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _raycon_readiness_metadata(
+    gc: GoogleClient,
+    drive_folder_url: str,
+    m1_folder_id: str | None,
+    m1_files_by_type: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Return readiness fields for the M1 RayCon scenario JSON."""
+    raycon_scenario_file = m1_files_by_type.get("raycon_scenario_json")
+    if not raycon_scenario_file:
+        return {
+            "raycon_scenario_found": False,
+            "raycon_scenario_usable": False,
+            "raycon_scenario_status": "missing",
+            "raycon_scenario_failed": False,
+            "raycon_scenario_failure_reason": "",
+            "raycon_scenario_run_id": "",
+            "raycon_report_data_fields": {},
+        }
+
+    base: dict[str, Any] = {
+        "raycon_scenario_found": True,
+        "raycon_scenario_usable": False,
+        "raycon_scenario_status": "read_error",
+        "raycon_scenario_failed": True,
+        "raycon_scenario_failure_reason": "",
+        "raycon_scenario_run_id": "",
+        "raycon_scenario_file_id": str(raycon_scenario_file.get("id") or ""),
+        "raycon_scenario_modified_time": str(
+            raycon_scenario_file.get("modifiedTime") or ""
+        ),
+        "raycon_report_data_fields": {},
+    }
+
+    try:
+        scenario = read_raycon_scenario_from_m1(
+            gc,
+            drive_folder_url,
+            m1_folder_id=m1_folder_id,
+            m1_files=[f for f in m1_files_by_type.values() if f],
+        )
+    except RayConSchemaError as e:
+        return {
+            **base,
+            "raycon_scenario_status": "invalid",
+            "raycon_scenario_failure_reason": str(e),
+        }
+    except Exception as e:  # pragma: no cover
+        logger.warning("RayCon scenario read failed: %s", e)
+        return {
+            **base,
+            "raycon_scenario_failure_reason": str(e),
+        }
+
+    if scenario is None:
+        return {
+            **base,
+            "raycon_scenario_status": "missing",
+            "raycon_scenario_failure_reason": "raycon_scenario.json could not be read",
+        }
+
+    report_fields = raycon_scenario_to_report_fields(scenario)
+    failed = raycon_payload_failed(scenario)
+    status = raycon_payload_status(scenario) or "completed"
+    failure_reason = str(
+        report_fields.get("exec.raycon_failure_reason") or ""
+    ).strip()
+    if failed and not failure_reason:
+        failure_reason = f"RayCon status: {status or 'failed'}"
+
+    return {
+        **base,
+        "raycon_scenario_usable": not failed,
+        "raycon_scenario_status": "failed_validation" if failed else status,
+        "raycon_scenario_failed": failed,
+        "raycon_scenario_failure_reason": failure_reason,
+        "raycon_scenario_run_id": report_fields.get("exec.raycon_run_id", ""),
+        "raycon_report_data_fields": report_fields,
+    }
+
+
 def check_site_readiness_direct(
     gc: GoogleClient,
     drive_folder_url: str,
@@ -510,11 +601,18 @@ def check_site_readiness_direct(
     # The third gating input. Lives only in M1 (written by RayCon's async
     # /v1/jobs hand-off) and is keyed by the dedicated ``raycon_scenario_json``
     # doc_type so an AI raycon_scenario_report can never satisfy this slot.
-    raycon_scenario_file: dict[str, Any] | None = None
+    raycon_metadata: dict[str, Any] = _raycon_readiness_metadata(
+        gc, drive_folder_url, m1_folder_id, {}
+    )
     if m1_folder_id:
         try:
             m1_files_by_type = _list_m1_documents_by_type(gc, m1_folder_id)
-            raycon_scenario_file = m1_files_by_type.get("raycon_scenario_json")
+            raycon_metadata = _raycon_readiness_metadata(
+                gc,
+                drive_folder_url,
+                m1_folder_id,
+                m1_files_by_type,
+            )
         except Exception as e:  # pragma: no cover
             logger.warning(
                 "M1 lookup failed for raycon_scenario_json in %s: %s", site_title, e
@@ -541,7 +639,7 @@ def check_site_readiness_direct(
         "sir_vendor": files_by_type["sir"] is not None and sir_is_vendor,
         "inspection_vendor": files_by_type["building_inspection"] is not None
             and inspection_is_vendor,
-        "raycon_scenario_found": raycon_scenario_file is not None,
+        **raycon_metadata,
         "report_exists": files_by_type["dd_report"] is not None,
         "e_occupancy_report_found": files_by_type["e_occupancy_report"] is not None,
         "school_approval_report_found": files_by_type["school_approval_report"] is not None,
@@ -1122,6 +1220,14 @@ def _merge_cached_report_fields(
     for key, value in cached_report_fields.items():
         report_data.setdefault(key, value)
 
+    cached_raycon_status = str(
+        cached_report_fields.get("exec.raycon_status") or ""
+    ).strip().lower()
+    if cached_raycon_status in RAYCON_FAILED_STATUSES:
+        for key, value in cached_report_fields.items():
+            if key.startswith("exec.raycon_") or key in _RAYCON_REPORT_FIELD_PATHS:
+                report_data[key] = value
+
     merged["report_data"] = report_data
     return merged
 
@@ -1160,8 +1266,16 @@ def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
                 if readiness.get("inspection_found")
                 else "Building Inspection"
             )
-        if not readiness.get("raycon_scenario_found", False):
+        raycon_found = bool(readiness.get("raycon_scenario_found", False))
+        raycon_usable = bool(readiness.get("raycon_scenario_usable", raycon_found))
+        if not raycon_found:
             missing.append("RayCon Scenario JSON")
+        elif not raycon_usable:
+            status = str(readiness.get("raycon_scenario_status") or "").strip()
+            if status == "failed_validation":
+                missing.append("Successful RayCon Scenario JSON")
+            else:
+                missing.append("Usable RayCon Scenario JSON")
         return missing
 
     if not readiness.get("sir_found", False):
@@ -2051,6 +2165,10 @@ def process_site_pipeline(
             gc=gc,
             drive_folder_url=drive_folder_url,
         )
+
+    raycon_report_fields = readiness.get("raycon_report_data_fields")
+    if isinstance(raycon_report_fields, dict):
+        initial_report_fields.update(raycon_report_fields)
 
     readiness_result = _resolve_readiness_result(
         site_title, readiness, force_regenerate=force_regenerate

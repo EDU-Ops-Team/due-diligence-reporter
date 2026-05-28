@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 from due_diligence_reporter.report_pipeline import (
@@ -1062,6 +1063,53 @@ class TestCheckSiteReadinessDirect:
         )
         assert result_empty["sir_found"] is True
 
+    @patch("due_diligence_reporter.report_pipeline._list_m1_documents_by_type")
+    @patch("due_diligence_reporter.report_pipeline._resolve_m1_folder")
+    def test_failed_raycon_json_is_not_usable_for_full_report(
+        self,
+        mock_resolve_m1,
+        mock_list_m1,
+    ):
+        mock_resolve_m1.return_value = ("m1-folder-id", "M1")
+        mock_list_m1.return_value = {
+            "raycon_scenario_json": {
+                "id": "raycon-json-1",
+                "name": "raycon_scenario.json",
+                "modifiedTime": "2026-05-28T14:00:00Z",
+            }
+        }
+        gc = MagicMock()
+        gc.list_files_recursive.return_value = []
+        gc.download_file_bytes.return_value = json.dumps(
+            {
+                "schema_version": "1.0",
+                "status": "failed",
+                "raycon_run_id": "rc_failed",
+                "validation": {
+                    "passed": False,
+                    "errors": ["capacity_not_defensible"],
+                },
+            }
+        ).encode("utf-8")
+
+        result = check_site_readiness_direct(
+            gc,
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Tulsa 6940 S Utica Ave"],
+            {"sir": [], "isp": [], "building_inspection": []},
+            site_title="Alpha Tulsa 6940 S Utica Ave",
+        )
+
+        assert result["raycon_scenario_found"] is True
+        assert result["raycon_scenario_usable"] is False
+        assert result["raycon_scenario_status"] == "failed_validation"
+        assert result["raycon_scenario_run_id"] == "rc_failed"
+        assert "capacity_not_defensible" in result["raycon_scenario_failure_reason"]
+        assert (
+            result["raycon_report_data_fields"]["exec.raycon_failure_reason"]
+            == "capacity_not_defensible"
+        )
+
 
 # ---------------------------------------------------------------------------
 # PipelineResult dataclass
@@ -1106,6 +1154,28 @@ class TestAgentToolMerging:
 
         assert merged["report_data"]["exec.fastest_open_capex"] == "$100,000"
         assert merged["report_data"]["exec.cost_demolition_fastest_open"] == "$0"
+
+    def test_failed_raycon_cached_fields_override_agent_values(self):
+        merged = _merge_cached_report_fields(
+            {
+                "report_data": {
+                    "exec.fastest_open_capex": "$100,000",
+                    "exec.raycon_status": "completed",
+                },
+            },
+            {
+                "exec.raycon_status": "failed",
+                "exec.raycon_failure_reason": "capacity_not_defensible",
+                "exec.fastest_open_capex": "",
+            },
+        )
+
+        assert merged["report_data"]["exec.raycon_status"] == "failed"
+        assert (
+            merged["report_data"]["exec.raycon_failure_reason"]
+            == "capacity_not_defensible"
+        )
+        assert merged["report_data"]["exec.fastest_open_capex"] == ""
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")

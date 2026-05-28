@@ -481,6 +481,32 @@ class TestReportNormalizationDefaults:
         assert replacements["exec.max_capacity_capex"] == "[Not found - Max Capacity scenario not extracted]"
         assert "exec.max_value_capacity" not in replacements
 
+    def test_normalize_report_replacements_marks_failed_raycon_tokens(self) -> None:
+        from due_diligence_reporter.server import _normalize_report_replacements
+
+        replacements, _, _, _, _ = _normalize_report_replacements(
+            report_data={
+                "exec": {
+                    "raycon_status": "failed",
+                    "raycon_failure_reason": "capacity_not_defensible",
+                    "fastest_open_capex": "$401,000",
+                    "cost_grand_total_fastest_open": "$401,000",
+                },
+            },
+            site_name="Alpha Tulsa 6940 S Utica Ave",
+            report_date="05/28/2026",
+            drive_folder_url="https://drive.google.com/drive/folders/folder123",
+        )
+
+        assert (
+            replacements["exec.fastest_open_capex"]
+            == "[Not found - RayCon validation failed]"
+        )
+        assert (
+            replacements["exec.cost_grand_total_fastest_open"]
+            == "[Not found - RayCon validation failed]"
+        )
+
     def test_normalize_report_replacements_preserves_verification_open_items(self) -> None:
         from due_diligence_reporter.google_doc_builder import VERIFICATION_OPEN_ITEMS_KEY
         from due_diligence_reporter.server import _normalize_report_replacements
