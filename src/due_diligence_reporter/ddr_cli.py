@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any
 
 from .pipeline_manifest import load_run_manifest
+from .portfolio_automation_gaps import build_portfolio_automation_gap_snapshot
 from .sir_review_queue import QUEUE_STATUSES, READY_STATUS, load_sir_review_queue
 from .sir_trends import (
     DEFAULT_SINCE,
@@ -75,6 +77,23 @@ def main(argv: list[str] | None = None) -> None:
     monthly_parser.add_argument("--since", default=DEFAULT_SINCE)
     monthly_parser.add_argument("--store", default=None)
 
+    gaps_parser = subparsers.add_parser(
+        "portfolio-gaps",
+        help="Print a Rhodes-backed portfolio automation gap snapshot",
+    )
+    gaps_parser.add_argument("--max-sites", type=int, default=100)
+    gaps_parser.add_argument(
+        "--include-clean",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include sites with no detected gaps in the output",
+    )
+    gaps_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the raw snapshot JSON instead of the operator summary",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "status":
         _print_status(load_run_manifest(args.run_id))
@@ -90,6 +109,8 @@ def main(argv: list[str] | None = None) -> None:
         _print_sir_trends(args)
     elif args.command == "sir-monthly-summary":
         _print_sir_monthly_summary(args)
+    elif args.command == "portfolio-gaps":
+        _print_portfolio_gaps(args)
 
 
 def _print_status(manifest: dict[str, Any]) -> None:
@@ -207,6 +228,102 @@ def _print_sir_monthly_summary(args: argparse.Namespace) -> None:
         since=since,
     )
     print(format_monthly_learning_summary(summary, since_label=args.since))
+
+
+def _print_portfolio_gaps(args: argparse.Namespace) -> None:
+    snapshot = build_portfolio_automation_gap_snapshot(
+        max_sites=args.max_sites,
+        include_clean=args.include_clean,
+    )
+    if args.json:
+        print(json.dumps(snapshot, indent=2, sort_keys=True))
+        return
+
+    totals = snapshot.get("totals") or {}
+    sites = snapshot.get("sites") or []
+    print("Portfolio Automation Gaps")
+    print(f"System of record: {snapshot.get('system_of_record')}")
+    print(f"Generated at: {snapshot.get('generated_at')}")
+    print(f"Sites returned: {totals.get('sites', 0)}")
+    print(f"Sites with gaps: {totals.get('sites_with_gaps', 0)}")
+    print(f"Missing P1 DRI: {totals.get('missing_p1_dri', 0)}")
+    print(f"Missing Drive folder: {totals.get('missing_drive_folder', 0)}")
+    print(f"Missing required DD docs: {totals.get('missing_required_documents', 0)}")
+    print(f"Open automation failures: {totals.get('open_automation_failures', 0)}")
+    print(f"Pending review tasks: {totals.get('pending_review_tasks', 0)}")
+    if not sites:
+        print("No automation gaps found.")
+        return
+
+    for index, site in enumerate(sites, 1):
+        print(f"{index}. {site.get('site_name')}")
+        print(f"   Site ID: {site.get('site_id') or '(missing)'}")
+        print(f"   Owner routing: {site.get('owner_routing_status') or '(unknown)'}")
+        _print_site_gap_line(site)
+        _print_required_docs_line(site)
+        _print_latest_ddr_line(site)
+        _print_open_failures(site)
+        _print_pending_tasks(site)
+        _print_site_errors(site)
+
+
+def _print_site_gap_line(site: dict[str, Any]) -> None:
+    reasons = site.get("gap_reasons") or []
+    print(f"   Gaps: {', '.join(str(reason) for reason in reasons) if reasons else '(none)'}")
+    drive_folder = site.get("drive_folder") or {}
+    drive_status = drive_folder.get("status") or "(unknown)"
+    drive_message = drive_folder.get("message") or drive_folder.get("url") or ""
+    print(f"   Drive folder: {drive_status}{f' - {drive_message}' if drive_message else ''}")
+
+
+def _print_required_docs_line(site: dict[str, Any]) -> None:
+    required_documents = site.get("required_documents") or {}
+    missing = required_documents.get("missing") or []
+    print(f"   Missing required docs: {', '.join(str(item) for item in missing) or '(none)'}")
+
+
+def _print_latest_ddr_line(site: dict[str, Any]) -> None:
+    latest_ddr = site.get("latest_ddr_status") or {}
+    print(f"   Latest DDR: {latest_ddr.get('status') or '(unknown)'}")
+    fingerprint = site.get("latest_source_event_fingerprint")
+    if fingerprint:
+        print(f"   Latest source event: {fingerprint}")
+
+
+def _print_open_failures(site: dict[str, Any]) -> None:
+    failures = site.get("open_automation_failures") or []
+    if not failures:
+        return
+    print("   Open automation failures:")
+    for failure in failures:
+        print(
+            "     - "
+            f"{failure.get('kind') or '(unknown)'} "
+            f"{failure.get('mutation_status') or '(unknown)'} "
+            f"{failure.get('source_id') or ''}".rstrip()
+        )
+
+
+def _print_pending_tasks(site: dict[str, Any]) -> None:
+    tasks = site.get("pending_review_tasks") or []
+    if not tasks:
+        return
+    print("   Pending review tasks:")
+    for task in tasks:
+        print(
+            "     - "
+            f"{task.get('title') or '(untitled)'} "
+            f"({task.get('status') or 'unknown'}, {task.get('task_id') or 'no task ID'})"
+        )
+
+
+def _print_site_errors(site: dict[str, Any]) -> None:
+    errors = site.get("errors") or []
+    if not errors:
+        return
+    print("   Read errors:")
+    for error in errors:
+        print(f"     - {error}")
 
 
 def _print_counter(title: str, values: dict[str, int]) -> None:

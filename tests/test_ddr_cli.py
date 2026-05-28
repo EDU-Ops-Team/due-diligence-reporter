@@ -185,3 +185,99 @@ def test_ddr_sir_monthly_summary_prints_decision_template(tmp_path, capsys) -> N
     assert "# SIR Learning Summary (30d)" in out
     assert "## Monthly Decisions" in out
     assert "retrieval rule: 1" in out
+
+
+def test_ddr_portfolio_gaps_prints_operator_summary(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        ddr_cli,
+        "build_portfolio_automation_gap_snapshot",
+        lambda *, max_sites, include_clean: {
+            "status": "success",
+            "system_of_record": "rhodes",
+            "generated_at": "2026-05-28T19:00:00+00:00",
+            "max_sites": max_sites,
+            "include_clean": include_clean,
+            "totals": {
+                "sites": 1,
+                "sites_with_gaps": 1,
+                "missing_p1_dri": 1,
+                "missing_drive_folder": 1,
+                "missing_required_documents": 1,
+                "open_automation_failures": 1,
+                "pending_review_tasks": 1,
+            },
+            "sites": [
+                {
+                    "site_id": "SITE1",
+                    "site_name": "Alpha Tulsa 6940 S Utica Ave",
+                    "owner_routing_status": "missing_owner",
+                    "gap_reasons": [
+                        "missing_p1_dri",
+                        "missing_drive_folder",
+                        "missing_required_documents",
+                    ],
+                    "drive_folder": {
+                        "status": "missing",
+                        "message": "Rhodes site has no linked Google Drive folder",
+                    },
+                    "required_documents": {
+                        "missing": ["propertyConditionAssessment", "floorPlan"],
+                    },
+                    "latest_ddr_status": {"status": "republish_failed"},
+                    "latest_source_event_fingerprint": (
+                        "due-diligence-reporter:raycon_followup_alert:raycon-1"
+                    ),
+                    "open_automation_failures": [
+                        {
+                            "kind": "raycon_followup_alert",
+                            "mutation_status": "failed",
+                            "source_id": "raycon-1",
+                        }
+                    ],
+                    "pending_review_tasks": [
+                        {
+                            "title": "Assign P1 DRI for Alpha Tulsa",
+                            "status": "new",
+                            "task_id": "TASK1",
+                        }
+                    ],
+                    "errors": [],
+                }
+            ],
+        },
+    )
+
+    ddr_cli.main(["portfolio-gaps", "--max-sites", "25"])
+
+    out = capsys.readouterr().out
+    assert "Portfolio Automation Gaps" in out
+    assert "Sites with gaps: 1" in out
+    assert "Alpha Tulsa 6940 S Utica Ave" in out
+    assert "Owner routing: missing_owner" in out
+    assert "Missing required docs: propertyConditionAssessment, floorPlan" in out
+    assert "raycon_followup_alert failed raycon-1" in out
+    assert "Assign P1 DRI for Alpha Tulsa (new, TASK1)" in out
+
+
+def test_ddr_portfolio_gaps_can_print_json(monkeypatch, capsys) -> None:
+    calls = []
+
+    def fake_snapshot(*, max_sites: int, include_clean: bool) -> dict:
+        calls.append({"max_sites": max_sites, "include_clean": include_clean})
+        return {
+            "status": "success",
+            "system_of_record": "rhodes",
+            "generated_at": "2026-05-28T19:00:00+00:00",
+            "totals": {"sites": 0, "sites_with_gaps": 0},
+            "sites": [],
+        }
+
+    monkeypatch.setattr(ddr_cli, "build_portfolio_automation_gap_snapshot", fake_snapshot)
+
+    ddr_cli.main(["portfolio-gaps", "--max-sites", "10", "--include-clean", "--json"])
+
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert calls == [{"max_sites": 10, "include_clean": True}]
+    assert payload["system_of_record"] == "rhodes"
+    assert payload["sites"] == []

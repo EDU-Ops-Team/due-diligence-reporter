@@ -1,5 +1,52 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - Portfolio Gap CLI and Workflow
+
+Confirmed PR #140 was merged:
+
+- `due-diligence-reporter` PR #140 merged at `a0c7e1a`.
+
+Continued the portfolio-health wrap-up by making the new Rhodes-backed snapshot
+usable outside MCP.
+
+Branch: `codex/ddr-portfolio-gap-cli`
+
+Current state: implementation complete locally; commit/PR pending.
+
+Changed:
+
+- Added `uv run ddr portfolio-gaps` as an operator-facing CLI for the
+  read-only `build_portfolio_automation_gap_snapshot` output.
+- The CLI defaults to gap-only output, supports `--include-clean`, and can emit
+  raw JSON with `--json`.
+- Added the scheduled/manual `Portfolio Automation Gaps` GitHub Actions
+  workflow. It requires only Rhodes credentials, writes a run summary, and
+  uploads text plus JSON artifacts.
+- Added regression tests for CLI human output, CLI JSON output, safe workflow
+  input handling, and the read-only Rhodes-only workflow contract.
+- Updated process docs with the CLI/workflow entrypoints.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-portfolio-gap-cli-focused tests/test_ddr_cli.py tests/test_portfolio_automation_gaps.py tests/test_workflow_contracts.py -q
+uv run ruff check src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\portfolio_automation_gaps.py tests\test_ddr_cli.py tests\test_workflow_contracts.py
+uv run mypy src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\portfolio_automation_gaps.py
+```
+
+Results:
+
+- Focused CLI/snapshot/workflow tests: 19 passed.
+- Ruff on touched source/tests: passed.
+- Mypy on touched source modules: passed.
+
+Next:
+
+- Commit, push, and open PR.
+- After merge, continue the remaining non-blocked plan item from clean `main`,
+  or return to the hosted Rhodes MCP blocker once Rhodes-side note-write
+  support is ready.
+
 ## 2026-05-28 - Portfolio Automation Gap Snapshot
 
 Continued the next non-blocked wrap-up item after the nested Rhodes record ID
