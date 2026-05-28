@@ -5,6 +5,10 @@
 Confirmed PR #126 was merged at `8dc8b16` and continued on a clean branch:
 
 - Branch: `codex/ddr-raycon-failed-state`
+- Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/127
+- Implementation commit: `39f48d1` (`Handle failed RayCon scenario payloads`)
+- Current state: branch pushed, draft PR open, GitHub reports merge state
+  `CLEAN`. No checks were reported when checked.
 
 Changed:
 
@@ -45,7 +49,7 @@ Results:
 
 Next:
 
-- Commit, push, and open the PR for `codex/ddr-raycon-failed-state`.
+- Wait for CI/review on PR #127.
 - After merge, rerun RayCon follow-up or the DDR republish path against Tulsa
   6940 S Utica Ave and Santa Clara 2340 Calle de Luna so Rhodes gets the
   failed-validation owner note and the DDRs render explicit RayCon validation
