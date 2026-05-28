@@ -11,7 +11,8 @@ operator-visible when gaps exist.
 
 Branch: `codex/ddr-portfolio-gap-chat-alert`
 
-Current state: implementation complete locally; commit/PR pending.
+Current state: branch pushed and draft PR open:
+https://github.com/GFooteGK1/due-diligence-reporter/pull/142
 
 Changed:
 
@@ -45,7 +46,7 @@ Results:
 
 Next:
 
-- Commit, push, and open PR.
+- Wait for CI/review/merge on DDR PR #142.
 - After merge, continue the remaining non-blocked plan item from clean `main`,
   or return to the hosted Rhodes MCP blocker once Rhodes-side note-write
   support is ready.
