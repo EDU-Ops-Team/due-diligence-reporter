@@ -18,6 +18,7 @@ from typing import Any, NotRequired, TypedDict
 
 from .automation_event import (
     build_document_registration_failed_event,
+    build_inbox_manual_review_required_event,
     render_automation_event_note,
 )
 from .classifier import classify_by_content_llm, classify_document
@@ -105,6 +106,7 @@ def _manual_review_item(
     site_title: str | None,
     reason: str,
     error: str | None = None,
+    site_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {
         "filename": filename,
@@ -116,6 +118,16 @@ def _manual_review_item(
     }
     if error:
         item["error"] = error
+    if site_summary:
+        site_id = str(site_summary.get("id") or site_summary.get("site_id") or "").strip()
+        owner_user_id = str(site_summary.get("p1_assignee_user_id") or "").strip()
+        owner_email = str(site_summary.get("p1_assignee_email") or "").strip()
+        if site_id:
+            item["site_id"] = site_id
+        if owner_user_id:
+            item["owner_user_id"] = owner_user_id
+        if owner_email:
+            item["owner_email"] = owner_email
     return item
 
 
@@ -287,6 +299,62 @@ def _record_rhodes_registration_failure_event(
     if chat_result is not None:
         result["google_chat"] = chat_result
     return result
+
+
+def _record_inbox_manual_review_event(
+    *,
+    settings: Settings,
+    item: dict[str, Any],
+    message_id: str,
+    thread_id: str,
+) -> dict[str, Any]:
+    event = build_inbox_manual_review_required_event(
+        site_id=str(item.get("site_id") or "").strip(),
+        site_name=str(item.get("site_title") or "").strip(),
+        message_id=message_id,
+        thread_id=thread_id,
+        filename=str(item.get("filename") or "").strip(),
+        doc_type=str(item.get("doc_type") or "").strip(),
+        confidence=float(item.get("confidence") or 0.0),
+        email_subject=str(item.get("email_subject") or "").strip(),
+        reason=str(item.get("reason") or "manual_review").strip(),
+        error=str(item.get("error") or "").strip(),
+    )
+    event_status, body = record_rhodes_automation_event(
+        event,
+        owner_user_id=str(item.get("owner_user_id") or "").strip(),
+        owner_email=str(item.get("owner_email") or "").strip(),
+        add_note=add_rhodes_site_note,
+    )
+    if should_alert_google_chat(event_status):
+        event_status["google_chat"] = _post_google_chat_to_configured_webhooks(
+            settings.google_chat_webhook_url,
+            body,
+        )
+    return event_status
+
+
+def _record_inbox_manual_review_events(
+    *,
+    settings: Settings,
+    manual_review: list[dict[str, Any]],
+    message_id: str,
+    thread_id: str,
+    already_recorded: bool,
+) -> None:
+    if already_recorded:
+        return
+    for item in manual_review:
+        if item.get("rhodes_failure_event") or item.get("rhodes_manual_review_event"):
+            continue
+        if not str(item.get("site_id") or "").strip():
+            continue
+        item["rhodes_manual_review_event"] = _record_inbox_manual_review_event(
+            settings=settings,
+            item=item,
+            message_id=message_id,
+            thread_id=thread_id,
+        )
 
 
 def _drive_file_from_retry_entry(entry: dict[str, Any]) -> dict[str, Any]:
@@ -1070,6 +1138,7 @@ def process_email(
     all_succeeded = True
     review_needed = False
     keep_unprocessed = False
+    manual_review_already_recorded = review_label_id in existing_label_ids
     failure_notification_sent = review_label_id in existing_label_ids
     site_records = site_records or []
 
@@ -1117,6 +1186,7 @@ def process_email(
                 confidence,
                 filename,
             )
+            review_site_summary = _build_site_summary(matched_record) if matched_record else None
             review_item = _manual_review_item(
                 filename=filename,
                 doc_type=doc_type,
@@ -1124,6 +1194,7 @@ def process_email(
                 email_subject=metadata.subject,
                 site_title=site_title,
                 reason="low_confidence",
+                site_summary=review_site_summary,
             )
             low_confidence.append(review_item)
             manual_review.append(review_item)
@@ -1211,6 +1282,7 @@ def process_email(
                     site_title=site_title,
                     reason="missing_drive_folder",
                     error=error_message,
+                    site_summary=site_summary,
                 )
             )
             all_succeeded = False
@@ -1241,6 +1313,7 @@ def process_email(
                     site_title=site_title,
                     reason="m1_resolution_failed",
                     error=error_message,
+                    site_summary=site_summary,
                 )
             )
             all_succeeded = False
@@ -1265,6 +1338,7 @@ def process_email(
                     site_title=site_title,
                     reason="m1_folder_missing",
                     error=error_message,
+                    site_summary=site_summary,
                 )
             )
             all_succeeded = False
@@ -1349,6 +1423,7 @@ def process_email(
                         site_title=site_title,
                         reason="rhodes_registration_retry_exhausted",
                         error=str(registration.get("error") or registration.get("reason") or ""),
+                        site_summary=site_summary,
                     )
                 )
                 failure_event = _record_rhodes_registration_failure_event(
@@ -1395,6 +1470,7 @@ def process_email(
                             site_title=site_title,
                             reason="existing_drive_file_missing",
                             error=error_message,
+                            site_summary=site_summary,
                         )
                     )
                     all_succeeded = False
@@ -1451,6 +1527,7 @@ def process_email(
                                 or registration.get("reason")
                                 or ""
                             ),
+                            site_summary=site_summary,
                         )
                     )
                     failure_event = _record_rhodes_registration_failure_event(
@@ -1504,6 +1581,7 @@ def process_email(
                         site_title=site_title,
                         reason="existing_block_plan_missing",
                         error=error_message,
+                        site_summary=site_summary,
                     )
                 )
                 all_succeeded = False
@@ -1586,6 +1664,7 @@ def process_email(
                                 or uploaded[-1]["rhodes_registration"].get("reason")
                                 or ""
                             ),
+                            site_summary=site_summary,
                         )
                     )
                     failure_event = _record_rhodes_registration_failure_event(
@@ -1675,6 +1754,7 @@ def process_email(
                     site_title=site_title,
                     reason="upload_failed",
                     error=error_message,
+                    site_summary=site_summary,
                 )
             )
             all_succeeded = False
@@ -1698,6 +1778,15 @@ def process_email(
                             site_title or filename,
                             notify_error,
                         )
+
+    if review_needed and not dry_run:
+        _record_inbox_manual_review_events(
+            settings=settings,
+            manual_review=manual_review,
+            message_id=message_id,
+            thread_id=_metadata_thread_id(metadata, message_id),
+            already_recorded=manual_review_already_recorded,
+        )
 
     marked = False
     if review_needed and not dry_run:
@@ -1968,6 +2057,9 @@ def build_scan_summary(results: dict[str, Any]) -> str:
                 f"(reason: {reason}, confidence: {lc['confidence']:.0%}, "
                 f"subject: {lc.get('email_subject', '')}{error_fragment})"
             )
+            event = lc.get("rhodes_manual_review_event") or lc.get("rhodes_failure_event")
+            if isinstance(event, dict) and event.get("rhodes_note_id"):
+                lines.append(f"    Rhodes decision record: note {event['rhodes_note_id']}")
 
     if results.get("errors"):
         lines.append(f"\nErrors: {len(results['errors'])}")

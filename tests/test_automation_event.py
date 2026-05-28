@@ -3,6 +3,7 @@ from __future__ import annotations
 from due_diligence_reporter.automation_event import (
     build_dd_report_summary_event,
     build_document_registration_failed_event,
+    build_inbox_manual_review_required_event,
     build_raycon_followup_alert_event,
     build_source_review_required_event,
     build_vendor_gate_review_required_event,
@@ -89,6 +90,41 @@ def test_document_registration_event_handles_missing_owner() -> None:
     note = render_automation_event_note(event)
 
     assert "Owner: No owner assigned" in note
+
+
+def test_inbox_manual_review_event_renders_decision_context() -> None:
+    event = build_inbox_manual_review_required_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        message_id="msg-1",
+        thread_id="thread-1",
+        filename="Alpha Keller SIR.pdf",
+        doc_type="sir",
+        confidence=0.95,
+        email_subject="Fwd: Alpha Keller SIR",
+        reason="missing_drive_folder",
+        error="Matched site has no Google Drive folder URL",
+        created_at="2026-05-28T12:00:00+00:00",
+    )
+
+    assert event.source_id == "msg-1:Alpha Keller SIR.pdf:missing_drive_folder"
+    assert event.event_type == "inbox_manual_review_required"
+    assert event.decision_required is True
+
+    note = render_automation_event_note(event)
+
+    assert "Kind: inbox_manual_review_required" in note
+    assert "Site ID: SITE1" in note
+    assert (
+        "Requested decision: review the inbound DD attachment and repair filing or site routing"
+        in note
+    )
+    assert "Mutation status: missing_drive_folder" in note
+    assert "Gmail message ID: msg-1" in note
+    assert "Gmail thread ID: thread-1" in note
+    assert "Filename: Alpha Keller SIR.pdf" in note
+    assert "Manual review reason: missing_drive_folder" in note
+    assert "Error: Matched site has no Google Drive folder URL" in note
 
 
 def test_dd_report_summary_event_renders_open_and_closed_items() -> None:

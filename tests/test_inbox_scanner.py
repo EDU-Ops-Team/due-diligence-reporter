@@ -45,6 +45,10 @@ def test_scan_summary_includes_manual_review_reason() -> None:
                     "reason": "unmatched_site",
                     "confidence": 0.95,
                     "email_subject": "Fwd: SIR",
+                    "rhodes_manual_review_event": {
+                        "status": "created",
+                        "rhodes_note_id": "NOTE-MANUAL",
+                    },
                 }
             ],
             "low_confidence": [],
@@ -56,6 +60,7 @@ def test_scan_summary_includes_manual_review_reason() -> None:
     assert "Needs manual review:" in summary
     assert "reason: unmatched_site" in summary
     assert "confidence: 95%" in summary
+    assert "Rhodes decision record: note NOTE-MANUAL" in summary
 
 
 class TestGenerateDriveFilename:
@@ -1581,6 +1586,184 @@ class TestRhodesDocumentRegistration:
             inbox_internal_sender_domains="trilogy.com",
             google_chat_webhook_url="",
         )
+
+    @patch("due_diligence_reporter.inbox_scanner._post_google_chat_to_configured_webhooks")
+    @patch("due_diligence_reporter.inbox_scanner.add_rhodes_site_note")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_matched_manual_review_records_rhodes_decision_event(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_resolve_m1,
+        mock_build_summary,
+        mock_add_note,
+        mock_chat,
+    ):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_manual_review",
+            subject="Alpha Keller SIR",
+            sender="vendor@example.com",
+            effective_sender="vendor@example.com",
+            body_snippet="",
+            label_ids=[],
+            attachments=[
+                {
+                    "filename": "Alpha Keller SIR.pdf",
+                    "attachment_id": "att_sir",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        mock_classify.return_value = ("sir", 0.95)
+        mock_build_summary.return_value = {
+            "id": "SITE1",
+            "title": "Alpha Keller",
+            "drive_folder_url": "",
+            "p1_assignee_user_id": "USER1",
+            "p1_assignee_email": "owner@example.com",
+        }
+        mock_add_note.return_value = {
+            "status": "created",
+            "rhodes_note_id": "NOTE-MANUAL",
+            "owner_notification": "mentioned",
+        }
+
+        result = process_email(
+            MagicMock(),
+            "msg_manual_review",
+            self._settings(),
+            "label_123",
+            "review_123",
+            site_records=[{"id": "SITE1", "title": "Alpha Keller"}],
+        )
+
+        event = result["manual_review"][0]["rhodes_manual_review_event"]
+        assert event["event_type"] == "inbox_manual_review_required"
+        assert event["rhodes_note_id"] == "NOTE-MANUAL"
+        mock_add_note.assert_called_once()
+        note_kwargs = mock_add_note.call_args.kwargs
+        assert note_kwargs["site_id"] == "SITE1"
+        assert note_kwargs["owner_user_id"] == "USER1"
+        assert "Kind: inbox_manual_review_required" in note_kwargs["body"]
+        assert "Manual review reason: missing_drive_folder" in note_kwargs["body"]
+        mock_chat.assert_not_called()
+        mock_resolve_m1.assert_not_called()
+
+    @patch("due_diligence_reporter.inbox_scanner._post_google_chat_to_configured_webhooks")
+    @patch("due_diligence_reporter.inbox_scanner.add_rhodes_site_note")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_matched_manual_review_posts_chat_when_owner_not_mentioned(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_resolve_m1,
+        mock_build_summary,
+        mock_add_note,
+        mock_chat,
+    ):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_manual_review_no_owner",
+            subject="Alpha Keller SIR",
+            sender="vendor@example.com",
+            effective_sender="vendor@example.com",
+            body_snippet="",
+            label_ids=[],
+            attachments=[
+                {
+                    "filename": "Alpha Keller SIR.pdf",
+                    "attachment_id": "att_sir",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        mock_classify.return_value = ("sir", 0.95)
+        mock_build_summary.return_value = {
+            "id": "SITE1",
+            "title": "Alpha Keller",
+            "drive_folder_url": "",
+        }
+        mock_add_note.return_value = {
+            "status": "created",
+            "rhodes_note_id": "NOTE-MANUAL",
+            "owner_notification": "none",
+        }
+        mock_chat.return_value = {"status": "sent", "posted": 1}
+        settings = self._settings()
+        settings.google_chat_webhook_url = "https://chat.example/hook"
+
+        result = process_email(
+            MagicMock(),
+            "msg_manual_review_no_owner",
+            settings,
+            "label_123",
+            "review_123",
+            site_records=[{"id": "SITE1", "title": "Alpha Keller"}],
+        )
+
+        event = result["manual_review"][0]["rhodes_manual_review_event"]
+        assert event["google_chat"] == {"status": "sent", "posted": 1}
+        mock_chat.assert_called_once()
+        assert mock_chat.call_args.args[0] == "https://chat.example/hook"
+        assert "Site ID: SITE1" in mock_chat.call_args.args[1]
+        assert "Kind: inbox_manual_review_required" in mock_chat.call_args.args[1]
+        mock_resolve_m1.assert_not_called()
+
+    @patch("due_diligence_reporter.inbox_scanner._post_google_chat_to_configured_webhooks")
+    @patch("due_diligence_reporter.inbox_scanner.add_rhodes_site_note")
+    @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.inbox_scanner.classify_document")
+    @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
+    def test_existing_manual_review_label_does_not_duplicate_rhodes_event(
+        self,
+        mock_extract,
+        mock_classify,
+        mock_resolve_m1,
+        mock_build_summary,
+        mock_add_note,
+        mock_chat,
+    ):
+        mock_extract.return_value = MagicMock(
+            message_id="msg_manual_review_existing",
+            subject="Alpha Keller SIR",
+            sender="vendor@example.com",
+            effective_sender="vendor@example.com",
+            body_snippet="",
+            label_ids=["review_123"],
+            attachments=[
+                {
+                    "filename": "Alpha Keller SIR.pdf",
+                    "attachment_id": "att_sir",
+                    "mime_type": "application/pdf",
+                }
+            ],
+        )
+        mock_classify.return_value = ("sir", 0.95)
+        mock_build_summary.return_value = {
+            "id": "SITE1",
+            "title": "Alpha Keller",
+            "drive_folder_url": "",
+        }
+
+        result = process_email(
+            MagicMock(),
+            "msg_manual_review_existing",
+            self._settings(),
+            "label_123",
+            "review_123",
+            site_records=[{"id": "SITE1", "title": "Alpha Keller"}],
+        )
+
+        assert "rhodes_manual_review_event" not in result["manual_review"][0]
+        mock_add_note.assert_not_called()
+        mock_chat.assert_not_called()
+        mock_resolve_m1.assert_not_called()
 
     @patch("due_diligence_reporter.inbox_scanner._build_site_summary")
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
