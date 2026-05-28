@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from .completeness import (
+    RAYCON_FAILED_REASON,
     RAYCON_PENDING_REASON,
     REASON_DISPLAY_LABELS,
     REASON_TRIGGER_FILES,
@@ -898,6 +899,12 @@ def format_partial_banner_text(
             for reason in reasons
             if reason in REASON_TRIGGER_FILES
         })
+    raycon_failure_reason = ""
+    if isinstance(reasons, dict) and RAYCON_FAILED_REASON in reasons:
+        raycon_failure_reason = str(
+            completeness.get("raycon_failure_reason") or ""
+        ).strip()
+
     if isinstance(triggers, list) and triggers:
         trigger_text = ", ".join(str(item) for item in triggers if str(item).strip())
         follow_up = (
@@ -908,9 +915,16 @@ def format_partial_banner_text(
     else:
         follow_up = "Review open items before treating this as a final DDR."
 
+    failure_line = (
+        f"RayCon validation reason: {raycon_failure_reason[:500]}.\n"
+        if raycon_failure_reason
+        else ""
+    )
+
     return (
         "PARTIAL REPORT -- pending data\n"
         f"Missing: {missing_str}{timestamp_clause}.\n"
+        f"{failure_line}"
         f"{follow_up}\n"
     )
 

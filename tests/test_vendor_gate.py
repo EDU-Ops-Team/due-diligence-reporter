@@ -95,6 +95,20 @@ class TestMissingRequiredDocsVendorGate:
         }
         assert _missing_required_docs(readiness) == ["RayCon Scenario JSON"]
 
+    def test_blocks_when_raycon_json_failed_validation(self):
+        readiness = {
+            "sir_found": True,
+            "sir_vendor": True,
+            "inspection_found": True,
+            "inspection_vendor": True,
+            "raycon_scenario_found": True,
+            "raycon_scenario_usable": False,
+            "raycon_scenario_status": "failed_validation",
+        }
+        assert _missing_required_docs(readiness) == [
+            "Successful RayCon Scenario JSON"
+        ]
+
     def test_blocks_when_inspection_is_ai_only(self):
         readiness = {
             "sir_found": True,

@@ -776,12 +776,17 @@ def _failed_scenario_base_row(
     report_fields: dict[str, str],
 ) -> dict[str, Any]:
     reason = report_fields.get("exec.raycon_failure_reason", "") or "unspecified"
+    run_id = report_fields.get("exec.raycon_run_id", "")
+    modified = str(scenario.get("_drive_modified_time", "") or "")
     return {
         "site": site_name,
         "alert": f"raycon run failed: {reason}",
+        "alert_dedup_key": (
+            f"{site_name}:failed_scenario:{run_id or reason[:120]}:{modified}"
+        ),
         "raycon_status": report_fields.get("exec.raycon_status", ""),
-        "raycon_run_id": report_fields.get("exec.raycon_run_id", ""),
-        "json_modified": scenario.get("_drive_modified_time", ""),
+        "raycon_run_id": run_id,
+        "json_modified": modified,
     }
 
 
@@ -796,7 +801,7 @@ def _failed_scenario_dispatch_row(
         "dispatch_reason": "failed_scenario_retry",
         "previous_failure": reason,
         "job_id": dispatch_result.get("job_id"),
-        "raycon_run_id": dispatch_result.get("raycon_run_id"),
+        "retry_raycon_run_id": dispatch_result.get("raycon_run_id"),
         "status": dispatch_result.get("status"),
         "status_url_present": dispatch_result.get("status_url_present"),
         "block_plan_file_id": dispatch_result.get("block_plan_file_id"),
@@ -811,6 +816,7 @@ def _failed_scenario_status_row(
 ) -> dict[str, Any] | None:
     if status in RAYCON_IN_PROGRESS_STATUSES:
         return {
+            **base_row,
             "site": site_name,
             "skipped": f"raycon recovery job {status}",
             "block_plan_file_id": block_plan_file_id,
@@ -864,7 +870,10 @@ def _handle_failed_scenario(
         redispatch_after=redispatch_after,
     )
     if dispatch_result.get("dispatched"):
-        return _failed_scenario_dispatch_row(site_name, reason, dispatch_result)
+        return {
+            **base_row,
+            **_failed_scenario_dispatch_row(site_name, reason, dispatch_result),
+        }
     if dispatch_result.get("dispatch_error"):
         return {
             "site": site_name,

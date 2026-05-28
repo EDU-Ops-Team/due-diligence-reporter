@@ -1073,6 +1073,23 @@ class TestRayConPayloadEnvelope:
         assert fields["exec.raycon_status"] == "failed"
         assert "no_address_match" in fields["exec.raycon_failure_reason"]
 
+    def test_validation_failed_status_blanks_all_scenario_fields(self) -> None:
+        payload = {
+            "schema_version": "1.0",
+            "status": "validation_failed",
+            "analysis": {
+                "fastest_open": {"grand_total": 100, "timeline_weeks": 4},
+                "max_capacity": {"grand_total": 200, "timeline_weeks": 8},
+            },
+            "validation": {"passed": True, "errors": []},
+        }
+
+        fields = raycon_scenario_to_report_fields(payload)
+
+        assert fields["exec.fastest_open_capex"] == ""
+        assert fields["exec.max_capacity_capex"] == ""
+        assert fields["exec.raycon_status"] == "validation_failed"
+
     def test_failed_via_validation_passed_false_blanks_scenarios(self) -> None:
         """Status optimistic but validation says no — still treat as failure."""
         payload = {

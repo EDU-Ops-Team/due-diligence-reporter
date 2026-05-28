@@ -677,7 +677,11 @@ def _scenario_breakdown(
 # when validation didn't pass (no scenarios computed); ``"completed"`` /
 # ``"success"`` for a happy run. Anything else is treated as completed for
 # back-compat with payloads that predate the envelope.
-RAYCON_FAILED_STATUSES: frozenset[str] = frozenset({"failed", "error"})
+RAYCON_FAILED_STATUSES: frozenset[str] = frozenset({
+    "failed",
+    "validation_failed",
+    "error",
+})
 
 
 def raycon_payload_status(payload: dict[str, Any]) -> str:

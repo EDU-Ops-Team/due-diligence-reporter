@@ -30,8 +30,14 @@ def _readiness(
     inspection_found: bool = True,
     inspection_vendor: bool = True,
     raycon_scenario_found: bool = True,
+    raycon_scenario_usable: bool | None = None,
+    raycon_scenario_status: str = "",
+    raycon_scenario_failure_reason: str = "",
+    raycon_scenario_run_id: str = "",
     report_exists: bool = False,
 ) -> dict:
+    if raycon_scenario_usable is None:
+        raycon_scenario_usable = raycon_scenario_found
     return {
         "sir_found": sir_found,
         "sir_vendor": sir_vendor,
@@ -39,6 +45,10 @@ def _readiness(
         "inspection_vendor": inspection_vendor,
         "isp_found": False,
         "raycon_scenario_found": raycon_scenario_found,
+        "raycon_scenario_usable": raycon_scenario_usable,
+        "raycon_scenario_status": raycon_scenario_status,
+        "raycon_scenario_failure_reason": raycon_scenario_failure_reason,
+        "raycon_scenario_run_id": raycon_scenario_run_id,
         "report_exists": report_exists,
         "e_occupancy_report_found": False,
         "school_approval_report_found": False,
@@ -331,6 +341,45 @@ def test_raycon_scenario_present_uses_run_timestamp(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # 5. Unknown site → graceful error response, not a crash.
 # ---------------------------------------------------------------------------
+
+
+def test_raycon_scenario_failed_is_not_full_report_ready(tmp_path, monkeypatch):
+    _vendor_gate_on(monkeypatch)
+    _no_dispatch_state(tmp_path, monkeypatch)
+
+    patchers = _patch_common(
+        readiness=_readiness(
+            raycon_scenario_found=True,
+            raycon_scenario_usable=False,
+            raycon_scenario_status="failed_validation",
+            raycon_scenario_failure_reason="capacity_not_defensible",
+            raycon_scenario_run_id="rc_failed",
+        ),
+        m1_docs={
+            "block_plan": {"id": "bp-1", "modifiedTime": "2026-05-07T13:00:00Z"},
+            "raycon_scenario_json": {
+                "id": "rs-1",
+                "modifiedTime": "2026-05-07T13:30:00Z",
+            },
+        },
+    )
+    _enter_all(patchers)
+    try:
+        result = _run()
+    finally:
+        _stop_all(patchers)
+
+    assert result["ready_for_full_report"] is False
+    raycon_entry = next(b for b in result["blocking"] if b["doc"] == "raycon_scenario")
+    assert raycon_entry["status"] == "failed_validation"
+    assert raycon_entry["failure_reason"] == "capacity_not_defensible"
+    assert raycon_entry["raycon_run_id"] == "rc_failed"
+    assert result["projected_completeness"]["pending_reasons"] == {
+        "raycon_scenario_failed": result["would_be_pending"]
+    }
+    assert result["pending_reason_labels"] == {
+        "raycon_scenario_failed": "RayCon validation failed"
+    }
 
 
 def test_missing_drive_url_returns_graceful_error(tmp_path, monkeypatch):

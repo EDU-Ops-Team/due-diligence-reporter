@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from due_diligence_reporter import completeness as completeness_module
 from due_diligence_reporter.completeness import (
+    RAYCON_FAILED_REASON,
     RAYCON_PENDING_REASON,
     REASON_DISPLAY_LABELS,
     VENDOR_VERIFICATION_PENDING_REASON,
@@ -11,6 +12,7 @@ from due_diligence_reporter.completeness import (
     compute_completeness_block,
     is_raycon_pending_placeholder,
     project_completeness_from_readiness,
+    raycon_placeholder_reason,
     raycon_token_paths,
 )
 from due_diligence_reporter.google_doc_builder import format_partial_banner_text
@@ -29,6 +31,15 @@ class TestIsRayconPendingPlaceholder:
     def test_max_capacity_placeholder(self) -> None:
         assert is_raycon_pending_placeholder(
             "[Not found - Max Capacity scenario not extracted]"
+        )
+
+    def test_generic_raycon_pending_placeholder(self) -> None:
+        assert is_raycon_pending_placeholder("[Not found - RayCon scenario pending]")
+
+    def test_failed_placeholder_has_failed_reason(self) -> None:
+        assert (
+            raycon_placeholder_reason("[Not found - RayCon validation failed]")
+            == RAYCON_FAILED_REASON
         )
 
     def test_real_value_is_not_placeholder(self) -> None:
@@ -144,6 +155,19 @@ class TestComputeCompletenessBlock:
             VERIFICATION_OPEN_ITEMS_TOKEN
         ]
 
+    def test_raycon_failure_reason_marks_blank_raycon_tokens_failed(self) -> None:
+        replacements = dict.fromkeys(raycon_token_paths(), "")
+        block = compute_completeness_block(
+            replacements,
+            raycon_failure_reason="capacity_not_defensible",
+        )
+
+        assert block["stage"] == "partial"
+        assert block["pending_token_count"] == 28
+        assert block["auto_republish_on"] == ["valid raycon_scenario.json"]
+        assert RAYCON_FAILED_REASON in block["pending_reasons"]
+        assert block["raycon_failure_reason"] == "capacity_not_defensible"
+
 
 class TestProjectCompletenessFromReadiness:
     def test_raycon_missing_projects_partial(self) -> None:
@@ -160,6 +184,18 @@ class TestProjectCompletenessFromReadiness:
         assert block["pending_token_count"] == 0
         assert block["pending_reasons"] == {}
         assert block["auto_republish_on"] == []
+
+    def test_raycon_failed_projects_failed_partial(self) -> None:
+        block = project_completeness_from_readiness(
+            raycon_scenario_found=True,
+            raycon_scenario_failed=True,
+            raycon_failure_reason="capacity_not_defensible",
+        )
+        assert block["stage"] == "partial"
+        assert block["pending_token_count"] == 28
+        assert block["pending_reasons"].keys() == {RAYCON_FAILED_REASON}
+        assert block["auto_republish_on"] == ["valid raycon_scenario.json"]
+        assert block["raycon_failure_reason"] == "capacity_not_defensible"
 
     def test_verification_open_items_pending_projects_partial(self) -> None:
         block = project_completeness_from_readiness(
@@ -209,6 +245,18 @@ class TestFormatPartialBannerText:
             block_plan_submitted_display="2026-05-07 13:42 UTC",
         )
         assert "Vendor verification" in text
+        assert "Block Plan submitted" not in text
+
+    def test_partial_with_raycon_failure_shows_failure_reason(self) -> None:
+        block = {
+            "stage": "partial",
+            "pending_reasons": {RAYCON_FAILED_REASON: ["exec.fastest_open_capex"]},
+            "auto_republish_on": ["valid raycon_scenario.json"],
+            "raycon_failure_reason": "capacity_not_defensible",
+        }
+        text = format_partial_banner_text(block)
+        assert "RayCon validation failed" in text
+        assert "capacity_not_defensible" in text
         assert "Block Plan submitted" not in text
 
     def test_partial_falls_back_when_timestamp_missing(self) -> None:

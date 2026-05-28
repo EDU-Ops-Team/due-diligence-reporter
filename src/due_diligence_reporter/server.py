@@ -30,6 +30,7 @@ from .classifier import (
 from .completeness import (
     REASON_DISPLAY_LABELS,
     compute_completeness_block,
+    is_raycon_pending_placeholder,
     project_completeness_from_readiness,
     raycon_token_paths,
 )
@@ -47,7 +48,7 @@ from .m1_lookup import (
     _list_m1_documents_by_type,
     _resolve_m1_folder,
 )
-from .raycon_client import RAYCON_BREAKDOWN_ROWS
+from .raycon_client import RAYCON_BREAKDOWN_ROWS, RAYCON_FAILED_STATUSES
 from .rebl import ReblResolution, resolve_address
 from .report_schema import (
     ALLOWED_CAN_WE_ANSWERS,
@@ -2338,6 +2339,25 @@ def _format_block_plan_submitted_display(iso_ts: str) -> str:
     return parsed.strftime("%Y-%m-%d %H:%M UTC")
 
 
+def _raycon_failure_reason_from_flat(flat_report_data: dict[str, Any]) -> str:
+    """Return the RayCon validation failure reason carried in report data."""
+    status = str(flat_report_data.get("exec.raycon_status") or "").strip().lower()
+    reason = str(
+        flat_report_data.get("exec.raycon_failure_reason") or ""
+    ).strip()
+    if reason:
+        return reason
+    if status in RAYCON_FAILED_STATUSES:
+        return f"RayCon status: {status}"
+    return ""
+
+
+def _fill_raycon_failed_placeholders(replacements: dict[str, str]) -> None:
+    """Force RayCon-sourced tokens to an explicit validation-failed label."""
+    for token in raycon_token_paths():
+        replacements[token] = "[Not found - RayCon validation failed]"
+
+
 def _normalize_report_replacements(
     report_data: dict[str, Any],
     site_name: str,
@@ -2347,6 +2367,7 @@ def _normalize_report_replacements(
 ) -> tuple[dict[str, str], list[str], list[str], dict[str, str], ReblResolution]:
     """Normalize report data and fill permissive current gap labels."""
     flat_report_data = flatten_report_data_for_replacement(report_data)
+    raycon_failure_reason = _raycon_failure_reason_from_flat(flat_report_data)
     report_data, rebl_resolution = _inject_report_defaults(
         report_data,
         site_address=site_address,
@@ -2362,6 +2383,8 @@ def _normalize_report_replacements(
             replacements["exec.c_answer"] = normalized_answer
     if site_name.strip():
         replacements["meta.site_name"] = site_name.strip()
+    if raycon_failure_reason:
+        _fill_raycon_failed_placeholders(replacements)
     _fill_fastest_open_placeholders(replacements)
     _fill_max_capacity_placeholders(replacements)
 
@@ -2530,11 +2553,19 @@ def _fill_scenario_placeholders(
     """Fill missing scenario summary and detailed breakdown fields."""
     for metric in ("capacity", "capex", "open_date"):
         token = f"exec.{scenario}_{metric}"
-        if token not in replacements or not str(replacements[token]).strip():
+        if (
+            token not in replacements
+            or not str(replacements[token]).strip()
+            or is_raycon_pending_placeholder(replacements[token])
+        ):
             replacements[token] = label
     for row_key, _ in RAYCON_BREAKDOWN_ROWS:
         token = f"exec.cost_{row_key}_{scenario}"
-        if token not in replacements or not str(replacements[token]).strip():
+        if (
+            token not in replacements
+            or not str(replacements[token]).strip()
+            or is_raycon_pending_placeholder(replacements[token])
+        ):
             replacements[token] = label
 
 
@@ -2751,7 +2782,13 @@ async def create_dd_report(
             # Compute the partial-on-purpose completeness metadata. Done
             # before the doc builder runs so the renderer can prepend
             # the "PARTIAL REPORT" banner when stage == "partial".
-            completeness = compute_completeness_block(replacements)
+            raycon_failure_reason = _raycon_failure_reason_from_flat(
+                flatten_report_data_for_replacement(report_data)
+            )
+            completeness = compute_completeness_block(
+                replacements,
+                raycon_failure_reason=raycon_failure_reason,
+            )
             _attach_block_plan_submitted_timestamp(
                 gc=gc,
                 drive_folder_url=drive_folder_url,
@@ -2860,10 +2897,23 @@ async def check_site_readiness(
 
             sir_found = bool(readiness.get("sir_found"))
             report_exists = bool(readiness.get("report_exists"))
+            raycon_found = bool(readiness.get("raycon_scenario_found"))
+            raycon_usable = bool(readiness.get("raycon_scenario_usable", raycon_found))
+            raycon_failed = raycon_found and not raycon_usable
+            raycon_failure_reason = str(
+                readiness.get("raycon_scenario_failure_reason") or ""
+            ).strip()
             missing_docs = [] if sir_found else ["sir"]
             ready_for_report = sir_found and not report_exists
             projected_completeness = project_completeness_from_readiness(
-                raycon_scenario_found=bool(readiness.get("raycon_scenario_found")),
+                raycon_scenario_found=raycon_found,
+                raycon_scenario_failed=raycon_failed,
+                raycon_failure_reason=raycon_failure_reason,
+            )
+            raycon_status_label = (
+                "failed validation"
+                if raycon_failed
+                else ("found" if raycon_found else "not yet posted")
             )
 
             return {
@@ -2873,7 +2923,10 @@ async def check_site_readiness(
                 "isp_found": bool(readiness.get("isp_found")),
                 "inspection_found": bool(readiness.get("inspection_found")),
                 "report_exists": report_exists,
-                "raycon_scenario_found": bool(readiness.get("raycon_scenario_found")),
+                "raycon_scenario_found": raycon_found,
+                "raycon_scenario_usable": raycon_usable,
+                "raycon_scenario_status": readiness.get("raycon_scenario_status", ""),
+                "raycon_scenario_failure_reason": raycon_failure_reason,
                 "missing_docs": missing_docs,
                 "ready_for_report": ready_for_report,
                 "drive_folder_url": drive_folder_url,
@@ -2883,7 +2936,8 @@ async def check_site_readiness(
                     f"  SIR: {'found' if sir_found else 'not found'}",
                     f"  Building Inspection: {'found' if readiness.get('inspection_found') else 'not found'}",
                     f"  DD Report: {'exists' if report_exists else 'not yet created'}",
-                    f"  RayCon scenario: {'found' if readiness.get('raycon_scenario_found') else 'not yet posted'}",
+                    f"  RayCon scenario: {raycon_status_label}",
+                    f"  RayCon failure: {raycon_failure_reason}" if raycon_failure_reason else "",
                     "",
                     "Ready for first-round report generation." if ready_for_report else (
                         "Not ready - " + ", ".join(missing_docs) + " missing." if missing_docs else "Report already exists."
@@ -3020,11 +3074,24 @@ def _build_blocking_entries(
         bi_present = bool(readiness.get("inspection_found"))
 
     raycon_present = bool(readiness.get("raycon_scenario_found"))
+    raycon_usable = bool(readiness.get("raycon_scenario_usable", raycon_present))
+    raycon_failed = raycon_present and not raycon_usable
 
     raycon_entry: dict[str, Any] = {
         "doc": "raycon_scenario",
-        "status": "present" if raycon_present else "pending",
+        "status": (
+            str(readiness.get("raycon_scenario_status") or "failed_validation")
+            if raycon_failed
+            else ("present" if raycon_present else "pending")
+        ),
     }
+    if raycon_failed:
+        raycon_entry["failure_reason"] = str(
+            readiness.get("raycon_scenario_failure_reason") or ""
+        )
+        raycon_entry["raycon_run_id"] = str(
+            readiness.get("raycon_scenario_run_id") or ""
+        )
     if not raycon_present:
         raycon_entry["block_plan_present"] = block_plan_present
         raycon_entry["last_dispatch"] = raycon_last_dispatch
@@ -3180,6 +3247,8 @@ async def diagnose_site_readiness(
 
             block_plan_present = block_plan_file_id is not None
             raycon_present = bool(readiness.get("raycon_scenario_found"))
+            raycon_usable = bool(readiness.get("raycon_scenario_usable", raycon_present))
+            raycon_failed = raycon_present and not raycon_usable
 
             # Resolve last_dispatch:
             #   1. If RayCon scenario is present, the dispatch already
@@ -3239,6 +3308,10 @@ async def diagnose_site_readiness(
 
             projection = project_completeness_from_readiness(
                 raycon_scenario_found=raycon_present,
+                raycon_scenario_failed=raycon_failed,
+                raycon_failure_reason=str(
+                    readiness.get("raycon_scenario_failure_reason") or ""
+                ).strip(),
             )
             pending_paths: list[str] = []
             for paths in projection.get("pending_reasons", {}).values():
