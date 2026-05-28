@@ -878,11 +878,18 @@ def add_rhodes_site_note(
                 *(extra_mention_user_ids or []),
             ]
         )
+        note_response_summaries: list[dict[str, Any]] = []
         note = rhodes.add_site_note(
             site_id=clean_site_id,
             site_slug=clean_site_slug,
             body=clean_body,
             mentions=mention_user_ids,
+        )
+        note_response_summaries.append(
+            _summarize_note_response(
+                note,
+                attempt="site_id" if clean_site_id else "site_slug",
+            )
         )
         note_id = _note_id(note)
         if not note_id:
@@ -892,6 +899,7 @@ def add_rhodes_site_note(
                 site_slug=clean_site_slug,
                 body=clean_body,
                 mentions=mention_user_ids,
+                response_summaries=note_response_summaries,
             )
             note_id = _note_id(note)
     except RhodesError as exc:
@@ -909,6 +917,7 @@ def add_rhodes_site_note(
             "owner_user_id": resolved_owner_user_id,
             "owner_resolution": owner_resolution,
             "mentioned_user_ids": mention_user_ids,
+            "note_response_summaries": note_response_summaries,
         }
 
     return {
@@ -930,6 +939,7 @@ def _recover_note_without_id(
     site_slug: str,
     body: str,
     mentions: Iterable[str],
+    response_summaries: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Recover a note ID after an empty addNote response, then retry by slug."""
 
@@ -944,6 +954,9 @@ def _recover_note_without_id(
 
     if site_slug:
         note = rhodes.add_site_note(site_slug=site_slug, body=body, mentions=mentions)
+        response_summaries.append(
+            _summarize_note_response(note, attempt="site_slug_retry")
+        )
         if _note_id(note):
             return note
         recovered = _find_note_after_empty_response(
@@ -972,6 +985,29 @@ def _find_note_after_empty_response(
         )
     except RhodesError:
         return None
+
+
+def _summarize_note_response(
+    note: dict[str, Any],
+    *,
+    attempt: str,
+) -> dict[str, Any]:
+    """Return a safe shape summary for diagnosing no-ID addNote responses."""
+
+    summary: dict[str, Any] = {
+        "attempt": attempt,
+        "type": type(note).__name__,
+        "has_note_id": bool(_note_id(note)),
+    }
+    if isinstance(note, dict):
+        summary["keys"] = sorted(str(key) for key in note.keys())
+        text = note.get("text")
+        if isinstance(text, str) and text.strip():
+            summary["text_prefix"] = text.strip()[:240]
+        nested_note = note.get("note")
+        if isinstance(nested_note, dict):
+            summary["note_keys"] = sorted(str(key) for key in nested_note.keys())
+    return summary
 
 
 def _unique_nonempty(values: Iterable[str]) -> list[str]:
