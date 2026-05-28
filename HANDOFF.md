@@ -1,5 +1,67 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - RayCon Note Rejection Diagnostics
+
+Confirmed PR #134 merged at `7f1aa37` and retested on `main`.
+
+Live test:
+
+- Deleted only the two stale RayCon runtime caches from the failed PR #133
+  retest runs:
+  - `raycon-runtime-state-26584277976`
+  - `raycon-runtime-state-26584277931`
+- Tulsa run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26585081257
+- Santa Clara run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26585081215
+- Both runs failed closed with `missing_note_id`.
+- Both runs posted Google Chat fallback.
+- Live Rhodes `listNotes` still showed no new RayCon note on either site.
+- New diagnostic showed both the site-ID attempt and site-slug retry returned
+  dicts with keys `["rejectionReason", "status"]`, no note ID. The actual values
+  were not logged yet, so the next slice must expose those safe scalar fields.
+
+Branch: `codex/raycon-note-rejection-diagnostics`
+
+Changed:
+
+- `note_response_summaries` now includes capped scalar values for:
+  - `status`
+  - `reason`
+  - `rejectionReason`
+  - `message`
+  - `error`
+- This keeps note body and secrets out of logs while surfacing the hosted MCP
+  write rejection reason.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_rhodes.py tests/test_rhodes_events.py tests/test_raycon_followup.py --basetemp C:\tmp\pytest-raycon-note-rejection-diagnostics
+uv run ruff check src\due_diligence_reporter\rhodes.py tests\test_rhodes.py tests\test_rhodes_events.py tests\test_raycon_followup.py scripts\raycon_followup.py src\due_diligence_reporter\rhodes_events.py
+uv run mypy src/
+uv run mypy scripts/raycon_followup.py
+```
+
+Results:
+
+- Focused Rhodes/RayCon suite: 83 passed.
+- Ruff on touched code/tests: passed.
+- Source Mypy: no issues in 38 source files.
+- Script Mypy: no issues.
+
+Next:
+
+- Open PR for `codex/raycon-note-rejection-diagnostics`.
+- After merge, clear the fresh RayCon runtime caches from the failed PR #134
+  retest runs if they would suppress the new test:
+  - `raycon-runtime-state-26585081257`
+  - `raycon-runtime-state-26585081215`
+- Rerun RayCon Follow-up for Tulsa/Santa Clara.
+- Use the logged `status` / `rejectionReason` values to decide whether the
+  durable fix is a caller payload change or a deployed Rhodes MCP write-surface
+  change.
+
 ## 2026-05-28 - RayCon Note Response Diagnostics
 
 Confirmed PR #133 merged at `41709ae` and retested on `main`.

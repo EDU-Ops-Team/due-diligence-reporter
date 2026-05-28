@@ -1001,6 +1001,10 @@ def _summarize_note_response(
     }
     if isinstance(note, dict):
         summary["keys"] = sorted(str(key) for key in note.keys())
+        for key in ("status", "reason", "rejectionReason", "message", "error"):
+            value = _safe_note_response_scalar(note.get(key))
+            if value:
+                summary[key] = value
         text = note.get("text")
         if isinstance(text, str) and text.strip():
             summary["text_prefix"] = text.strip()[:240]
@@ -1008,6 +1012,16 @@ def _summarize_note_response(
         if isinstance(nested_note, dict):
             summary["note_keys"] = sorted(str(key) for key in nested_note.keys())
     return summary
+
+
+def _safe_note_response_scalar(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()[:240]
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, int | float):
+        return str(value)
+    return ""
 
 
 def _unique_nonempty(values: Iterable[str]) -> list[str]:
