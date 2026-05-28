@@ -16,7 +16,9 @@ from scripts.raycon_followup import (
     _filter_dedup_alerts,
     _find_block_plan,
     _find_published_doc,
+    _fresh_dedup_alerts,
     _load_site_summaries,
+    _mark_notified_alerts,
     _notify_raycon_followup_rows,
     _process_site,
     _republish_dd_report_if_present,
@@ -420,6 +422,47 @@ class TestFailedScenarioAlerts:
         # Critical: no Doc published for a failed run.
         mock_save.assert_not_called()
         assert "published" not in row
+
+    @patch("scripts.raycon_followup.save_skill_report")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_failed_status_alerts_even_without_direct_m1_block_plan(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_save,
+    ):
+        """A failed scenario JSON is actionable even when RayCon used a nested plan."""
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = None
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "failed",
+            "raycon_run_id": "rc_nested_plan",
+            "validation": {
+                "passed": False,
+                "errors": ["max capacity was not defensible"],
+            },
+            "_drive_modified_time": "2026-05-27T16:12:24Z",
+        }
+
+        row = _process_site(
+            MagicMock(),
+            _site("Alpha Tulsa 6940 S Utica Ave"),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state={},
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert "raycon run failed" in row["alert"]
+        assert "max capacity was not defensible" in row["alert"]
+        assert row["raycon_run_id"] == "rc_nested_plan"
+        assert row["alert_dedup_key"].endswith(":owner_note_v2")
+        assert "dispatched" not in row
+        mock_save.assert_not_called()
 
     @patch("scripts.raycon_followup.post_raycon_job")
     @patch("scripts.raycon_followup.save_skill_report")
@@ -1059,6 +1102,47 @@ class TestFilterDedupAlerts:
 
         assert len(fresh) == 1
         assert new_state["Alpha Keller"] == now.isoformat()
+
+
+class TestNotificationDedupState:
+    def test_fresh_dedup_alerts_does_not_advance_state_before_notification(self):
+        now = datetime(2026, 5, 28, 13, 0, tzinfo=UTC)
+        alerts = [{"site": "Alpha Keller", "alert": "raycon run failed"}]
+        state: dict[str, str] = {}
+
+        fresh = _fresh_dedup_alerts(alerts, state, now=now)
+
+        assert fresh == alerts
+        assert state == {}
+
+    def test_mark_notified_alerts_only_records_successful_owner_or_chat_delivery(self):
+        now = datetime(2026, 5, 28, 13, 0, tzinfo=UTC)
+        rows = [
+            {
+                "site": "Owner Mentioned",
+                "raycon_followup_event": {"owner_notification": "mentioned"},
+            },
+            {
+                "site": "Chat Posted",
+                "raycon_followup_event": {
+                    "owner_notification": "none",
+                    "google_chat": {"status": "posted"},
+                },
+            },
+            {
+                "site": "Not Delivered",
+                "raycon_followup_event": {
+                    "owner_notification": "none",
+                    "google_chat": {"status": "skipped"},
+                },
+            },
+        ]
+
+        new_state = _mark_notified_alerts(rows, {}, now=now)
+
+        assert new_state["Owner Mentioned"] == now.isoformat()
+        assert new_state["Chat Posted"] == now.isoformat()
+        assert "Not Delivered" not in new_state
 
 
 class TestRayConFollowupEventNotification:

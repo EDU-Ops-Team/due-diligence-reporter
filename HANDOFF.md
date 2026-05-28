@@ -1,5 +1,65 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - RayCon Failed Alert Backfill
+
+Confirmed PR #127 was merged at `cefda5c` and tested the production RayCon
+follow-up workflow on `main`:
+
+- Tulsa run: https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26576437853
+- Santa Clara run: https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26576446208
+
+Live findings:
+
+- Both workflows completed successfully.
+- Both sites have `raycon_scenario.json` files with `status: failed` and
+  `validation.passed: false`.
+- Tulsa's RayCon JSON points to a selected Block Plan in a nested
+  `From Landlord / Floor Plan` folder, while `scripts/raycon_followup.py`
+  required a direct M1 Block Plan before reading the scenario. That meant the
+  failed JSON could be skipped as `no block plan in M1`.
+- Santa Clara has a direct M1 Block Plan and a failed RayCon JSON, but no new
+  Rhodes note appeared after the workflow. The likely cause is alert dedupe
+  advancing before the owner/Chat notification result is known, so a prior
+  failed notification can suppress later retries.
+
+Branch: `codex/ddr-raycon-failed-alert-backfill`
+
+Changed:
+
+- RayCon follow-up now reads a present `raycon_scenario.json` before requiring a
+  direct M1 Block Plan.
+- Failed RayCon JSON now produces an alert row even when the Block Plan is not
+  directly listed in M1; retry dispatch still requires a concrete Block Plan
+  file.
+- Failed-scenario alert dedupe keys now carry an `owner_note_v2` suffix so
+  older alert-state entries do not suppress the new owner-note behavior.
+- Runtime alert dedupe now advances only after the Rhodes owner mention or
+  Google Chat fallback actually succeeds.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-raycon-alert-backfill2 tests\test_raycon_followup.py tests\test_rhodes_events.py -q
+uv run ruff check scripts\raycon_followup.py tests\test_raycon_followup.py
+uv run mypy scripts\raycon_followup.py
+uv run python -m py_compile scripts\raycon_followup.py
+```
+
+Results:
+
+- Focused RayCon/Rhodes event suite: 62 passed.
+- Ruff on touched files: passed.
+- Script Mypy: no issues.
+- Script compile: passed.
+
+Next:
+
+- Open PR for `codex/ddr-raycon-failed-alert-backfill`.
+- After merge, rerun RayCon Follow-up for `6940 S Utica` and
+  `2340 Calle de Luna`; expected result is a Rhodes `raycon_followup_alert`
+  owner mention for Devin Bates on both sites, with Chat fallback only if the
+  owner mention cannot be delivered.
+
 ## 2026-05-28 - RayCon Failed Scenario State
 
 Confirmed PR #126 was merged at `8dc8b16` and continued on a clean branch:
