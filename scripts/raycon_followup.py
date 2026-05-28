@@ -69,8 +69,10 @@ from due_diligence_reporter.config import get_settings  # noqa: E402
 from due_diligence_reporter.dd_republish import (  # noqa: E402
     DD_REPUBLISH_STATE_PATH,
     REASON_RAYCON,
+    RepublishOutcome,
     find_existing_dd_report,
     maybe_republish_dd_report,
+    record_dd_republish_failure_event,
 )
 from due_diligence_reporter.dd_republish_state_store import (  # noqa: E402
     build_dd_republish_state_store,
@@ -1028,6 +1030,7 @@ def _republish_dd_report_if_present(
     drive_modified_time: str = "",
     now: datetime | None = None,
     force_after: timedelta = DD_REPUBLISH_FORCE_AFTER,
+    failure_event_recorder: Any = None,
 ) -> dict[str, Any]:
     """Regenerate the DD Report on top of an existing one when RayCon answers.
 
@@ -1085,6 +1088,7 @@ def _republish_dd_report_if_present(
         # symbol directly from ``due_diligence_reporter.report_pipeline``
         # and bypasses the patch.
         pipeline_runner=process_site_pipeline,
+        failure_event_recorder=failure_event_recorder,
     )
 
     # Translate the helper's decision strings back to the legacy strings
@@ -1094,12 +1098,15 @@ def _republish_dd_report_if_present(
     # composite-fingerprint fix.
     legacy_run_id = base_key
     if outcome.decision == "republish":
-        return {
+        payload: dict[str, Any] = {
             "dd_report_republish": "republished",
             "raycon_run_id": legacy_run_id,
             "pipeline_status": outcome.pipeline_status,
             "doc_url": outcome.doc_url,
         }
+        if outcome.failure_event is not None:
+            payload["republish_failure_event"] = outcome.failure_event
+        return payload
     if outcome.decision == "skip_no_prior_report":
         return {"dd_report_republish": "skipped_no_existing_report"}
     if outcome.decision == "skip_no_diff":
@@ -1118,7 +1125,13 @@ def _republish_dd_report_if_present(
             "existing_dd_report_id": (existing or {}).get("id"),
         }
     if outcome.decision == "failed":
-        return {"dd_report_republish": "failed", "reason": outcome.error}
+        failed_payload: dict[str, Any] = {
+            "dd_report_republish": "failed",
+            "reason": outcome.error,
+        }
+        if outcome.failure_event is not None:
+            failed_payload["republish_failure_event"] = outcome.failure_event
+        return failed_payload
     # skip_bad_input fallback (e.g. unknown reason — shouldn't happen
     # since we hard-code REASON_RAYCON above).
     return {"dd_report_republish": outcome.decision, "reason": outcome.error}
@@ -1530,10 +1543,27 @@ def main(argv: list[str] | None = None) -> int:
                 logger.error(
                     "DD Report republish: system prompt missing at %s", prompt_path
                 )
-                return {
+                error = f"system prompt missing at {prompt_path}"
+                outcome = RepublishOutcome(
+                    decision="failed",
+                    reason=REASON_RAYCON,
+                    site_id=str(site_summary.get("id") or "").strip(),
+                    fingerprint=raycon_run_id,
+                    error=error,
+                )
+                failure_payload: dict[str, Any] = {
                     "dd_report_republish": "failed",
-                    "reason": f"system prompt missing at {prompt_path}",
+                    "reason": error,
                 }
+                if not dry_run:
+                    failure_payload["republish_failure_event"] = (
+                        record_dd_republish_failure_event(
+                            outcome,
+                            site_summary,
+                            settings,
+                        )
+                    )
+                return failure_payload
             _system_prompt = prompt_path.read_text(encoding="utf-8")
         if _shared_cache is None:
             _shared_cache = list_shared_folders_once(gc)
@@ -1547,6 +1577,7 @@ def main(argv: list[str] | None = None) -> int:
             republish_state=republish_state,
             dry_run=dry_run,
             drive_modified_time=drive_modified_time,
+            failure_event_recorder=record_dd_republish_failure_event,
         )
 
     results: list[dict[str, Any]] = []

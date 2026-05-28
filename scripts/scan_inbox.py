@@ -41,7 +41,9 @@ from due_diligence_reporter.cds_verification import (  # noqa: E402
 )
 from due_diligence_reporter.config import get_settings  # noqa: E402
 from due_diligence_reporter.dd_republish import (  # noqa: E402
+    RepublishOutcome,
     maybe_republish_dd_report,
+    record_dd_republish_failure_event,
 )
 from due_diligence_reporter.dd_republish_state_store import (  # noqa: E402
     build_dd_republish_state_store,
@@ -156,7 +158,27 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
                 logger.error(
                     "DD Report republish: system prompt missing at %s", prompt_path
                 )
-                return {"status": "failed", "error": f"prompt missing at {prompt_path}"}
+                error = f"prompt missing at {prompt_path}"
+                outcome = RepublishOutcome(
+                    decision="failed",
+                    reason=reason,
+                    site_id=str(site_summary.get("id") or "").strip(),
+                    fingerprint=fingerprint,
+                    error=error,
+                )
+                failure_payload: dict[str, Any] = {
+                    "status": "failed",
+                    "error": error,
+                }
+                if not dry_run:
+                    failure_payload["republish_failure_event"] = (
+                        record_dd_republish_failure_event(
+                            outcome,
+                            site_summary,
+                            settings,
+                        )
+                    )
+                return failure_payload
             _system_prompt = prompt_path.read_text(encoding="utf-8")
         if _shared_cache is None:
             _shared_cache = list_shared_folders_once(gc)
@@ -173,6 +195,7 @@ def main(dry_run: bool = False, scan_only: bool = False) -> None:
             # Inject the script-local pipeline reference so future
             # mocking parity matches the raycon_followup pattern.
             pipeline_runner=process_site_pipeline,
+            failure_event_recorder=record_dd_republish_failure_event,
         )
         return outcome.as_dict()
 

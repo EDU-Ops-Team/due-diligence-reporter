@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from due_diligence_reporter.dd_republish import (
     DD_REPUBLISH_FORCE_AFTER,
@@ -30,8 +30,10 @@ from due_diligence_reporter.dd_republish import (
     REASON_RAYCON,
     REASON_SCHOOL_APPROVAL,
     REASON_VENDOR_SIR,
+    RepublishOutcome,
     load_state,
     maybe_republish_dd_report,
+    record_dd_republish_failure_event,
     save_state,
 )
 
@@ -88,6 +90,7 @@ def _call_helper(
     force=False,
     now=None,
     open_questions_before=None,
+    failure_event_recorder=None,
 ):
     """Driver helper to keep the test signatures terse."""
     return maybe_republish_dd_report(
@@ -106,6 +109,7 @@ def _call_helper(
         or MagicMock(return_value=_existing_dd_report()),
         pipeline_runner=runner or _pipeline_runner_factory(),
         open_questions_before=open_questions_before,
+        failure_event_recorder=failure_event_recorder,
     )
 
 
@@ -158,6 +162,92 @@ class TestVendorSIRArrival:
         assert outcome.decision == "republish"
         assert outcome.pipeline_status == "generation_failed"
         assert state == {}
+
+    def test_failed_pipeline_status_records_failure_event_when_requested(self):
+        recorder = MagicMock(return_value={"status": "created", "rhodes_note_id": "NOTE1"})
+        runner = _pipeline_runner_factory(status="generation_failed")
+
+        outcome = _call_helper(
+            reason=REASON_VENDOR_SIR,
+            fingerprint="sir-file-1:2026-05-05T10:00:00Z",
+            runner=runner,
+            failure_event_recorder=recorder,
+        )
+
+        assert outcome.decision == "republish"
+        assert outcome.pipeline_status == "generation_failed"
+        assert outcome.failure_event == {"status": "created", "rhodes_note_id": "NOTE1"}
+        recorder.assert_called_once()
+        assert recorder.call_args.args[0] is outcome
+
+    def test_raised_pipeline_records_failure_event_when_requested(self):
+        recorder = MagicMock(return_value={"status": "created", "rhodes_note_id": "NOTE1"})
+        runner = MagicMock(side_effect=RuntimeError("Anthropic 500"))
+
+        outcome = _call_helper(
+            reason=REASON_VENDOR_SIR,
+            fingerprint="sir-file-1:2026-05-05T10:00:00Z",
+            runner=runner,
+            failure_event_recorder=recorder,
+        )
+
+        assert outcome.decision == "failed"
+        assert "Anthropic 500" in outcome.error
+        assert outcome.failure_event == {"status": "created", "rhodes_note_id": "NOTE1"}
+        recorder.assert_called_once()
+
+    def test_record_dd_republish_failure_event_posts_chat_when_owner_note_not_verified(self):
+        settings = MagicMock()
+        settings.google_chat_webhook_url = "https://chat.example/webhook"
+        outcome = RepublishOutcome(
+            decision="failed",
+            reason=REASON_VENDOR_SIR,
+            site_id="SITE1",
+            fingerprint="sir-file-1:2026-05-05T10:00:00Z",
+            error="Anthropic 500",
+            source_event={
+                "source_type": "vendor_sir",
+                "drive_file_id": "sir-file-1",
+                "file_name": "Alpha Keller SIR.pdf",
+            },
+        )
+        site_summary = {
+            "id": "SITE1",
+            "title": "Alpha Keller",
+            "drive_folder_url": "https://drive.google.com/drive/folders/root",
+            "p1_assignee_email": "owner@example.com",
+        }
+
+        with (
+            patch(
+                "due_diligence_reporter.dd_republish.record_rhodes_automation_event",
+                return_value=(
+                    {
+                        "status": "failed",
+                        "reason": "missing_note_id",
+                        "owner_notification": "none",
+                    },
+                    "AutomationEvent v1\nKind: dd_report_republish_failed",
+                ),
+            ) as record_event,
+            patch(
+                "due_diligence_reporter.dd_republish.post_google_chat_to_configured_webhooks",
+                return_value={"status": "sent"},
+            ) as post_chat,
+        ):
+            status = record_dd_republish_failure_event(outcome, site_summary, settings)
+
+        assert status["status"] == "failed"
+        assert status["google_chat"] == {"status": "sent"}
+        event_arg = record_event.call_args.args[0]
+        assert event_arg.event_type == "dd_report_republish_failed"
+        assert event_arg.site_id == "SITE1"
+        assert "Anthropic 500" in event_arg.details["Failure reason"]
+        assert record_event.call_args.kwargs["owner_email"] == "owner@example.com"
+        post_chat.assert_called_once_with(
+            "https://chat.example/webhook",
+            "AutomationEvent v1\nKind: dd_report_republish_failed",
+        )
 
     def test_same_fingerprint_inside_force_after_skips(self):
         """Same SIR fingerprint repeated within 12h → no diff, no republish."""

@@ -8,7 +8,7 @@ from typing import Any
 
 from .classifier import classify_document
 from .config import Settings
-from .dd_republish import maybe_republish_dd_report
+from .dd_republish import maybe_republish_dd_report, record_dd_republish_failure_event
 from .google_client import GoogleClient
 from .m1_lookup import _list_m1_documents_by_type, _resolve_m1_folder
 from .open_questions import source_event_from_drive_file, source_type_for_doc_type
@@ -142,18 +142,23 @@ def run_vendor_doc_republish_sweep(
             continue
 
         for event in events:
+            kwargs = {
+                "site_summary": site_summary,
+                "reason": event["source_type"],
+                "content_fingerprint": event["fingerprint"],
+                "settings": settings,
+                "system_prompt": system_prompt,
+                "shared_cache": shared_cache,
+                "republish_state": republish_state,
+                "dry_run": dry_run,
+                "source_event": event,
+                "pipeline_runner": pipeline_runner,
+            }
+            if republish_callback is maybe_republish_dd_report:
+                kwargs["failure_event_recorder"] = record_dd_republish_failure_event
             outcome = republish_callback(
                 gc,
-                site_summary=site_summary,
-                reason=event["source_type"],
-                content_fingerprint=event["fingerprint"],
-                settings=settings,
-                system_prompt=system_prompt,
-                shared_cache=shared_cache,
-                republish_state=republish_state,
-                dry_run=dry_run,
-                source_event=event,
-                pipeline_runner=pipeline_runner,
+                **kwargs,
             )
             row = outcome.as_dict() if hasattr(outcome, "as_dict") else dict(outcome)
             row["site_title"] = site_summary.get("title", "")
@@ -175,13 +180,25 @@ def run_vendor_doc_republish_sweep(
 
 
 def _site_summary(site_record: dict[str, Any]) -> dict[str, Any]:
+    p1_dri = site_record.get("p1_dri") or site_record.get("p1Dri")
+    p1_user_id = ""
+    if isinstance(p1_dri, dict):
+        p1_user_id = str(
+            p1_dri.get("userId")
+            or p1_dri.get("user_id")
+            or p1_dri.get("_id")
+            or p1_dri.get("id")
+            or ""
+        ).strip()
     return {
         "id": str(site_record.get("id") or site_record.get("site_id") or "").strip(),
+        "slug": str(site_record.get("slug") or site_record.get("site_slug") or "").strip(),
         "title": str(site_record.get("title") or site_record.get("name") or "").strip(),
         "address": str(site_record.get("address") or site_record.get("site_address") or "").strip(),
         "drive_folder_url": str(site_record.get("drive_folder_url") or "").strip(),
         "p1_assignee_name": str(site_record.get("p1_assignee_name") or "").strip(),
         "p1_assignee_email": str(site_record.get("p1_assignee_email") or "").strip(),
+        "p1_assignee_user_id": str(site_record.get("p1_assignee_user_id") or p1_user_id).strip(),
         "created_date": str(site_record.get("created_date") or "").strip(),
     }
 
