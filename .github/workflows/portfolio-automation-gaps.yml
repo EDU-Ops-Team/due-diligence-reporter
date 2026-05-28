@@ -1,0 +1,91 @@
+name: Portfolio Automation Gaps
+
+on:
+  schedule:
+    - cron: '15 11 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      max_sites:
+        description: 'Maximum active Rhodes sites to scan'
+        required: false
+        default: '100'
+        type: string
+      include_clean:
+        description: 'Include sites with no detected gaps'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+concurrency:
+  group: portfolio-automation-gaps
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  portfolio-automation-gaps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.14"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Verify required secrets
+        run: |
+          [ -n "${{ secrets.RHODES_API_KEY }}" ] || { echo "RHODES_API_KEY missing"; exit 1; }
+
+      - name: Create .env file from secrets
+        env:
+          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
+          RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
+        run: |
+          touch .env
+          echo "RHODES_API_KEY=${RHODES_API_KEY}" >> .env
+          echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
+
+      - name: Build portfolio gap snapshot
+        env:
+          INPUT_MAX_SITES: ${{ inputs.max_sites }}
+          INPUT_INCLUDE_CLEAN: ${{ inputs.include_clean }}
+        run: |
+          set -euo pipefail
+          max_sites="${INPUT_MAX_SITES:-100}"
+          include_clean="${INPUT_INCLUDE_CLEAN:-false}"
+          args=(--max-sites "$max_sites")
+          if [ "$include_clean" = "true" ]; then
+            args+=(--include-clean)
+          else
+            args+=(--no-include-clean)
+          fi
+
+          uv run ddr portfolio-gaps "${args[@]}" | tee portfolio-automation-gaps.txt
+          uv run ddr portfolio-gaps "${args[@]}" --json > portfolio-automation-gaps.json
+
+          {
+            echo "## Portfolio Automation Gaps"
+            echo
+            echo '```text'
+            cat portfolio-automation-gaps.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload snapshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-automation-gaps
+          path: |
+            portfolio-automation-gaps.txt
+            portfolio-automation-gaps.json

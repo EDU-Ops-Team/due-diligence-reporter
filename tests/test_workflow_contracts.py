@@ -40,11 +40,14 @@ def test_workflow_dispatch_site_inputs_are_not_interpolated_in_shell() -> None:
         "vendor-doc-republish-sweep.yml",
         "reprocess-mislabeled.yml",
         "drive-rhodes-reconciliation.yml",
+        "portfolio-automation-gaps.yml",
     ):
         shell = "\n".join(_run_blocks(_workflow_text(workflow)))
         assert "${{ inputs.site }}" not in shell
         assert "${{ inputs.since }}" not in shell
         assert "${{ inputs.max_results }}" not in shell
+        assert "${{ inputs.max_sites }}" not in shell
+        assert "${{ inputs.include_clean }}" not in shell
 
 
 def test_publish_to_mcp_hive_never_packages_generated_secret_files() -> None:
@@ -91,6 +94,16 @@ def test_long_running_mutating_workflows_have_timeouts() -> None:
     assert "timeout-minutes: 60" in _workflow_text("inbox-scan.yml")
     assert "timeout-minutes: 60" in _workflow_text("vendor-doc-republish-sweep.yml")
     assert "timeout-minutes: 60" in _workflow_text("drive-rhodes-reconciliation.yml")
+
+
+def test_portfolio_gap_snapshot_is_read_only_rhodes_workflow() -> None:
+    text = _workflow_text("portfolio-automation-gaps.yml")
+
+    assert "RHODES_API_KEY" in text
+    assert "portfolio-gaps" in text
+    assert "portfolio-automation-gaps.json" in text
+    assert "OAUTH_CLIENT_ID" not in text
+    assert "OAUTH_REFRESH_TOKEN" not in text
 
 
 def test_inbox_scan_can_enable_firestore_retry_state_without_required_secret() -> None:
