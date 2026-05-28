@@ -1,5 +1,48 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - DDR Report Event Test Gap
+
+Confirmed PR #137 was merged:
+
+- `due-diligence-reporter` PR #137 merged at `c8fcf1a`.
+
+Closed the local validation gap called out in the prior handoff where
+`tests/test_report_pipeline.py` was excluded because one success-path test did
+not stub the newer Rhodes report-event write.
+
+Branch: `codex/ddr-report-event-test-gap`
+
+Changed:
+
+- Updated `test_report_created_does_not_record_publish_step` so it stubs the
+  Rhodes report-event note, passes a site ID, and still verifies no legacy
+  publish/upload side effect happens.
+- This keeps the test aligned with the current contract: report-created success
+  writes a Rhodes `dd_report_created` event and should not resurrect the old
+  publish side effect.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-report-pipeline-fix tests/test_report_pipeline.py -q
+uv run ruff check tests\test_report_pipeline.py
+uv run pytest --basetemp C:\tmp\ddr-report-pipeline-gap-broad tests/test_automation_event.py tests/test_report_pipeline.py tests/test_dd_republish.py tests/test_vendor_doc_sweep.py tests/test_raycon_followup.py tests/test_inbox_scanner.py tests/test_workflow_contracts.py tests/test_rhodes_events.py -q
+git diff --check
+```
+
+Results:
+
+- Report pipeline suite: 44 passed.
+- Ruff on touched test: passed.
+- Broader affected DDR suite including report pipeline: 242 passed.
+- Diff check: passed with expected Windows LF-to-CRLF warnings only.
+
+Next:
+
+- Commit, push, and open the PR.
+- After merge, continue with the next remaining shared-adapter/record-completion
+  wrap-up item that is not blocked by the hosted Rhodes MCP `addNote` issue.
+
 ## 2026-05-28 - DDR Republish Failure Events
 
 Confirmed downstream PR #54 was merged, then continued the next DDR

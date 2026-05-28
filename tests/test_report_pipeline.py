@@ -926,6 +926,7 @@ class TestProcessSitePipeline:
         assert step.artifacts[0].metadata["event_type"] == "vendor_gate_review_required"
         assert step.artifacts[0].metadata["rhodes_note_id"] == "NOTE-VENDOR"
 
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
     @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
@@ -934,8 +935,9 @@ class TestProcessSitePipeline:
         mock_readiness,
         mock_agent,
         mock_completeness,
+        mock_rhodes_note,
     ):
-        """Success path does not record a publish side effect."""
+        """Success path records the Rhodes event but not the old publish side effect."""
         mock_readiness.return_value = {
             "sir_found": True,
             "isp_found": False,
@@ -959,15 +961,24 @@ class TestProcessSitePipeline:
             return {"ready_to_send": True, "pending_section_count": 0}
 
         mock_completeness.side_effect = fake_completeness
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "none",
+        }
         gc = MagicMock()
         result = process_site_pipeline(
             gc, "Alpha Keller", "https://drive.google.com/drive/folders/abc123",
             ["Alpha Keller"], {}, "system prompt", _make_settings(),
+            site_id="SITE1",
         )
 
         assert result.status == "report_created"
         assert result.run_id
         assert result.failed_step is None
+        assert result.rhodes_report_event is not None
+        assert result.rhodes_report_event["rhodes_note_id"] == "NOTE1"
         assert result.quality_band in {"green", "yellow", "orange", "red"}
         assert not any(step.step.startswith("publish.") for step in result.steps)
         gc.upload_file_to_folder.assert_not_called()
