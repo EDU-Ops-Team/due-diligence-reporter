@@ -173,6 +173,17 @@ def _coerce_note(payload: Any) -> dict[str, Any]:
     return {}
 
 
+def _coerce_note_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("notes", "data", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
 def _coerce_user(payload: Any) -> dict[str, Any]:
     if isinstance(payload, list):
         first = next((item for item in payload if isinstance(item, dict)), {})
@@ -616,20 +627,61 @@ class RhodesClient:
     def add_site_note(
         self,
         *,
-        site_id: str,
+        site_id: str = "",
+        site_slug: str = "",
         body: str,
         mentions: Iterable[str] | None = None,
     ) -> dict[str, Any]:
-        if not site_id.strip():
-            raise RhodesError("site_id is required")
+        clean_site_id = site_id.strip()
+        clean_site_slug = site_slug.strip()
+        if not clean_site_id and not clean_site_slug:
+            raise RhodesError("site_id or site_slug is required")
         if not body.strip():
             raise RhodesError("body is required")
 
-        payload: dict[str, Any] = {"siteId": site_id.strip(), "body": body.strip()}
+        payload: dict[str, Any] = {"body": body.strip()}
+        if clean_site_id:
+            payload["siteId"] = clean_site_id
+        else:
+            payload["siteSlug"] = clean_site_slug
         clean_mentions = [m.strip() for m in (mentions or []) if m.strip()]
         if clean_mentions:
             payload["mentions"] = clean_mentions
         return _coerce_note(self.call_tool("addNote", payload))
+
+    def list_notes(
+        self,
+        *,
+        site_id: str = "",
+        site_slug: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        clean_site_id = site_id.strip()
+        clean_site_slug = site_slug.strip()
+        if not clean_site_id and not clean_site_slug:
+            raise RhodesError("site_id or site_slug is required")
+        payload: dict[str, Any] = {"limit": limit}
+        if clean_site_id:
+            payload["siteId"] = clean_site_id
+        else:
+            payload["siteSlug"] = clean_site_slug
+        return _coerce_note_list(self.call_tool("listNotes", payload))
+
+    def find_site_note_by_body(
+        self,
+        *,
+        site_id: str = "",
+        site_slug: str = "",
+        body: str,
+    ) -> dict[str, Any] | None:
+        clean_body = body.strip()
+        if not clean_body:
+            return None
+        notes = self.list_notes(site_id=site_id, site_slug=site_slug, limit=50)
+        for note in notes:
+            if str(note.get("body") or "").strip() == clean_body:
+                return note
+        return None
 
     def get_user(
         self,
@@ -778,6 +830,7 @@ def lookup_rhodes_site_owner(
 def add_rhodes_site_note(
     *,
     site_id: str,
+    site_slug: str = "",
     body: str,
     owner_user_id: str = "",
     owner_email: str = "",
@@ -786,17 +839,19 @@ def add_rhodes_site_note(
 ) -> dict[str, Any]:
     """Create a Rhodes site note and mention the owner when possible."""
     clean_site_id = site_id.strip()
+    clean_site_slug = site_slug.strip()
     clean_body = body.strip()
     clean_owner_user_id = owner_user_id.strip()
     clean_owner_email = owner_email.strip()
     base = {
         "rhodes_site_id": clean_site_id,
+        "rhodes_site_slug": clean_site_slug,
         "owner_user_id": clean_owner_user_id,
         "owner_email": clean_owner_email,
         "owner_notification": "none",
     }
-    if not clean_site_id:
-        return {**base, "status": "skipped", "reason": "missing_site_id"}
+    if not clean_site_id and not clean_site_slug:
+        return {**base, "status": "skipped", "reason": "missing_site_identity"}
     if not clean_body:
         return {**base, "status": "skipped", "reason": "missing_body"}
 
@@ -821,15 +876,25 @@ def add_rhodes_site_note(
         )
         note = rhodes.add_site_note(
             site_id=clean_site_id,
+            site_slug=clean_site_slug,
             body=clean_body,
             mentions=mention_user_ids,
         )
+        note_id = _note_id(note)
+        if not note_id:
+            note = _recover_note_without_id(
+                rhodes,
+                site_id=clean_site_id,
+                site_slug=clean_site_slug,
+                body=clean_body,
+                mentions=mention_user_ids,
+            )
+            note_id = _note_id(note)
     except RhodesError as exc:
         return {**base, "status": "failed", "reason": "rhodes_error", "error": str(exc)}
     except Exception as exc:  # noqa: BLE001 - non-fatal scanner side effect
         return {**base, "status": "failed", "reason": "unexpected_error", "error": str(exc)}
 
-    note_id = _note_id(note)
     if not note_id:
         return {
             **base,
@@ -852,6 +917,57 @@ def add_rhodes_site_note(
         "owner_notification": "mentioned" if resolved_owner_user_id else "none",
         "mentioned_user_ids": mention_user_ids,
     }
+
+
+def _recover_note_without_id(
+    rhodes: RhodesClient,
+    *,
+    site_id: str,
+    site_slug: str,
+    body: str,
+    mentions: Iterable[str],
+) -> dict[str, Any]:
+    """Recover a note ID after an empty addNote response, then retry by slug."""
+
+    recovered = _find_note_after_empty_response(
+        rhodes,
+        site_id=site_id,
+        site_slug=site_slug,
+        body=body,
+    )
+    if recovered is not None:
+        return recovered
+
+    if site_slug:
+        note = rhodes.add_site_note(site_slug=site_slug, body=body, mentions=mentions)
+        if _note_id(note):
+            return note
+        recovered = _find_note_after_empty_response(
+            rhodes,
+            site_id="",
+            site_slug=site_slug,
+            body=body,
+        )
+        if recovered is not None:
+            return recovered
+    return {}
+
+
+def _find_note_after_empty_response(
+    rhodes: RhodesClient,
+    *,
+    site_id: str,
+    site_slug: str,
+    body: str,
+) -> dict[str, Any] | None:
+    try:
+        return rhodes.find_site_note_by_body(
+            site_id=site_id,
+            site_slug=site_slug,
+            body=body,
+        )
+    except RhodesError:
+        return None
 
 
 def _unique_nonempty(values: Iterable[str]) -> list[str]:

@@ -19,11 +19,13 @@ class FakeRhodesClient:
         sites: list[dict[str, Any]] | None = None,
         drive_root: tuple[str, str] | Exception | None = None,
         note_response: dict[str, Any] | None = None,
+        note_responses: list[dict[str, Any] | None] | None = None,
     ) -> None:
         self.site = site or {}
         self.sites = sites or []
         self.drive_root = drive_root
         self.note_response = note_response
+        self.note_responses = list(note_responses or [])
         self.documents: list[dict[str, Any]] = []
         self.registered_documents: list[dict[str, Any]] = []
         self.notes: list[dict[str, Any]] = []
@@ -130,7 +132,8 @@ class FakeRhodesClient:
     def add_site_note(
         self,
         *,
-        site_id: str,
+        site_id: str = "",
+        site_slug: str = "",
         body: str,
         mentions: list[str] | None = None,
     ) -> dict[str, Any]:
@@ -139,21 +142,68 @@ class FakeRhodesClient:
                 "add_site_note",
                 {
                     "site_id": site_id,
+                    "site_slug": site_slug,
                     "body": body,
                     "mentions": ",".join(mentions or []),
                 },
             )
         )
+        if self.note_responses:
+            response = self.note_responses.pop(0)
+            if response is not None:
+                return response
         if self.note_response is not None:
             return self.note_response
         note = {
             "_id": f"NOTE{len(self.notes) + 1}",
             "siteId": site_id,
+            "siteSlug": site_slug,
             "body": body,
             "mentions": mentions or [],
         }
         self.notes.append(note)
         return note
+
+    def list_notes(
+        self,
+        *,
+        site_id: str = "",
+        site_slug: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        self.calls.append(
+            (
+                "list_notes",
+                {
+                    "site_id": site_id,
+                    "site_slug": site_slug,
+                    "limit": str(limit),
+                },
+            )
+        )
+        return self.notes[:limit]
+
+    def find_site_note_by_body(
+        self,
+        *,
+        site_id: str = "",
+        site_slug: str = "",
+        body: str,
+    ) -> dict[str, Any] | None:
+        self.calls.append(
+            (
+                "find_site_note_by_body",
+                {
+                    "site_id": site_id,
+                    "site_slug": site_slug,
+                    "body": body,
+                },
+            )
+        )
+        for note in self.notes:
+            if str(note.get("body") or "").strip() == body.strip():
+                return note
+        return None
 
 
 def test_lookup_rhodes_site_owner_returns_p1_report_fields() -> None:
@@ -462,6 +512,64 @@ def test_add_rhodes_site_note_requires_returned_note_id() -> None:
     assert result["owner_notification"] == "none"
     assert result["rhodes_note_id"] == ""
     assert result["mentioned_user_ids"] == ["OWNER1", "GREG1"]
+
+
+def test_add_rhodes_site_note_recovers_note_id_from_readback() -> None:
+    body = "AutomationEvent v1\nKind: raycon_followup_alert"
+    client = FakeRhodesClient(note_response={"text": "created"})
+    client.notes = [{"_id": "NOTE-READBACK", "siteId": "SITE1", "body": body}]
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body=body,
+        owner_user_id="OWNER1",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "created"
+    assert result["rhodes_note_id"] == "NOTE-READBACK"
+    assert result["owner_notification"] == "mentioned"
+    assert (
+        "find_site_note_by_body",
+        {
+            "site_id": "SITE1",
+            "site_slug": "",
+            "body": body,
+        },
+    ) in client.calls
+
+
+def test_add_rhodes_site_note_retries_by_slug_when_site_id_returns_no_id() -> None:
+    client = FakeRhodesClient(note_responses=[{"text": "created"}, None])
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        site_slug="alpha-test",
+        body="AutomationEvent v1\nKind: raycon_followup_alert",
+        owner_user_id="OWNER1",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "created"
+    assert result["rhodes_note_id"] == "NOTE1"
+    assert client.calls[0] == (
+        "add_site_note",
+        {
+            "site_id": "SITE1",
+            "site_slug": "alpha-test",
+            "body": "AutomationEvent v1\nKind: raycon_followup_alert",
+            "mentions": "OWNER1",
+        },
+    )
+    assert client.calls[2] == (
+        "add_site_note",
+        {
+            "site_id": "",
+            "site_slug": "alpha-test",
+            "body": "AutomationEvent v1\nKind: raycon_followup_alert",
+            "mentions": "OWNER1",
+        },
+    )
 
 
 def test_add_rhodes_site_note_resolves_owner_email() -> None:
