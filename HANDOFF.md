@@ -7,7 +7,8 @@ alignment work.
 
 Branch: `codex/ddr-portfolio-automation-gap-snapshot`
 
-Current state: implementation complete locally; commit/PR pending.
+Current state: branch pushed and draft PR open:
+https://github.com/GFooteGK1/due-diligence-reporter/pull/140
 
 Changed:
 
@@ -44,7 +45,7 @@ Results:
 
 Next:
 
-- Commit, push, and open PR.
+- Wait for CI/review/merge on PR #140.
 - After merge, continue any remaining non-blocked plan item from a clean
   `main`, or revisit the hosted Rhodes MCP blocker if Rhodes-side support is
   ready.
