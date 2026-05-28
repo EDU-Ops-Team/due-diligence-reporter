@@ -322,8 +322,17 @@ def _raycon_followup_notification_succeeded(row: dict[str, Any]) -> bool:
         return False
     if event_status.get("owner_notification") == "mentioned":
         return True
+    if _row_has_site_owner(row):
+        return False
     google_chat = event_status.get("google_chat")
     return isinstance(google_chat, dict) and google_chat.get("status") == "posted"
+
+
+def _row_has_site_owner(row: dict[str, Any]) -> bool:
+    return bool(
+        str(row.get("p1_assignee_user_id") or "").strip()
+        or str(row.get("p1_assignee_email") or "").strip()
+    )
 
 
 def _mark_notified_alerts(
@@ -609,7 +618,7 @@ def _notify_raycon_followup_rows(
     alert_type: str,
     message_field: str,
     heading: str,
-) -> None:
+) -> list[dict[str, Any]]:
     chat_bodies: list[str] = []
     chat_rows: list[dict[str, Any]] = []
     for row in rows:
@@ -623,12 +632,20 @@ def _notify_raycon_followup_rows(
             message=message,
         )
         row["raycon_followup_event"] = event_status
+        logger.info(
+            "RayCon follow-up notification status: %s",
+            json.dumps(_notification_status_summary(row, event_status), default=str),
+        )
         if should_alert_google_chat(event_status):
             chat_bodies.append(body)
             chat_rows.append(row)
 
     if not chat_bodies:
-        return
+        return [
+            row
+            for row in rows
+            if row.get(message_field) and not _raycon_followup_notification_succeeded(row)
+        ]
 
     webhook_url = str(getattr(settings, "google_chat_webhook_url", "") or "").strip()
     chat_result: dict[str, str]
@@ -642,6 +659,36 @@ def _notify_raycon_followup_rows(
         stored_event_status = row.get("raycon_followup_event")
         if isinstance(stored_event_status, dict):
             stored_event_status["google_chat"] = chat_result
+            logger.info(
+                "RayCon follow-up Chat fallback status: %s",
+                json.dumps(
+                    _notification_status_summary(row, stored_event_status),
+                    default=str,
+                ),
+            )
+
+    return [
+        row
+        for row in rows
+        if row.get(message_field) and not _raycon_followup_notification_succeeded(row)
+    ]
+
+
+def _notification_status_summary(
+    row: dict[str, Any],
+    event_status: dict[str, Any],
+) -> dict[str, Any]:
+    google_chat = event_status.get("google_chat")
+    return {
+        "site": row.get("site"),
+        "site_id": row.get("site_id"),
+        "owner_assigned": _row_has_site_owner(row),
+        "status": event_status.get("status"),
+        "reason": event_status.get("reason"),
+        "owner_notification": event_status.get("owner_notification"),
+        "rhodes_note_id": event_status.get("rhodes_note_id"),
+        "google_chat": google_chat if isinstance(google_chat, dict) else None,
+    }
 
 
 def _dispatch_raycon_job(
@@ -1516,17 +1563,20 @@ def main(argv: list[str] | None = None) -> int:
 
     alert_state_changed = False
     dedup_state = _load_alert_state() if alerts or errors else {}
+    notification_failures: list[dict[str, Any]] = []
 
     if alerts:
         fresh_alerts = _fresh_dedup_alerts(alerts, dedup_state)
         if fresh_alerts:
-            _notify_raycon_followup_rows(
-                fresh_alerts,
-                settings,
-                run_id=event_run_id,
-                alert_type="stuck_site",
-                message_field="alert",
-                heading="RayCon scenario follow-up: stuck sites",
+            notification_failures.extend(
+                _notify_raycon_followup_rows(
+                    fresh_alerts,
+                    settings,
+                    run_id=event_run_id,
+                    alert_type="stuck_site",
+                    message_field="alert",
+                    heading="RayCon scenario follow-up: stuck sites",
+                )
             )
             new_state = _mark_notified_alerts(fresh_alerts, dedup_state)
             alert_state_changed = alert_state_changed or new_state != dedup_state
@@ -1544,13 +1594,15 @@ def main(argv: list[str] | None = None) -> int:
             row["alert_dedup_key"] = _error_alert_dedup_key(row)
         fresh_errors = _fresh_dedup_alerts(errors, dedup_state)
         if fresh_errors:
-            _notify_raycon_followup_rows(
-                fresh_errors,
-                settings,
-                run_id=event_run_id,
-                alert_type="error",
-                message_field="error",
-                heading="RayCon scenario follow-up: errors",
+            notification_failures.extend(
+                _notify_raycon_followup_rows(
+                    fresh_errors,
+                    settings,
+                    run_id=event_run_id,
+                    alert_type="error",
+                    message_field="error",
+                    heading="RayCon scenario follow-up: errors",
+                )
             )
             new_state = _mark_notified_alerts(fresh_errors, dedup_state)
             alert_state_changed = alert_state_changed or new_state != dedup_state
@@ -1566,6 +1618,21 @@ def main(argv: list[str] | None = None) -> int:
     if alert_state_changed:
         _save_alert_state(dedup_state)
 
+    if notification_failures:
+        for row in notification_failures:
+            logger.error(
+                "RayCon follow-up notification delivery failed: %s",
+                json.dumps(
+                    {
+                        "site": row.get("site"),
+                        "site_id": row.get("site_id"),
+                        "owner_assigned": _row_has_site_owner(row),
+                        "raycon_followup_event": row.get("raycon_followup_event"),
+                    },
+                    default=str,
+                ),
+            )
+
     logger.info(
         "Run complete: published=%d dispatched=%d alerts=%d errors=%d total_sites=%d",
         len(published),
@@ -1574,7 +1641,7 @@ def main(argv: list[str] | None = None) -> int:
         len(errors),
         len(results),
     )
-    return 0 if not errors else 1
+    return 0 if not errors and not notification_failures else 1
 
 
 if __name__ == "__main__":

@@ -1130,6 +1130,14 @@ class TestNotificationDedupState:
                 },
             },
             {
+                "site": "Owner Failed Chat Posted",
+                "p1_assignee_user_id": "user-1",
+                "raycon_followup_event": {
+                    "owner_notification": "none",
+                    "google_chat": {"status": "posted"},
+                },
+            },
+            {
                 "site": "Not Delivered",
                 "raycon_followup_event": {
                     "owner_notification": "none",
@@ -1142,6 +1150,7 @@ class TestNotificationDedupState:
 
         assert new_state["Owner Mentioned"] == now.isoformat()
         assert new_state["Chat Posted"] == now.isoformat()
+        assert "Owner Failed Chat Posted" not in new_state
         assert "Not Delivered" not in new_state
 
 
@@ -1172,7 +1181,7 @@ class TestRayConFollowupEventNotification:
             }
         ]
 
-        _notify_raycon_followup_rows(
+        failures = _notify_raycon_followup_rows(
             rows,
             SimpleNamespace(google_chat_webhook_url="https://chat.example/hook"),
             run_id="raycon-followup-20260527213000",
@@ -1186,6 +1195,7 @@ class TestRayConFollowupEventNotification:
         assert mock_add_note.call_args.kwargs["owner_user_id"] == "user-1"
         assert "Kind: raycon_followup_alert" in mock_add_note.call_args.kwargs["body"]
         mock_post_chat.assert_not_called()
+        assert failures == []
         assert rows[0]["raycon_followup_event"]["rhodes_note_id"] == "note-1"
         assert rows[0]["raycon_followup_event"]["owner_notification"] == "mentioned"
 
@@ -1211,7 +1221,7 @@ class TestRayConFollowupEventNotification:
             }
         ]
 
-        _notify_raycon_followup_rows(
+        failures = _notify_raycon_followup_rows(
             rows,
             SimpleNamespace(google_chat_webhook_url="https://chat.example/hook"),
             run_id="raycon-followup-20260527213000",
@@ -1227,6 +1237,48 @@ class TestRayConFollowupEventNotification:
         assert "Kind: raycon_followup_alert" in chat_body
         assert "Mutation status: error" in chat_body
         assert "Message: raycon dispatch: RayCon 503" in chat_body
+        assert rows[0]["raycon_followup_event"]["google_chat"] == {
+            "status": "posted"
+        }
+        assert failures == []
+
+    @patch("scripts.raycon_followup._post_chat")
+    @patch("scripts.raycon_followup.add_rhodes_site_note")
+    def test_owner_note_failure_remains_delivery_failure_even_with_chat(
+        self,
+        mock_add_note,
+        mock_post_chat,
+    ):
+        mock_add_note.return_value = {
+            "status": "failed",
+            "reason": "rhodes_error",
+            "error": "Rhodes MCP returned 403",
+            "owner_user_id": "user-1",
+            "owner_notification": "none",
+        }
+        rows = [
+            {
+                "site": "Alpha Keller",
+                "site_id": "SITE1",
+                "alert": "raycon run failed: validation rejected capacity",
+                "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                "p1_assignee_user_id": "user-1",
+                "p1_assignee_email": "owner@example.com",
+            }
+        ]
+
+        failures = _notify_raycon_followup_rows(
+            rows,
+            SimpleNamespace(google_chat_webhook_url="https://chat.example/hook"),
+            run_id="raycon-followup-20260527213000",
+            alert_type="stuck_site",
+            message_field="alert",
+            heading="RayCon scenario follow-up: stuck sites",
+        )
+
+        mock_add_note.assert_called_once()
+        mock_post_chat.assert_called_once()
+        assert failures == rows
         assert rows[0]["raycon_followup_event"]["google_chat"] == {
             "status": "posted"
         }

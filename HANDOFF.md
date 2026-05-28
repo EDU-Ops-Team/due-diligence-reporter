@@ -1,5 +1,60 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - RayCon Alert Delivery Enforcement
+
+Tested PR #128 after merge on `main` at
+`164caac02d8c82582a4bd190fce105c32b3493ea`:
+
+- Tulsa manual run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26577057390
+- Santa Clara manual run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26577064119
+
+Live findings:
+
+- Both runs completed successfully.
+- Both runs detected the failed `raycon_scenario.json` and resolved Devin Bates
+  as the P1 owner.
+- Rhodes readback showed no new site note and no `note.added` audit entry for
+  either Tulsa or Santa Clara.
+- Workflow logs showed `published=0 alerts=1 errors=0`; the alert row existed,
+  but notification delivery was not visible in the logs and did not affect the
+  workflow exit code.
+
+Branch: `codex/raycon-alert-delivery-enforced`
+
+Changed:
+
+- RayCon follow-up now logs sanitized Rhodes/Chat notification status for each
+  fresh alert/error row.
+- Owner-assigned rows only count as delivered when Rhodes creates the note and
+  mentions the owner. A Google Chat post no longer advances alert dedupe for an
+  owner-assigned row whose owner notification failed.
+- Fresh alert/error rows with undelivered notifications now make the workflow
+  exit non-zero instead of completing green.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_raycon_followup.py --basetemp C:\tmp\pytest-raycon-followup
+uv run ruff check scripts/raycon_followup.py tests/test_raycon_followup.py
+uv run mypy scripts/raycon_followup.py
+```
+
+Results:
+
+- RayCon follow-up test file: 58 passed.
+- Ruff on touched files: passed.
+- Script Mypy: no issues.
+
+Next:
+
+- Open PR for `codex/raycon-alert-delivery-enforced`.
+- After merge, rerun RayCon Follow-up for `6940 S Utica` and
+  `2340 Calle de Luna`. If Rhodes note creation still fails, the workflow
+  should fail and log the exact `raycon_followup_event` status instead of
+  silently reporting success.
+
 ## 2026-05-28 - RayCon Failed Alert Backfill
 
 Confirmed PR #127 was merged at `cefda5c` and tested the production RayCon
