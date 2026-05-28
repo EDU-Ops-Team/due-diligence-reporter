@@ -105,6 +105,48 @@ def build_document_registration_failed_event(
     return event
 
 
+def build_inbox_manual_review_required_event(
+    *,
+    site_id: str,
+    site_name: str,
+    message_id: str,
+    thread_id: str,
+    filename: str,
+    doc_type: str,
+    confidence: float,
+    email_subject: str,
+    reason: str,
+    error: str = "",
+    created_at: str | None = None,
+) -> AutomationEvent:
+    """Build the DDR inbox manual-review decision event."""
+
+    details = {
+        "Gmail subject": email_subject.strip(),
+        "Filename": filename.strip(),
+        "DDR doc type": doc_type.strip(),
+        "Confidence": f"{confidence:.0%}",
+        "Manual review reason": reason.strip() or "manual_review",
+        "Gmail thread ID": thread_id.strip(),
+        "Error": error.strip(),
+    }
+    return AutomationEvent(
+        source_system="due-diligence-reporter",
+        source_id=f"{message_id}:{filename}:{reason}",
+        site_id=site_id.strip(),
+        site_name=site_name.strip() or "Unknown site",
+        event_type="inbox_manual_review_required",
+        artifact_ids={
+            "Gmail message ID": message_id,
+        },
+        decision_required=True,
+        requested_decision="review the inbound DD attachment and repair filing or site routing",
+        mutation_status=reason.strip() or "manual_review",
+        details=details,
+        created_at=created_at or datetime.now(UTC).isoformat(),
+    )
+
+
 def build_dd_report_summary_event(
     *,
     site_id: str,
