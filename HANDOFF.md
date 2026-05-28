@@ -23,6 +23,8 @@ Live findings:
 
 Branch: `codex/raycon-alert-delivery-enforced`
 
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/129
+
 Changed:
 
 - RayCon follow-up now logs sanitized Rhodes/Chat notification status for each
@@ -49,7 +51,7 @@ Results:
 
 Next:
 
-- Open PR for `codex/raycon-alert-delivery-enforced`.
+- Wait for CI/review on PR #129.
 - After merge, rerun RayCon Follow-up for `6940 S Utica` and
   `2340 Calle de Luna`. If Rhodes note creation still fails, the workflow
   should fail and log the exact `raycon_followup_event` status instead of
