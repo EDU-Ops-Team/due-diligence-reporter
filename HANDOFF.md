@@ -1,5 +1,56 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - Portfolio Gap Google Chat Alert
+
+Confirmed PR #141 was merged:
+
+- `due-diligence-reporter` PR #141 merged at `9696127`.
+
+Continued the portfolio-health wrap-up by making the scheduled snapshot
+operator-visible when gaps exist.
+
+Branch: `codex/ddr-portfolio-gap-chat-alert`
+
+Current state: branch pushed and draft PR open:
+https://github.com/GFooteGK1/due-diligence-reporter/pull/142
+
+Changed:
+
+- Added `portfolio_gap_notifications.py` to format and post compact Google
+  Chat summaries from the Rhodes-backed portfolio gap snapshot.
+- Added `scripts/post_portfolio_gap_summary.py` for the GitHub Actions
+  workflow.
+- Updated `Portfolio Automation Gaps` to post a Chat summary when
+  `sites_with_gaps > 0` and `GOOGLE_CHAT_WEBHOOK_URL` is configured.
+- Clean snapshots skip notification; missing webhook configuration skips
+  without failing the read-only workflow.
+- Updated workflow contract tests, notification tests, and process docs.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-portfolio-gap-chat-focused tests/test_portfolio_gap_notifications.py tests/test_workflow_contracts.py tests/test_ddr_cli.py tests/test_portfolio_automation_gaps.py -q
+uv run ruff check src\due_diligence_reporter\portfolio_gap_notifications.py scripts\post_portfolio_gap_summary.py tests\test_portfolio_gap_notifications.py tests\test_workflow_contracts.py
+uv run mypy src\due_diligence_reporter\portfolio_gap_notifications.py
+uv run mypy scripts\post_portfolio_gap_summary.py
+git diff --check
+```
+
+Results:
+
+- Focused notification/CLI/snapshot/workflow tests: 23 passed.
+- Ruff on touched source/script/tests: passed.
+- Mypy on touched source module: passed.
+- Mypy on touched script: passed.
+- Diff check: passed with expected Windows LF-to-CRLF warnings only.
+
+Next:
+
+- Wait for CI/review/merge on DDR PR #142.
+- After merge, continue the remaining non-blocked plan item from clean `main`,
+  or return to the hosted Rhodes MCP blocker once Rhodes-side note-write
+  support is ready.
+
 ## 2026-05-28 - Portfolio Gap CLI and Workflow
 
 Confirmed PR #140 was merged:
