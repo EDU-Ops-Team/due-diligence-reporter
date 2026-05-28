@@ -11,7 +11,8 @@ usable outside MCP.
 
 Branch: `codex/ddr-portfolio-gap-cli`
 
-Current state: implementation complete locally; commit/PR pending.
+Current state: branch pushed and draft PR open:
+https://github.com/GFooteGK1/due-diligence-reporter/pull/141
 
 Changed:
 
@@ -42,7 +43,7 @@ Results:
 
 Next:
 
-- Commit, push, and open PR.
+- Wait for CI/review/merge on PR #141.
 - After merge, continue the remaining non-blocked plan item from clean `main`,
   or return to the hosted Rhodes MCP blocker once Rhodes-side note-write
   support is ready.
