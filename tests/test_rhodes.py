@@ -546,6 +546,15 @@ def test_add_rhodes_site_note_requires_returned_note_id() -> None:
     assert result["owner_notification"] == "none"
     assert result["rhodes_note_id"] == ""
     assert result["mentioned_user_ids"] == ["OWNER1", "GREG1"]
+    assert result["note_response_summaries"] == [
+        {
+            "attempt": "site_id",
+            "type": "dict",
+            "has_note_id": False,
+            "keys": ["text"],
+            "text_prefix": "created",
+        }
+    ]
 
 
 def test_add_rhodes_site_note_recovers_note_id_from_readback() -> None:
@@ -595,6 +604,7 @@ def test_add_rhodes_site_note_retries_by_slug_when_site_id_returns_no_id() -> No
             "mentions": "OWNER1",
         },
     )
+    assert result.get("note_response_summaries") is None
     assert client.calls[2] == (
         "add_site_note",
         {

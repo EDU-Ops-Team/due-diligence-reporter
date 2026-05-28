@@ -1,5 +1,65 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - RayCon Note Response Diagnostics
+
+Confirmed PR #133 merged at `41709ae` and retested on `main`.
+
+Live test:
+
+- Deleted only the two stale RayCon runtime caches from the failed PR #132
+  retest runs:
+  - `raycon-runtime-state-26583402921`
+  - `raycon-runtime-state-26583402885`
+- Santa Clara run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26584277976
+- Tulsa run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26584277931
+- Both runs failed closed with `missing_note_id`.
+- Both runs included Devin Bates plus Greg Foote in `mentioned_user_ids`.
+- Both runs posted the Google Chat fallback.
+- Live Rhodes `listNotes` and audit-log readback still showed no new RayCon
+  note on either site.
+- The failure now survives explicit `anchorType: "site"` / `anchorId` payloads
+  as well as prior site-ID, site-slug, and readback recovery paths.
+
+Branch: `codex/raycon-note-response-diagnostics`
+
+Changed:
+
+- Missing-note failures now include `note_response_summaries`, a sanitized
+  shape-only summary of each `addNote` response attempt.
+- The summary includes attempt name, Python type, response keys, whether a note
+  ID was present, and a capped text prefix only when the MCP returned plain text.
+- It does not log the generated RayCon note body or secrets.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_rhodes.py tests/test_rhodes_events.py tests/test_raycon_followup.py --basetemp C:\tmp\pytest-raycon-note-response-diagnostics
+uv run ruff check src\due_diligence_reporter\rhodes.py tests\test_rhodes.py tests\test_rhodes_events.py tests\test_raycon_followup.py scripts\raycon_followup.py src\due_diligence_reporter\rhodes_events.py
+uv run mypy src/
+uv run mypy scripts/raycon_followup.py
+```
+
+Results:
+
+- Focused Rhodes/RayCon suite: 83 passed.
+- Ruff on touched code/tests: passed.
+- Source Mypy: no issues in 38 source files.
+- Script Mypy: no issues.
+
+Next:
+
+- Open PR for `codex/raycon-note-response-diagnostics`.
+- After merge, clear the fresh RayCon runtime caches from the failed PR #133
+  retest runs if they would suppress the new test:
+  - `raycon-runtime-state-26584277976`
+  - `raycon-runtime-state-26584277931`
+- Rerun RayCon Follow-up for Tulsa/Santa Clara.
+- Use `note_response_summaries` in the workflow logs to decide the actual
+  hosted Rhodes MCP/API fix. If the response is empty or confirmation-shaped,
+  the durable fix belongs in the deployed Rhodes MCP write surface.
+
 ## 2026-05-28 - RayCon Explicit Rhodes Note Anchor
 
 Confirmed PR #132 merged at `98d31ad` and retested on `main`.
