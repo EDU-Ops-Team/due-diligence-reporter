@@ -100,8 +100,10 @@ def test_portfolio_gap_snapshot_is_read_only_rhodes_workflow() -> None:
     text = _workflow_text("portfolio-automation-gaps.yml")
 
     assert "RHODES_API_KEY" in text
+    assert "GOOGLE_CHAT_WEBHOOK_URL" in text
     assert "portfolio-gaps" in text
     assert "portfolio-automation-gaps.json" in text
+    assert "post_portfolio_gap_summary.py" in text
     assert "OAUTH_CLIENT_ID" not in text
     assert "OAUTH_REFRESH_TOKEN" not in text
 

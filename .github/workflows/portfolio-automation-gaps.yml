@@ -82,6 +82,17 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Post Google Chat summary when gaps exist
+        env:
+          GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          uv run python scripts/post_portfolio_gap_summary.py \
+            --snapshot portfolio-automation-gaps.json \
+            --webhook-url "${GOOGLE_CHAT_WEBHOOK_URL:-}" \
+            --run-url "${GITHUB_RUN_URL}" \
+            --max-sites 5
+
       - name: Upload snapshot artifact
         uses: actions/upload-artifact@v4
         with:
