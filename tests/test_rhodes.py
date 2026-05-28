@@ -18,10 +18,12 @@ class FakeRhodesClient:
         site: dict[str, Any] | None = None,
         sites: list[dict[str, Any]] | None = None,
         drive_root: tuple[str, str] | Exception | None = None,
+        note_response: dict[str, Any] | None = None,
     ) -> None:
         self.site = site or {}
         self.sites = sites or []
         self.drive_root = drive_root
+        self.note_response = note_response
         self.documents: list[dict[str, Any]] = []
         self.registered_documents: list[dict[str, Any]] = []
         self.notes: list[dict[str, Any]] = []
@@ -142,6 +144,8 @@ class FakeRhodesClient:
                 },
             )
         )
+        if self.note_response is not None:
+            return self.note_response
         note = {
             "_id": f"NOTE{len(self.notes) + 1}",
             "siteId": site_id,
@@ -440,6 +444,24 @@ def test_add_rhodes_site_note_mentions_owner_and_extra_users() -> None:
     assert result["owner_notification"] == "mentioned"
     assert result["mentioned_user_ids"] == ["OWNER1", "GREG1"]
     assert client.notes[0]["mentions"] == ["OWNER1", "GREG1"]
+
+
+def test_add_rhodes_site_note_requires_returned_note_id() -> None:
+    client = FakeRhodesClient(note_response={"text": "created"})
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body="AutomationEvent v1\nKind: raycon_followup_alert",
+        owner_user_id="OWNER1",
+        extra_mention_user_ids=["GREG1"],
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "missing_note_id"
+    assert result["owner_notification"] == "none"
+    assert result["rhodes_note_id"] == ""
+    assert result["mentioned_user_ids"] == ["OWNER1", "GREG1"]
 
 
 def test_add_rhodes_site_note_resolves_owner_email() -> None:

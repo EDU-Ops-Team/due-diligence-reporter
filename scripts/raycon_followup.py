@@ -320,7 +320,11 @@ def _raycon_followup_notification_succeeded(row: dict[str, Any]) -> bool:
     event_status = row.get("raycon_followup_event")
     if not isinstance(event_status, dict):
         return False
-    if event_status.get("owner_notification") == "mentioned":
+    if (
+        event_status.get("status") == "created"
+        and event_status.get("owner_notification") == "mentioned"
+        and str(event_status.get("rhodes_note_id") or "").strip()
+    ):
         return True
     if _row_has_site_owner(row):
         return False

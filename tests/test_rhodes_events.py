@@ -95,7 +95,18 @@ def test_record_rhodes_automation_event_skips_missing_site_id() -> None:
 
 def test_should_alert_google_chat_requires_decision_and_owner_notification() -> None:
     assert not should_alert_google_chat(
-        {"status": "created", "owner_notification": "mentioned"}
+        {
+            "status": "created",
+            "owner_notification": "mentioned",
+            "rhodes_note_id": "NOTE1",
+        }
+    )
+    assert should_alert_google_chat(
+        {
+            "status": "created",
+            "owner_notification": "mentioned",
+            "rhodes_note_id": "",
+        }
     )
     assert should_alert_google_chat({"status": "failed", "owner_notification": "none"})
     assert should_alert_google_chat(
