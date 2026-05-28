@@ -215,20 +215,26 @@ def _document_drive_file_id(document: dict[str, Any]) -> str:
     return ""
 
 
-def _note_id(note: dict[str, Any]) -> str:
-    for key in ("noteId", "_id", "id"):
-        value = note.get(key)
+def _response_id(payload: Any, keys: tuple[str, ...]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in keys:
+        value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    for nested_key in ("note", "user", "record", "result", "data"):
+        nested_id = _response_id(payload.get(nested_key), keys)
+        if nested_id:
+            return nested_id
     return ""
+
+
+def _note_id(note: dict[str, Any]) -> str:
+    return _response_id(note, ("noteId", "_id", "id"))
 
 
 def _user_id(user: dict[str, Any]) -> str:
-    for key in ("userId", "_id", "id"):
-        value = user.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+    return _response_id(user, ("userId", "_id", "id"))
 
 
 @dataclass(frozen=True)
