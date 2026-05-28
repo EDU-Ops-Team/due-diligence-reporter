@@ -781,6 +781,7 @@ def add_rhodes_site_note(
     body: str,
     owner_user_id: str = "",
     owner_email: str = "",
+    extra_mention_user_ids: Iterable[str] | None = None,
     client: RhodesClient | None = None,
 ) -> dict[str, Any]:
     """Create a Rhodes site note and mention the owner when possible."""
@@ -812,10 +813,16 @@ def add_rhodes_site_note(
             else:
                 resolved_owner_user_id = _user_id(user or {})
                 owner_resolution = "resolved_from_email" if resolved_owner_user_id else "not_found"
+        mention_user_ids = _unique_nonempty(
+            [
+                resolved_owner_user_id,
+                *(extra_mention_user_ids or []),
+            ]
+        )
         note = rhodes.add_site_note(
             site_id=clean_site_id,
             body=clean_body,
-            mentions=[resolved_owner_user_id] if resolved_owner_user_id else [],
+            mentions=mention_user_ids,
         )
     except RhodesError as exc:
         return {**base, "status": "failed", "reason": "rhodes_error", "error": str(exc)}
@@ -830,7 +837,20 @@ def add_rhodes_site_note(
         "owner_user_id": resolved_owner_user_id,
         "owner_resolution": owner_resolution,
         "owner_notification": "mentioned" if resolved_owner_user_id else "none",
+        "mentioned_user_ids": mention_user_ids,
     }
+
+
+def _unique_nonempty(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for value in values:
+        clean = str(value or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        cleaned.append(clean)
+    return cleaned
 
 
 def map_ddr_doc_type_to_rhodes(ddr_doc_type: str) -> RhodesDocumentMapping | None:

@@ -1201,6 +1201,51 @@ class TestRayConFollowupEventNotification:
 
     @patch("scripts.raycon_followup._post_chat")
     @patch("scripts.raycon_followup.add_rhodes_site_note")
+    def test_extra_mentions_are_passed_to_rhodes_note(
+        self,
+        mock_add_note,
+        mock_post_chat,
+    ):
+        mock_add_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "note-1",
+            "owner_user_id": "user-1",
+            "owner_notification": "mentioned",
+            "mentioned_user_ids": ["user-1", "greg-user"],
+        }
+        rows = [
+            {
+                "site": "Alpha Keller",
+                "site_id": "SITE1",
+                "alert": "raycon run failed: validation rejected capacity",
+                "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                "p1_assignee_user_id": "user-1",
+                "p1_assignee_email": "owner@example.com",
+            }
+        ]
+
+        failures = _notify_raycon_followup_rows(
+            rows,
+            SimpleNamespace(
+                google_chat_webhook_url="https://chat.example/hook",
+                raycon_followup_extra_mention_user_ids="greg-user, other-user",
+            ),
+            run_id="raycon-followup-20260527213000",
+            alert_type="stuck_site",
+            message_field="alert",
+            heading="RayCon scenario follow-up: stuck sites",
+        )
+
+        assert mock_add_note.call_args.kwargs["extra_mention_user_ids"] == [
+            "greg-user",
+            "other-user",
+        ]
+        mock_post_chat.assert_not_called()
+        assert failures == []
+
+    @patch("scripts.raycon_followup._post_chat")
+    @patch("scripts.raycon_followup.add_rhodes_site_note")
     def test_missing_owner_posts_same_event_to_chat(
         self,
         mock_add_note,
