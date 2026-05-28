@@ -274,6 +274,58 @@ def build_vendor_gate_review_required_event(
     )
 
 
+def build_dd_report_republish_failed_event(
+    *,
+    site_id: str,
+    site_name: str,
+    reason: str,
+    content_fingerprint: str,
+    failure_reason: str,
+    mutation_status: str,
+    source_event: dict[str, Any] | None = None,
+    drive_folder_url: str = "",
+    run_id: str = "",
+    doc_url: str = "",
+    manifest_path: str = "",
+    created_at: str | None = None,
+) -> AutomationEvent:
+    """Build the DDR republish failure review event."""
+
+    source = source_event or {}
+    artifact_ids = {
+        "Content fingerprint": content_fingerprint.strip(),
+    }
+    if run_id:
+        artifact_ids["Run ID"] = run_id
+    source_drive_file_id = str(source.get("drive_file_id") or "").strip()
+    if source_drive_file_id:
+        artifact_ids["Source Drive file ID"] = source_drive_file_id
+
+    details = {
+        "Trigger source": str(source.get("source_type") or reason).strip(),
+        "Source file": str(source.get("file_name") or "").strip(),
+        "Failure reason": failure_reason.strip()[:1000],
+        "Pipeline status": mutation_status.strip(),
+        "Drive folder": drive_folder_url.strip(),
+        "DD report URL": doc_url.strip(),
+        "Manifest": manifest_path.strip(),
+    }
+
+    return AutomationEvent(
+        source_system="due-diligence-reporter",
+        source_id=run_id.strip() or f"{site_id}:{reason}:{content_fingerprint}".strip(":"),
+        site_id=site_id.strip(),
+        site_name=site_name.strip() or "Unknown site",
+        event_type="dd_report_republish_failed",
+        artifact_ids=artifact_ids,
+        decision_required=True,
+        requested_decision="review failed DDR republish and repair report generation",
+        mutation_status=mutation_status.strip() or "republish_failed",
+        details=details,
+        created_at=created_at or datetime.now(UTC).isoformat(),
+    )
+
+
 def build_raycon_followup_alert_event(
     *,
     site_id: str,

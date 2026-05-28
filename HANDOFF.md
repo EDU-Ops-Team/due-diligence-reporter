@@ -1,5 +1,70 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - DDR Republish Failure Events
+
+Confirmed downstream PR #54 was merged, then continued the next DDR
+notification/record-completion slice.
+
+Branch: `codex/ddr-republish-failure-events`
+
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/137
+
+Implementation commit: `94d31de` (`Record DDR republish failure events`)
+
+Current state: branch pushed, draft PR open. GitHub reports merge state
+`CLEAN`; no checks were reported when checked.
+
+Changed:
+
+- Added `dd_report_republish_failed` to the DDR `AutomationEvent v1` contract.
+- Failed event-driven DDR republish attempts now write a Rhodes decision note
+  carrying source trigger, fingerprint, run ID, manifest, Drive folder, and
+  failure reason.
+- If the Rhodes owner note is not verified, the same event body is posted to
+  the configured Google Chat webhook.
+- Wired the failure-event recorder into inbox scan, RayCon follow-up, and the
+  vendor doc republish sweep.
+- Prompt-missing branches now surface the same failure event in live mode while
+  keeping dry runs side-effect free.
+- Updated process docs and regression coverage.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_automation_event.py tests/test_dd_republish.py tests/test_vendor_doc_sweep.py tests/test_raycon_followup.py --basetemp C:\tmp\ddr-republish-failure-events-focused -q
+uv run pytest tests/test_automation_event.py tests/test_dd_republish.py tests/test_vendor_doc_sweep.py tests/test_raycon_followup.py tests/test_inbox_scanner.py tests/test_workflow_contracts.py tests/test_rhodes_events.py --basetemp C:\tmp\ddr-republish-failure-events-broad -q
+uv run ruff check src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\dd_republish.py src\due_diligence_reporter\vendor_doc_sweep.py scripts\scan_inbox.py scripts\raycon_followup.py tests\test_automation_event.py tests\test_dd_republish.py tests\test_vendor_doc_sweep.py tests\test_raycon_followup.py
+uv run mypy src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\dd_republish.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\rhodes_events.py
+uv run mypy scripts\scan_inbox.py scripts\raycon_followup.py
+git diff --check
+git diff --cached --check
+```
+
+Results:
+
+- Focused event/republish/RayCon/vendor sweep suite: 110 passed.
+- Broader affected DDR suite: 198 passed.
+- Ruff on touched code/tests: passed.
+- Focused source Mypy: no issues in 4 source files.
+- Script Mypy: no issues in 2 script files.
+- Diff checks: passed with expected Windows LF-to-CRLF warnings and the
+  existing user-level ignore permission warning only.
+
+Note:
+
+- A broader run that included `tests/test_report_pipeline.py` previously showed
+  the local setup failure where the report-created test does not stub the
+  Rhodes report-event write. That failure is unrelated to this branch and was
+  not included in the final affected-suite gate.
+
+Next:
+
+- Wait for CI/review on PR #137.
+- After merge, continue with the next remaining plan item. The separate hosted
+  Rhodes MCP blocker still remains: GitHub Actions service clients cannot
+  create verified Rhodes notes until the Rhodes team exposes a non-interactive
+  automation-safe note write path.
+
 ## 2026-05-28 - RayCon Rhodes MCP Elicitation Blocker
 
 Confirmed PR #135 merged at `0836280` and retested on `main`.

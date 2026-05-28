@@ -52,6 +52,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .automation_event import build_dd_report_republish_failed_event
 from .classifier import classify_document_type
 from .config import Settings
 from .google_client import GoogleClient
@@ -64,6 +65,11 @@ from .open_questions import (
 )
 from .pipeline_manifest import RUN_MANIFEST_DIR
 from .report_pipeline import PipelineResult, process_site_pipeline
+from .rhodes_events import (
+    post_google_chat_to_configured_webhooks,
+    record_rhodes_automation_event,
+    should_alert_google_chat,
+)
 from .utils import build_site_match_terms, extract_folder_id_from_url
 
 logger = logging.getLogger("dd_republish")
@@ -136,9 +142,10 @@ class RepublishOutcome:
     source_event: dict[str, Any] | None = None
     still_open_items: list[dict[str, Any]] | None = None
     closed_items: list[dict[str, Any]] | None = None
+    failure_event: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "dd_report_republish": self.decision,
             "republish_reason": self.reason,
             "site_id": self.site_id,
@@ -153,6 +160,15 @@ class RepublishOutcome:
             "still_open_items": self.still_open_items or [],
             "closed_items": self.closed_items or [],
         }
+        if self.failure_event is not None:
+            payload["republish_failure_event"] = self.failure_event
+        return payload
+
+
+FailureEventRecorder = Callable[
+    [RepublishOutcome, dict[str, Any], Settings],
+    dict[str, Any],
+]
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +346,7 @@ def maybe_republish_dd_report(
     | None = None,
     source_event: dict[str, Any] | SourceEvent | None = None,
     open_questions_before: list[dict[str, Any]] | None = None,
+    failure_event_recorder: FailureEventRecorder | None = None,
 ) -> RepublishOutcome:
     """Idempotent "republish DD Report if a material input changed" hook.
 
@@ -549,13 +566,19 @@ def maybe_republish_dd_report(
             site_name,
             fingerprint,
         )
-        return RepublishOutcome(
+        outcome = RepublishOutcome(
             decision="failed",
             reason=reason,
             site_id=site_id,
             fingerprint=fingerprint,
             error=str(e),
             source_event=event_dict,
+        )
+        return _with_failure_event(
+            outcome,
+            site_summary=site_summary,
+            settings=settings,
+            failure_event_recorder=failure_event_recorder,
         )
 
     # Record only successful report creation as the dedup boundary. Failed,
@@ -582,7 +605,7 @@ def maybe_republish_dd_report(
             closed_run=_str_attr(result, "run_id"),
         )
         closed_items = [closure.to_dict() for closure in closures]
-    return RepublishOutcome(
+    outcome = RepublishOutcome(
         decision="republish",
         reason=reason,
         site_id=site_id,
@@ -595,6 +618,94 @@ def maybe_republish_dd_report(
         still_open_items=still_open_items,
         closed_items=closed_items if result.status == "report_created" else [],
     )
+    return _with_failure_event(
+        outcome,
+        site_summary=site_summary,
+        settings=settings,
+        failure_event_recorder=failure_event_recorder,
+    )
+
+
+def record_dd_republish_failure_event(
+    outcome: RepublishOutcome,
+    site_summary: dict[str, Any],
+    settings: Settings,
+) -> dict[str, Any]:
+    """Record a failed DDR republish as a Rhodes AutomationEvent plus Chat fallback."""
+
+    event = build_dd_report_republish_failed_event(
+        site_id=outcome.site_id or str(site_summary.get("id") or "").strip(),
+        site_name=str(site_summary.get("title") or "").strip(),
+        reason=outcome.reason,
+        content_fingerprint=outcome.fingerprint,
+        failure_reason=_republish_failure_reason(outcome),
+        mutation_status=outcome.pipeline_status or outcome.decision,
+        source_event=outcome.source_event,
+        drive_folder_url=str(site_summary.get("drive_folder_url") or "").strip(),
+        run_id=outcome.run_id,
+        doc_url=outcome.doc_url,
+        manifest_path=outcome.manifest_path,
+    )
+    event_status, body = record_rhodes_automation_event(
+        event,
+        owner_user_id=str(
+            site_summary.get("p1_assignee_user_id")
+            or site_summary.get("owner_user_id")
+            or ""
+        ).strip(),
+        owner_email=str(site_summary.get("p1_assignee_email") or "").strip(),
+        site_slug=str(site_summary.get("slug") or site_summary.get("site_slug") or "").strip(),
+    )
+    if should_alert_google_chat(event_status):
+        event_status["google_chat"] = post_google_chat_to_configured_webhooks(
+            settings.google_chat_webhook_url,
+            body,
+        )
+    return event_status
+
+
+def _with_failure_event(
+    outcome: RepublishOutcome,
+    *,
+    site_summary: dict[str, Any],
+    settings: Settings,
+    failure_event_recorder: FailureEventRecorder | None,
+) -> RepublishOutcome:
+    if not failure_event_recorder or not _should_record_republish_failure_event(outcome):
+        return outcome
+    try:
+        outcome.failure_event = failure_event_recorder(outcome, site_summary, settings)
+    except Exception as exc:  # noqa: BLE001 - notification side effect only
+        logger.warning(
+            "DD republish failure event failed: reason=%s site_id=%s: %s",
+            outcome.reason,
+            outcome.site_id or "?",
+            exc,
+        )
+        outcome.failure_event = {
+            "status": "failed",
+            "reason": "republish_failure_event_failed",
+            "error": str(exc),
+        }
+    return outcome
+
+
+def _should_record_republish_failure_event(outcome: RepublishOutcome) -> bool:
+    if outcome.decision == "failed":
+        return True
+    return outcome.decision == "republish" and outcome.pipeline_status in {
+        "generation_failed",
+        "report_incomplete",
+        "error",
+    }
+
+
+def _republish_failure_reason(outcome: RepublishOutcome) -> str:
+    if outcome.error:
+        return outcome.error
+    if outcome.pipeline_status:
+        return f"Republish produced pipeline status {outcome.pipeline_status}"
+    return "Republish failed before report_created"
 
 
 def _coerce_source_event(

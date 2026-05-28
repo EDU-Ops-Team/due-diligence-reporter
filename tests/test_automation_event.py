@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from due_diligence_reporter.automation_event import (
+    build_dd_report_republish_failed_event,
     build_dd_report_summary_event,
     build_document_registration_failed_event,
     build_inbox_manual_review_required_event,
@@ -254,6 +255,47 @@ def test_vendor_gate_review_required_event_renders_failure_context() -> None:
     assert "Failure reason: Report NOT ready to send. 1 raw template token(s)." in note
     assert "Drive folder: https://drive.google.com/drive/folders/abc123" in note
     assert "Trace: https://drive.google.com/file/d/trace123" in note
+
+
+def test_dd_report_republish_failed_event_renders_failure_context() -> None:
+    event = build_dd_report_republish_failed_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        reason="vendor_sir",
+        content_fingerprint="sir-1:2026-05-28T10:00:00Z",
+        failure_reason="Anthropic 500",
+        mutation_status="generation_failed",
+        source_event={
+            "source_type": "vendor_sir",
+            "drive_file_id": "sir-1",
+            "file_name": "Alpha Keller SIR.pdf",
+        },
+        drive_folder_url="https://drive.google.com/drive/folders/abc123",
+        run_id="run-1",
+        manifest_path=".ddr-runs/run-1.json",
+        created_at="2026-05-28T16:45:00+00:00",
+    )
+
+    assert event.event_type == "dd_report_republish_failed"
+    assert event.source_id == "run-1"
+    assert event.decision_required is True
+    assert (
+        event.requested_decision
+        == "review failed DDR republish and repair report generation"
+    )
+
+    note = render_automation_event_note(event)
+
+    assert "Kind: dd_report_republish_failed" in note
+    assert "Decision required: yes" in note
+    assert "Mutation status: generation_failed" in note
+    assert "Run ID: run-1" in note
+    assert "Content fingerprint: sir-1:2026-05-28T10:00:00Z" in note
+    assert "Source Drive file ID: sir-1" in note
+    assert "Trigger source: vendor_sir" in note
+    assert "Source file: Alpha Keller SIR.pdf" in note
+    assert "Failure reason: Anthropic 500" in note
+    assert "Manifest: .ddr-runs/run-1.json" in note
 
 
 def test_raycon_followup_alert_event_renders_review_context() -> None:
