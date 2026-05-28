@@ -1,5 +1,45 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - RayCon Rhodes MCP Elicitation Blocker
+
+Confirmed PR #135 merged at `0836280` and retested on `main`.
+
+Live test:
+
+- Deleted only the two stale RayCon runtime caches from the failed PR #134
+  retest runs:
+  - `raycon-runtime-state-26585081215`
+  - `raycon-runtime-state-26585081257`
+- Tulsa run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26585435369
+- Santa Clara run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26585435328
+- Both runs failed closed with `missing_note_id`.
+- Both runs posted Google Chat fallback.
+- `note_response_summaries` showed that both the `site_id` attempt and the
+  `site_slug_retry` attempt returned:
+  - `status: "rejected"`
+  - `rejectionReason: "elicitation_unsupported"`
+  - no Rhodes note ID
+
+Conclusion:
+
+- The RayCon follow-up caller is now doing the right fail-closed behavior.
+- The remaining blocker is the hosted Rhodes MCP `addNote` write surface:
+  GitHub Actions cannot satisfy an interactive elicitation/confirmation flow,
+  so the note write is rejected before any owner `@` mention can notify.
+- More RayCon caller retries will not fix this unless the Rhodes write surface
+  exposes a trusted automation-safe note creation path.
+
+Next:
+
+- Locate the deployed Rhodes MCP/write-surface source.
+- Add or adjust a non-interactive service/API-key path for automation-created
+  site notes that still records audit context and honors `mentions`.
+- Retest Tulsa/Santa Clara RayCon Follow-up after that Rhodes-side fix. Keep
+  `RAYCON_FOLLOWUP_EXTRA_MENTION_USER_IDS` set to Greg until notification
+  delivery is confirmed.
+
 ## 2026-05-28 - RayCon Note Rejection Diagnostics
 
 Confirmed PR #134 merged at `7f1aa37` and retested on `main`.
