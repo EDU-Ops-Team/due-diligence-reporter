@@ -1120,7 +1120,19 @@ class TestNotificationDedupState:
         rows = [
             {
                 "site": "Owner Mentioned",
-                "raycon_followup_event": {"owner_notification": "mentioned"},
+                "raycon_followup_event": {
+                    "status": "created",
+                    "owner_notification": "mentioned",
+                    "rhodes_note_id": "NOTE1",
+                },
+            },
+            {
+                "site": "Owner Mentioned Without Note ID",
+                "raycon_followup_event": {
+                    "status": "created",
+                    "owner_notification": "mentioned",
+                    "rhodes_note_id": "",
+                },
             },
             {
                 "site": "Chat Posted",
@@ -1150,6 +1162,7 @@ class TestNotificationDedupState:
 
         assert new_state["Owner Mentioned"] == now.isoformat()
         assert new_state["Chat Posted"] == now.isoformat()
+        assert "Owner Mentioned Without Note ID" not in new_state
         assert "Owner Failed Chat Posted" not in new_state
         assert "Not Delivered" not in new_state
 

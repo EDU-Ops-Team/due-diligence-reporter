@@ -63,9 +63,13 @@ def should_alert_google_chat(
 
     if not decision_required:
         return False
-    return event_status.get("status") != "created" or (
-        event_status.get("owner_notification") != "mentioned"
+    note_id = str(event_status.get("rhodes_note_id") or "").strip()
+    owner_notified = (
+        event_status.get("status") == "created"
+        and event_status.get("owner_notification") == "mentioned"
+        and bool(note_id)
     )
+    return not owner_notified
 
 
 def post_google_chat_to_configured_webhooks(

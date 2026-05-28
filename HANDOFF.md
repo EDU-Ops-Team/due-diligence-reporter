@@ -1,5 +1,63 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - RayCon Note ID Verification
+
+Confirmed PR #130 was merged at `e7227be` and tested the merged RayCon
+extra-mention path on `main`.
+
+Live test:
+
+- First rerun pair was dedup-suppressed by restored RayCon runtime alert state.
+- Cleared only the four relevant `raycon-runtime-state-*` GitHub Actions cache
+  entries from today's test runs.
+- Second Tulsa run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26580325911
+- Second Santa Clara run:
+  https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/26580325718
+- Both second runs completed successfully and logged
+  `owner_notification: mentioned` with Devin Bates plus Greg Foote in
+  `mentioned_user_ids`.
+- The log status also had an empty `rhodes_note_id`, and live Rhodes
+  `listNotes` / audit-log checks showed no new RayCon note on either site.
+  The workflow was therefore falsely treating a no-ID `addNote` response as a
+  verified owner notification.
+
+Branch: `codex/raycon-note-id-required`
+
+Changed:
+
+- `add_rhodes_site_note` now treats an `addNote` response without a concrete
+  note ID as `failed` with reason `missing_note_id`.
+- Shared Rhodes/Chat fallback logic now requires a created Rhodes note ID before
+  considering an owner mention delivered.
+- RayCon alert dedupe now advances only when the owner mention has a concrete
+  Rhodes note ID, or when the no-owner Chat fallback posts.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_rhodes.py tests/test_rhodes_events.py tests/test_raycon_followup.py --basetemp C:\tmp\pytest-raycon-note-id
+uv run ruff check src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\rhodes_events.py scripts\raycon_followup.py tests\test_rhodes.py tests\test_rhodes_events.py tests\test_raycon_followup.py
+uv run mypy src/
+uv run mypy scripts/raycon_followup.py
+```
+
+Results:
+
+- Focused Rhodes/RayCon suite: 80 passed.
+- Ruff on touched code/tests: passed.
+- Source Mypy: no issues in 38 source files.
+- Script Mypy: no issues.
+
+Next:
+
+- Open PR for `codex/raycon-note-id-required`.
+- After merge, rerun RayCon Follow-up for Tulsa/Santa Clara again. Expected
+  behavior if Rhodes still returns no note ID: workflow fails and posts Chat
+  fallback instead of suppressing future retries.
+- Keep `RAYCON_FOLLOWUP_EXTRA_MENTION_USER_IDS` set to Greg's user ID until a
+  retest confirms the notification is actually delivered; then clear it.
+
 ## 2026-05-28 - RayCon Test Extra Mention
 
 Confirmed PR #129 merged at `d54462d` and continued from updated `main`.

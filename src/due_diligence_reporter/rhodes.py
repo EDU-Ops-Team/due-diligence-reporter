@@ -829,11 +829,24 @@ def add_rhodes_site_note(
     except Exception as exc:  # noqa: BLE001 - non-fatal scanner side effect
         return {**base, "status": "failed", "reason": "unexpected_error", "error": str(exc)}
 
+    note_id = _note_id(note)
+    if not note_id:
+        return {
+            **base,
+            "status": "failed",
+            "reason": "missing_note_id",
+            "error": "Rhodes addNote returned no note ID; delivery could not be verified",
+            "rhodes_note_id": "",
+            "owner_user_id": resolved_owner_user_id,
+            "owner_resolution": owner_resolution,
+            "mentioned_user_ids": mention_user_ids,
+        }
+
     return {
         **base,
         "status": "created",
         "reason": "ok",
-        "rhodes_note_id": _note_id(note),
+        "rhodes_note_id": note_id,
         "owner_user_id": resolved_owner_user_id,
         "owner_resolution": owner_resolution,
         "owner_notification": "mentioned" if resolved_owner_user_id else "none",
