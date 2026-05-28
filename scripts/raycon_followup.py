@@ -293,6 +293,56 @@ def _filter_dedup_alerts(
     return fresh, new_state
 
 
+def _fresh_dedup_alerts(
+    alerts: list[dict[str, Any]],
+    state: dict[str, str],
+    *,
+    now: datetime | None = None,
+    window: timedelta = ALERT_DEDUP_WINDOW,
+) -> list[dict[str, Any]]:
+    """Return alerts that are outside the dedup window without mutating state."""
+    now = now or datetime.now(UTC)
+    fresh: list[dict[str, Any]] = []
+    for row in alerts:
+        site = str(row.get("site", "")).strip()
+        dedupe_key = _alert_dedup_key(row)
+        if not site or not dedupe_key:
+            continue
+        last_iso = state.get(dedupe_key)
+        last_dt = _parse_iso(last_iso) if last_iso else None
+        if last_dt is not None and (now - last_dt) < window:
+            continue
+        fresh.append(row)
+    return fresh
+
+
+def _raycon_followup_notification_succeeded(row: dict[str, Any]) -> bool:
+    event_status = row.get("raycon_followup_event")
+    if not isinstance(event_status, dict):
+        return False
+    if event_status.get("owner_notification") == "mentioned":
+        return True
+    google_chat = event_status.get("google_chat")
+    return isinstance(google_chat, dict) and google_chat.get("status") == "posted"
+
+
+def _mark_notified_alerts(
+    alerts: list[dict[str, Any]],
+    state: dict[str, str],
+    *,
+    now: datetime | None = None,
+) -> dict[str, str]:
+    """Advance dedup state only for rows that notified an owner or Chat."""
+    now = now or datetime.now(UTC)
+    new_state = dict(state)
+    for row in alerts:
+        dedupe_key = _alert_dedup_key(row)
+        if not dedupe_key or not _raycon_followup_notification_succeeded(row):
+            continue
+        new_state[dedupe_key] = now.isoformat()
+    return new_state
+
+
 def _alert_dedup_key(row: dict[str, Any]) -> str:
     explicit_key = str(row.get("alert_dedup_key") or "").strip()
     if explicit_key:
@@ -581,6 +631,7 @@ def _notify_raycon_followup_rows(
         return
 
     webhook_url = str(getattr(settings, "google_chat_webhook_url", "") or "").strip()
+    chat_result: dict[str, str]
     if webhook_url:
         _post_chat(webhook_url, "\n\n".join([heading, *chat_bodies]))
         chat_result = {"status": "posted"}
@@ -588,9 +639,9 @@ def _notify_raycon_followup_rows(
         chat_result = {"status": "skipped", "reason": "missing_webhook"}
 
     for row in chat_rows:
-        event_status = row.get("raycon_followup_event")
-        if isinstance(event_status, dict):
-            event_status["google_chat"] = chat_result
+        stored_event_status = row.get("raycon_followup_event")
+        if isinstance(stored_event_status, dict):
+            stored_event_status["google_chat"] = chat_result
 
 
 def _dispatch_raycon_job(
@@ -782,7 +833,8 @@ def _failed_scenario_base_row(
         "site": site_name,
         "alert": f"raycon run failed: {reason}",
         "alert_dedup_key": (
-            f"{site_name}:failed_scenario:{run_id or reason[:120]}:{modified}"
+            f"{site_name}:failed_scenario:{run_id or reason[:120]}:{modified}:"
+            "owner_note_v2"
         ),
         "raycon_status": report_fields.get("exec.raycon_status", ""),
         "raycon_run_id": run_id,
@@ -1040,10 +1092,6 @@ def _process_site(
 
     m1_files = gc.list_files_in_folder(m1_folder_id)
 
-    block_plan = _find_block_plan(gc, m1_folder_id, m1_files=m1_files)
-    if block_plan is None:
-        return {"site": site_name, "skipped": "no block plan in M1"}
-
     try:
         scenario = read_raycon_scenario_from_m1(
             gc,
@@ -1055,7 +1103,12 @@ def _process_site(
         logger.error("[%s] %s", site_name, e)
         return {"site": site_name, "error": f"schema error: {e}"}
 
+    block_plan = _find_block_plan(gc, m1_folder_id, m1_files=m1_files)
+    if block_plan is None and scenario is None:
+        return {"site": site_name, "skipped": "no block plan in M1"}
+
     if scenario is None:
+        assert block_plan is not None
         now = datetime.now(UTC)
         bp_modified = _parse_iso(str(block_plan.get("modifiedTime", "")))
         is_stuck = (
@@ -1082,14 +1135,14 @@ def _process_site(
                 "block_plan_file_id": block_plan_file_id,
             }
         if status in RAYCON_IN_PROGRESS_STATUSES:
-            row = {
+            progress_row: dict[str, Any] = {
                 "site": site_name,
                 "skipped": f"raycon job {status}",
                 "block_plan_file_id": block_plan_file_id,
             }
             if is_stuck:
-                row["alert"] = f"raycon job still {status} after {alert_after}"
-            return row
+                progress_row["alert"] = f"raycon job still {status} after {alert_after}"
+            return progress_row
 
         # Safety-net dispatch: try to (re-)fire RayCon for this Block Plan
         # before we decide whether to alert. If RayCon is just slow, this
@@ -1109,7 +1162,7 @@ def _process_site(
 
         # Successful dispatch is the headline outcome for this site.
         if dispatch_result.get("dispatched"):
-            row = {
+            dispatch_row: dict[str, Any] = {
                 "site": site_name,
                 "dispatched": True,
                 "job_id": dispatch_result.get("job_id"),
@@ -1119,8 +1172,8 @@ def _process_site(
                 "block_plan_file_id": dispatch_result.get("block_plan_file_id"),
             }
             if bp_modified is not None:
-                row["block_plan_modified"] = bp_modified.isoformat()
-            return row
+                dispatch_row["block_plan_modified"] = bp_modified.isoformat()
+            return dispatch_row
 
         # Dispatch errored — surface as an error row so it lands in the
         # error alert path and we can see it in Chat.
@@ -1154,6 +1207,8 @@ def _process_site(
     # so EDU Ops sees it in Chat and we don't pollute the site's M1 folder.
     if raycon_payload_failed(scenario):
         report_fields = raycon_scenario_to_report_fields(scenario)
+        if block_plan is None:
+            return _failed_scenario_base_row(site_name, scenario, report_fields)
         return _handle_failed_scenario(
             site_summary,
             site_name,
@@ -1213,7 +1268,7 @@ def _process_site(
     if result.get("status") != "success":
         return {"site": site_name, "error": str(result.get("message", "publish failed"))}
 
-    row: dict[str, Any] = {
+    published_row: dict[str, Any] = {
         "site": site_name,
         "published": True,
         "doc_url": result.get("doc_url"),
@@ -1248,9 +1303,9 @@ def _process_site(
             )
             republish_result = {"dd_report_republish": "failed", "reason": str(e)}
         if republish_result:
-            row.update(republish_result)
+            published_row.update(republish_result)
 
-    return row
+    return published_row
 
 
 def _parse_iso(s: str) -> datetime | None:
@@ -1463,8 +1518,7 @@ def main(argv: list[str] | None = None) -> int:
     dedup_state = _load_alert_state() if alerts or errors else {}
 
     if alerts:
-        fresh_alerts, new_state = _filter_dedup_alerts(alerts, dedup_state)
-        dedup_state = new_state
+        fresh_alerts = _fresh_dedup_alerts(alerts, dedup_state)
         if fresh_alerts:
             _notify_raycon_followup_rows(
                 fresh_alerts,
@@ -1474,7 +1528,9 @@ def main(argv: list[str] | None = None) -> int:
                 message_field="alert",
                 heading="RayCon scenario follow-up: stuck sites",
             )
-            alert_state_changed = True
+            new_state = _mark_notified_alerts(fresh_alerts, dedup_state)
+            alert_state_changed = alert_state_changed or new_state != dedup_state
+            dedup_state = new_state
         suppressed = len(alerts) - len(fresh_alerts)
         if suppressed:
             logger.info(
@@ -1486,8 +1542,7 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         for row in errors:
             row["alert_dedup_key"] = _error_alert_dedup_key(row)
-        fresh_errors, new_state = _filter_dedup_alerts(errors, dedup_state)
-        dedup_state = new_state
+        fresh_errors = _fresh_dedup_alerts(errors, dedup_state)
         if fresh_errors:
             _notify_raycon_followup_rows(
                 fresh_errors,
@@ -1497,7 +1552,9 @@ def main(argv: list[str] | None = None) -> int:
                 message_field="error",
                 heading="RayCon scenario follow-up: errors",
             )
-            alert_state_changed = True
+            new_state = _mark_notified_alerts(fresh_errors, dedup_state)
+            alert_state_changed = alert_state_changed or new_state != dedup_state
+            dedup_state = new_state
         suppressed = len(errors) - len(fresh_errors)
         if suppressed:
             logger.info(
