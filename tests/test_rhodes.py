@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from due_diligence_reporter.rhodes import (
+    RhodesClient,
     RhodesError,
     add_rhodes_site_note,
     list_rhodes_site_records,
@@ -204,6 +205,15 @@ class FakeRhodesClient:
             if str(note.get("body") or "").strip() == body.strip():
                 return note
         return None
+
+
+class RecordingRhodesClient(RhodesClient):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        self.calls.append((name, arguments))
+        return {"_id": "NOTE1"}
 
 
 def test_lookup_rhodes_site_owner_returns_p1_report_fields() -> None:
@@ -461,6 +471,30 @@ def test_register_rhodes_document_for_upload_handles_missing_config(monkeypatch)
     assert result["status"] == "failed"
     assert result["reason"] == "rhodes_error"
     assert "RHODES_API_KEY" in result["error"]
+
+
+def test_rhodes_client_add_site_note_sends_explicit_site_anchor() -> None:
+    client = RecordingRhodesClient()
+
+    result = client.add_site_note(
+        site_id=" SITE1 ",
+        body=" Body ",
+        mentions=[" USER1 ", ""],
+    )
+
+    assert result["_id"] == "NOTE1"
+    assert client.calls == [
+        (
+            "addNote",
+            {
+                "anchorType": "site",
+                "body": "Body",
+                "siteId": "SITE1",
+                "anchorId": "SITE1",
+                "mentions": ["USER1"],
+            },
+        )
+    ]
 
 
 def test_add_rhodes_site_note_mentions_owner_user_id() -> None:
