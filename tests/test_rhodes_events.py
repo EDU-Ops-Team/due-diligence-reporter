@@ -60,6 +60,27 @@ def test_record_rhodes_automation_event_writes_note_with_owner_context() -> None
     assert "Kind: test_event" in body
 
 
+def test_record_rhodes_automation_event_passes_extra_mentions() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def add_note(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {
+            "status": "created",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        }
+
+    record_rhodes_automation_event(
+        _event(),
+        owner_user_id="USER1",
+        extra_mention_user_ids=["USER2", " ", "USER3"],
+        add_note=add_note,
+    )
+
+    assert calls[0]["extra_mention_user_ids"] == ["USER2", "USER3"]
+
+
 def test_record_rhodes_automation_event_skips_missing_site_id() -> None:
     def add_note(**_: Any) -> dict[str, Any]:
         raise AssertionError("add_note should not be called without a site ID")

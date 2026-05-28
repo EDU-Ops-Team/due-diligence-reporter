@@ -591,6 +591,7 @@ def _record_raycon_followup_event(
     run_id: str,
     alert_type: str,
     message: str,
+    extra_mention_user_ids: list[str] | None = None,
 ) -> tuple[dict[str, Any], str]:
     event = build_raycon_followup_alert_event(
         site_id=str(row.get("site_id") or "").strip(),
@@ -606,6 +607,7 @@ def _record_raycon_followup_event(
         event,
         owner_user_id=str(row.get("p1_assignee_user_id") or "").strip(),
         owner_email=str(row.get("p1_assignee_email") or "").strip(),
+        extra_mention_user_ids=extra_mention_user_ids,
         add_note=add_rhodes_site_note,
     )
 
@@ -621,6 +623,9 @@ def _notify_raycon_followup_rows(
 ) -> list[dict[str, Any]]:
     chat_bodies: list[str] = []
     chat_rows: list[dict[str, Any]] = []
+    extra_mention_user_ids = _csv_values(
+        getattr(settings, "raycon_followup_extra_mention_user_ids", "")
+    )
     for row in rows:
         message = str(row.get(message_field) or "").strip()
         if not message:
@@ -630,6 +635,7 @@ def _notify_raycon_followup_rows(
             run_id=run_id,
             alert_type=alert_type,
             message=message,
+            extra_mention_user_ids=extra_mention_user_ids,
         )
         row["raycon_followup_event"] = event_status
         logger.info(
@@ -687,8 +693,13 @@ def _notification_status_summary(
         "reason": event_status.get("reason"),
         "owner_notification": event_status.get("owner_notification"),
         "rhodes_note_id": event_status.get("rhodes_note_id"),
+        "mentioned_user_ids": event_status.get("mentioned_user_ids"),
         "google_chat": google_chat if isinstance(google_chat, dict) else None,
     }
+
+
+def _csv_values(value: str) -> list[str]:
+    return [part.strip() for part in str(value or "").split(",") if part.strip()]
 
 
 def _dispatch_raycon_job(

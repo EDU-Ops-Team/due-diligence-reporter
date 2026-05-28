@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from .automation_event import AutomationEvent, render_automation_event_note
@@ -18,6 +18,7 @@ def record_rhodes_automation_event(
     *,
     owner_user_id: str = "",
     owner_email: str = "",
+    extra_mention_user_ids: Iterable[str] | None = None,
     body: str | None = None,
     add_note: AddRhodesSiteNote = add_rhodes_site_note,
 ) -> tuple[dict[str, Any], str]:
@@ -25,12 +26,16 @@ def record_rhodes_automation_event(
 
     rendered_body = body if body is not None else render_automation_event_note(event)
     if event.site_id:
-        note_result = add_note(
-            site_id=event.site_id,
-            body=rendered_body,
-            owner_user_id=owner_user_id,
-            owner_email=owner_email,
-        )
+        note_kwargs: dict[str, Any] = {
+            "site_id": event.site_id,
+            "body": rendered_body,
+            "owner_user_id": owner_user_id,
+            "owner_email": owner_email,
+        }
+        extra_ids = [uid.strip() for uid in (extra_mention_user_ids or []) if uid.strip()]
+        if extra_ids:
+            note_kwargs["extra_mention_user_ids"] = extra_ids
+        note_result = add_note(**note_kwargs)
     else:
         note_result = {
             "status": "skipped",

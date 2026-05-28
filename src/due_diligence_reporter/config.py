@@ -214,6 +214,13 @@ class Settings(BaseSettings):
     google_chat_webhook_url: str = Field(
         "", description="Comma-separated Google Chat incoming webhook URLs for notifications"
     )
+    raycon_followup_extra_mention_user_ids: str = Field(
+        "",
+        description=(
+            "Comma-separated Rhodes user IDs to mention on RayCon follow-up "
+            "Rhodes notes in addition to the site owner."
+        ),
+    )
 
     # Inbox Scanner
     # The scanner runs OAuth-authed AS edu.ops@trilogy.com (the shared inbox

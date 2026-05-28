@@ -1,5 +1,59 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - RayCon Test Extra Mention
+
+Confirmed PR #129 merged at `d54462d` and continued from updated `main`.
+
+Goal:
+
+- Add Greg as an additional Rhodes mention on RayCon follow-up alert notes so
+  he can verify whether the `@` mention notification comes through during the
+  Tulsa/Santa Clara test rerun.
+
+Branch: `codex/raycon-test-extra-mention`
+
+Draft PR: https://github.com/GFooteGK1/due-diligence-reporter/pull/130
+
+Changed:
+
+- Added `RAYCON_FOLLOWUP_EXTRA_MENTION_USER_IDS` as a configurable
+  comma-separated Settings value.
+- RayCon follow-up passes configured extra mention user IDs into the Rhodes note
+  writer, while preserving the site owner's notification as the delivery
+  success criterion.
+- `add_rhodes_site_note` now supports extra mention user IDs and de-dupes them
+  against the owner mention.
+- The RayCon workflow writes the GitHub Actions variable into `.env`.
+- Repository Actions variable set:
+  `RAYCON_FOLLOWUP_EXTRA_MENTION_USER_IDS=kd7fnr0nm2tg1c8jq85wrc3gn9830jw5`
+  for Greg Foote.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_raycon_followup.py tests/test_rhodes_events.py tests/test_rhodes.py --basetemp C:\tmp\pytest-raycon-extra-mention
+uv run ruff check scripts/raycon_followup.py src/due_diligence_reporter/config.py src/due_diligence_reporter/rhodes.py src/due_diligence_reporter/rhodes_events.py tests/test_raycon_followup.py tests/test_rhodes_events.py tests/test_rhodes.py
+uv run mypy src/
+uv run mypy scripts/raycon_followup.py
+uv run pytest tests/test_workflow_contracts.py --basetemp C:\tmp\pytest-raycon-extra-mention-workflow
+```
+
+Results:
+
+- Focused RayCon/Rhodes suite: 79 passed.
+- Workflow contract suite: 7 passed.
+- Ruff on touched code/tests: passed.
+- Source Mypy: no issues in 38 source files.
+- Script Mypy: no issues.
+
+Next:
+
+- Wait for CI/review on PR #130.
+- After merge, rerun RayCon Follow-up for `6940 S Utica` and
+  `2340 Calle de Luna`; expected Rhodes note mentions Devin Bates plus Greg.
+- After Greg confirms the notification behavior, remove or clear the extra
+  mention variable so Greg is not permanently copied on RayCon alerts.
+
 ## 2026-05-28 - RayCon Alert Delivery Enforcement
 
 Tested PR #128 after merge on `main` at

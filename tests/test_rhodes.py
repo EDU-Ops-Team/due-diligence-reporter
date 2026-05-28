@@ -425,6 +425,23 @@ def test_add_rhodes_site_note_mentions_owner_user_id() -> None:
     assert client.notes[0]["mentions"] == ["USER1"]
 
 
+def test_add_rhodes_site_note_mentions_owner_and_extra_users() -> None:
+    client = FakeRhodesClient()
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body="AutomationEvent v1\nKind: raycon_followup_alert",
+        owner_user_id="OWNER1",
+        extra_mention_user_ids=["GREG1", "OWNER1", ""],
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "created"
+    assert result["owner_notification"] == "mentioned"
+    assert result["mentioned_user_ids"] == ["OWNER1", "GREG1"]
+    assert client.notes[0]["mentions"] == ["OWNER1", "GREG1"]
+
+
 def test_add_rhodes_site_note_resolves_owner_email() -> None:
     client = FakeRhodesClient()
     client.users_by_email["owner@example.com"] = {
