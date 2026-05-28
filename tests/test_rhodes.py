@@ -531,7 +531,13 @@ def test_add_rhodes_site_note_mentions_owner_and_extra_users() -> None:
 
 
 def test_add_rhodes_site_note_requires_returned_note_id() -> None:
-    client = FakeRhodesClient(note_response={"text": "created"})
+    client = FakeRhodesClient(
+        note_response={
+            "status": "rejected",
+            "rejectionReason": "Action requires confirmation",
+            "text": "created",
+        }
+    )
 
     result = add_rhodes_site_note(
         site_id="SITE1",
@@ -551,7 +557,9 @@ def test_add_rhodes_site_note_requires_returned_note_id() -> None:
             "attempt": "site_id",
             "type": "dict",
             "has_note_id": False,
-            "keys": ["text"],
+            "keys": ["rejectionReason", "status", "text"],
+            "status": "rejected",
+            "rejectionReason": "Action requires confirmation",
             "text_prefix": "created",
         }
     ]
