@@ -64,7 +64,6 @@ import requests  # noqa: E402
 
 from due_diligence_reporter.automation_event import (  # noqa: E402
     build_raycon_followup_alert_event,
-    render_automation_event_note,
 )
 from due_diligence_reporter.config import get_settings  # noqa: E402
 from due_diligence_reporter.dd_republish import (  # noqa: E402
@@ -100,6 +99,10 @@ from due_diligence_reporter.rhodes import (  # noqa: E402
     RhodesError,
     add_rhodes_site_note,
     list_rhodes_site_records,
+)
+from due_diligence_reporter.rhodes_events import (  # noqa: E402
+    record_rhodes_automation_event,
+    should_alert_google_chat,
 )
 from due_diligence_reporter.server import save_skill_report  # noqa: E402
 from due_diligence_reporter.utils import (  # noqa: E402
@@ -540,29 +543,11 @@ def _record_raycon_followup_event(
         block_plan_file_id=str(row.get("block_plan_file_id") or "").strip(),
         raycon_run_id=str(row.get("raycon_run_id") or "").strip(),
     )
-    body = render_automation_event_note(event)
-    if event.site_id:
-        note_result = add_rhodes_site_note(
-            site_id=event.site_id,
-            body=body,
-            owner_user_id=str(row.get("p1_assignee_user_id") or "").strip(),
-            owner_email=str(row.get("p1_assignee_email") or "").strip(),
-        )
-    else:
-        note_result = {
-            "status": "skipped",
-            "reason": "missing_site_id",
-            "owner_notification": "none",
-        }
-
-    return (
-        {
-            "event_type": event.event_type,
-            "source_id": event.source_id,
-            "decision_required": event.decision_required,
-            **note_result,
-        },
-        body,
+    return record_rhodes_automation_event(
+        event,
+        owner_user_id=str(row.get("p1_assignee_user_id") or "").strip(),
+        owner_email=str(row.get("p1_assignee_email") or "").strip(),
+        add_note=add_rhodes_site_note,
     )
 
 
@@ -588,10 +573,7 @@ def _notify_raycon_followup_rows(
             message=message,
         )
         row["raycon_followup_event"] = event_status
-        if (
-            event_status.get("status") != "created"
-            or event_status.get("owner_notification") != "mentioned"
-        ):
+        if should_alert_google_chat(event_status):
             chat_bodies.append(body)
             chat_rows.append(row)
 

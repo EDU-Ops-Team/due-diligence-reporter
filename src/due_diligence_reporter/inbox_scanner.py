@@ -28,11 +28,17 @@ from .m1_lookup import (
     _resolve_m1_folder,
 )
 from .rhodes import add_rhodes_site_note, register_rhodes_document_for_upload
+from .rhodes_events import (
+    post_google_chat_to_configured_webhooks as _post_google_chat_to_configured_webhooks,
+)
+from .rhodes_events import (
+    record_rhodes_automation_event,
+    should_alert_google_chat,
+)
 from .rhodes_retry_state_store import JsonRhodesRetryStateStore, RhodesRetryState
 from .utils import (
     escape_html_text,
     extract_text_from_pdf_bytes,
-    post_google_chat_message,
     score_site_match_strength,
     send_email,
 )
@@ -194,27 +200,6 @@ def _metadata_thread_id(metadata: Any, fallback_message_id: str) -> str:
     return fallback_message_id
 
 
-def _post_google_chat_to_configured_webhooks(webhook_urls: str, text: str) -> dict[str, Any]:
-    urls = [url.strip() for url in webhook_urls.split(",") if url.strip()]
-    if not urls:
-        return {"status": "skipped", "reason": "missing_google_chat_webhook_url"}
-    posted = 0
-    errors: list[str] = []
-    for url in urls:
-        try:
-            post_google_chat_message(url, text)
-            posted += 1
-        except Exception as exc:  # noqa: BLE001 - non-fatal notification side effect
-            errors.append(str(exc))
-    if errors:
-        return {
-            "status": "failed" if posted == 0 else "partial",
-            "posted": posted,
-            "errors": errors,
-        }
-    return {"status": "sent", "posted": posted}
-
-
 def _record_rhodes_registration_failure_event(
     *,
     settings: Settings,
@@ -271,23 +256,22 @@ def _record_rhodes_registration_failure_event(
 
     owner_user_id = str(site_summary.get("p1_assignee_user_id") or "").strip()
     owner_email = str(site_summary.get("p1_assignee_email") or "").strip()
-    note_result = add_rhodes_site_note(
-        site_id=str(site_summary.get("id") or "").strip(),
+    event_status, _ = record_rhodes_automation_event(
+        event,
         body=body,
         owner_user_id=owner_user_id,
         owner_email=owner_email,
+        add_note=add_rhodes_site_note,
     )
     if entry is not None:
-        entry["rhodes_failure_event_status"] = note_result.get("status")
-        entry["rhodes_failure_event_reason"] = note_result.get("reason")
-        if note_result.get("status") == "created":
-            entry["rhodes_failure_note_id"] = str(note_result.get("rhodes_note_id") or "")
+        entry["rhodes_failure_event_status"] = event_status.get("status")
+        entry["rhodes_failure_event_reason"] = event_status.get("reason")
+        if event_status.get("status") == "created":
+            entry["rhodes_failure_note_id"] = str(event_status.get("rhodes_note_id") or "")
             entry["rhodes_failure_notified_at"] = datetime.now(UTC).isoformat()
-            entry["rhodes_failure_owner_notification"] = note_result.get("owner_notification")
+            entry["rhodes_failure_owner_notification"] = event_status.get("owner_notification")
 
-    should_alert_chat = note_result.get("status") != "created" or (
-        note_result.get("owner_notification") != "mentioned"
-    )
+    should_alert_chat = should_alert_google_chat(event_status)
     chat_result: dict[str, Any] | None = None
     if should_alert_chat and not (entry and entry.get("rhodes_failure_chat_notified_at")):
         chat_result = _post_google_chat_to_configured_webhooks(
@@ -299,7 +283,7 @@ def _record_rhodes_registration_failure_event(
             if chat_result.get("status") in {"sent", "partial"}:
                 entry["rhodes_failure_chat_notified_at"] = datetime.now(UTC).isoformat()
 
-    result = dict(note_result)
+    result = dict(event_status)
     if chat_result is not None:
         result["google_chat"] = chat_result
     return result

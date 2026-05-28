@@ -20,7 +20,6 @@ from .automation_event import (
     build_dd_report_summary_event,
     build_source_review_required_event,
     build_vendor_gate_review_required_event,
-    render_automation_event_note,
 )
 from .classifier import (
     AI_GENERATED_DOC_TYPES,
@@ -51,6 +50,11 @@ from .pipeline_manifest import manifest_has_secret_like_value, persist_run_manif
 from .pipeline_quality import evaluate_run_quality
 from .provenance import classify_provenance
 from .rhodes import add_rhodes_site_note, lookup_rhodes_site_owner
+from .rhodes_events import (
+    post_google_chat_to_configured_webhooks,
+    record_rhodes_automation_event,
+    should_alert_google_chat,
+)
 from .sir_learning import build_sir_learning_review
 from .utils import (
     escape_html_text,
@@ -1314,31 +1318,13 @@ def _record_vendor_gate_alert_step(
         drive_folder_url=drive_folder_url,
         trace_url=trace_url,
     )
-    body = render_automation_event_note(event)
-    if event.site_id:
-        note_result = add_rhodes_site_note(
-            site_id=event.site_id,
-            body=body,
-            owner_user_id=owner_user_id,
-            owner_email=owner_email,
-        )
-    else:
-        note_result = {
-            "status": "skipped",
-            "reason": "missing_site_id",
-            "owner_notification": "none",
-        }
-
-    event_status: dict[str, Any] = {
-        "event_type": event.event_type,
-        "source_id": event.source_id,
-        "decision_required": event.decision_required,
-        **note_result,
-    }
-    should_alert_chat = (
-        note_result.get("status") != "created"
-        or note_result.get("owner_notification") != "mentioned"
+    event_status, body = record_rhodes_automation_event(
+        event,
+        owner_user_id=owner_user_id,
+        owner_email=owner_email,
+        add_note=add_rhodes_site_note,
     )
+    should_alert_chat = should_alert_google_chat(event_status)
     chat_result: dict[str, Any] | None = None
     if should_alert_chat:
         chat_result = _post_google_chat_to_configured_webhooks(
@@ -1352,7 +1338,7 @@ def _record_vendor_gate_alert_step(
         name="DDR vendor gate AutomationEvent",
         metadata=event_status,
     )
-    note_status = str(note_result.get("status") or "")
+    note_status = str(event_status.get("status") or "")
     chat_status = str((chat_result or {}).get("status") or "")
     if note_status == "created" and chat_status not in {"failed", "skipped"}:
         recorder.record(
@@ -1373,7 +1359,7 @@ def _record_vendor_gate_alert_step(
         )
         return
 
-    message = str(note_result.get("error") or note_result.get("reason") or "unknown")
+    message = str(event_status.get("error") or event_status.get("reason") or "unknown")
     if should_alert_chat and chat_status in {"failed", "skipped"}:
         message = f"{message}; Google Chat fallback {chat_status}"
     recorder.record(
@@ -1649,24 +1635,11 @@ def _owner_user_id_from_context(context: dict[str, Any] | None) -> str:
 
 
 def _post_google_chat_to_configured_webhooks(webhook_urls: str, text: str) -> dict[str, Any]:
-    urls = [url.strip() for url in webhook_urls.split(",") if url.strip()]
-    if not urls:
-        return {"status": "skipped", "reason": "missing_google_chat_webhook_url"}
-    posted = 0
-    error_count = 0
-    for url in urls:
-        try:
-            post_google_chat_message(url, text)
-            posted += 1
-        except Exception:  # noqa: BLE001 - non-fatal notification side effect
-            error_count += 1
-    if error_count:
-        return {
-            "status": "failed" if posted == 0 else "partial",
-            "posted": posted,
-            "error_count": error_count,
-        }
-    return {"status": "sent", "posted": posted}
+    return post_google_chat_to_configured_webhooks(
+        webhook_urls,
+        text,
+        post_message=post_google_chat_message,
+    )
 
 
 def _report_data_from_trace(trace: ReportTrace | None) -> dict[str, Any]:
@@ -1734,30 +1707,13 @@ def _record_source_alert_step(
             drive_folder_url=drive_folder_url,
             trace_url=trace_url,
         )
-        body = render_automation_event_note(event)
-        if event.site_id:
-            note_result = add_rhodes_site_note(
-                site_id=event.site_id,
-                body=body,
-                owner_user_id=owner_user_id,
-                owner_email=owner_email,
-            )
-        else:
-            note_result = {
-                "status": "skipped",
-                "reason": "missing_site_id",
-                "owner_notification": "none",
-            }
-        event_status: dict[str, Any] = {
-            "event_type": event.event_type,
-            "source_id": event.source_id,
-            "decision_required": event.decision_required,
-            **note_result,
-        }
-        if (
-            note_result.get("status") != "created"
-            or note_result.get("owner_notification") != "mentioned"
-        ):
+        event_status, body = record_rhodes_automation_event(
+            event,
+            owner_user_id=owner_user_id,
+            owner_email=owner_email,
+            add_note=add_rhodes_site_note,
+        )
+        if should_alert_google_chat(event_status):
             event_status["google_chat"] = _post_google_chat_to_configured_webhooks(
                 settings.google_chat_webhook_url,
                 body,
@@ -1885,31 +1841,15 @@ def _record_rhodes_report_event_step(
         open_questions=result.open_questions,
         closed_open_questions=result.closed_open_questions,
     )
-    body = render_automation_event_note(event)
-    note_result: dict[str, Any]
-    if not event.site_id:
-        note_result = {
-            "status": "skipped",
-            "reason": "missing_site_id",
-            "owner_notification": "none",
-        }
-    else:
-        note_result = add_rhodes_site_note(
-            site_id=event.site_id,
-            body=body,
-            owner_user_id=owner_user_id,
-            owner_email=owner_email,
-        )
-
-    event_status: dict[str, Any] = {
-        "event_type": event.event_type,
-        "source_id": event.source_id,
-        "decision_required": event.decision_required,
-        **note_result,
-    }
-    should_alert_chat = event.decision_required and (
-        note_result.get("status") != "created"
-        or note_result.get("owner_notification") != "mentioned"
+    event_status, body = record_rhodes_automation_event(
+        event,
+        owner_user_id=owner_user_id,
+        owner_email=owner_email,
+        add_note=add_rhodes_site_note,
+    )
+    should_alert_chat = should_alert_google_chat(
+        event_status,
+        decision_required=event.decision_required,
     )
     chat_result: dict[str, Any] | None = None
     if should_alert_chat:
@@ -1925,7 +1865,7 @@ def _record_rhodes_report_event_step(
         name="DDR report AutomationEvent",
         metadata=event_status,
     )
-    note_status = str(note_result.get("status") or "")
+    note_status = str(event_status.get("status") or "")
     chat_status = str((chat_result or {}).get("status") or "")
     if note_status == "created" and chat_status not in {"failed", "skipped"}:
         recorder.record(
@@ -1951,11 +1891,11 @@ def _record_rhodes_report_event_step(
             started_at,
             started_monotonic,
             "skipped",
-            skipped_reason=str(note_result.get("reason") or "skipped"),
+            skipped_reason=str(event_status.get("reason") or "skipped"),
         )
         return
 
-    message = str(note_result.get("error") or note_result.get("reason") or "unknown")
+    message = str(event_status.get("error") or event_status.get("reason") or "unknown")
     if should_alert_chat and chat_status in {"failed", "skipped"}:
         message = f"{message}; Google Chat fallback {chat_status}"
     recorder.record(
