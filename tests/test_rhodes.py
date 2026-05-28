@@ -530,6 +530,32 @@ def test_add_rhodes_site_note_mentions_owner_and_extra_users() -> None:
     assert client.notes[0]["mentions"] == ["OWNER1", "GREG1"]
 
 
+def test_add_rhodes_site_note_accepts_nested_note_id_response() -> None:
+    client = FakeRhodesClient(note_response={"note": {"id": "NOTE-NESTED"}})
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body="AutomationEvent v1\nKind: raycon_followup_alert",
+        owner_user_id="OWNER1",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "created"
+    assert result["rhodes_note_id"] == "NOTE-NESTED"
+    assert result["owner_notification"] == "mentioned"
+    assert client.calls == [
+        (
+            "add_site_note",
+            {
+                "site_id": "SITE1",
+                "site_slug": "",
+                "body": "AutomationEvent v1\nKind: raycon_followup_alert",
+                "mentions": "OWNER1",
+            },
+        )
+    ]
+
+
 def test_add_rhodes_site_note_requires_returned_note_id() -> None:
     client = FakeRhodesClient(
         note_response={
@@ -642,3 +668,22 @@ def test_add_rhodes_site_note_resolves_owner_email() -> None:
     assert result["owner_user_id"] == "USER2"
     assert result["owner_resolution"] == "resolved_from_email"
     assert client.notes[0]["mentions"] == ["USER2"]
+
+
+def test_add_rhodes_site_note_resolves_nested_owner_user_id() -> None:
+    client = FakeRhodesClient()
+    client.users_by_email["owner@example.com"] = {
+        "result": {"userId": "USER-NESTED"},
+    }
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body="AutomationEvent v1\nKind: document_registration_failed",
+        owner_email="owner@example.com",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "created"
+    assert result["owner_user_id"] == "USER-NESTED"
+    assert result["owner_resolution"] == "resolved_from_email"
+    assert client.notes[0]["mentions"] == ["USER-NESTED"]

@@ -1,5 +1,47 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - Nested Rhodes Record IDs
+
+Continued the non-blocked Phase 3 adapter-alignment work.
+
+Branch: `codex/ddr-nested-rhodes-record-ids`
+
+Current state: implementation complete locally; commit/PR pending.
+
+Changed:
+
+- Added shared nested response ID extraction in `rhodes.py`.
+- DDR note creation now accepts Rhodes note IDs returned in nested response
+  shapes such as `{note: {id: ...}}`, `{result: {...}}`, `{record: {...}}`,
+  or `{data: {...}}`.
+- Owner user resolution now accepts nested user ID response shapes too.
+- Added regression coverage proving nested note IDs do not trigger readback or
+  retry, and nested owner IDs still produce `@` mentions.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-nested-rhodes-ids-focused tests/test_rhodes.py::test_add_rhodes_site_note_accepts_nested_note_id_response tests/test_rhodes.py::test_add_rhodes_site_note_resolves_nested_owner_user_id tests/test_rhodes.py::test_add_rhodes_site_note_requires_returned_note_id -q
+uv run pytest --basetemp C:\tmp\ddr-nested-rhodes-ids-broad tests/test_rhodes.py tests/test_rhodes_events.py -q
+uv run ruff check src\due_diligence_reporter\rhodes.py tests\test_rhodes.py
+uv run mypy src\due_diligence_reporter\rhodes.py
+git diff --check
+```
+
+Results:
+
+- Focused nested-ID tests: 3 passed.
+- Broader Rhodes/Rhodes-event suite: 26 passed.
+- Ruff on touched code/tests: passed.
+- Mypy on touched Rhodes module: passed.
+- Diff check: passed with expected Windows LF-to-CRLF warnings only.
+
+Next:
+
+- Commit, push, and open PR.
+- After merge, continue the next non-blocked task: another adapter alignment
+  slice or the portfolio automation-gap snapshot.
+
 ## 2026-05-28 - DDR Report Event Test Gap
 
 Confirmed PR #137 was merged:
