@@ -48,6 +48,7 @@ from .m1_lookup import (
     _list_m1_documents_by_type,
     _resolve_m1_folder,
 )
+from .portfolio_automation_gaps import build_portfolio_automation_gap_snapshot
 from .raycon_client import RAYCON_BREAKDOWN_ROWS, RAYCON_FAILED_STATUSES
 from .rebl import ReblResolution, resolve_address
 from .report_schema import (
@@ -908,6 +909,29 @@ async def lookup_rhodes_site_owner(
         site_address=site_address,
         site_id=site_id,
         slug=slug,
+    )
+
+
+@mcp.tool()
+async def portfolio_automation_gap_snapshot(
+    max_sites: int = 100,
+    include_clean: bool = True,
+) -> dict[str, Any]:
+    """Read Rhodes and summarize portfolio-level automation/data-quality gaps.
+
+    The snapshot is read-only and uses Rhodes as the backing record for active
+    sites, linked Drive folders, registered documents, site notes, and review
+    tasks.
+    """
+    logger.info(
+        "Tool called: portfolio_automation_gap_snapshot - max_sites=%s include_clean=%s",
+        max_sites,
+        include_clean,
+    )
+    return await asyncio.to_thread(
+        build_portfolio_automation_gap_snapshot,
+        max_sites=max_sites,
+        include_clean=include_clean,
     )
 
 

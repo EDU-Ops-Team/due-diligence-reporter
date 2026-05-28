@@ -184,6 +184,17 @@ def _coerce_note_list(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _coerce_task_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("tasks", "data", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
 def _coerce_user(payload: Any) -> dict[str, Any]:
     if isinstance(payload, list):
         first = next((item for item in payload if isinstance(item, dict)), {})
@@ -676,6 +687,19 @@ class RhodesClient:
         else:
             payload["siteSlug"] = clean_site_slug
         return _coerce_note_list(self.call_tool("listNotes", payload))
+
+    def list_tasks(
+        self,
+        *,
+        site_id: str,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not site_id.strip():
+            raise RhodesError("site_id is required")
+        payload: dict[str, Any] = {"siteId": site_id.strip()}
+        if status:
+            payload["status"] = status
+        return _coerce_task_list(self.call_tool("listTasks", payload))
 
     def find_site_note_by_body(
         self,
