@@ -1,5 +1,54 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-28 - Portfolio Automation Gap Snapshot
+
+Continued the next non-blocked wrap-up item after the nested Rhodes record ID
+alignment work.
+
+Branch: `codex/ddr-portfolio-automation-gap-snapshot`
+
+Current state: implementation complete locally; commit/PR pending.
+
+Changed:
+
+- Added a read-only Rhodes-backed `portfolio_automation_gap_snapshot` MCP tool.
+- The snapshot rolls up active-site Drive-folder linkage, required DD source
+  document coverage, `AutomationEvent v1` notes, pending automation review
+  tasks, P1 DRI assignment, owner-routing status, latest DDR status, and
+  source-event fingerprints.
+- Added `RhodesClient.list_tasks()` plus task-list response coercion for the
+  snapshot's pending-review task read.
+- Added focused tests for portfolio totals, per-site gap reasons, missing-owner
+  routing, missing Drive/doc coverage, open RayCon automation failures, pending
+  data-repair tasks, and clean-site filtering.
+- Documented that the snapshot is read-only and does not write to Rhodes,
+  Drive, Gmail, or Chat.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-portfolio-gaps-focused tests/test_portfolio_automation_gaps.py -q
+uv run pytest --basetemp C:\tmp\ddr-portfolio-gaps-final tests/test_portfolio_automation_gaps.py tests/test_rhodes.py tests/test_rhodes_events.py tests/test_workflow_contracts.py -q
+uv run ruff check src\due_diligence_reporter\portfolio_automation_gaps.py src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\server.py tests\test_portfolio_automation_gaps.py
+uv run mypy src\due_diligence_reporter\portfolio_automation_gaps.py src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\server.py
+git diff --check
+```
+
+Results:
+
+- Focused snapshot tests: 2 passed.
+- Affected Rhodes/workflow suite: 35 passed.
+- Ruff on touched source/tests: passed.
+- Mypy on touched source modules: passed.
+- Diff check: passed with expected Windows LF-to-CRLF warnings only.
+
+Next:
+
+- Commit, push, and open PR.
+- After merge, continue any remaining non-blocked plan item from a clean
+  `main`, or revisit the hosted Rhodes MCP blocker if Rhodes-side support is
+  ready.
+
 ## 2026-05-28 - Nested Rhodes Record IDs
 
 Continued the non-blocked Phase 3 adapter-alignment work.
