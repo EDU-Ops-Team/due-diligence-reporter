@@ -2785,6 +2785,36 @@ def post_pipeline_result(
             logger.error("Failed to post Chat message for '%s' to %s: %s", result.site_title, url[:60], e)
 
 
+def post_completed_report_bundle_summary(
+    webhook_url: str,
+    results: list[PipelineResult],
+) -> None:
+    """Post one end-of-run summary for sites that already have reports."""
+    if not webhook_url:
+        return
+
+    report_exists = [result for result in results if result.status == "report_exists"]
+    if not report_exists:
+        return
+
+    urls = [u.strip() for u in webhook_url.split(",") if u.strip()]
+    if not urls:
+        return
+
+    lines = [
+        "Daily DDR scan -- completed report bundles already present",
+        f"Sites skipped because a completed DD Report already exists: {len(report_exists)}",
+    ]
+    lines.extend(f"- {result.site_title}" for result in report_exists)
+    msg = "\n".join(lines)
+
+    for url in urls:
+        try:
+            post_google_chat_message(url, msg)
+        except Exception as e:
+            logger.error("Failed to post completed report bundle summary to %s: %s", url[:60], e)
+
+
 def _pipeline_observability_lines(result: PipelineResult) -> list[str]:
     lines: list[str] = []
     if result.run_id:

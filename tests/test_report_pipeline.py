@@ -18,6 +18,7 @@ from due_diligence_reporter.report_pipeline import (
     _merge_cached_report_fields,
     check_site_readiness_direct,
     match_site_in_shared_cache,
+    post_completed_report_bundle_summary,
     process_site_pipeline,
     run_dd_report_agent,
 )
@@ -1302,6 +1303,37 @@ class TestPipelineResult:
         )
         assert r.doc_id == "abc"
         assert r.pending_count == 2
+
+
+class TestCompletedReportBundleSummary:
+    @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
+    def test_batches_report_exists_sites_into_one_message(self, mock_chat):
+        post_completed_report_bundle_summary(
+            "https://chat.example/hook",
+            [
+                PipelineResult(site_title="Alpha Keller", status="report_exists"),
+                PipelineResult(site_title="Alpha Austin", status="waiting_on_docs"),
+                PipelineResult(site_title="Alpha Boston", status="report_exists"),
+            ],
+        )
+
+        mock_chat.assert_called_once()
+        assert mock_chat.call_args.args[0] == "https://chat.example/hook"
+        message = mock_chat.call_args.args[1]
+        assert "Daily DDR scan -- completed report bundles already present" in message
+        assert "completed DD Report already exists: 2" in message
+        assert "- Alpha Keller" in message
+        assert "- Alpha Boston" in message
+        assert "Alpha Austin" not in message
+
+    @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
+    def test_noops_when_no_existing_reports(self, mock_chat):
+        post_completed_report_bundle_summary(
+            "https://chat.example/hook",
+            [PipelineResult(site_title="Alpha Austin", status="waiting_on_docs")],
+        )
+
+        mock_chat.assert_not_called()
 
 
 class TestAgentToolMerging:

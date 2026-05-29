@@ -1,5 +1,39 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-29 - Daily DDR Completed-Report Notification Batch
+
+Context:
+
+- Greg asked to reduce notification volume during the DDR scan when sites
+  already have completed report bundles.
+- The scheduled daily DDR scan was posting `post_pipeline_result(...)` for
+  every `report_exists` result, creating one Google Chat message per already
+  completed site.
+
+Actions completed:
+
+- Added `post_completed_report_bundle_summary(...)` in
+  `src/due_diligence_reporter/report_pipeline.py`.
+- Updated `scripts/daily_dd_check.py` to defer `report_exists` notifications
+  during the per-site loop and send one end-of-run summary listing all sites
+  that already have completed DD Reports.
+- Kept per-site notifications unchanged for waiting, created, incomplete,
+  failed, and error statuses.
+- Added regression coverage in `tests/test_report_pipeline.py` and
+  `tests/test_daily_dd_check.py`.
+
+Verification:
+
+- `uv run pytest tests/test_daily_dd_check.py tests/test_report_pipeline.py -q --basetemp C:\tmp\pytest-ddr-notifications`
+  -> `47 passed`
+- `uv run ruff check scripts/daily_dd_check.py src\due_diligence_reporter\report_pipeline.py tests\test_daily_dd_check.py tests\test_report_pipeline.py`
+  -> `All checks passed`
+
+Notes:
+
+- Beads tracking could not be updated in this shell because `bd` was not found
+  on PATH or in the checked local locations.
+
 ## 2026-05-29 - Action-First DDR Report Event Notes
 
 Started after Greg flagged DD report automation notes as noisy/repetitive and
@@ -1094,7 +1128,6 @@ Next:
 - Wait for CI/review on PR #125.
 - After merge, continue with the next remaining adapter consolidation or
   notification-only path that still lacks a Rhodes-owned record.
-
 ## 2026-05-27 - Inbox Missing-Folder Cleanup: Linked Active Rhodes Folders, Suppressed Cancelled Torrance
 
 Context:

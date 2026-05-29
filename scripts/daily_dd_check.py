@@ -33,6 +33,7 @@ from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
 from due_diligence_reporter.report_pipeline import (  # noqa: E402
     PipelineResult,
     list_shared_folders_once,
+    post_completed_report_bundle_summary,
     post_pipeline_result,
     process_site_pipeline,
 )
@@ -114,7 +115,12 @@ def main(site_filter: str | None = None) -> None:
             result = PipelineResult(site_title=site_title, status="error", error=str(e))
         results.append(result)
 
-        post_pipeline_result(settings.google_chat_webhook_url, result, drive_folder_url)
+        if result.status == "report_exists":
+            logger.info("'%s' - deferring completed-report notification to run summary", site_title)
+        else:
+            post_pipeline_result(settings.google_chat_webhook_url, result, drive_folder_url)
+
+    post_completed_report_bundle_summary(settings.google_chat_webhook_url, results)
 
     print("\n" + "=" * 60)
     print(f"Daily DD Check -- {len(results)} sites processed, {skipped} skipped")
