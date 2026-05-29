@@ -7,7 +7,8 @@ not clear enough about what the user needs to do next.
 
 Branch: `codex/ddr-clear-action-event-notes`
 
-Current state: implementation complete locally; commit/PR pending.
+Current state: branch pushed and draft PR open:
+https://github.com/GFooteGK1/due-diligence-reporter/pull/145
 
 Changed:
 
@@ -54,7 +55,7 @@ Results:
 
 Next:
 
-- Commit, push, and open the DDR PR.
+- Wait for CI/review/merge on DDR PR #145.
 
 ## 2026-05-29 - Portfolio Milestone Document Gaps
 
