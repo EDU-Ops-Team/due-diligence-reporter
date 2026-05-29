@@ -8,11 +8,33 @@ from typing import Any
 
 from .rhodes import RhodesClient, RhodesError
 
-REQUIRED_DD_DOC_TYPES = (
-    "siteInvestigationReport",
-    "propertyConditionAssessment",
-    "floorPlan",
+P1_MILESTONE_ORDER = (
+    "prospecting",
+    "conductingDiligence",
+    "acquireProperty",
+    "constructionPermits",
+    "certificateOfOccupancy",
+    "educationRegulatoryApproval",
+    "preparingToOpen",
+    "readyToOpen",
+    "postOpen",
 )
+MILESTONE_LABELS = {
+    "prospecting": "Prospecting",
+    "conductingDiligence": "Conducting Diligence",
+    "acquireProperty": "Acquiring Property",
+    "constructionPermits": "Obtaining Permits",
+    "certificateOfOccupancy": "Executing Buildout",
+    "educationRegulatoryApproval": "Gaining Edu Approval",
+    "preparingToOpen": "Preparing to Open",
+    "readyToOpen": "Ready to Open",
+    "postOpen": "Operating",
+}
+STAGE_MILESTONE_FALLBACK = {
+    "diligence": "conductingDiligence",
+    "buildout": "constructionPermits",
+    "operating": "postOpen",
+}
 
 OPEN_TASK_STATUSES = {"new", "inProgress", "delayed", "escalatedBlocked"}
 DDR_EVENT_KINDS = {
@@ -68,10 +90,16 @@ def _build_site_snapshot(rhodes: RhodesClient, site: dict[str, Any]) -> dict[str
     slug = _first_str(site, "slug")
     errors: list[str] = []
 
-    documents = _call_list(
+    site_detail = _call_record(
         errors,
-        "documents",
-        lambda: rhodes.list_documents(site_id=site_id),
+        "site",
+        lambda: rhodes.get_site(site_id=site_id),
+    )
+    site_context = site_detail or site
+    missing_document_snapshot = _call_record(
+        errors,
+        "missing_documents",
+        lambda: rhodes.get_missing_documents(site_id=site_id),
     )
     notes = _call_list(
         errors,
@@ -84,8 +112,6 @@ def _build_site_snapshot(rhodes: RhodesClient, site: dict[str, Any]) -> dict[str
         lambda: rhodes.list_tasks(site_id=site_id),
     )
     drive_folder = _resolve_drive_folder(rhodes, site_id)
-    if drive_folder["status"] != "linked":
-        errors.append(str(drive_folder["message"]))
 
     events = [
         event for event in (_parse_automation_event_note(note) for note in notes)
@@ -93,8 +119,12 @@ def _build_site_snapshot(rhodes: RhodesClient, site: dict[str, Any]) -> dict[str
     ]
     open_failures = _open_automation_failures(events)
     pending_tasks = _pending_automation_tasks(tasks)
-    required_docs = _required_document_coverage(documents)
-    p1_dri = _user_ref(site.get("p1Dri") or site.get("p1_dri"))
+    current_milestone = _current_milestone(site_context)
+    required_docs = _milestone_document_coverage(
+        missing_document_snapshot,
+        current_milestone=current_milestone,
+    )
+    p1_dri = _user_ref(site_context.get("p1Dri") or site_context.get("p1_dri"))
     owner_routing = _owner_routing_status(p1_dri, events)
     latest_ddr = _latest_ddr_status(events)
     latest_event = _latest_event(events)
@@ -115,6 +145,7 @@ def _build_site_snapshot(rhodes: RhodesClient, site: dict[str, Any]) -> dict[str
         "status": _first_str(site, "status"),
         "p1_dri": p1_dri,
         "owner_routing_status": owner_routing,
+        "current_milestone": current_milestone,
         "drive_folder": drive_folder,
         "required_documents": required_docs,
         "latest_ddr_status": latest_ddr,
@@ -141,6 +172,21 @@ def _call_list(
     return []
 
 
+def _call_record(
+    errors: list[str],
+    label: str,
+    fn: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        result = fn()
+        return result if isinstance(result, dict) else {}
+    except RhodesError as exc:
+        errors.append(f"{label}: {exc}")
+    except Exception as exc:  # noqa: BLE001 - read-only snapshot should continue per site
+        errors.append(f"{label}: {exc}")
+    return {}
+
+
 def _resolve_drive_folder(rhodes: RhodesClient, site_id: str) -> dict[str, str]:
     try:
         folder_id, folder_url = rhodes.resolve_drive_root(site_id=site_id)
@@ -149,24 +195,113 @@ def _resolve_drive_folder(rhodes: RhodesClient, site_id: str) -> dict[str, str]:
     return {"status": "linked", "folder_id": folder_id, "url": folder_url}
 
 
-def _required_document_coverage(documents: list[dict[str, Any]]) -> dict[str, Any]:
-    by_type: dict[str, dict[str, str]] = {}
-    for document in documents:
-        doc_type = _first_str(document, "docType", "doc_type")
-        if doc_type and doc_type not in by_type:
-            by_type[doc_type] = {
-                "title": _first_str(document, "title", "name"),
-                "document_id": _record_id(document, ("documentId", "_id", "id")),
-                "drive_file_id": _first_str(document, "driveFileId", "drive_file_id", "fileId"),
-            }
-    missing = [doc_type for doc_type in REQUIRED_DD_DOC_TYPES if doc_type not in by_type]
-    present = [doc_type for doc_type in REQUIRED_DD_DOC_TYPES if doc_type in by_type]
+def _milestone_document_coverage(
+    missing_document_snapshot: dict[str, Any],
+    *,
+    current_milestone: dict[str, str],
+) -> dict[str, Any]:
+    milestone_key = current_milestone.get("key", "")
+    milestone_row = _missing_documents_milestone(
+        missing_document_snapshot,
+        milestone_key=milestone_key,
+    )
+    missing_details = _document_requirement_rows(milestone_row.get("missingRequired"))
+    present_details = _document_requirement_rows(milestone_row.get("presentRequired"))
+    missing = [row["doc_type"] for row in missing_details]
+    present = [row["doc_type"] for row in present_details]
+    required = [row["doc_type"] for row in [*present_details, *missing_details]]
+    required_count = _int(milestone_row.get("requiredCount"))
+    if required_count <= 0:
+        required_count = len(required)
+    present_count = _int(milestone_row.get("presentRequiredCount"))
+    if present_count <= 0:
+        present_count = len(present)
+    completion_percent = 100 if required_count <= 0 else round(100 * present_count / required_count)
     return {
-        "required": list(REQUIRED_DD_DOC_TYPES),
+        "milestone": current_milestone,
+        "required": required,
         "present": present,
         "missing": missing,
-        "completion_percent": round(100 * len(present) / len(REQUIRED_DD_DOC_TYPES)),
-        "documents": {doc_type: by_type[doc_type] for doc_type in present},
+        "missing_details": missing_details,
+        "present_details": present_details,
+        "required_count": required_count,
+        "present_required_count": present_count,
+        "completion_percent": completion_percent,
+    }
+
+
+def _missing_documents_milestone(
+    missing_document_snapshot: dict[str, Any],
+    *,
+    milestone_key: str,
+) -> dict[str, Any]:
+    milestones = missing_document_snapshot.get("milestones")
+    if not isinstance(milestones, list):
+        return {}
+    for milestone in milestones:
+        if not isinstance(milestone, dict):
+            continue
+        if _first_str(milestone, "key") == milestone_key:
+            return milestone
+    return {}
+
+
+def _document_requirement_rows(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        doc_type = _first_str(item, "docType", "doc_type")
+        if not doc_type:
+            continue
+        rows.append({
+            "doc_type": doc_type,
+            "label": _first_str(item, "label", "title", "name") or doc_type,
+        })
+    return rows
+
+
+def _current_milestone(site: dict[str, Any]) -> dict[str, str]:
+    milestones = site.get("milestones")
+    if isinstance(milestones, dict):
+        active = _milestone_by_status(milestones, "active")
+        if active:
+            return active
+        next_open = _first_incomplete_milestone(milestones)
+        if next_open:
+            return next_open
+
+    stage = _first_str(site, "stage")
+    key = STAGE_MILESTONE_FALLBACK.get(stage, "")
+    return _milestone_ref(key, status=_first_str(site, "status")) if key else _milestone_ref("")
+
+
+def _milestone_by_status(milestones: dict[str, Any], status: str) -> dict[str, str]:
+    for key in P1_MILESTONE_ORDER:
+        milestone = milestones.get(key)
+        if isinstance(milestone, dict) and _first_str(milestone, "status") == status:
+            return _milestone_ref(key, status=status)
+    return {}
+
+
+def _first_incomplete_milestone(milestones: dict[str, Any]) -> dict[str, str]:
+    for key in P1_MILESTONE_ORDER:
+        milestone = milestones.get(key)
+        if not isinstance(milestone, dict):
+            continue
+        status = _first_str(milestone, "status")
+        if status != "completed":
+            return _milestone_ref(key, status=status)
+    return {}
+
+
+def _milestone_ref(key: str, *, status: str = "") -> dict[str, str]:
+    return {
+        "key": key,
+        "label": MILESTONE_LABELS.get(key, key),
+        "status": status,
     }
 
 
@@ -300,7 +435,7 @@ def _gap_reasons(
     if drive_folder["status"] != "linked":
         reasons.append("missing_drive_folder")
     if required_docs["missing"]:
-        reasons.append("missing_required_documents")
+        reasons.append("missing_current_milestone_documents")
     if open_failures:
         reasons.append("open_automation_failures")
     if pending_tasks:
@@ -317,7 +452,7 @@ def _build_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
         "missing_p1_dri": sum(1 for row in rows if "missing_p1_dri" in row["gap_reasons"]),
         "missing_drive_folder": sum(1 for row in rows if "missing_drive_folder" in row["gap_reasons"]),
         "missing_required_documents": sum(
-            1 for row in rows if "missing_required_documents" in row["gap_reasons"]
+            1 for row in rows if "missing_current_milestone_documents" in row["gap_reasons"]
         ),
         "open_automation_failures": sum(len(row["open_automation_failures"]) for row in rows),
         "pending_review_tasks": sum(len(row["pending_review_tasks"]) for row in rows),
@@ -366,3 +501,10 @@ def _normalize_key(value: str) -> str:
 
 def _event_sort_key(event: dict[str, Any]) -> str:
     return str(event.get("created_at") or "")
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0

@@ -21,7 +21,11 @@ def _snapshot(*, sites_with_gaps: int = 1) -> dict:
             {
                 "site_name": "Alpha Tulsa 6940 S Utica Ave",
                 "gap_count": sites_with_gaps,
-                "gap_reasons": ["missing_p1_dri", "missing_drive_folder"],
+                "gap_reasons": [
+                    "missing_p1_dri",
+                    "missing_drive_folder",
+                    "missing_current_milestone_documents",
+                ],
             }
         ]
         if sites_with_gaps
@@ -35,8 +39,12 @@ def test_format_portfolio_gap_chat_message_summarizes_counts_and_top_sites() -> 
     assert "Portfolio automation gaps need review" in message
     assert "Sites with gaps: 1 / 2" in message
     assert "missing P1 DRI=1" in message
+    assert "missing current-milestone docs=1" in message
     assert "Run: https://actions/run/1" in message
-    assert "Alpha Tulsa 6940 S Utica Ave: missing_p1_dri, missing_drive_folder" in message
+    assert (
+        "Alpha Tulsa 6940 S Utica Ave: missing P1 DRI, missing Drive folder, "
+        "missing current-milestone docs"
+    ) in message
 
 
 def test_post_portfolio_gap_chat_summary_skips_when_clean() -> None:

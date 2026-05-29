@@ -601,6 +601,16 @@ class RhodesClient:
             payload["milestone"] = milestone
         return _coerce_document_list(self.call_tool("listDocuments", payload))
 
+    def get_missing_documents(
+        self,
+        *,
+        site_id: str,
+    ) -> dict[str, Any]:
+        if not site_id.strip():
+            raise RhodesError("site_id is required")
+        payload = self.call_tool("getMissingDocuments", {"siteId": site_id.strip()})
+        return payload if isinstance(payload, dict) else {}
+
     def register_document(
         self,
         *,

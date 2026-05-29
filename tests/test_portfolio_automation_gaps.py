@@ -18,6 +18,10 @@ class FakeRhodesPortfolioClient:
                 "stage": "diligence",
                 "status": "active",
                 "p1Dri": {"userId": "USER1", "name": "Owner One", "email": "owner@example.com"},
+                "milestones": {
+                    "conductingDiligence": {"status": "active"},
+                    "acquireProperty": {"status": "notStarted"},
+                },
             },
             {
                 "_id": "SITE2",
@@ -25,15 +29,52 @@ class FakeRhodesPortfolioClient:
                 "slug": "alpha-tulsa",
                 "stage": "diligence",
                 "status": "active",
+                "milestones": {
+                    "conductingDiligence": {"status": "completed"},
+                    "acquireProperty": {"status": "active"},
+                },
             },
         ]
-        self.documents: dict[str, list[dict[str, Any]]] = {
+        self.missing_documents: dict[str, list[dict[str, Any]]] = {
             "SITE1": [
-                {"_id": "DOC1", "title": "SIR", "docType": "siteInvestigationReport"},
-                {"_id": "DOC2", "title": "BI", "docType": "propertyConditionAssessment"},
-                {"_id": "DOC3", "title": "Plan", "docType": "floorPlan"},
+                {
+                    "key": "conductingDiligence",
+                    "label": "Conducting Diligence",
+                    "missingRequired": [],
+                    "presentRequired": [],
+                    "presentRequiredCount": 0,
+                    "requiredCount": 0,
+                },
+                {
+                    "key": "acquireProperty",
+                    "label": "Acquiring Property",
+                    "missingRequired": [{"docType": "lease", "label": "Lease"}],
+                    "presentRequired": [],
+                    "presentRequiredCount": 0,
+                    "requiredCount": 1,
+                },
             ],
-            "SITE2": [{"_id": "DOC4", "title": "SIR", "docType": "siteInvestigationReport"}],
+            "SITE2": [
+                {
+                    "key": "acquireProperty",
+                    "label": "Acquiring Property",
+                    "missingRequired": [
+                        {
+                            "docType": "propertyConditionAssessment",
+                            "label": "Property Condition Assessment",
+                        },
+                        {"docType": "floorPlan", "label": "Floor Plan"},
+                    ],
+                    "presentRequired": [
+                        {
+                            "docType": "siteInvestigationReport",
+                            "label": "Site Investigation Report",
+                        }
+                    ],
+                    "presentRequiredCount": 1,
+                    "requiredCount": 3,
+                }
+            ],
         }
         self.notes: dict[str, list[dict[str, Any]]] = {
             "SITE1": [
@@ -107,8 +148,11 @@ class FakeRhodesPortfolioClient:
         assert status == "active"
         return self.sites
 
-    def list_documents(self, *, site_id: str, **_: Any) -> list[dict[str, Any]]:
-        return self.documents[site_id]
+    def get_site(self, *, site_id: str) -> dict[str, Any]:
+        return next(site for site in self.sites if site["_id"] == site_id)
+
+    def get_missing_documents(self, *, site_id: str) -> dict[str, Any]:
+        return {"milestones": self.missing_documents[site_id], "siteId": site_id}
 
     def list_notes(self, *, site_id: str = "", **_: Any) -> list[dict[str, Any]]:
         return self.notes[site_id]
@@ -145,10 +189,13 @@ def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
         "propertyConditionAssessment",
         "floorPlan",
     ]
+    assert tulsa["required_documents"]["milestone"]["key"] == "acquireProperty"
     assert tulsa["open_automation_failures"][0]["kind"] == "raycon_followup_alert"
     assert tulsa["pending_review_tasks"][0]["task_id"] == "TASK1"
 
     austin = result["sites"][1]
+    assert austin["required_documents"]["missing"] == []
+    assert austin["required_documents"]["milestone"]["key"] == "conductingDiligence"
     assert austin["owner_routing_status"] == "owner_routed"
     assert austin["latest_ddr_status"]["status"] == "created"
     assert (
