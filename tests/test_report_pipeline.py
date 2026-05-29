@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from due_diligence_reporter.automation_event import build_dd_report_summary_event
 from due_diligence_reporter.report_pipeline import (
     PipelineResult,
     ReportTrace,
     TraceEvent,
+    _dd_report_event_frequency_cap,
     _extract_source_read_issues,
     _merge_cached_report_fields,
     check_site_readiness_direct,
@@ -16,6 +21,82 @@ from due_diligence_reporter.report_pipeline import (
     process_site_pipeline,
     run_dd_report_agent,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_report_event_manifest_dir(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("due_diligence_reporter.report_pipeline.RUN_MANIFEST_DIR", tmp_path)
+
+
+def _open_ask_event():
+    return build_dd_report_summary_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        run_id="new-run",
+        doc_id="doc-1",
+        doc_url="https://docs.google.com/document/d/doc-1",
+        open_questions=[{"display_text": "Confirm zoning use from the vendor SIR"}],
+        created_at="2026-05-29T14:00:00+00:00",
+    )
+
+
+def _write_prior_report_event_manifest(tmp_path, *, started_at: str) -> None:
+    (tmp_path / "prior-run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "prior-run",
+                "site_id": "SITE1",
+                "site_title": "Alpha Keller",
+                "started_at": started_at,
+                "rhodes_report_event": {
+                    "event_type": "dd_report_created",
+                    "decision_required": True,
+                    "status": "created",
+                    "rhodes_note_id": "NOTE1",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_dd_report_event_frequency_cap_blocks_two_business_days(tmp_path) -> None:
+    _write_prior_report_event_manifest(
+        tmp_path,
+        started_at="2026-05-29T14:00:00+00:00",
+    )
+
+    cap = _dd_report_event_frequency_cap(
+        _open_ask_event(),
+        site_title="Alpha Keller",
+        current_run_id="new-run",
+        now=datetime(2026, 6, 1, 15, 0, tzinfo=UTC),
+        manifest_root=tmp_path,
+    )
+
+    assert cap is not None
+    assert cap["status"] == "skipped"
+    assert cap["reason"] == "frequency_cap"
+    assert cap["last_sent_at"] == "2026-05-29T14:00:00+00:00"
+    assert cap["next_allowed_at"] == "2026-06-02T14:00:00+00:00"
+
+
+def test_dd_report_event_frequency_cap_allows_after_two_business_days(tmp_path) -> None:
+    _write_prior_report_event_manifest(
+        tmp_path,
+        started_at="2026-05-29T14:00:00+00:00",
+    )
+
+    cap = _dd_report_event_frequency_cap(
+        _open_ask_event(),
+        site_title="Alpha Keller",
+        current_run_id="new-run",
+        now=datetime(2026, 6, 2, 14, 0, tzinfo=UTC),
+        manifest_root=tmp_path,
+    )
+
+    assert cap is None
+
 
 # ---------------------------------------------------------------------------
 # match_site_in_shared_cache
@@ -505,7 +586,10 @@ class TestProcessSitePipeline:
         assert note_kwargs["owner_email"] == "owner@example.com"
         assert "Kind: dd_report_created" in note_kwargs["body"]
         assert "Decision required: yes" in note_kwargs["body"]
-        assert "Open item 1: Confirm zoning use from the vendor SIR" in note_kwargs["body"]
+        assert "Action needed: Review the DD report and close 1 open verification ask" in (
+            note_kwargs["body"]
+        )
+        assert "Ask 1: Confirm zoning use from the vendor SIR" in note_kwargs["body"]
         step = next(step for step in result.steps if step.step == "rhodes.report_event")
         assert step.status == "succeeded"
 
@@ -571,9 +655,80 @@ class TestProcessSitePipeline:
         assert result.rhodes_report_event["google_chat"]["status"] == "sent"
         mock_chat.assert_called_once()
         assert mock_chat.call_args.args[0] == "https://chat.example/webhook"
-        assert "Requested decision: review and resolve DDR open verification items" in (
+        assert "Action needed: Review the DD report and close 1 open verification ask" in (
             mock_chat.call_args.args[1]
         )
+
+    @patch(
+        "due_diligence_reporter.report_pipeline.utc_now_iso",
+        return_value="2026-06-01T15:00:00+00:00",
+    )
+    @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_report_created_frequency_cap_skips_owner_and_chat_notifications(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+        mock_rhodes_note,
+        mock_chat,
+        _mock_utc_now,
+        tmp_path,
+    ):
+        _write_prior_report_event_manifest(
+            tmp_path,
+            started_at="2026-05-29T14:00:00+00:00",
+        )
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": False,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-05-27T18:00:00+00:00",
+            events=[],
+            final_report_data={
+                "verification.open_items": "- Confirm education approval path",
+            },
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+            "trace": trace,
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+        settings = _make_settings()
+        settings.google_chat_webhook_url = "https://chat.example/webhook"
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            settings,
+            site_id="SITE1",
+        )
+
+        assert result.rhodes_report_event is not None
+        assert result.rhodes_report_event["status"] == "skipped"
+        assert result.rhodes_report_event["reason"] == "frequency_cap"
+        assert result.rhodes_report_event["next_allowed_at"] == "2026-06-02T14:00:00+00:00"
+        mock_rhodes_note.assert_not_called()
+        mock_chat.assert_not_called()
+        step = next(step for step in result.steps if step.step == "rhodes.report_event")
+        assert step.status == "skipped"
 
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")

@@ -11,7 +11,8 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import anthropic
@@ -47,7 +48,11 @@ from .pipeline_contracts import (
     next_operator_action,
     utc_now_iso,
 )
-from .pipeline_manifest import manifest_has_secret_like_value, persist_run_manifest
+from .pipeline_manifest import (
+    RUN_MANIFEST_DIR,
+    manifest_has_secret_like_value,
+    persist_run_manifest,
+)
 from .pipeline_quality import evaluate_run_quality
 from .provenance import classify_provenance
 from .raycon_client import (
@@ -77,6 +82,7 @@ from .utils import (
 logger = logging.getLogger("report_pipeline")
 
 _RAYCON_REPORT_FIELD_PATHS: frozenset[str] = frozenset(raycon_token_paths())
+DD_REPORT_EVENT_FREQUENCY_CAP_BUSINESS_DAYS = 2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tool definitions for the Claude API call (mirrors the MCP tools)
@@ -1955,6 +1961,29 @@ def _record_rhodes_report_event_step(
         open_questions=result.open_questions,
         closed_open_questions=result.closed_open_questions,
     )
+    cap_status = _dd_report_event_frequency_cap(
+        event,
+        site_title=result.site_title,
+        current_run_id=recorder.run_id,
+        now=_parse_iso_datetime(recorder.started_at) or datetime.now(UTC),
+    )
+    if cap_status is not None:
+        result.rhodes_report_event = cap_status
+        artifact = ArtifactRef(
+            kind="rhodes_note",
+            name="DDR report AutomationEvent",
+            metadata=cap_status,
+        )
+        recorder.record(
+            "rhodes.report_event",
+            started_at,
+            started_monotonic,
+            "skipped",
+            skipped_reason=str(cap_status.get("message") or "frequency_cap"),
+            artifacts=[artifact],
+        )
+        return
+
     event_status, body = record_rhodes_automation_event(
         event,
         owner_user_id=owner_user_id,
@@ -1972,6 +2001,8 @@ def _record_rhodes_report_event_step(
             body,
         )
         event_status["google_chat"] = chat_result
+    if _report_event_notification_was_sent(event_status):
+        event_status["sent_at"] = recorder.started_at
 
     result.rhodes_report_event = event_status
     artifact = ArtifactRef(
@@ -2025,6 +2056,168 @@ def _record_rhodes_report_event_step(
         ),
         artifacts=[artifact],
     )
+
+
+def _dd_report_event_frequency_cap(
+    event: Any,
+    *,
+    site_title: str,
+    current_run_id: str,
+    now: datetime,
+    manifest_root: Path | None = None,
+) -> dict[str, Any] | None:
+    if not getattr(event, "decision_required", False):
+        return None
+    if _detail_open_count(event) <= 0:
+        return None
+    prior = _latest_prior_dd_report_notification(
+        site_id=str(getattr(event, "site_id", "") or ""),
+        site_title=site_title,
+        current_run_id=current_run_id,
+        manifest_root=manifest_root or RUN_MANIFEST_DIR,
+    )
+    if prior is None:
+        return None
+
+    last_sent_at = prior["sent_at"]
+    next_allowed_at = _add_business_days(
+        last_sent_at,
+        DD_REPORT_EVENT_FREQUENCY_CAP_BUSINESS_DAYS,
+    )
+    if now >= next_allowed_at:
+        return None
+
+    return {
+        "event_type": getattr(event, "event_type", "dd_report_event"),
+        "source_id": getattr(event, "source_id", current_run_id),
+        "decision_required": True,
+        "status": "skipped",
+        "reason": "frequency_cap",
+        "business_day_cap": DD_REPORT_EVENT_FREQUENCY_CAP_BUSINESS_DAYS,
+        "last_sent_at": last_sent_at.isoformat(),
+        "next_allowed_at": next_allowed_at.isoformat(),
+        "message": (
+            "Skipped DD report open-ask notification because this site was "
+            f"already notified within the last "
+            f"{DD_REPORT_EVENT_FREQUENCY_CAP_BUSINESS_DAYS} business days."
+        ),
+    }
+
+
+def _latest_prior_dd_report_notification(
+    *,
+    site_id: str,
+    site_title: str,
+    current_run_id: str,
+    manifest_root: Path,
+) -> dict[str, Any] | None:
+    if not manifest_root.exists():
+        return None
+    matches: list[dict[str, Any]] = []
+    for path in manifest_root.glob("*.json"):
+        payload = _read_manifest(path)
+        if not payload:
+            continue
+        if str(payload.get("run_id") or "") == current_run_id:
+            continue
+        if not _manifest_matches_report_site(payload, site_id=site_id, site_title=site_title):
+            continue
+        event_status = payload.get("rhodes_report_event")
+        if not isinstance(event_status, dict):
+            continue
+        if event_status.get("event_type") not in {"dd_report_created", "dd_report_updated"}:
+            continue
+        if not event_status.get("decision_required"):
+            continue
+        if not _report_event_notification_was_sent(event_status):
+            continue
+        sent_at = _sent_at_from_manifest(payload, event_status)
+        if sent_at is None:
+            continue
+        matches.append({"sent_at": sent_at, "run_id": payload.get("run_id")})
+    if not matches:
+        return None
+    return max(matches, key=lambda item: item["sent_at"])
+
+
+def _read_manifest(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - stale/corrupt run manifests should not block pipeline work
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _manifest_matches_report_site(
+    payload: dict[str, Any],
+    *,
+    site_id: str,
+    site_title: str,
+) -> bool:
+    payload_site_id = str(payload.get("site_id") or "").strip()
+    if site_id.strip() and payload_site_id and payload_site_id == site_id.strip():
+        return True
+    return _normalize_site_title(str(payload.get("site_title") or "")) == _normalize_site_title(site_title)
+
+
+def _normalize_site_title(value: str) -> str:
+    return " ".join(value.strip().lower().split())
+
+
+def _report_event_notification_was_sent(event_status: dict[str, Any]) -> bool:
+    if event_status.get("status") == "created":
+        return True
+    google_chat = event_status.get("google_chat")
+    if isinstance(google_chat, dict) and google_chat.get("status") in {"sent", "partial"}:
+        return True
+    return False
+
+
+def _sent_at_from_manifest(
+    payload: dict[str, Any],
+    event_status: dict[str, Any],
+) -> datetime | None:
+    for key in ("sent_at", "created_at", "ended_at", "started_at"):
+        source = event_status if key in event_status else payload
+        parsed = _parse_iso_datetime(str(source.get(key) or ""))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _add_business_days(value: datetime, days: int) -> datetime:
+    current = value.astimezone(UTC)
+    added = 0
+    while added < days:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            added += 1
+    return current
+
+
+def _detail_open_count(event: Any) -> int:
+    details = getattr(event, "details", {})
+    if not isinstance(details, dict):
+        return 0
+    try:
+        return int(details.get("Open item count") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def process_site_pipeline(

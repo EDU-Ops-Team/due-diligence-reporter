@@ -163,16 +163,56 @@ def test_dd_report_summary_event_renders_open_and_closed_items() -> None:
     note = render_automation_event_note(event)
 
     assert "Kind: dd_report_updated" in note
+    assert (
+        "Action needed: Review the DD report and close 1 open verification ask. "
+        "Update the source document, Rhodes record, or DD report evidence when resolved."
+        in note
+    )
+    assert "Asks to close:" in note
+    assert "How to close: These asks come from the DD report Open Items to Verify section." in note
+    assert (
+        "Move the answer/evidence into the right DD report section or Rhodes/source record, "
+        "then remove the ask from Open Items to Verify."
+        in note
+    )
+    assert "If an answer is left under the ask, it still counts as open." in note
+    assert "Ask 1: Confirm zoning use from the vendor SIR" in note
+    assert "Resolved in this update:" in note
+    assert "Resolved 1: Resolve construction timeline from RayCon" in note
+    assert "System details:" in note
     assert "Mutation status: report_created" in note
     assert "Run ID: run-1" in note
     assert "DD report ID: doc-1" in note
     assert "Source Drive file ID: drive-file-1" in note
-    assert "DD report URL: https://docs.google.com/document/d/doc-1" in note
-    assert "Trigger source: vendor_sir" in note
+    assert "DD report: https://docs.google.com/document/d/doc-1" in note
+    assert "Latest source reviewed: vendor_sir - Alpha Keller SIR.pdf" in note
     assert "Open item count: 1" in note
-    assert "Open item 1: Confirm zoning use from the vendor SIR" in note
     assert "Closed item count: 1" in note
-    assert "Closed item 1: Resolve construction timeline from RayCon" in note
+
+
+def test_dd_report_summary_event_rolls_up_long_open_item_list() -> None:
+    event = build_dd_report_summary_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        run_id="run-1",
+        doc_id="doc-1",
+        doc_url="https://docs.google.com/document/d/doc-1",
+        open_questions=[
+            {"display_text": f"Resolve verification ask {index}"}
+            for index in range(1, 8)
+        ],
+        created_at="2026-05-27T18:15:00+00:00",
+    )
+
+    note = render_automation_event_note(event)
+    lines = note.splitlines()
+
+    assert lines[0] == "AutomationEvent v1"
+    assert lines[1].startswith("Action needed: Review the DD report and close 7 open")
+    assert "Ask 1: Resolve verification ask 1" in note
+    assert "Ask 5: Resolve verification ask 5" in note
+    assert "Resolve verification ask 6" not in note
+    assert "Additional asks: 2 more open item(s) are listed in the DD report." in note
 
 
 def test_source_review_required_event_renders_source_issues() -> None:

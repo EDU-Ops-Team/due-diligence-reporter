@@ -1,5 +1,62 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-29 - Action-First DDR Report Event Notes
+
+Started after Greg flagged DD report automation notes as noisy/repetitive and
+not clear enough about what the user needs to do next.
+
+Branch: `codex/ddr-clear-action-event-notes`
+
+Current state: branch pushed and draft PR open:
+https://github.com/GFooteGK1/due-diligence-reporter/pull/145
+
+Changed:
+
+- Kept the `AutomationEvent v1` contract intact, but added a custom renderer
+  for `dd_report_created` and `dd_report_updated` events.
+- DD report notes now put operator action first:
+  - `Action needed`
+  - site
+  - open ask count
+  - DD report link
+  - latest source reviewed
+  - how to close the asks
+  - up to five `Ask N` lines
+  - resolved items from the latest update
+- The close instruction says asks come from DD report Open Items to Verify,
+  answers/evidence must be moved into the right report section or Rhodes/source
+  record, and answers left under an ask still count as open.
+- System/debug metadata now appears below a `System details` separator.
+- Long open-item lists show the first five asks and an `Additional asks` count
+  pointing the user back to the DD report.
+- Decision-required report-created/report-updated notifications with open asks
+  are capped at once per site every two business days. Capped runs record
+  `rhodes.report_event` as `skipped` with `reason=frequency_cap` in the run
+  manifest and do not send a Rhodes or Google Chat notification.
+- Updated process docs and regression coverage.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-clear-action-events tests/test_automation_event.py tests/test_report_pipeline.py::test_dd_report_event_frequency_cap_blocks_two_business_days tests/test_report_pipeline.py::test_dd_report_event_frequency_cap_allows_after_two_business_days tests/test_report_pipeline.py::TestProcessSitePipeline::test_report_created_records_rhodes_summary_event tests/test_report_pipeline.py::TestProcessSitePipeline::test_report_created_with_open_items_alerts_chat_when_owner_not_mentioned tests/test_report_pipeline.py::TestProcessSitePipeline::test_report_created_frequency_cap_skips_owner_and_chat_notifications -q
+uv run ruff check src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\report_pipeline.py tests\test_automation_event.py tests\test_report_pipeline.py
+uv run mypy src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\report_pipeline.py
+uv run pytest --basetemp C:\tmp\ddr-clear-action-events-broad tests/test_automation_event.py tests/test_report_pipeline.py -q
+git diff --check
+```
+
+Results:
+
+- Focused report-event tests: 14 passed.
+- Ruff on touched source/tests: passed.
+- Mypy on touched source modules: passed.
+- Broader affected automation/report pipeline suite: 56 passed.
+- Diff check: passed with expected Windows LF-to-CRLF warnings only.
+
+Next:
+
+- Wait for CI/review/merge on DDR PR #145.
+
 ## 2026-05-29 - Portfolio Milestone Document Gaps
 
 Started from clean `main` after the portfolio gap alert showed every active

@@ -28,6 +28,9 @@ class AutomationEvent:
 def render_automation_event_note(event: AutomationEvent) -> str:
     """Render an AutomationEvent as a stable Rhodes note body."""
 
+    if event.event_type in {"dd_report_created", "dd_report_updated"}:
+        return _render_dd_report_event_note(event)
+
     lines = [
         "AutomationEvent v1",
         f"Source: {event.source_system}",
@@ -50,6 +53,114 @@ def render_automation_event_note(event: AutomationEvent) -> str:
             lines.append(f"{label}: {value}")
     lines.append(f"Created at: {event.created_at}")
     return "\n".join(lines)
+
+
+def _render_dd_report_event_note(event: AutomationEvent) -> str:
+    """Render DD report activity with the operator ask first."""
+
+    open_count = _detail_int(event, "Open item count")
+    closed_count = _detail_int(event, "Closed item count")
+    doc_url = event.details.get("DD report URL", "").strip()
+    trigger_source = event.details.get("Trigger source", "").strip()
+    source_file = event.details.get("Source file", "").strip()
+
+    lines = [
+        "AutomationEvent v1",
+        f"Action needed: {_dd_report_action_needed(event, open_count)}",
+        f"Site: {event.site_name}",
+        f"Open asks: {open_count}",
+    ]
+    if closed_count:
+        lines.append(f"Resolved this run: {closed_count}")
+    if doc_url:
+        lines.append(f"DD report: {doc_url}")
+    if trigger_source or source_file:
+        source_parts = [part for part in (trigger_source, source_file) if part]
+        lines.append(f"Latest source reviewed: {' - '.join(source_parts)}")
+    if open_count > 0:
+        lines.extend(_dd_report_close_instructions())
+
+    ask_lines = _dd_report_ask_lines(event.details)
+    if ask_lines:
+        lines.append("Asks to close:")
+        lines.extend(ask_lines)
+        additional_count = max(0, open_count - len(ask_lines))
+        if additional_count:
+            lines.append(
+                f"Additional asks: {additional_count} more open item(s) are listed in the DD report."
+            )
+
+    resolved_lines = _dd_report_resolved_lines(event.details)
+    if resolved_lines:
+        lines.append("Resolved in this update:")
+        lines.extend(resolved_lines)
+
+    lines.extend([
+        "System details:",
+        f"Source: {event.source_system}",
+        f"Source ID: {event.source_id}",
+        f"Kind: {event.event_type}",
+        f"Site ID: {event.site_id or 'unknown'}",
+        f"Decision required: {'yes' if event.decision_required else 'no'}",
+    ])
+    if event.requested_decision:
+        lines.append(f"Requested decision: {event.requested_decision}")
+    if event.mutation_status:
+        lines.append(f"Mutation status: {event.mutation_status}")
+    if event.retry_state:
+        lines.append(f"Retry state: {_format_retry_state(event.retry_state)}")
+    for label, value in event.artifact_ids.items():
+        lines.append(f"{label}: {value or 'unknown'}")
+    lines.append(f"Open item count: {open_count}")
+    lines.append(f"Closed item count: {closed_count}")
+    lines.append(f"Created at: {event.created_at}")
+    return "\n".join(lines)
+
+
+def _dd_report_action_needed(event: AutomationEvent, open_count: int) -> str:
+    if not event.decision_required or open_count <= 0:
+        return "No operator action needed; DD report event is recorded."
+    item_word = "ask" if open_count == 1 else "asks"
+    return (
+        f"Review the DD report and close {open_count} open verification {item_word}. "
+        "Update the source document, Rhodes record, or DD report evidence when resolved."
+    )
+
+
+def _dd_report_close_instructions() -> list[str]:
+    return [
+        "How to close: These asks come from the DD report Open Items to Verify section.",
+        (
+            "Move the answer/evidence into the right DD report section or Rhodes/source record, "
+            "then remove the ask from Open Items to Verify."
+        ),
+        "If an answer is left under the ask, it still counts as open.",
+    ]
+
+
+def _dd_report_ask_lines(details: dict[str, str], *, limit: int = 5) -> list[str]:
+    rows: list[str] = []
+    for index in range(1, limit + 1):
+        text = details.get(f"Open item {index}", "").strip()
+        if text:
+            rows.append(f"Ask {index}: {text}")
+    return rows
+
+
+def _dd_report_resolved_lines(details: dict[str, str], *, limit: int = 3) -> list[str]:
+    rows: list[str] = []
+    for index in range(1, limit + 1):
+        text = details.get(f"Closed item {index}", "").strip()
+        if text:
+            rows.append(f"Resolved {index}: {text}")
+    return rows
+
+
+def _detail_int(event: AutomationEvent, label: str) -> int:
+    try:
+        return int(event.details.get(label, "0"))
+    except (TypeError, ValueError):
+        return 0
 
 
 def build_document_registration_failed_event(
