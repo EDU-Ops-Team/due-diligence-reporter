@@ -1,5 +1,54 @@
 # Due Diligence Reporter Handoff
 
+## 2026-05-29 - Portfolio Milestone Document Gaps
+
+Started from clean `main` after the portfolio gap alert showed every active
+site missing required documents.
+
+Branch: `codex/portfolio-milestone-doc-gaps`
+
+Current state: implementation complete locally; commit/PR pending.
+
+Changed:
+
+- Changed `portfolio_automation_gap_snapshot` document-gap logic from a flat
+  three-document checklist to Rhodes' milestone-specific
+  `getMissingDocuments` breakdown.
+- The snapshot now loads each site's current P1 milestone and only flags
+  missing documents required for that milestone.
+- Future-milestone documents no longer create a portfolio gap before the site
+  reaches that milestone.
+- Changed the gap reason to `missing_current_milestone_documents` while keeping
+  the existing `totals.missing_required_documents` count key for compatibility.
+- Updated CLI and Google Chat wording to say `missing current-milestone docs`.
+- Stopped treating a missing Drive folder as `snapshot_read_errors`; it remains
+  its own `missing_drive_folder` gap.
+- Added `RhodesClient.get_missing_documents()`.
+- Updated process docs and regression tests.
+
+Verification:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-milestone-gaps tests/test_portfolio_automation_gaps.py tests/test_portfolio_gap_notifications.py tests/test_ddr_cli.py tests/test_rhodes.py -q
+uv run ruff check src\due_diligence_reporter\portfolio_automation_gaps.py src\due_diligence_reporter\portfolio_gap_notifications.py src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\rhodes.py tests\test_portfolio_automation_gaps.py tests\test_portfolio_gap_notifications.py tests\test_ddr_cli.py tests\test_rhodes.py
+uv run mypy src\due_diligence_reporter\portfolio_automation_gaps.py src\due_diligence_reporter\portfolio_gap_notifications.py src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\rhodes.py
+git diff --check
+```
+
+Results:
+
+- Focused portfolio/Rhodes tests: 36 passed.
+- Ruff on touched source/tests: passed.
+- Mypy on touched source modules: passed.
+- Diff check: passed with expected Windows LF-to-CRLF warnings only.
+
+Next:
+
+- Commit, push, and open the DDR PR.
+- After merge, rerun `Portfolio Automation Gaps`; the missing-doc count should
+  drop to sites missing documents for their current active milestone, not all
+  future milestone requirements.
+
 ## 2026-05-28 - Portfolio Gap Google Chat Alert
 
 Confirmed PR #141 was merged:

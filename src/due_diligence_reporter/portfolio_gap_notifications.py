@@ -30,7 +30,7 @@ def format_portfolio_gap_chat_message(
             "Counts: "
             f"missing P1 DRI={_int(totals.get('missing_p1_dri'))}; "
             f"missing Drive folder={_int(totals.get('missing_drive_folder'))}; "
-            f"missing required docs={_int(totals.get('missing_required_documents'))}; "
+            f"missing current-milestone docs={_int(totals.get('missing_required_documents'))}; "
             f"open automation failures={_int(totals.get('open_automation_failures'))}; "
             f"pending review tasks={_int(totals.get('pending_review_tasks'))}"
         ),
@@ -42,7 +42,7 @@ def format_portfolio_gap_chat_message(
     if gap_sites:
         lines.append("Top sites:")
         for site in gap_sites[:max_sites]:
-            reasons = ", ".join(str(reason) for reason in _list(site.get("gap_reasons")))
+            reasons = ", ".join(_reason_label(str(reason)) for reason in _list(site.get("gap_reasons")))
             if not reasons:
                 reasons = "snapshot_read_errors"
             lines.append(f"- {site.get('site_name') or 'Unknown site'}: {reasons}")
@@ -91,3 +91,15 @@ def _int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _reason_label(reason: str) -> str:
+    labels = {
+        "missing_p1_dri": "missing P1 DRI",
+        "missing_drive_folder": "missing Drive folder",
+        "missing_current_milestone_documents": "missing current-milestone docs",
+        "open_automation_failures": "open automation failures",
+        "pending_review_tasks": "pending review tasks",
+        "snapshot_read_errors": "snapshot read errors",
+    }
+    return labels.get(reason, reason)

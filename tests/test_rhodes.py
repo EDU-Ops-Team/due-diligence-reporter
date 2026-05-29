@@ -216,6 +216,15 @@ class RecordingRhodesClient(RhodesClient):
         return {"_id": "NOTE1"}
 
 
+def test_get_missing_documents_calls_rhodes_tool() -> None:
+    client = RecordingRhodesClient()
+
+    result = client.get_missing_documents(site_id="SITE1")
+
+    assert result == {"_id": "NOTE1"}
+    assert client.calls == [("getMissingDocuments", {"siteId": "SITE1"})]
+
+
 def test_lookup_rhodes_site_owner_returns_p1_report_fields() -> None:
     client = FakeRhodesClient(
         {
