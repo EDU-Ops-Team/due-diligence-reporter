@@ -31,6 +31,8 @@ RepublishCallback = Callable[..., Any]
 def collect_core_source_events(
     gc: GoogleClient,
     site_record: dict[str, Any],
+    *,
+    read_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Return material DDR source events for one Rhodes site."""
     drive_folder_url = str(site_record.get("drive_folder_url") or "").strip()
@@ -77,6 +79,7 @@ def collect_core_source_events(
             candidate,
             doc_type=doc_type,
             m1_folder_id=m1_folder_id,
+            read_only=read_only,
         ):
             continue
         event = source_event_from_drive_file(source_type, candidate, doc_type=doc_type)
@@ -113,7 +116,7 @@ def run_vendor_doc_republish_sweep(
             )
             continue
         try:
-            events = collect_core_source_events(gc, site_summary)
+            events = collect_core_source_events(gc, site_summary, read_only=dry_run)
         except Exception as exc:  # noqa: BLE001 - one site should not stop the sweep
             logger.warning(
                 "Core source sweep failed for %s: %s",
@@ -209,12 +212,14 @@ def _is_vendor_source(
     *,
     doc_type: str,
     m1_folder_id: str | None,
+    read_only: bool = False,
 ) -> bool:
     return is_vendor_sourced(
         file_info,
         gc=gc,
         m1_folder_id=m1_folder_id,
         doc_type=doc_type,
+        read_only=read_only,
     )
 
 

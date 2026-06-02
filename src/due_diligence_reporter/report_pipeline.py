@@ -136,7 +136,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_e_occupancy_skill",
-        "description": "Apply E-Occupancy scoring to a building. Pass site_name and drive_folder_url to auto-publish the assessment as a Google Doc in the M1 subfolder — the returned doc_url can be used as sources.e_occupancy_link.",
+        "description": "Apply E-Occupancy scoring to a building using the hosted Ops-Skills ease-of-conversion rating contract. Pass site_name and drive_folder_url to auto-publish the assessment as a Google Doc in the M1 subfolder - the returned doc_url can be used as sources.e_occupancy_link.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -163,10 +163,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "state": {"type": "string", "description": "Two-letter US state abbreviation"},
+                "address": {"type": "string", "default": "", "description": "Full site address; preferred when available"},
                 "site_name": {"type": "string", "default": "", "description": "Site name — pass to auto-publish assessment to Drive"},
                 "drive_folder_url": {"type": "string", "default": "", "description": "Site Drive folder URL — pass to auto-publish"},
             },
-            "required": ["state"],
+            "required": [],
         },
     },
     {
@@ -294,9 +295,12 @@ def _canonicalize_site_tool_input(
     if site_address and tool_name in {
         "lookup_rhodes_site_owner",
         "list_drive_documents",
+        "apply_school_approval_skill",
         "create_dd_report",
     }:
         canonical["site_address"] = site_address
+        if tool_name == "apply_school_approval_skill" and not str(canonical.get("address") or "").strip():
+            canonical["address"] = site_address
 
     return canonical
 

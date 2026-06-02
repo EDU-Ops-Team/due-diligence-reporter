@@ -65,6 +65,34 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
     assert any(event["fingerprint"] == "sir-1:2026-05-26T10:00:00Z" for event in events)
 
 
+def test_collect_core_source_events_can_skip_provenance_cache_writes() -> None:
+    gc = MagicMock()
+    gc.list_subfolders.return_value = [
+        {
+            "id": "m1",
+            "name": "M1 - Acquire Property",
+            "webViewLink": "https://drive/m1",
+        }
+    ]
+    gc.list_files_in_folder.return_value = [
+        {
+            "id": "sir-1",
+            "name": "Alpha Test SIR.pdf",
+            "modifiedTime": "2026-05-26T10:00:00Z",
+            "webViewLink": "https://drive/sir-1",
+        }
+    ]
+
+    with patch(
+        "due_diligence_reporter.vendor_doc_sweep.is_vendor_sourced",
+        return_value=True,
+    ) as is_vendor:
+        events = collect_core_source_events(gc, _site(), read_only=True)
+
+    assert events
+    assert is_vendor.call_args.kwargs["read_only"] is True
+
+
 def test_sweep_triggers_republish_for_core_source_doc() -> None:
     gc = MagicMock()
     callback = MagicMock(

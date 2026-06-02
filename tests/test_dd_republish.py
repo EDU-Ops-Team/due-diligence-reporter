@@ -31,6 +31,7 @@ from due_diligence_reporter.dd_republish import (
     REASON_SCHOOL_APPROVAL,
     REASON_VENDOR_SIR,
     RepublishOutcome,
+    find_existing_dd_report,
     load_state,
     maybe_republish_dd_report,
     record_dd_republish_failure_event,
@@ -111,6 +112,38 @@ def _call_helper(
         open_questions_before=open_questions_before,
         failure_event_recorder=failure_event_recorder,
     )
+
+
+class TestFindExistingDDReport:
+    def test_finds_latest_dd_report_in_m1_before_site_root(self):
+        gc = MagicMock()
+        gc.list_subfolders.return_value = [
+            {
+                "id": "m1-folder",
+                "name": "M1 - Acquire Property",
+                "webViewLink": "https://drive.google.com/drive/folders/m1-folder",
+            }
+        ]
+        m1_report = {
+            "id": "dd-m1",
+            "name": "Alpha Keller DD Report - 2026-06-01",
+            "modifiedTime": "2026-06-01T10:00:00Z",
+        }
+        root_report = {
+            "id": "dd-root",
+            "name": "Alpha Keller DD Report - 2026-05-01",
+            "modifiedTime": "2026-05-01T10:00:00Z",
+        }
+        gc.list_files_in_folder.side_effect = [
+            [m1_report],
+            [root_report],
+        ]
+
+        result = find_existing_dd_report(gc, "site-root")
+
+        assert result == m1_report
+        assert gc.list_files_in_folder.call_args_list[0].args == ("m1-folder",)
+        assert gc.list_files_in_folder.call_args_list[1].args == ("site-root",)
 
 
 # ---------------------------------------------------------------------------

@@ -73,6 +73,11 @@ def extract_folder_id_from_url(url: str) -> str | None:
     return None
 
 
+def is_drive_root_folder_id(folder_id: str | None) -> bool:
+    """Return True when a parsed Drive folder ID points to the user's root."""
+    return str(folder_id or "").strip().lower() == "root"
+
+
 def extract_state_from_address(address: str | None) -> str | None:
     """Extract a two-letter state or territory code from a US-style address."""
     if not address:

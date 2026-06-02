@@ -1,5 +1,207 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-01 - Route Manual DDR Publishes to M1
+
+Greg reported a manual DDR run published the DD Report to My Drive instead of
+the site's M1 folder.
+
+Root cause:
+
+- `create_dd_report` parsed the supplied site Drive folder URL and created the
+  DDR in that raw site root, while other skill report paths already resolved
+  `M1 - Acquire Property`.
+- `GoogleClient.create_document()` created a Google Doc via the Docs API and
+  then tried to move it by removing `"root"` instead of reading/removing the
+  document's actual My Drive parent ID.
+
+Changed:
+
+- `create_dd_report` now resolves/creates `M1 - Acquire Property` with
+  `allow_legacy_fallback=False` and creates new DDR docs in that M1 folder.
+- Existing DDR lookup checks M1 first. If a legacy same-site DDR is found in
+  the site root, it is moved into M1 and rebuilt in place instead of leaving a
+  duplicate root-level report.
+- Added `GoogleClient.move_file_to_folder()`, which reads actual current parent
+  IDs before calling Drive `files.update(addParents=..., removeParents=...)`.
+- `create_document()` now uses that move helper, so new Docs do not depend on
+  the `"root"` alias and should not remain in My Drive after creation.
+- The `create_dd_report` response now includes `document.folder_id` and
+  `document.folder_url` for the resolved target folder.
+- `create_dd_report` and `list_drive_documents` reject `/folders/root` instead
+  of letting a stale/root folder URL create or read reports from My Drive.
+- Existing report replacement data now prefers a real tool-supplied Drive folder
+  URL over a blank or root URL persisted in earlier report metadata.
+- `find_existing_dd_report` now searches the site's M1 folder before checking
+  the legacy site root, so vendor-doc republish updates the active DDR instead
+  of missing it.
+- `vendor_doc_sweep` dry-run collection now passes `read_only=True` into the
+  provenance classifier, so dry runs do not mutate provenance state.
+
+Live artifact follow-up:
+
+- Drive search for DD Reports modified on 2026-06-01 found:
+  - `Alpha Miami Beach DD Report - 06/01/2026`
+    (`1Ym8ZIzuUuSheIX8MnlRccf8F4rqUJqGn6aAXanlDNSc`) already in untrashed
+    `M1 - Acquire Property` (`1DuceE9iu0y45G6wncl4cRZyTkgP7IiYL`).
+  - Older duplicate `Alpha Miami Beach DD Report - 06/01/2026`
+    (`18P6t2agXzgz9_MxItX-ESxgO3AqsgFQLBoOeCmSgrj4`) under a trashed M1 folder
+    (`1HYk3KndRA_VLcklX7V5T09xh29JEEXJ5`).
+  - `Alpha Palo Alto 4260 El Camino Real DD Report - 06/01/2026`
+    (`1HPIVhrcc5mnJdq8RoEBOn5YF6TFo-LAXyhGQWSKgCjU`) in the site root
+    `Alpha Palo Alto 4260 El Camino Real` (`12T6gDf43NZtAPZ1yRybYteD53eKLUjfT`).
+- Resolved Palo Alto's correct M1 folder through Rhodes:
+  `1Fpo4IlSChNLTnpL74TBgasBtYp7snHYL`.
+- Attempted `driveMoveFile` for the Palo Alto DDR from site root to M1, but
+  LocationOS returned `Permission denied for this Google Drive operation`
+  (`Request ID: a174908e-f1f0-4f90-98cf-f9907cb41296`).
+- Manual/permissioned move still needed for that live Palo Alto document unless
+  the Drive write permission is fixed.
+
+Miami Beach follow-up for `Alpha Miami Beach 300 71st St`:
+
+- Rhodes site `k972ay4w964539mq0naqyde5ws85fr3r` had no Drive folder linked and
+  no registered documents when the manual DDR issue was reviewed.
+- Linked the real site Drive folder
+  `Alpha Miami Beach 300 71st St` (`1qjyrtHSFkPOQjTHPo8VSORCGh9h7KqOt`) back to
+  Rhodes. M1 now resolves to `1DuceE9iu0y45G6wncl4cRZyTkgP7IiYL`.
+- Registered the vendor SIR
+  `Alpha School - Miami Beach, FL (300 71st Street) SIR 5.1.2026.pdf`
+  (`1wUn5FAWlT_mq9ghh17kBj4_HJW-LBo2s`) as `siteInvestigationReport`.
+- Republished the corrected DDR:
+  `Alpha Miami Beach 300 71st St DD Report - 06/01/2026`
+  (`1QXQcCqO3NPHY8sG6DmcbTk9Y_xyLw3G7UQ2yQ7YYcbQ`) in M1.
+- Renamed the stale short-name report to
+  `Superseded - Alpha Miami Beach DD Report - 06/01/2026 (missing vendor docs)`
+  (`1Ym8ZIzuUuSheIX8MnlRccf8F4rqUJqGn6aAXanlDNSc`) and left it in M1 for audit
+  trail continuity.
+- Reviewed the apparent Building Inspection file. Its filename referenced
+  `300 71st`, but extraction showed the report contents describe
+  `1021 Biarritz Drive`, so it is not valid property-condition evidence for
+  this site.
+- Copied that mismatched PDF into M1 only as a review artifact, renamed it to
+  `Needs review - 1021 Biarritz content - not 300 71st.pdf`, and updated the
+  Rhodes document record to `docType=other` with notes that a site-specific
+  building inspection remains required.
+- Current Rhodes missing-document readback shows the vendor SIR present and
+  `propertyConditionAssessment` still missing, which matches the corrected DDR.
+- Added a Rhodes site note documenting the recovery, corrected DDR, valid SIR,
+  and invalid/mislabeled Building Inspection candidate.
+
+Additional Miami Beach Block Plan correction:
+
+- Greg identified Drive file `10dPoeXlUcuYwvEGflf0r9zo4RQMCfErM` as the site
+  Block Plan. It was already in M1 but was named
+  `2026.05.19_AlphaMiami_ProgressSet.pdf`, which did not reliably expose it as
+  a Block Plan to deterministic automation.
+- Renamed it in Drive to
+  `2026.05.19 - Alpha Miami Beach 300 71st St Block Plan.pdf`.
+- Registered it in Rhodes as `floorPlan` for the `acquireProperty` milestone
+  using the Drive link. The LocationOS direct `driveFileId` registration path
+  hit the same noninteractive elicitation schema bug seen earlier, so the
+  external URL path was used.
+- Re-ran `list_drive_documents` and verified the DDR scanner now returns the
+  file as `doc_type=block_plan`.
+- Rebuilt the corrected DDR in place:
+  `1QXQcCqO3NPHY8sG6DmcbTk9Y_xyLw3G7UQ2yQ7YYcbQ`.
+- Readback from the DDR shows `View Block Plan`, a partial banner noting
+  `Block Plan submitted 2026-06-01 19:04 UTC`, and Block Plan scenario notes:
+  Scenario 1 / Alpha Standard = 114 students; Scenario 2 / Code = 199 students.
+- The refreshed DDR adds a new open question that the Block Plan references
+  3rd floor while the E-Occupancy report references 4th floor; this discrepancy
+  must be resolved before permit submittal.
+- Ran the RayCon follow-up safety net for this site. It dispatched a RayCon job
+  for block plan file `10dPoeXlUcuYwvEGflf0r9zo4RQMCfErM` with job ID
+  `c9cb1c0309ebc26abb1f1dc5a73f42ff`, status `queued`. Do not paste the
+  generated RayCon status URL into handoffs or notes because it contains an
+  access token.
+- Added a Rhodes site note documenting the Block Plan correction and RayCon
+  dispatch.
+
+Validation:
+
+```powershell
+uv run pytest --basetemp C:\tmp\ddr-m1-publish tests/test_dd_output_fixes.py::TestGoogleClientDocumentCreation::test_create_document_removes_actual_parent_when_moving_to_target_folder tests/test_dd_output_fixes.py::TestAsyncOffloading::test_create_dd_report_uses_to_thread tests/test_dd_output_fixes.py::TestAsyncOffloading::test_create_dd_report_rebuilds_existing_same_day_doc tests/test_dd_output_fixes.py::TestAsyncOffloading::test_create_dd_report_moves_legacy_root_report_to_m1 -q
+uv run pytest --basetemp C:\tmp\ddr-m1-publish-broad tests/test_dd_output_fixes.py tests/test_m1_lookup.py -q
+uv run pytest --basetemp C:\tmp\ddr-m1-report-pipeline tests/test_report_pipeline.py -q
+uv run ruff check src\due_diligence_reporter\google_client.py src\due_diligence_reporter\server.py tests\test_dd_output_fixes.py
+uv run mypy src\due_diligence_reporter\google_client.py src\due_diligence_reporter\server.py
+git diff --check
+```
+
+Results:
+
+- Focused M1/Drive publish tests: 4 passed.
+- Broader affected output/M1 tests: 58 passed.
+- Report pipeline suite: 49 passed.
+- Ruff and focused mypy passed.
+- `git diff --check` passed with expected Windows LF-to-CRLF warnings only.
+- Beads state could not be updated because `bd` is not available on PATH in
+  this shell, and `uv run bd` also failed with `program not found`.
+
+## 2026-06-01 - RayCon Follow-up Action Failure Recheck
+
+Greg flagged that the RayCon Follow-up GitHub Action has been failing a lot.
+
+Live checks:
+
+- `gh run list --workflow raycon-followup.yml --limit 100` showed 37 failures
+  and 63 successes in the latest 100 runs.
+- Current consecutive failure streak: 28 runs.
+- First failure in the current streak:
+  - run `26581936500`
+  - `2026-05-28T14:44:13Z`
+  - SHA `c71de5e672ea70ce71d6fa06c29d2e90ba0e28eb`
+  - event `workflow_dispatch`
+- Previous success:
+  - run `26581095061`
+  - `2026-05-28T14:29:44Z`
+  - SHA `e7227be6269a84842c418ec961e5b8d815f3afcc`
+  - event `schedule`
+- Latest sampled run `26768030545` on current `main`
+  (`25ec37b2b400d8726a56530adfbcfdcc47b93ac8`) failed after processing
+  all sites with `published=0 dispatched=4 alerts=16 errors=0 total_sites=44`.
+
+Conclusion:
+
+- The recurring failure signature is still the Rhodes MCP note-write blocker,
+  not a runner/setup/secret failure.
+- `addNote` returns `status: "rejected"`,
+  `rejectionReason: "elicitation_unsupported"`, and no note ID for the
+  site-id and slug retry paths.
+- Google Chat fallback posts, but owner notification is not considered
+  delivered because `add_rhodes_site_note` now correctly requires a concrete
+  Rhodes note ID.
+- Commit `c71de5e` (`Require verified Rhodes note IDs`) is where the workflow
+  started failing closed instead of falsely passing when no note was actually
+  created.
+
+Next:
+
+- Fix the Rhodes/LocationOS write surface so API-key/noninteractive automation
+  can create a site note with mentions and return the note ID.
+- After that, rerun RayCon Follow-up on current `main` and verify the log shows
+  `status: "created"`, `owner_notification: "mentioned"`, and a non-empty
+  `rhodes_note_id`.
+- Do not "fix" this by making Chat fallback count as owner delivery unless Greg
+  explicitly decides that GitHub Action green status is more important than
+  verified Rhodes owner notification.
+
+Rhodes write-fix source check:
+
+- The DDR repo only contains the API-key JSON-RPC client and RayCon
+  fail-closed guardrails. It does not contain the deployed
+  `location-os-mcp.ephor.workers.dev` write-surface implementation.
+- Local/GitHub-visible searches did not find the LocationOS MCP worker source.
+- Cloudflare API inspection was attempted from this session, but the configured
+  Cloudflare API token returned `10000: Authentication error`.
+- Durable fix remains Rhodes-side: trusted automation/API-key note writes need
+  a noninteractive path that creates the note, honors `mentions`, returns the
+  note ID, and records audit/source context.
+- DDR-side fallback is possible but less desirable: prior Rhodes write work
+  succeeded only with a direct OAuth-backed MCP client plus an elicitation
+  approval callback, which would require explicit OAuth configuration in the
+  GitHub Action path.
+
 ## 2026-05-29 - Daily DDR Completed-Report Notification Batch
 
 Context:
@@ -2803,3 +3005,97 @@ Results:
 - Focused pytest: 86 passed.
 - Ruff: all checks passed.
 - Mypy: success for 3 touched source files.
+
+## 2026-06-02 - School Approval Routed Through Ops-Skills
+
+DDR no longer relies on the stale local school approval state table in
+`server.py`. `apply_school_approval_skill` now loads the hosted
+`school-approval` skill from Ops-Skills, preferring `OPS_SKILLS_REPO_PATH`, then
+the sibling Ops-Skills checkout, then the installed Ops Skills plugin cache.
+When the source is a git checkout, it reads `origin/main:skills/school-approval/SKILL.md`
+so the local dirty/behind worktree does not silently downgrade the rules.
+
+What changed:
+
+- Added `src/due_diligence_reporter/school_approval_skill.py` to resolve,
+  load, and parse the hosted skill's version, rules version, and Baseline Score
+  Table.
+- Updated `apply_school_approval_skill` to accept `address`, derive the state
+  from address when needed, and return provenance fields:
+  `rules_version`, `school_approval_skill_version`, and
+  `school_approval_skill_source`.
+- Removed the stale `_STATE_APPROVAL_TABLE` from `server.py`.
+- Updated the report pipeline tool schema/canonicalizer so the site address is
+  passed into `apply_school_approval_skill`.
+- Documented `OPS_SKILLS_REPO_PATH` in `.env.example` and config metadata.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_school_approval.py tests/test_report_pipeline.py -q --basetemp C:\tmp\pytest-ddr-school-approval
+uv run ruff check src/due_diligence_reporter/school_approval_skill.py src/due_diligence_reporter/server.py src/due_diligence_reporter/report_pipeline.py tests/test_school_approval.py tests/test_report_pipeline.py
+uv run mypy src/due_diligence_reporter/school_approval_skill.py src/due_diligence_reporter/server.py src/due_diligence_reporter/report_pipeline.py
+```
+
+Results:
+
+- Focused pytest: 56 passed.
+- Ruff: all checks passed.
+- Mypy: success for 3 touched source files.
+- Live local smoke invocation read `Ops-Skills origin/main` and returned
+  v3.3.0: CA `REGISTRATION_SIMPLE` / 14 days, OK `NONE` / 7 days, RI
+  `CERTIFICATE_OR_APPROVAL_REQUIRED` / 45 days.
+
+## 2026-06-02 - Ease of Conversion Routed Through Ops-Skills
+
+DDR no longer flattens E-Occupancy/ease-of-conversion ratings through the stale
+local `GREEN only at 100 / RED only at 0 / otherwise YELLOW` zone rule.
+`apply_e_occupancy_skill` now loads the hosted `ease-of-conversion` skill from
+Ops-Skills and reads its `references/site-eval-brainlift.md` rating-band
+contract, using the same source resolution path as school approval:
+`OPS_SKILLS_REPO_PATH`, sibling `Ops-Skills`, then installed Ops Skills plugin
+cache. Git checkouts are read from `origin/main` when possible.
+
+What changed:
+
+- Added `src/due_diligence_reporter/ops_skill_loader.py` as the shared hosted
+  skill loader.
+- Refactored `src/due_diligence_reporter/school_approval_skill.py` onto the
+  shared loader without changing its public behavior.
+- Added `src/due_diligence_reporter/ease_conversion_skill.py` to load
+  `ease-of-conversion/SKILL.md`, parse scorecard metadata, and parse/validate
+  the hosted E-Occupancy Rating Bands from
+  `references/site-eval-brainlift.md`.
+- Updated `apply_e_occupancy_skill` to derive `zone` from the hosted
+  GREEN/YELLOW/ORANGE/RED bands and to return provenance fields:
+  `ease_conversion_skill_version`, `ease_conversion_skill_source`,
+  `ease_conversion_reference_source`, and
+  `ease_conversion_scorecard_theme_id`.
+- Added matching `q2.e_occupancy_*` report data fields and included provenance
+  in the standalone E-Occupancy assessment document.
+- Updated process docs and `OPS_SKILLS_REPO_PATH` config text to cover both
+  school approval and ease-of-conversion.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_ease_conversion.py tests/test_school_approval.py tests/test_report_pipeline.py -q --basetemp C:\tmp\pytest-ddr-ease-conversion-rerun
+uv run ruff check src\due_diligence_reporter\ops_skill_loader.py src\due_diligence_reporter\ease_conversion_skill.py src\due_diligence_reporter\school_approval_skill.py src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\config.py tests\test_ease_conversion.py tests\test_school_approval.py
+uv run mypy src\due_diligence_reporter\ops_skill_loader.py src\due_diligence_reporter\ease_conversion_skill.py src\due_diligence_reporter\school_approval_skill.py src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\config.py
+git diff --check
+```
+
+Results:
+
+- Focused pytest: 59 passed.
+- Ruff: all checks passed.
+- Mypy: success for 6 source files.
+- `git diff --check` passed with expected Windows LF-to-CRLF warnings only.
+- Live local E-Occupancy smoke invocation read:
+  - `C:\Users\foote\.claude\Work\repos\Ops-Skills origin/main:skills/ease-of-conversion/SKILL.md`
+  - `C:\Users\foote\.claude\Work\repos\Ops-Skills origin/main:skills/ease-of-conversion/references/site-eval-brainlift.md`
+- Hosted `ease-of-conversion` currently has no frontmatter `version`, so DDR
+  reports `ease_conversion_skill_version=unversioned`.
+- Live smoke returned score `58`, zone `ORANGE`, and
+  `ease_conversion_scorecard_theme_id=site-due-diligence-opening` for
+  `warehouse with hvac`.

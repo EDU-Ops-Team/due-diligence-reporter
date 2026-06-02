@@ -379,17 +379,18 @@ team can run the review process in `docs/process/sir-learning-loop.md`.
 Three skill tools analyze the source data and produce structured outputs. The first two auto-publish full assessment documents to the site's Drive folder when `site_name` and `drive_folder_url` are provided.
 
 **E-Occupancy Skill** â€” `apply_e_occupancy_skill(building_type_description, stories, ..., ibc_occupancy_group, fire_area_sqft, has_below_grade_space, already_sprinklered, construction_type, max_travel_distance_ft, existing_exit_count, projected_occupant_load, site_name, drive_folder_url)`
-1. Matches building type against a scoring matrix
-2. Applies IBC group override (H â†’ score 0, I â†’ cap 20)
-3. Applies height ceiling and tenant deductions
-4. Runs IBC compliance gates: sprinkler requirement, travel distance, exit count, construction type
-5. Returns score (0â€“100), zone (GREEN/YELLOW/RED), tier, confidence, `ibc_gates`, `ibc_flags`, and `q2.e_occupancy_ibc_summary`
-6. Publishes assessment â†’ `sources.e_occupancy_link`
-7. Phase 4: `ibc_flags` and `q2.e_occupancy_zone` remain available in report data for downstream analysis.
+1. Loads the hosted `ease-of-conversion` skill and rating-band reference from Ops-Skills (`OPS_SKILLS_REPO_PATH`, the sibling Ops-Skills checkout, or the installed Ops Skills plugin cache)
+2. Matches building type against the DDR deterministic scoring matrix
+3. Applies IBC group override (H -> score 0, I -> cap 20)
+4. Applies height ceiling and tenant deductions
+5. Runs IBC compliance gates: sprinkler requirement, travel distance, exit count, construction type
+6. Returns score (0-100), zone (GREEN/YELLOW/ORANGE/RED), tier, confidence, hosted skill provenance, `ibc_gates`, `ibc_flags`, and `q2.e_occupancy_ibc_summary`
+7. Publishes assessment -> `sources.e_occupancy_link`
+8. Phase 4: `ibc_flags` and `q2.e_occupancy_zone` remain available in report data for downstream analysis.
 
-**School Approval Skill** â€” `apply_school_approval_skill(state, site_name, drive_folder_url)`
-1. Looks up state in built-in approval table (all 50 states + DC)
-2. Returns approval type, gating status, timeline, and required steps
+**School Approval Skill** â€” `apply_school_approval_skill(address, state, site_name, drive_folder_url)`
+1. Loads the hosted `school-approval` skill from Ops-Skills (`OPS_SKILLS_REPO_PATH`, the sibling Ops-Skills checkout, or the installed Ops Skills plugin cache)
+2. Applies the hosted skill baseline/rules version for approval type, archetype, gating status, timeline, and required steps
 3. Publishes assessment â†’ `sources.school_approval_link`
 
 **Cost Estimate** â€” `get_cost_estimate(total_building_sf, rooms=[...])`

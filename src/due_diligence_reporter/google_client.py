@@ -439,6 +439,50 @@ class GoogleClient:
             logger.error("Failed to rename file %s -> %s: %s", file_id, new_name, error)
             raise RuntimeError(f"Failed to rename file: {error}") from error
 
+    def move_file_to_folder(self, file_id: str, folder_id: str) -> dict[str, Any]:
+        """Move an existing Drive file into *folder_id*."""
+        try:
+            metadata = _google_api_execute(
+                self.drive_service.files()
+                .get(
+                    fileId=file_id,
+                    fields="parents",
+                    supportsAllDrives=True,
+                )
+            )
+            parents = [
+                parent
+                for parent in metadata.get("parents", [])
+                if isinstance(parent, str) and parent
+            ]
+            kwargs: dict[str, Any] = {
+                "fileId": file_id,
+                "fields": "id,name,webViewLink,parents",
+                "supportsAllDrives": True,
+            }
+            if folder_id not in parents:
+                kwargs["addParents"] = folder_id
+            remove_parents = [parent for parent in parents if parent != folder_id]
+            if remove_parents:
+                kwargs["removeParents"] = ",".join(remove_parents)
+            if "addParents" not in kwargs and "removeParents" not in kwargs:
+                current: dict[str, Any] = _google_api_execute(
+                    self.drive_service.files()
+                    .get(
+                        fileId=file_id,
+                        fields="id,name,webViewLink,parents",
+                        supportsAllDrives=True,
+                    )
+                )
+                return current
+            moved: dict[str, Any] = _google_api_execute(
+                self.drive_service.files().update(**kwargs)
+            )
+            return moved
+        except HttpError as error:
+            logger.error("Failed to move file %s to folder %s: %s", file_id, folder_id, error)
+            raise RuntimeError(f"Failed to move file: {error}") from error
+
     def get_document(self, document_id: str) -> dict[str, Any]:
         """Retrieve the full Google Docs document structure (body, lists, etc.).
 
@@ -500,16 +544,8 @@ class GoogleClient:
                     )
                 )
 
-            # 3. Move into target folder (remove default 'My Drive' parent, add folder_id)
-            _google_api_execute(
-                self.drive_service.files().update(
-                    fileId=doc_id,
-                    addParents=folder_id,
-                    removeParents="root",
-                    fields="id,name,webViewLink",
-                    supportsAllDrives=True,
-                )
-            )
+            # 3. Move into target folder.
+            self.move_file_to_folder(doc_id, folder_id)
 
             # 4. Fetch final metadata
             result = _google_api_execute(

@@ -13,6 +13,7 @@ from due_diligence_reporter.report_pipeline import (
     PipelineResult,
     ReportTrace,
     TraceEvent,
+    _canonicalize_site_tool_input,
     _dd_report_event_frequency_cap,
     _extract_source_read_issues,
     _merge_cached_report_fields,
@@ -59,6 +60,20 @@ def _write_prior_report_event_manifest(tmp_path, *, started_at: str) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def test_canonicalize_site_tool_input_adds_address_for_school_approval() -> None:
+    canonical = _canonicalize_site_tool_input(
+        "apply_school_approval_skill",
+        {"state": ""},
+        site_title="Alpha Tulsa",
+        drive_folder_url="https://drive.google.com/drive/folders/site123",
+        site_address="421 E 11th St, Tulsa, OK 74120",
+    )
+
+    assert canonical["site_name"] == "Alpha Tulsa"
+    assert canonical["drive_folder_url"] == "https://drive.google.com/drive/folders/site123"
+    assert canonical["address"] == "421 E 11th St, Tulsa, OK 74120"
 
 
 def test_dd_report_event_frequency_cap_blocks_two_business_days(tmp_path) -> None:

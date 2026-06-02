@@ -56,6 +56,7 @@ from .automation_event import build_dd_report_republish_failed_event
 from .classifier import classify_document_type
 from .config import Settings
 from .google_client import GoogleClient
+from .m1_lookup import M1_FOLDER_NAME, _resolve_m1_folder
 from .open_questions import (
     CORE_SOURCE_TYPES,
     SourceEvent,
@@ -293,20 +294,54 @@ def _parse_iso(s: str) -> datetime | None:
 def find_existing_dd_report(
     gc: GoogleClient, site_folder_id: str
 ) -> dict[str, Any] | None:
-    """Return the most recently modified DD Report Doc in the site folder.
+    """Return the most recently modified DD Report Doc in M1 or the site root.
 
-    DD Reports live at the site-folder root (not M1) and are named like
-    ``<site> DD Report - YYYY-MM-DD``. We classify by filename via the
-    shared classifier so we accept any historical naming scheme that
-    ``classify_document_type`` flags as ``dd_report``.
+    Current DD Reports live in the site's ``M1`` folder. Older reports may
+    still live at the site-folder root, so check both locations and return the
+    newest report classified by filename as ``dd_report``.
     """
     candidate: dict[str, Any] | None = None
+    folder_ids: list[str] = []
     try:
-        files = gc.list_files_in_folder(site_folder_id)
+        m1_folder_id, _m1_url = _resolve_m1_folder(
+            gc,
+            f"https://drive.google.com/drive/folders/{site_folder_id}",
+            create_if_missing=False,
+            allow_legacy_fallback=False,
+        )
+        if m1_folder_id:
+            folder_ids.append(m1_folder_id)
     except Exception as e:
         logger.warning(
-            "Could not list site folder %s while looking for existing DD Report: %s",
+            "Could not resolve %s under site folder %s while looking for existing DD Report: %s",
+            M1_FOLDER_NAME,
             site_folder_id,
+            e,
+        )
+    if site_folder_id not in folder_ids:
+        folder_ids.append(site_folder_id)
+
+    for folder_id in folder_ids:
+        folder_candidate = _find_existing_dd_report_in_folder(gc, folder_id)
+        if folder_candidate is None:
+            continue
+        if candidate is None or str(folder_candidate.get("modifiedTime", "")) > str(
+            candidate.get("modifiedTime", "")
+        ):
+            candidate = folder_candidate
+    return candidate
+
+
+def _find_existing_dd_report_in_folder(
+    gc: GoogleClient, folder_id: str
+) -> dict[str, Any] | None:
+    candidate: dict[str, Any] | None = None
+    try:
+        files = gc.list_files_in_folder(folder_id)
+    except Exception as e:
+        logger.warning(
+            "Could not list folder %s while looking for existing DD Report: %s",
+            folder_id,
             e,
         )
         return None

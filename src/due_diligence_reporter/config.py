@@ -159,7 +159,8 @@ class Settings(BaseSettings):
         "",
         description=(
             "Optional path to the ops skills repo root or its skills/ directory. "
-            "Used to load shared skill context such as capacity-brainlift."
+            "Used to load hosted shared skill context such as school-approval "
+            "and ease-of-conversion."
         ),
     )
 

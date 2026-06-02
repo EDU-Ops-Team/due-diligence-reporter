@@ -35,6 +35,10 @@ from .completeness import (
     raycon_token_paths,
 )
 from .config import get_settings, shovels_status
+from .ease_conversion_skill import (
+    EaseConversionSkillError,
+    load_ease_conversion_skill,
+)
 from .google_client import GoogleClient
 from .google_doc_builder import (
     CITATIONS_BLOCK_KEY,
@@ -62,12 +66,18 @@ from .report_schema import (
 )
 from .retry import retry_config
 from .rhodes import lookup_rhodes_site_owner as _lookup_rhodes_site_owner
+from .school_approval_skill import (
+    SchoolApprovalSkillError,
+    load_school_approval_skill,
+    normalize_school_approval_state,
+)
 from .utils import (
     build_hyperlink_requests,
     escape_html_text,
     extract_folder_id_from_url,
     extract_text_from_pdf_bytes,
     flatten_report_data_for_replacement,
+    is_drive_root_folder_id,
     sanitize_http_url,
     score_site_match_strength,
     send_email,
@@ -389,59 +399,6 @@ def _e_occupancy_tier(score: int) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 # SCHOOL APPROVAL SKILL DATA
 # ─────────────────────────────────────────────────────────────────────────────
-
-# state -> (score, approval_type, gating, timeline_days)
-_STATE_APPROVAL_TABLE: dict[str, tuple[int, str, bool, int]] = {
-    "TX": (95, "NONE", False, 7),
-    "ID": (92, "NONE", False, 7),
-    "AK": (90, "NONE", False, 7),
-    "OK": (90, "REGISTRATION_SIMPLE", False, 30),
-    "WY": (90, "NONE", False, 7),
-    "MT": (88, "NONE", False, 7),
-    "MO": (88, "NONE", False, 7),
-    "IN": (87, "NONE", False, 7),
-    "IL": (86, "NONE", False, 7),
-    "KS": (86, "NONE", False, 7),
-    "NE": (86, "NONE", False, 7),
-    "AL": (85, "NONE", False, 7),
-    "AZ": (82, "REGISTRATION_SIMPLE", False, 30),
-    "CO": (80, "REGISTRATION_SIMPLE", False, 30),
-    "FL": (78, "REGISTRATION_SIMPLE", False, 30),
-    "GA": (78, "REGISTRATION_SIMPLE", False, 30),
-    "NC": (78, "REGISTRATION_SIMPLE", False, 30),
-    "TN": (78, "REGISTRATION_SIMPLE", False, 30),
-    "UT": (78, "REGISTRATION_SIMPLE", False, 30),
-    "AR": (76, "REGISTRATION_SIMPLE", False, 30),
-    "LA": (76, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "SC": (76, "REGISTRATION_SIMPLE", False, 30),
-    "VA": (75, "REGISTRATION_SIMPLE", False, 30),
-    "WI": (75, "REGISTRATION_SIMPLE", False, 30),
-    "MI": (74, "REGISTRATION_SIMPLE", False, 30),
-    "MN": (74, "REGISTRATION_SIMPLE", False, 30),
-    "OH": (74, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "NM": (72, "REGISTRATION_SIMPLE", False, 30),
-    "NV": (72, "LICENSE_REQUIRED", True, 150),
-    "WA": (72, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "OR": (70, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "DE": (68, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "KY": (68, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "WV": (68, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "HI": (65, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "IA": (65, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "NH": (65, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "CT": (62, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "ME": (62, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "VT": (62, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "CA": (60, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "NJ": (60, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "PA": (60, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "MA": (58, "LOCAL_APPROVAL_REQUIRED", True, 120),
-    "MD": (55, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "RI": (55, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90),
-    "NY": (45, "COMPLEX_OR_OVERSIGHT", True, 365),
-    "ND": (42, "COMPLEX_OR_OVERSIGHT", True, 365),
-    "DC": (40, "COMPLEX_OR_OVERSIGHT", True, 365),
-}
 
 _SCHOOL_APPROVAL_STEPS: dict[str, str] = {
     "NONE": (
@@ -1038,6 +995,15 @@ async def list_drive_documents(
                 "Expected a URL like https://drive.google.com/drive/folders/FOLDER_ID"
             ),
         }
+    if is_drive_root_folder_id(folder_id):
+        return {
+            "status": "error",
+            "error": "Invalid folder URL",
+            "message": (
+                "drive_folder_url points to Google Drive root. Provide the site Drive "
+                "folder URL so source discovery can read the site's M1 folder."
+            ),
+        }
 
     def _work() -> dict[str, Any]:
         try:
@@ -1380,6 +1346,16 @@ async def apply_e_occupancy_skill(
         stories,
     )
 
+    try:
+        hosted_skill = load_ease_conversion_skill()
+    except EaseConversionSkillError as exc:
+        logger.error("Failed to load Ops-Skills ease-of-conversion skill: %s", exc)
+        return {
+            "status": "error",
+            "error": "Ops-Skills ease-of-conversion unavailable",
+            "message": str(exc),
+        }
+
     base_score, matched_type = _match_building_type(building_type_description)
 
     # IBC group override: H → do not pursue (0), I → cap at 20
@@ -1451,7 +1427,15 @@ async def apply_e_occupancy_skill(
 
     score = max(0, min(100, score))
 
-    zone = "GREEN" if score == 100 else ("RED" if score == 0 else "YELLOW")
+    try:
+        zone = hosted_skill.band_for_score(score)
+    except EaseConversionSkillError as exc:
+        logger.error("Invalid Ops-Skills ease-of-conversion band data: %s", exc)
+        return {
+            "status": "error",
+            "error": "Ops-Skills ease-of-conversion invalid",
+            "message": str(exc),
+        }
     tier = _e_occupancy_tier(score)
     tier_label = _EOCCUPANCY_TIER_LABELS.get(tier, str(tier))
     timeline = _e_occupancy_timeline(score)
@@ -1484,6 +1468,10 @@ async def apply_e_occupancy_skill(
         "tier": tier_label,
         "timeline": timeline,
         "confidence": confidence,
+        "ease_conversion_skill_version": hosted_skill.version,
+        "ease_conversion_skill_source": hosted_skill.source,
+        "ease_conversion_reference_source": hosted_skill.reference_source,
+        "ease_conversion_scorecard_theme_id": hosted_skill.scorecard_theme_id,
         "ibc_gates": ibc_gates,
         "ibc_flags": ibc_flags,
         "report_data_fields": {
@@ -1493,6 +1481,10 @@ async def apply_e_occupancy_skill(
             "q2.e_occupancy_timeline": timeline,
             "q2.e_occupancy_confidence": confidence,
             "q2.e_occupancy_ibc_summary": ibc_summary,
+            "q2.e_occupancy_skill_version": hosted_skill.version,
+            "q2.e_occupancy_skill_source": hosted_skill.source,
+            "q2.e_occupancy_reference_source": hosted_skill.reference_source,
+            "q2.e_occupancy_scorecard_theme_id": hosted_skill.scorecard_theme_id,
         },
         "message": (
             f"E-Occupancy: {score}/100 — {zone} ({tier_label}, {timeline}). "
@@ -1522,22 +1514,24 @@ async def apply_e_occupancy_skill(
 
 @mcp.tool()
 async def apply_school_approval_skill(
-    state: str,
+    state: str = "",
+    address: str = "",
     site_name: str = "",
     drive_folder_url: str = "",
 ) -> dict[str, Any]:
     """Apply the School Approval Skill to determine registration requirements for a state.
 
-    Looks up the state in the Alpha School private school approval difficulty table and
-    returns all registration requirements needed for Q1 — State School Registration.
-    Call this tool in Step 5 using the state extracted from the site address.
+    Loads the current school-approval skill from Ops-Skills and applies its
+    baseline table for Q1 — State School Registration.
 
     If site_name and drive_folder_url are provided, the full assessment is automatically
     saved as a Google Doc in the site's M1 subfolder and the doc_url is returned.
 
     Args:
         state: Two-letter US state abbreviation (e.g., "TX", "CA", "FL").
-            Use "DC" for Washington D.C.
+            Use "DC" for Washington D.C. Optional when address includes a state.
+        address: Full site address. Preferred when available because the
+            hosted school-approval skill is address-first.
         site_name: Site name — pass to auto-publish the assessment as a Google Doc.
         drive_folder_url: Site Drive folder URL — pass to auto-publish.
 
@@ -1545,17 +1539,45 @@ async def apply_school_approval_skill(
         Dict with approval_type, gating, timeline, steps, summary, doc_url (if
         auto-published), and ready-to-use report_data_fields.
     """
-    logger.info("Tool called: apply_school_approval_skill — state=%s", state)
+    logger.info("Tool called: apply_school_approval_skill — state=%s address=%s", state, address)
 
-    state_upper = state.strip().upper()
+    state_upper = normalize_school_approval_state(state=state, address=address)
+    if not state_upper:
+        return {
+            "status": "error",
+            "error": "Missing state",
+            "message": "Provide a two-letter state or a full site address with a state.",
+        }
 
-    if state_upper in _STATE_APPROVAL_TABLE:
-        score, approval_type, gating, timeline_days = _STATE_APPROVAL_TABLE[state_upper]
+    try:
+        hosted_skill = load_school_approval_skill()
+    except SchoolApprovalSkillError as e:
+        logger.error("Failed to load Ops-Skills school-approval skill: %s", e)
+        return {
+            "status": "error",
+            "error": "Ops-Skills school-approval unavailable",
+            "message": str(e),
+        }
+
+    baseline = hosted_skill.baselines.get(state_upper)
+    data_quality_flags: list[str] = []
+    if baseline is not None:
+        score = baseline.score
+        archetype = baseline.archetype
+        approval_type = baseline.approval_type
+        gating = baseline.gating
+        timeline_days = baseline.timeline_days
         confidence = "HIGH"
     else:
+        archetype = "UNKNOWN"
         score, approval_type, gating, timeline_days = 70, "CERTIFICATE_OR_APPROVAL_REQUIRED", True, 90
         confidence = "LOW"
-        logger.warning("State '%s' not in approval table — using default values", state_upper)
+        data_quality_flags.append("NO_BASELINE_ROW_IN_OPS_SKILL")
+        logger.warning(
+            "State '%s' not in Ops-Skills school-approval baseline from %s - using default values",
+            state_upper,
+            hosted_skill.source,
+        )
 
     zone = _school_zone(score)
     steps = _SCHOOL_APPROVAL_STEPS.get(
@@ -1589,13 +1611,22 @@ async def apply_school_approval_skill(
 
     result: dict[str, Any] = {
         "status": "success",
+        "address": address,
         "state": state_upper,
+        "archetype": archetype,
         "score": score,
+        "score_0_100": score,
         "zone": zone,
         "approval_type": approval_type,
         "gating": gating,
+        "gating_before_open": gating,
         "timeline_days": timeline_days,
+        "timeline_days_preopen": {"min": 0, "likely": timeline_days, "max": timeline_days},
         "confidence": confidence,
+        "data_quality_flags": data_quality_flags,
+        "rules_version": hosted_skill.rules_version,
+        "school_approval_skill_version": hosted_skill.version,
+        "school_approval_skill_source": hosted_skill.source,
         "exec_c_edreg_status": exec_status,
         "alpha_state_reference": alpha_reference,
         "alpha_has_worked_in_state": has_worked_in_state,
@@ -1606,9 +1637,14 @@ async def apply_school_approval_skill(
             "q1.state_school_registration": summary,
             "q1.school_approval_type": approval_type,
             "q1.school_approval_gating": str(gating).lower(),
+            "q1.school_approval_zone": zone,
+            "q1.school_approval_archetype": archetype,
             "q1.school_approval_timeline_days": str(timeline_days),
             "q1.school_approval_exec_status": exec_status,
             "q1.school_approval_alpha_reference": alpha_reference,
+            "q1.school_approval_rules_version": hosted_skill.rules_version,
+            "q1.school_approval_skill_version": hosted_skill.version,
+            "q1.school_approval_skill_source": hosted_skill.source,
             "q1.steps_to_allow_operation": steps,
         },
         "message": (
@@ -2412,7 +2448,17 @@ def _normalize_report_replacements(
     _fill_fastest_open_placeholders(replacements)
     _fill_max_capacity_placeholders(replacements)
 
-    replacements.setdefault("meta.drive_folder_url", drive_folder_url)
+    existing_drive_folder_url = str(replacements.get("meta.drive_folder_url") or "").strip()
+    existing_drive_folder_id = (
+        extract_folder_id_from_url(existing_drive_folder_url)
+        if existing_drive_folder_url
+        else None
+    )
+    if (
+        drive_folder_url.strip()
+        and (not existing_drive_folder_url or is_drive_root_folder_id(existing_drive_folder_id))
+    ):
+        replacements["meta.drive_folder_url"] = drive_folder_url
     source_quality_notes = (
         flat_report_data.get("source_quality_notes")
         or flat_report_data.get("notes.source_quality")
@@ -2740,6 +2786,15 @@ async def create_dd_report(
             "error": "Invalid folder URL",
             "message": f"Could not extract a Google Drive folder ID from: {drive_folder_url}",
         }
+    if is_drive_root_folder_id(folder_id):
+        return {
+            "status": "error",
+            "error": "Invalid folder URL",
+            "message": (
+                "drive_folder_url points to Google Drive root. Provide the site Drive "
+                f"folder URL so the DD report can be created in {M1_FOLDER_NAME}."
+            ),
+        }
 
     today_str = datetime.now().strftime("%m/%d/%Y")
     doc_name = f"{site_name.strip()} DD Report - {today_str}"
@@ -2748,9 +2803,29 @@ async def create_dd_report(
     def _work() -> dict[str, Any]:
         try:
             gc = _make_google_client()
-            existing_doc = _find_existing_report_doc(
-                gc, folder_id=folder_id, site_name=site_name
+            target_folder_id, target_folder_url = _resolve_m1_folder(
+                gc,
+                drive_folder_url,
+                allow_legacy_fallback=False,
             )
+            if not target_folder_id:
+                raise RuntimeError(f"Could not resolve {M1_FOLDER_NAME} folder for DD report")
+            logger.info(
+                "Using %s folder %s for DD report '%s'",
+                M1_FOLDER_NAME,
+                target_folder_id,
+                doc_name,
+            )
+            existing_doc = _find_existing_report_doc(
+                gc, folder_id=target_folder_id, site_name=site_name
+            )
+            legacy_source_folder_id: str | None = None
+            if existing_doc is None and target_folder_id != folder_id:
+                existing_doc = _find_existing_report_doc(
+                    gc, folder_id=folder_id, site_name=site_name
+                )
+                if existing_doc is not None:
+                    legacy_source_folder_id = folder_id
             doc_id: str | None = None
             doc_url: str | None = None
             if existing_doc:
@@ -2759,6 +2834,15 @@ async def create_dd_report(
                     raise RuntimeError(f"Existing DD report is missing a valid document ID: {doc_name}")
                 doc_id = existing_doc_id
                 doc_url = existing_doc.get("webViewLink")
+                if legacy_source_folder_id is not None:
+                    logger.info(
+                        "Moving existing DD Doc %s from site root %s to %s folder %s",
+                        doc_id,
+                        legacy_source_folder_id,
+                        M1_FOLDER_NAME,
+                        target_folder_id,
+                    )
+                    gc.move_file_to_folder(doc_id, target_folder_id)
                 old_name = str(existing_doc.get("name", "")).strip()
                 if old_name and old_name != doc_name:
                     # Cross-day regenerate: same site, different report-date suffix.
@@ -2778,10 +2862,10 @@ async def create_dd_report(
                 logger.info("Existing DD report found, rebuilding in place: %s (id=%s)", doc_name, doc_id)
                 _clear_document_body(gc, doc_id=doc_id)
             else:
-                logger.info("Creating blank document in folder %s as '%s'", folder_id, doc_name)
+                logger.info("Creating blank document in folder %s as '%s'", target_folder_id, doc_name)
                 new_doc = gc.create_document(
                     name=doc_name,
-                    folder_id=folder_id,
+                    folder_id=target_folder_id,
                     text_content="",
                 )
                 doc_id = new_doc.get("id")
@@ -2857,7 +2941,14 @@ async def create_dd_report(
             logger.info("DD report created successfully: %s", doc_url)
             response: dict[str, Any] = {
                 "status": "success",
-                "document": {"id": doc_id, "name": doc_name, "url": doc_url},
+                "document": {
+                    "id": doc_id,
+                    "name": doc_name,
+                    "url": doc_url,
+                    "folder_id": target_folder_id,
+                    "folder_url": target_folder_url
+                    or f"https://drive.google.com/drive/folders/{target_folder_id}",
+                },
                 "replacements_applied": len(replacements),
                 "unmatched_agent_keys": len(unmatched),
                 "unfilled_template_tokens": len(unfilled),
@@ -3720,6 +3811,10 @@ def _format_skill_document(
             f"  Conversion Tier: {data.get('tier', 'N/A')}",
             f"  Estimated Timeline: {data.get('timeline', 'N/A')}",
             f"  Confidence Level: {data.get('confidence', 'N/A')}",
+            f"  Skill Version: {data.get('ease_conversion_skill_version', 'N/A')}",
+            f"  Skill Source: {data.get('ease_conversion_skill_source', 'N/A')}",
+            f"  Reference Source: {data.get('ease_conversion_reference_source', 'N/A')}",
+            f"  Scorecard Theme: {data.get('ease_conversion_scorecard_theme_id', 'N/A')}",
             "",
             "Building Type Analysis",
             f"  Matched Building Type: {data.get('matched_building_type', 'N/A')}",
@@ -3744,6 +3839,10 @@ def _format_skill_document(
                 "q2.e_occupancy_tier": "E-Occupancy Tier",
                 "q2.e_occupancy_timeline": "E-Occupancy Timeline",
                 "q2.e_occupancy_confidence": "E-Occupancy Confidence",
+                "q2.e_occupancy_skill_version": "Skill Version",
+                "q2.e_occupancy_skill_source": "Skill Source",
+                "q2.e_occupancy_reference_source": "Reference Source",
+                "q2.e_occupancy_scorecard_theme_id": "Scorecard Theme",
             }
             for k, v in sorted(rdf.items()):
                 label = e_occ_labels.get(k, k)
@@ -3825,12 +3924,16 @@ def _format_skill_document(
         lines.extend([
             "State Requirements",
             f"  State: {data.get('state', 'N/A')}",
+            f"  Archetype: {data.get('archetype', 'N/A')}",
             f"  Score: {data.get('score', 'N/A')}/100",
             f"  Zone: {data.get('zone', 'N/A')}",
             f"  Approval Type: {_humanize_approval_type(data.get('approval_type', 'N/A'))}",
             f"  Gating Requirement: {'Yes' if data.get('gating') else 'No'}",
             f"  Timeline: {data.get('timeline_days', 'N/A')} days",
             f"  Confidence Level: {data.get('confidence', 'N/A')}",
+            f"  Rules Version: {data.get('rules_version', 'N/A')}",
+            f"  Skill Version: {data.get('school_approval_skill_version', 'N/A')}",
+            f"  Skill Source: {data.get('school_approval_skill_source', 'N/A')}",
             f"  Executive Status: {data.get('exec_c_edreg_status', 'N/A')}",
             f"  Alpha State Reference: {data.get('alpha_state_reference', 'N/A')}",
             "",
@@ -3849,9 +3952,14 @@ def _format_skill_document(
                 "q1.state_school_registration": "State School Registration",
                 "q1.school_approval_type": "Approval Type",
                 "q1.school_approval_gating": "Gating Requirement",
+                "q1.school_approval_zone": "School Approval Zone",
+                "q1.school_approval_archetype": "State Archetype",
                 "q1.school_approval_timeline_days": "Approval Timeline (days)",
                 "q1.school_approval_exec_status": "Executive Status",
                 "q1.school_approval_alpha_reference": "Alpha State Reference",
+                "q1.school_approval_rules_version": "Rules Version",
+                "q1.school_approval_skill_version": "Skill Version",
+                "q1.school_approval_skill_source": "Skill Source",
                 "q1.steps_to_allow_operation": "Steps to Allow Operation",
             }
             for k, v in sorted(rdf.items()):

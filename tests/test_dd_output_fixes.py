@@ -364,6 +364,18 @@ class TestCheckReportCompleteness:
 
 
 class TestListDriveDocumentsFiltering:
+    def test_rejects_drive_root_folder_url(self) -> None:
+        from due_diligence_reporter.server import list_drive_documents
+
+        result = asyncio.run(list_drive_documents(
+            "https://drive.google.com/drive/folders/root",
+            "Alpha Miami Beach 300 71st St",
+        ))
+
+        assert result["status"] == "error"
+        assert result["error"] == "Invalid folder URL"
+        assert "Google Drive root" in result["message"]
+
     def test_returns_site_folder_report_and_source_artifacts(self) -> None:
         from due_diligence_reporter.server import list_drive_documents
 
@@ -457,6 +469,22 @@ class TestReportNormalizationDefaults:
         )
 
         assert replacements["meta.site_name"] == "Alpha Los Angeles 5400 Beethoven St"
+
+    def test_normalize_report_replacements_overrides_root_drive_folder_url(self) -> None:
+        from due_diligence_reporter.server import _normalize_report_replacements
+
+        replacements, _, _, _, _ = _normalize_report_replacements(
+            report_data={
+                "meta": {
+                    "drive_folder_url": "https://drive.google.com/drive/folders/root",
+                },
+            },
+            site_name="Alpha Miami Beach 300 71st St",
+            report_date="06/01/2026",
+            drive_folder_url="https://drive.google.com/drive/folders/site-root",
+        )
+
+        assert replacements["meta.drive_folder_url"].endswith("/site-root")
 
     def test_normalize_report_replacements_fills_two_scenario_gap_labels(self) -> None:
         from due_diligence_reporter.server import _normalize_report_replacements
@@ -853,6 +881,50 @@ class TestDriveQueryEscaping:
         assert r"name='O\'Brien\\ISP.pdf'" in query
 
 
+class TestGoogleClientDocumentCreation:
+    def test_create_document_removes_actual_parent_when_moving_to_target_folder(self) -> None:
+        docs_documents = MagicMock()
+        docs_documents.create.return_value = "create-request"
+        docs_service = MagicMock()
+        docs_service.documents.return_value = docs_documents
+
+        files_resource = MagicMock()
+        files_resource.get.side_effect = ["parents-request", "final-request"]
+        files_resource.update.return_value = "update-request"
+        drive_service = MagicMock()
+        drive_service.files.return_value = files_resource
+
+        client = GoogleClient.__new__(GoogleClient)
+        client.docs_service = docs_service
+        client.drive_service = drive_service
+
+        final_metadata = {
+            "id": "doc123",
+            "name": "Alpha DD Report",
+            "webViewLink": "https://docs.google.com/document/d/doc123",
+        }
+        with patch("due_diligence_reporter.google_client._google_api_execute") as execute:
+            execute.side_effect = [
+                {"documentId": "doc123"},
+                {"parents": ["my-drive-root-id"]},
+                {"id": "doc123", "parents": ["m1-folder"]},
+                final_metadata,
+            ]
+
+            result = client.create_document(
+                name="Alpha DD Report",
+                folder_id="m1-folder",
+                text_content="",
+            )
+
+        assert result == final_metadata
+        update_kwargs = files_resource.update.call_args.kwargs
+        assert update_kwargs["fileId"] == "doc123"
+        assert update_kwargs["addParents"] == "m1-folder"
+        assert update_kwargs["removeParents"] == "my-drive-root-id"
+        assert update_kwargs["supportsAllDrives"] is True
+
+
 class TestConfiguredModels:
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_FILENAME_MODEL": "gpt-custom-mini"})
     def test_filename_classifier_uses_configured_model(self) -> None:
@@ -905,6 +977,12 @@ class TestAsyncOffloading:
         from due_diligence_reporter.server import create_dd_report
 
         gc = MagicMock()
+        gc.list_subfolders.return_value = [{
+            "id": "m1-folder",
+            "name": "M1 - Acquire Property",
+            "webViewLink": "https://drive.google.com/drive/folders/m1-folder",
+        }]
+        gc.list_files_in_folder.return_value = []
         gc.create_document.return_value = {
             "id": "doc123",
             "webViewLink": "https://docs.google.com/document/d/doc123",
@@ -936,13 +1014,32 @@ class TestAsyncOffloading:
 
         assert result["status"] == "success"
         gc.create_document.assert_called_once()
+        assert gc.create_document.call_args.kwargs["folder_id"] == "m1-folder"
         gc.upload_file_to_folder.assert_not_called()
         mock_to_thread.assert_awaited_once()
+
+    def test_create_dd_report_rejects_drive_root_folder_url(self) -> None:
+        from due_diligence_reporter.server import create_dd_report
+
+        result = asyncio.run(create_dd_report(
+            site_name="Alpha Miami Beach 300 71st St",
+            drive_folder_url="https://drive.google.com/drive/folders/root",
+            report_data={},
+        ))
+
+        assert result["status"] == "error"
+        assert result["error"] == "Invalid folder URL"
+        assert "Google Drive root" in result["message"]
 
     def test_create_dd_report_rebuilds_existing_same_day_doc(self) -> None:
         from due_diligence_reporter.server import create_dd_report
 
         gc = MagicMock()
+        gc.list_subfolders.return_value = [{
+            "id": "m1-folder",
+            "name": "M1 - Acquire Property",
+            "webViewLink": "https://drive.google.com/drive/folders/m1-folder",
+        }]
         gc.list_files_in_folder.return_value = [{
             "id": "doc-existing",
             "name": "Alpha DD Report - 04/02/2026",
@@ -983,6 +1080,59 @@ class TestAsyncOffloading:
         assert result["document"]["id"] == "doc-existing"
         gc.create_document.assert_not_called()
         gc.upload_file_to_folder.assert_not_called()
+        mock_clear.assert_called_once_with(gc, doc_id="doc-existing")
+
+    def test_create_dd_report_moves_legacy_root_report_to_m1(self) -> None:
+        from due_diligence_reporter.server import create_dd_report
+
+        gc = MagicMock()
+        gc.list_subfolders.return_value = [{
+            "id": "m1-folder",
+            "name": "M1 - Acquire Property",
+            "webViewLink": "https://drive.google.com/drive/folders/m1-folder",
+        }]
+        gc.list_files_in_folder.side_effect = [
+            [],
+            [{
+                "id": "doc-existing",
+                "name": "Alpha DD Report - 04/02/2026",
+                "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            }],
+        ]
+        gc.docs_service = MagicMock()
+        gc.drive_service = MagicMock()
+
+        async def run_inline(func: Any, *args: Any, **kwargs: Any) -> Any:
+            return func(*args, **kwargs)
+
+        with patch(
+            "due_diligence_reporter.server.asyncio.to_thread",
+            new=AsyncMock(side_effect=run_inline),
+        ), patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ), patch(
+            "due_diligence_reporter.server._clear_document_body",
+        ) as mock_clear, patch(
+            "due_diligence_reporter.server.datetime",
+        ) as mock_datetime, patch(
+            "due_diligence_reporter.server._normalize_report_replacements",
+            return_value=({}, [], [], {}, MagicMock()),
+        ), patch(
+            "due_diligence_reporter.server.build_dd_report_doc",
+            return_value={"applied": 0, "found_tokens": [], "not_found_tokens": []},
+        ):
+            mock_datetime.now.return_value.strftime.return_value = "04/02/2026"
+            result = asyncio.run(create_dd_report(
+                site_name="Alpha",
+                drive_folder_url="https://drive.google.com/drive/folders/site-root",
+                report_data={},
+            ))
+
+        assert result["status"] == "success"
+        assert result["document"]["folder_id"] == "m1-folder"
+        gc.move_file_to_folder.assert_called_once_with("doc-existing", "m1-folder")
+        gc.create_document.assert_not_called()
         mock_clear.assert_called_once_with(gc, doc_id="doc-existing")
 
 
