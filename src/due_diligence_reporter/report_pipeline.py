@@ -1915,8 +1915,24 @@ def _record_email_step(
     *,
     is_update: bool = False,
     open_question_count: int = 0,
+    full_report_inputs_present: bool = False,
 ) -> None:
     started_at, started_monotonic = recorder.start()
+    skip_reason = _dd_report_email_skip_reason(
+        is_update=is_update,
+        full_report_inputs_present=full_report_inputs_present,
+        open_question_count=open_question_count,
+    )
+    if skip_reason:
+        recorder.record(
+            "notify.email",
+            started_at,
+            started_monotonic,
+            "skipped",
+            skipped_reason=skip_reason,
+        )
+        return
+
     error = _email_pipeline_report(
         settings,
         site_title,
@@ -1943,6 +1959,22 @@ def _record_email_step(
         )
     else:
         recorder.record("notify.email", started_at, started_monotonic, "succeeded")
+
+
+def _dd_report_email_skip_reason(
+    *,
+    is_update: bool,
+    full_report_inputs_present: bool,
+    open_question_count: int,
+) -> str | None:
+    """Return why a DD report email should be skipped, or None to send it."""
+    if not is_update:
+        return None
+    if not full_report_inputs_present:
+        return "interim DDR update; full vendor input set not present"
+    if open_question_count > 0:
+        return "interim DDR update; open verification items remain"
+    return None
 
 
 def _record_rhodes_report_event_step(
@@ -2250,7 +2282,7 @@ def process_site_pipeline(
     # — vendor gate, missing required docs — still apply.
     force_regenerate: bool = False,
 ) -> PipelineResult:
-    """Full single-site pipeline: readiness -> report generation -> completeness -> email.
+    """Full single-site pipeline: readiness -> report generation -> completeness -> email gate.
 
     Returns a PipelineResult describing what happened.
     """
@@ -2676,6 +2708,7 @@ def process_site_pipeline(
         p1_email,
         is_update=source_event is not None,
         open_question_count=len(final_result.open_questions),
+        full_report_inputs_present=full_report_inputs_present,
     )
 
     return _finalize_pipeline_result(

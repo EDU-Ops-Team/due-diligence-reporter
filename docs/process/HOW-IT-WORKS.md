@@ -469,7 +469,7 @@ to the configured Google Chat webhook.
 
 **Tool:** `send_dd_report_email(site_name, report_url, key_findings, additional_recipients)`
 
-**Activity:** Sends an HTML email to configured recipients (base list + Rhodes P1 DRI when found) with the site name, key findings summary, and a link to the Google Doc report. Sent automatically â€” no confirmation prompt.
+**Activity:** Sends an HTML email to configured recipients (base list + Rhodes P1 DRI when found) with the site name, key findings summary, and a link to the Google Doc report. The shared pipeline emails the first successful DDR publish, then suppresses interim source-triggered updates while vendor inputs or open verification items remain. It emails an update again only when the full vendor input set is present and the regenerated DDR has no open verification items. Skipped interim emails are recorded as `notify.email` skipped steps in the run manifest.
 
 ---
 
@@ -487,7 +487,7 @@ The report pipeline module contains all shared logic used by both the inbox scan
 | `match_site_in_shared_cache(terms, cache)` | Find docs for a site in pre-fetched cache |
 | `check_site_readiness_direct(gc, url, terms, cache)` | Readiness check bypassing MCP layer |
 | `run_dd_report_agent(site_title, prompt)` | Claude agentic loop (up to 40 iterations) |
-| `process_site_pipeline(gc, title, url, terms, cache, prompt, settings)` | Full pipeline: readiness -> report -> completeness -> email |
+| `process_site_pipeline(gc, title, url, terms, cache, prompt, settings)` | Full pipeline: readiness -> report -> completeness -> first/final email gate |
 | `post_pipeline_result(webhook_url, result, url)` | Google Chat notification per result |
 | `PipelineResult` | Dataclass with status, missing_docs, doc_id, doc_url, etc. |
 
@@ -520,7 +520,7 @@ For each site folder in the Drive root:
      b. apply_e_occupancy_skill + apply_school_approval_skill + get_cost_estimate
      c. create_dd_report (with normalize_report_data + compute_deltas)
      d. check_report_completeness
-     e. If complete -> send email to recipients
+     e. If complete -> send first/final email only when the email gate passes
      f. If incomplete -> post Google Chat alert with unfilled tokens
 ```
 

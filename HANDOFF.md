@@ -1,5 +1,42 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-04 - DDR First/Final Email Gate
+
+Greg asked to stop emailing every interim DDR update. The desired behavior is:
+email the first DDR, suppress interim source-triggered republishes, and email
+again only when the final vendor-reviewed DDR is ready.
+
+Changed:
+
+- `src/due_diligence_reporter/report_pipeline.py` now gates `notify.email`
+  before calling `_email_pipeline_report`.
+- Initial successful DDR publishes still email, even when the report has open
+  verification items.
+- Source-triggered updates now skip email when the full vendor input set is not
+  present or when open verification items remain.
+- Source-triggered updates email again only when the full vendor input set is
+  present and the regenerated report has no open verification items.
+- Skipped interim emails are recorded as `notify.email` skipped steps with a
+  reason in the run manifest.
+- `docs/process/HOW-IT-WORKS.md` now documents the first/final-only email gate.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_report_pipeline.py -q --basetemp C:\tmp\pytest-ddr-email-gate
+uv run ruff check src\due_diligence_reporter\report_pipeline.py tests\test_report_pipeline.py
+uv run mypy src\due_diligence_reporter\report_pipeline.py
+git diff --check
+```
+
+Results:
+
+- Report pipeline tests: 54 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in 1 source file.
+- `git diff --check`: passed; Git printed existing LF-to-CRLF working-copy
+  warnings for touched files.
+
 ## 2026-06-01 - Route Manual DDR Publishes to M1
 
 Greg reported a manual DDR run published the DD Report to My Drive instead of

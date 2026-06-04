@@ -394,6 +394,282 @@ class TestProcessSitePipeline:
         mock_email.assert_called_once()
         assert mock_email.call_args.args[3] == "devin.bates@trilogy.com"
 
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline._email_pipeline_report")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_first_partial_report_still_sends_email(
+        self,
+        mock_readiness,
+        mock_email,
+        mock_agent,
+        mock_completeness,
+        mock_rhodes_note,
+    ):
+        """The initial DDR email still sends even when vendor inputs remain open."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": False,
+            "inspection_found": False,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-04T15:00:00+00:00",
+            events=[],
+            final_report_data={
+                "verification.open_items": "- Review vendor Building Inspection when it arrives",
+            },
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc-first",
+            "doc_url": "https://docs.google.com/document/d/doc-first",
+            "trace": trace,
+        }
+        mock_email.return_value = None
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            p1_email="owner@example.com",
+            site_id="SITE1",
+        )
+
+        assert result.status == "report_created"
+        assert len(result.open_questions) == 1
+        mock_email.assert_called_once()
+        assert mock_email.call_args.kwargs["is_update"] is False
+        assert mock_email.call_args.kwargs["open_question_count"] == 1
+        email_step = next(step for step in result.steps if step.step == "notify.email")
+        assert email_step.status == "succeeded"
+
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline._email_pipeline_report")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_interim_update_skips_email_when_vendor_inputs_remain_missing(
+        self,
+        mock_readiness,
+        mock_email,
+        mock_agent,
+        mock_completeness,
+        mock_rhodes_note,
+    ):
+        """Source-triggered updates do not email until the full vendor set is present."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "sir_vendor": True,
+            "isp_found": False,
+            "inspection_found": False,
+            "inspection_vendor": False,
+            "raycon_scenario_found": False,
+            "raycon_scenario_usable": False,
+            "report_exists": True,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-04T15:00:00+00:00",
+            events=[],
+            final_report_data={"exec.c_answer": "Yes"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc-update",
+            "doc_url": "https://docs.google.com/document/d/doc-update",
+            "trace": trace,
+        }
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            source_event={"source_type": "vendor_sir", "fingerprint": "sir-1"},
+            force_regenerate=True,
+            site_id="SITE1",
+        )
+
+        assert result.status == "report_created"
+        mock_email.assert_not_called()
+        email_step = next(step for step in result.steps if step.step == "notify.email")
+        assert email_step.status == "skipped"
+        assert email_step.skipped_reason == (
+            "interim DDR update; full vendor input set not present"
+        )
+
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline._email_pipeline_report")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_interim_update_skips_email_when_open_items_remain(
+        self,
+        mock_readiness,
+        mock_email,
+        mock_agent,
+        mock_completeness,
+        mock_rhodes_note,
+    ):
+        """Source-triggered updates with remaining open asks are not emailed."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "sir_vendor": True,
+            "isp_found": False,
+            "inspection_found": True,
+            "inspection_vendor": True,
+            "raycon_scenario_found": True,
+            "raycon_scenario_usable": True,
+            "report_exists": True,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-04T15:00:00+00:00",
+            events=[],
+            final_report_data={
+                "verification.open_items": "- Confirm education approval path",
+            },
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc-update",
+            "doc_url": "https://docs.google.com/document/d/doc-update",
+            "trace": trace,
+        }
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            source_event={"source_type": "building_inspection", "fingerprint": "bi-1"},
+            force_regenerate=True,
+            site_id="SITE1",
+        )
+
+        assert result.status == "report_created"
+        assert len(result.open_questions) == 1
+        mock_email.assert_not_called()
+        email_step = next(step for step in result.steps if step.step == "notify.email")
+        assert email_step.status == "skipped"
+        assert email_step.skipped_reason == "interim DDR update; open verification items remain"
+
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline._email_pipeline_report")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_final_update_sends_email_when_vendor_review_is_complete(
+        self,
+        mock_readiness,
+        mock_email,
+        mock_agent,
+        mock_completeness,
+        mock_rhodes_note,
+    ):
+        """The final source-triggered DDR update emails once no open asks remain."""
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "sir_vendor": True,
+            "isp_found": False,
+            "inspection_found": True,
+            "inspection_vendor": True,
+            "raycon_scenario_found": True,
+            "raycon_scenario_usable": True,
+            "report_exists": True,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-04T15:00:00+00:00",
+            events=[],
+            final_report_data={"exec.c_answer": "Yes"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc-final",
+            "doc_url": "https://docs.google.com/document/d/doc-final",
+            "trace": trace,
+        }
+        mock_email.return_value = None
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            source_event={"source_type": "building_inspection", "fingerprint": "bi-1"},
+            force_regenerate=True,
+            site_id="SITE1",
+        )
+
+        assert result.status == "report_created"
+        assert result.open_questions == []
+        mock_email.assert_called_once()
+        assert mock_email.call_args.kwargs["is_update"] is True
+        assert mock_email.call_args.kwargs["open_question_count"] == 0
+        email_step = next(step for step in result.steps if step.step == "notify.email")
+        assert email_step.status == "succeeded"
+
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
     def test_report_exists(self, mock_readiness):
         """Returns report_exists when report already present."""
