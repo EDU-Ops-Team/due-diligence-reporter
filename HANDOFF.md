@@ -50,6 +50,82 @@ Results:
 - `git diff --check`: passed; Git printed LF-to-CRLF working-copy warnings for
   touched files.
 
+## 2026-06-05 - RayCon DDR Source-Of-Truth Review And Patch
+
+Greg asked for a team deep dive on the two RayCon repos and the safest way to
+keep RayCon aligned with DDR.
+
+Conclusion:
+
+- DDR's live integration is the current `RayCon` repo, deployed as Cloud Run
+  service `raycon-api` in project `brandon-gee`, not `RayCon-v2-service`.
+- Live `/version` on `raycon-api` returned commit
+  `50f9b74c1452e61739f5b6d59e070a9f2eaeb00e`; the local checkout is
+  `C:\tmp\raycon-direct-RayCon`.
+- `RayCon-v2-service` is separately deployed as `raycon-v2-api` and does not
+  expose the DDR `/v1/jobs` contract.
+- The key contract bug was RayCon treating a completed calculation as callback
+  success even when `raycon_scenario.json` failed to persist to M1.
+- DDR follow-up already refuses to publish if the M1 JSON is missing; the needed
+  code fix is RayCon-side status/callback correctness.
+
+Changed in `C:\tmp\raycon-direct-RayCon` on branch
+`codex/raycon-ddr-contract`:
+
+- `api/src/index.js` now reports expected scenario-file persistence failures as
+  terminal `failed` for sync responses and async worker state, and duplicate
+  async dispatches can requeue failed persistence states.
+- `api/src/rayconJobCallback.js` now refuses `succeeded`/`partial` callback
+  status when the expected `raycon_scenario.json` was not written.
+- `api/src/jobStateStore.js` exposes `drive_error` in public status metadata.
+- `api/src/openApiSpec.js` now marks `raycon_run_id` as required in the accepted
+  response schema.
+- Added route/callback/OpenAPI regression tests covering sync callback, async
+  worker/status polling, and the accepted-response schema.
+
+Verification:
+
+```powershell
+cd C:\tmp\raycon-direct-RayCon\api
+$env:NODE_ENV='test'; npm.cmd exec vitest run src/rayconJobCallback.test.js src/jobsRoute.test.js src/openApiSpec.test.js
+$env:NODE_ENV='test'; npm.cmd exec vitest run src/jobsRoute.test.js src/rayconJobCallback.test.js src/rayconJobs.test.js src/openApiSpec.test.js
+
+cd C:\Users\foote\.claude\Work\repos\due-diligence-reporter
+uv run pytest tests/test_raycon_client.py tests/test_raycon_followup.py
+```
+
+Results:
+
+- Focused RayCon tests: 3 files passed, 65 tests passed.
+- Broader RayCon API slice: 4 files passed, 114 tests passed.
+- DDR RayCon tests: 119 passed.
+- `git -C C:\tmp\raycon-direct-RayCon diff --check` passed; Git printed
+  LF-to-CRLF working-copy warnings for touched files.
+
+Remaining deploy/config work:
+
+- Published `RayCon` PR #1 and deployed merged commit
+  `fe23b69c08a6464946df6998c759aa7d77fa4af0` to Cloud Run `raycon-api`.
+- Live verification after deploy:
+  - `raycon-api-00186-jw4` served image `gcr.io/brandon-gee/raycon-api:fe23b69`.
+  - `/version` returned git commit `fe23b69c08a6464946df6998c759aa7d77fa4af0`.
+  - Callback wiring was tested on revisions `raycon-api-00187-7g5` and
+    `raycon-api-00188-2lq`; both existing candidate token secrets
+    (`github-token`, then `github-pat`) produced GitHub workflow dispatch HTTP
+    403.
+  - Callback env/secrets were removed again in `raycon-api-00189-8ps` so live
+    RayCon does not emit repeated failed callback attempts.
+- Created Secret Manager entry `raycon-job-callback-secret` for callback HMAC
+  signing, but callback activation still needs a valid GitHub token with
+  permission to dispatch `GFooteGK1/due-diligence-reporter` workflows.
+- DDR workflow commit `ce280c1` allows `validation_failed` as a
+  `raycon-followup.yml` dispatch status; this was required before enabling
+  callback because RayCon can emit that status.
+- Enable inbound HMAC/API-key enforcement when ready; code support exists, but
+  the current deploy config leaves RayCon public.
+- Treat `/v1/chat` convergence with the deterministic job engine as a later
+  Phase 4 product task, not a DDR blocker.
+
 ## 2026-06-04 - DDR First/Final Email Gate
 
 Greg asked to stop emailing every interim DDR update. The desired behavior is:
