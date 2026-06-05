@@ -48,6 +48,7 @@ def test_workflow_dispatch_site_inputs_are_not_interpolated_in_shell() -> None:
         assert "${{ inputs.max_results }}" not in shell
         assert "${{ inputs.max_sites }}" not in shell
         assert "${{ inputs.include_clean }}" not in shell
+        assert "${{ inputs.trigger_remediation }}" not in shell
 
 
 def test_publish_to_mcp_hive_never_packages_generated_secret_files() -> None:
@@ -96,7 +97,7 @@ def test_long_running_mutating_workflows_have_timeouts() -> None:
     assert "timeout-minutes: 60" in _workflow_text("drive-rhodes-reconciliation.yml")
 
 
-def test_portfolio_gap_snapshot_is_read_only_rhodes_workflow() -> None:
+def test_portfolio_gap_snapshot_triggers_aadp_remediation_without_oauth() -> None:
     text = _workflow_text("portfolio-automation-gaps.yml")
 
     assert "RHODES_API_KEY" in text
@@ -108,6 +109,10 @@ def test_portfolio_gap_snapshot_is_read_only_rhodes_workflow() -> None:
     assert "GOOGLE_CHAT_WEBHOOK_URL" in text
     assert "portfolio-gaps" in text
     assert "portfolio-automation-gaps.json" in text
+    assert "trilogy-group/alpha-analysis-downstream-processing" in text
+    assert "AADP_REMEDIATION_REPO_TOKEN" in text
+    assert "AADP_DRIVE_PARENT_FOLDER_ID" in text
+    assert "scripts/run_aadp_portfolio_gap_remediation.py" in text
     assert "post_portfolio_gap_summary.py" in text
     assert "OAUTH_CLIENT_ID" not in text
     assert "OAUTH_REFRESH_TOKEN" not in text

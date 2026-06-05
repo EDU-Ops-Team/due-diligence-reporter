@@ -18,6 +18,14 @@ on:
         options:
           - 'false'
           - 'true'
+      trigger_remediation:
+        description: 'Run AADP-owned remediation for correctable gaps'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 concurrency:
   group: portfolio-automation-gaps
@@ -83,6 +91,26 @@ jobs:
             cat portfolio-automation-gaps.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout AADP remediation runner
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.trigger_remediation != 'false' }}
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: trilogy-group/alpha-analysis-downstream-processing
+          ref: main
+          path: aadp-remediation
+          token: ${{ secrets.AADP_REMEDIATION_REPO_TOKEN || github.token }}
+
+      - name: Trigger AADP remediation for correctable gaps
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.trigger_remediation != 'false' }}
+        env:
+          AADP_DRIVE_PARENT_FOLDER_ID: ${{ vars.AADP_DRIVE_PARENT_FOLDER_ID || secrets.AADP_DRIVE_PARENT_FOLDER_ID }}
+        run: |
+          uv run python scripts/run_aadp_portfolio_gap_remediation.py \
+            --snapshot portfolio-automation-gaps.json \
+            --aadp-repo aadp-remediation \
+            --drive-parent-folder-id "${AADP_DRIVE_PARENT_FOLDER_ID:-}"
 
       - name: Post Google Chat summary when gaps exist
         env:

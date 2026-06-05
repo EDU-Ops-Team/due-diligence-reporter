@@ -1,5 +1,55 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-05 - Portfolio Gaps AADP Remediation Trigger
+
+Greg wanted Portfolio Gaps alerts to show what action agents took instead of
+only notifying humans. Missing P1 DRI and missing Drive-folder gaps should be
+handed back to AADP so they can be corrected shortly after discovery, while the
+dashboard shows per-alert action status.
+
+Changed:
+
+- `.github/workflows/portfolio-automation-gaps.yml` now checks out
+  `trilogy-group/alpha-analysis-downstream-processing` into `aadp-remediation`
+  after building `portfolio-automation-gaps.json`, then runs the new wrapper
+  before posting the Chat summary or uploading artifacts.
+- Added `scripts/run_aadp_portfolio_gap_remediation.py`. It imports AADP's
+  remediation runner from the checked-out repo, enriches the snapshot in place,
+  and falls back to explicit `blocked`/`error` action records when AADP is
+  unavailable instead of leaving the dashboard with no action telemetry.
+- Added workflow-dispatch input `trigger_remediation`, support for
+  `AADP_DRIVE_PARENT_FOLDER_ID`, and optional `AADP_REMEDIATION_REPO_TOKEN` for
+  private cross-repo checkout.
+- Added regression tests covering unavailable-runner fallback, checked-out AADP
+  runner import, CLI overwrite behavior, and workflow contract guardrails.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_aadp_portfolio_gap_remediation_trigger.py tests/test_workflow_contracts.py -q --basetemp C:\tmp\ddr-aadp-remediation-broad
+uv run ruff check scripts\run_aadp_portfolio_gap_remediation.py tests\test_aadp_portfolio_gap_remediation_trigger.py tests\test_workflow_contracts.py
+uv run mypy scripts\run_aadp_portfolio_gap_remediation.py
+git diff --check
+```
+
+Results:
+
+- Focused pytest: 11 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in the wrapper script; the repo still prints the known unused
+  pyproject override note.
+- `git diff --check`: passed with expected Windows LF-to-CRLF warnings only.
+
+Next:
+
+- Commit/push this repo together with the AADP remediation runner before
+  expecting scheduled runs to emit real action status.
+- Configure `AADP_DRIVE_PARENT_FOLDER_ID` as a repo variable or secret. Do not
+  omit it for Drive-folder creation, because AADP can otherwise fall back to an
+  unintended Drive parent.
+- Configure `AADP_REMEDIATION_REPO_TOKEN` if the default `github.token` cannot
+  read `trilogy-group/alpha-analysis-downstream-processing`.
+
 ## 2026-06-05 - Clean DDR Republish Notifications And Revision-Safe Updates
 
 Greg asked for the DDR process to be easier to understand: republish only when
