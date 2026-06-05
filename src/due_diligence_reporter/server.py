@@ -115,6 +115,10 @@ MIN_SITE_MATCH_SCORE = 40
 
 _READ_CONTEXT_BY_FILE_ID: dict[str, dict[str, str]] = {}
 _REBL_RESOLUTION_CACHE: dict[str, ReblResolution] = {}
+DDR_AUTOMATION_UPDATED_AT_KEY = "ddrAutomationUpdatedAt"
+DDR_AUTOMATION_REVISION_ID_KEY = "ddrAutomationRevisionId"
+DDR_AUTOMATION_DOC_ROLE_KEY = "ddrAutomationDocRole"
+DDR_AUTOMATION_SOURCE_DOC_ID_KEY = "ddrAutomationSourceDocId"
 
 
 CAN_WE_SECTION_DELIMITER = "Education Regulatory Approval:"
@@ -541,6 +545,123 @@ def _clear_document_body(
             }]
         },
     ).execute()
+
+
+def _get_dd_report_metadata(
+    gc: GoogleClient,
+    *,
+    doc_id: str,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        metadata = gc.get_file_metadata(
+            doc_id,
+            fields="id,name,modifiedTime,webViewLink,appProperties",
+        )
+    except Exception as exc:  # noqa: BLE001 - fail closed in the overwrite guard
+        logger.warning("Could not read DD report metadata for %s: %s", doc_id, exc)
+        return dict(fallback or {})
+    return metadata if isinstance(metadata, dict) else dict(fallback or {})
+
+
+def _get_dd_report_revision_id(gc: GoogleClient, *, doc_id: str) -> str:
+    try:
+        document = gc.get_document(doc_id)
+    except Exception as exc:  # noqa: BLE001 - fail closed in the overwrite guard
+        logger.warning("Could not read DD report revision for %s: %s", doc_id, exc)
+        return ""
+    return str(document.get("revisionId") or "").strip()
+
+
+def _dd_report_overwrite_guard(
+    gc: GoogleClient,
+    *,
+    existing_doc: dict[str, Any],
+) -> dict[str, Any]:
+    """Return whether an existing DD report can be rebuilt in place."""
+    doc_id = str(existing_doc.get("id") or "").strip()
+    metadata = _get_dd_report_metadata(gc, doc_id=doc_id, fallback=existing_doc)
+    app_properties = metadata.get("appProperties")
+    if not isinstance(app_properties, dict):
+        app_properties = {}
+
+    automation_revision_id = str(
+        app_properties.get(DDR_AUTOMATION_REVISION_ID_KEY) or ""
+    ).strip()
+    modified_raw = str(metadata.get("modifiedTime") or existing_doc.get("modifiedTime") or "").strip()
+    active_doc_url = str(metadata.get("webViewLink") or existing_doc.get("webViewLink") or "")
+    if not automation_revision_id:
+        return {
+            "status": "blocked",
+            "reason": "missing_automation_revision",
+            "message": "Active DDR has no automation-owned revision; candidate update required",
+            "active_doc_id": doc_id,
+            "active_doc_url": active_doc_url,
+            "active_modified_time": modified_raw,
+            "automation_revision_id": automation_revision_id,
+        }
+    current_revision_id = _get_dd_report_revision_id(gc, doc_id=doc_id)
+    if not current_revision_id:
+        return {
+            "status": "blocked",
+            "reason": "missing_current_revision",
+            "message": "Active DDR current revision could not be verified; candidate update required",
+            "active_doc_id": doc_id,
+            "active_doc_url": active_doc_url,
+            "active_modified_time": modified_raw,
+            "automation_revision_id": automation_revision_id,
+            "current_revision_id": current_revision_id,
+        }
+    if current_revision_id != automation_revision_id:
+        return {
+            "status": "blocked",
+            "reason": "content_revision_changed",
+            "message": "Active DDR revision changed after the last automation-owned write",
+            "active_doc_id": doc_id,
+            "active_doc_url": active_doc_url,
+            "active_modified_time": modified_raw,
+            "automation_revision_id": automation_revision_id,
+            "current_revision_id": current_revision_id,
+        }
+    return {
+        "status": "safe",
+        "reason": "automation_owned",
+        "message": "Active DDR revision matches the last automation-owned write",
+        "active_doc_id": doc_id,
+        "active_doc_url": active_doc_url,
+        "active_modified_time": modified_raw,
+        "automation_revision_id": automation_revision_id,
+        "current_revision_id": current_revision_id,
+    }
+
+
+def _mark_dd_report_automation_write(
+    gc: GoogleClient,
+    *,
+    doc_id: str,
+    role: str,
+    source_doc_id: str = "",
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    revision_id = _get_dd_report_revision_id(gc, doc_id=doc_id)
+    properties = {
+        DDR_AUTOMATION_UPDATED_AT_KEY: now.isoformat(),
+        DDR_AUTOMATION_DOC_ROLE_KEY: role,
+    }
+    if revision_id:
+        properties[DDR_AUTOMATION_REVISION_ID_KEY] = revision_id
+    if source_doc_id:
+        properties[DDR_AUTOMATION_SOURCE_DOC_ID_KEY] = source_doc_id
+    try:
+        return gc.update_file_app_properties(doc_id, properties)
+    except Exception as exc:  # noqa: BLE001 - the report is still usable
+        logger.warning("Could not mark DD report %s automation metadata: %s", doc_id, exc)
+        return {}
+
+
+def _candidate_dd_report_name(site_name: str, today_str: str) -> str:
+    stamp = datetime.now(UTC).strftime("%H%M UTC")
+    return f"{site_name.strip()} DD Report Candidate - {today_str} {stamp}"
 
 
 # _classify_document_type moved to classifier.py (imported above as alias).
@@ -2828,39 +2949,69 @@ async def create_dd_report(
                     legacy_source_folder_id = folder_id
             doc_id: str | None = None
             doc_url: str | None = None
+            document_name = doc_name
+            document_role = "active"
+            source_doc_id = ""
+            republish_guard: dict[str, Any] = {}
             if existing_doc:
                 existing_doc_id = existing_doc.get("id")
                 if not isinstance(existing_doc_id, str) or not existing_doc_id:
                     raise RuntimeError(f"Existing DD report is missing a valid document ID: {doc_name}")
-                doc_id = existing_doc_id
-                doc_url = existing_doc.get("webViewLink")
-                if legacy_source_folder_id is not None:
+                republish_guard = _dd_report_overwrite_guard(gc, existing_doc=existing_doc)
+                if republish_guard.get("status") == "blocked":
+                    source_doc_id = existing_doc_id
+                    document_role = "candidate"
+                    document_name = _candidate_dd_report_name(site_name, today_str)
                     logger.info(
-                        "Moving existing DD Doc %s from site root %s to %s folder %s",
-                        doc_id,
-                        legacy_source_folder_id,
-                        M1_FOLDER_NAME,
-                        target_folder_id,
+                        "Existing DD report is protected (%s); creating candidate %s",
+                        republish_guard.get("reason"),
+                        document_name,
                     )
-                    gc.move_file_to_folder(doc_id, target_folder_id)
-                old_name = str(existing_doc.get("name", "")).strip()
-                if old_name and old_name != doc_name:
-                    # Cross-day regenerate: same site, different report-date suffix.
-                    # Rename in place so we never accumulate one Doc per day.
-                    logger.info(
-                        "Renaming existing DD Doc from %s to %s", old_name, doc_name
+                    candidate_doc = gc.create_document(
+                        name=document_name,
+                        folder_id=target_folder_id,
+                        text_content="",
                     )
-                    try:
-                        gc.rename_file(doc_id, doc_name)
-                    except Exception as rename_err:  # noqa: BLE001
-                        logger.warning(
-                            "Failed to rename DD Doc %s -> %s; continuing with stale name: %s",
-                            old_name,
-                            doc_name,
-                            rename_err,
+                    doc_id = candidate_doc.get("id")
+                    doc_url = candidate_doc.get("webViewLink")
+                    if not doc_id or not isinstance(doc_id, str):
+                        raise RuntimeError("Invalid document ID returned from candidate create operation")
+                    republish_guard = {
+                        **republish_guard,
+                        "candidate_created": True,
+                        "candidate_doc_id": doc_id,
+                        "candidate_doc_url": str(doc_url or ""),
+                    }
+                else:
+                    doc_id = existing_doc_id
+                    doc_url = existing_doc.get("webViewLink")
+                    if legacy_source_folder_id is not None:
+                        logger.info(
+                            "Moving existing DD Doc %s from site root %s to %s folder %s",
+                            doc_id,
+                            legacy_source_folder_id,
+                            M1_FOLDER_NAME,
+                            target_folder_id,
                         )
-                logger.info("Existing DD report found, rebuilding in place: %s (id=%s)", doc_name, doc_id)
-                _clear_document_body(gc, doc_id=doc_id)
+                        gc.move_file_to_folder(doc_id, target_folder_id)
+                    old_name = str(existing_doc.get("name", "")).strip()
+                    if old_name and old_name != doc_name:
+                        # Cross-day regenerate: same site, different report-date suffix.
+                        # Rename in place so we never accumulate one Doc per day.
+                        logger.info(
+                            "Renaming existing DD Doc from %s to %s", old_name, doc_name
+                        )
+                        try:
+                            gc.rename_file(doc_id, doc_name)
+                        except Exception as rename_err:  # noqa: BLE001
+                            logger.warning(
+                                "Failed to rename DD Doc %s -> %s; continuing with stale name: %s",
+                                old_name,
+                                doc_name,
+                                rename_err,
+                            )
+                    logger.info("Existing DD report found, rebuilding in place: %s (id=%s)", doc_name, doc_id)
+                    _clear_document_body(gc, doc_id=doc_id)
             else:
                 logger.info("Creating blank document in folder %s as '%s'", target_folder_id, doc_name)
                 new_doc = gc.create_document(
@@ -2919,6 +3070,12 @@ async def create_dd_report(
                 site_title=site_name.strip(),
                 completeness=completeness,
             )
+            automation_metadata = _mark_dd_report_automation_write(
+                gc,
+                doc_id=doc_id,
+                role=document_role,
+                source_doc_id=source_doc_id,
+            )
 
             hyperlink_trace = {
                 "candidates": {},
@@ -2943,20 +3100,25 @@ async def create_dd_report(
                 "status": "success",
                 "document": {
                     "id": doc_id,
-                    "name": doc_name,
+                    "name": document_name,
                     "url": doc_url,
                     "folder_id": target_folder_id,
                     "folder_url": target_folder_url
                     or f"https://drive.google.com/drive/folders/{target_folder_id}",
+                    "role": document_role,
+                    "source_doc_id": source_doc_id,
                 },
                 "replacements_applied": len(replacements),
                 "unmatched_agent_keys": len(unmatched),
                 "unfilled_template_tokens": len(unfilled),
                 "hyperlinks_applied": hyperlink_trace["applied"],
                 "normalized_report_data": replacements,
+                "automation_metadata": automation_metadata,
                 "report_metadata": {"completeness": completeness},
                 "message": f"DD report built: {doc_url}",
             }
+            if republish_guard:
+                response["republish_guard"] = republish_guard
             return response
         except Exception as e:
             logger.error("Failed to create DD report: %s", e)

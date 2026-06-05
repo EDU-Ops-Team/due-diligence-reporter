@@ -360,6 +360,43 @@ class GoogleClient:
             logger.error("Failed to copy document: %s", error)
             raise RuntimeError(f"Failed to copy document: {error}") from error
 
+    def get_file_metadata(self, file_id: str, fields: str = "id,name,modifiedTime,webViewLink,appProperties") -> dict[str, Any]:
+        """Return selected Drive metadata for a file."""
+        try:
+            metadata: dict[str, Any] = _google_api_execute(
+                self.drive_service.files()
+                .get(
+                    fileId=file_id,
+                    fields=fields,
+                    supportsAllDrives=True,
+                )
+            )
+            return metadata
+        except HttpError as error:
+            logger.error("Failed to get file metadata for %s: %s", file_id, error)
+            raise RuntimeError(f"Failed to get file metadata: {error}") from error
+
+    def update_file_app_properties(
+        self,
+        file_id: str,
+        app_properties: dict[str, str],
+    ) -> dict[str, Any]:
+        """Merge appProperties onto a Drive file and return updated metadata."""
+        try:
+            updated: dict[str, Any] = _google_api_execute(
+                self.drive_service.files()
+                .update(
+                    fileId=file_id,
+                    body={"appProperties": app_properties},
+                    fields="id,name,modifiedTime,webViewLink,appProperties",
+                    supportsAllDrives=True,
+                )
+            )
+            return updated
+        except HttpError as error:
+            logger.error("Failed to update appProperties for %s: %s", file_id, error)
+            raise RuntimeError(f"Failed to update appProperties: {error}") from error
+
     # ---------- Docs API Methods ----------
 
     def batch_update_document(

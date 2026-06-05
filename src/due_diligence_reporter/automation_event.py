@@ -30,6 +30,8 @@ def render_automation_event_note(event: AutomationEvent) -> str:
 
     if event.event_type in {"dd_report_created", "dd_report_updated"}:
         return _render_dd_report_event_note(event)
+    if event.event_type == "dd_report_republish_candidate_created":
+        return _render_dd_report_candidate_note(event)
 
     lines = [
         "AutomationEvent v1",
@@ -63,6 +65,7 @@ def _render_dd_report_event_note(event: AutomationEvent) -> str:
     doc_url = event.details.get("DD report URL", "").strip()
     trigger_source = event.details.get("Trigger source", "").strip()
     source_file = event.details.get("Source file", "").strip()
+    outstanding_docs = event.details.get("Outstanding vendor docs", "").strip()
 
     lines = [
         "AutomationEvent v1",
@@ -70,6 +73,11 @@ def _render_dd_report_event_note(event: AutomationEvent) -> str:
         f"Site: {event.site_name}",
         f"Open asks: {open_count}",
     ]
+    if trigger_source:
+        source_label = _format_republish_source(trigger_source, source_file)
+        lines.append(f"DDR republished due to: {source_label}")
+    if outstanding_docs:
+        lines.append(f"Outstanding vendor docs: {outstanding_docs}")
     if closed_count:
         lines.append(f"Resolved this run: {closed_count}")
     if doc_url:
@@ -115,6 +123,61 @@ def _render_dd_report_event_note(event: AutomationEvent) -> str:
     lines.append(f"Closed item count: {closed_count}")
     lines.append(f"Created at: {event.created_at}")
     return "\n".join(lines)
+
+
+def _render_dd_report_candidate_note(event: AutomationEvent) -> str:
+    trigger_source = event.details.get("Trigger source", "").strip()
+    source_file = event.details.get("Source file", "").strip()
+    outstanding_docs = event.details.get("Outstanding vendor docs", "").strip()
+    active_url = event.details.get("Active DD report URL", "").strip()
+    candidate_url = event.details.get("Candidate DD report URL", "").strip()
+    reason = event.details.get("Guard reason", "").strip()
+
+    lines = [
+        "AutomationEvent v1",
+        "Action needed: Review the candidate DDR before replacing the active report.",
+        f"Site: {event.site_name}",
+    ]
+    if trigger_source:
+        lines.append(
+            f"Candidate created due to: {_format_republish_source(trigger_source, source_file)}"
+        )
+    if outstanding_docs:
+        lines.append(f"Outstanding vendor docs: {outstanding_docs}")
+    if active_url:
+        lines.append(f"Active DD report: {active_url}")
+    if candidate_url:
+        lines.append(f"Candidate DD report: {candidate_url}")
+    if reason:
+        lines.append(f"Guard reason: {reason}")
+    lines.extend([
+        "System details:",
+        f"Source: {event.source_system}",
+        f"Source ID: {event.source_id}",
+        f"Kind: {event.event_type}",
+        f"Site ID: {event.site_id or 'unknown'}",
+        f"Decision required: {'yes' if event.decision_required else 'no'}",
+    ])
+    if event.requested_decision:
+        lines.append(f"Requested decision: {event.requested_decision}")
+    if event.mutation_status:
+        lines.append(f"Mutation status: {event.mutation_status}")
+    for label, value in event.artifact_ids.items():
+        lines.append(f"{label}: {value or 'unknown'}")
+    lines.append(f"Created at: {event.created_at}")
+    return "\n".join(lines)
+
+
+def _format_republish_source(source_type: str, source_file: str = "") -> str:
+    labels = {
+        "vendor_sir": "Vendor SIR",
+        "building_inspection": "Vendor Building Inspection",
+        "raycon_scenario": "RayCon Scenario JSON",
+        "e_occupancy_report": "E-Occupancy report",
+        "school_approval_report": "School Approval report",
+    }
+    label = labels.get(source_type, source_type.replace("_", " ").title())
+    return f"{label} ({source_file})" if source_file else label
 
 
 def _dd_report_action_needed(event: AutomationEvent, open_count: int) -> str:
@@ -268,6 +331,7 @@ def build_dd_report_summary_event(
     source_event: dict[str, Any] | None = None,
     open_questions: list[dict[str, Any]] | None = None,
     closed_open_questions: list[dict[str, Any]] | None = None,
+    missing_vendor_docs: list[str] | None = None,
     created_at: str | None = None,
 ) -> AutomationEvent:
     """Build the DDR generated/updated report summary event."""
@@ -291,6 +355,7 @@ def build_dd_report_summary_event(
         "Source file": str(source.get("file_name") or "").strip(),
         "Open item count": str(len(open_items)),
         "Closed item count": str(len(closed_items)),
+        "Outstanding vendor docs": _format_missing_docs(missing_vendor_docs),
     }
     details.update(_indexed_item_details("Open item", open_items))
     details.update(_indexed_item_details("Closed item", closed_items))
@@ -310,6 +375,57 @@ def build_dd_report_summary_event(
         details=details,
         created_at=created_at or datetime.now(UTC).isoformat(),
     )
+
+
+def build_dd_report_republish_candidate_event(
+    *,
+    site_id: str,
+    site_name: str,
+    run_id: str,
+    candidate_doc_id: str | None,
+    candidate_doc_url: str | None,
+    source_event: dict[str, Any] | None = None,
+    missing_vendor_docs: list[str] | None = None,
+    overwrite_guard: dict[str, Any] | None = None,
+    created_at: str | None = None,
+) -> AutomationEvent:
+    """Build a review event when republish creates a candidate instead of overwriting."""
+
+    source = source_event or {}
+    guard = overwrite_guard or {}
+    artifact_ids = {"Run ID": run_id}
+    if candidate_doc_id:
+        artifact_ids["Candidate DD report ID"] = candidate_doc_id
+    active_doc_id = str(guard.get("active_doc_id") or "").strip()
+    if active_doc_id:
+        artifact_ids["Active DD report ID"] = active_doc_id
+
+    return AutomationEvent(
+        source_system="due-diligence-reporter",
+        source_id=run_id,
+        site_id=site_id.strip(),
+        site_name=site_name.strip() or "Unknown site",
+        event_type="dd_report_republish_candidate_created",
+        artifact_ids=artifact_ids,
+        decision_required=True,
+        requested_decision="review candidate DDR and decide whether to replace the active report",
+        mutation_status="candidate_created",
+        details={
+            "Trigger source": str(source.get("source_type") or "").strip(),
+            "Source file": str(source.get("file_name") or "").strip(),
+            "Outstanding vendor docs": _format_missing_docs(missing_vendor_docs),
+            "Active DD report URL": str(guard.get("active_doc_url") or "").strip(),
+            "Candidate DD report URL": str(candidate_doc_url or "").strip(),
+            "Guard reason": str(guard.get("reason") or "").strip(),
+        },
+        created_at=created_at or datetime.now(UTC).isoformat(),
+    )
+
+
+def _format_missing_docs(missing_docs: list[str] | None) -> str:
+    if not missing_docs:
+        return "None"
+    return ", ".join(str(item).strip() for item in missing_docs if str(item).strip())
 
 
 def build_source_review_required_event(

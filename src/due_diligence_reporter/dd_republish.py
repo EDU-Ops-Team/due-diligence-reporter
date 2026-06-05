@@ -31,9 +31,10 @@ Design choices:
 * **Failures are non-fatal**: the caller's primary action (publishing
   the RayCon Doc, filing the SIR/BI to Drive) has already succeeded by
   the time we get here, and a republish error must not undo that.
-* **Force-after window** (12h, mirroring the RayCon path) ensures a
-  permanently-stuck site still re-enters the pipeline at most once per
-  half-day for the same fingerprint.
+* **Operator force only**: once a fingerprint has produced a DDR or
+  protected DDR candidate, scheduled sweeps do not replay it. A new
+  Drive ``modifiedTime`` / RayCon run ID is a new fingerprint; operator
+  recovery can still use ``force=True``.
 
 Observability mirrors PR #85's silent-fail pattern: every decision
 emits a structured log line with ``reason``, ``site_id``, the
@@ -101,11 +102,11 @@ LEGACY_DD_REPUBLISH_STATE_PATH = (
     _PROJECT_ROOT / ".raycon_dd_republish_state.json"
 )
 
-# Force-republish window: regenerate at least once per N hours for the
-# same ``(site_id, reason, fingerprint)`` triple if conditions still
-# hold. Mirrors ``DD_REPUBLISH_FORCE_AFTER`` in raycon_followup.py so
-# the RayCon path's behavior is unchanged after refactoring.
-DD_REPUBLISH_FORCE_AFTER = timedelta(hours=12)
+# Backward-compatible sentinel for callers/tests that still pass the old
+# force-after parameter. Normal scheduled dedupe is now permanent per
+# ``(site_id, reason, fingerprint)`` until ``force=True`` is supplied.
+DD_REPUBLISH_FORCE_AFTER = timedelta.max
+DEDUP_SUCCESS_STATUSES = frozenset({"report_created", "republish_candidate_created"})
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +121,7 @@ class RepublishOutcome:
     ``decision`` is one of:
       * ``"republish"`` — pipeline ran with ``force_regenerate=True``.
       * ``"skip_no_prior_report"`` — first-generation case; not our job.
-      * ``"skip_no_diff"`` — same fingerprint within force-after window.
+      * ``"skip_no_diff"`` — same fingerprint already produced a DDR/candidate.
       * ``"skip_dry_run"`` — dry run; no work performed.
       * ``"skip_bad_input"`` — caller-supplied site fields incomplete.
       * ``"failed"`` — pipeline raised; report unchanged. ``error`` set.
@@ -372,7 +373,7 @@ def maybe_republish_dd_report(
     republish_state: dict[str, str],
     dry_run: bool = False,
     force: bool = False,
-    force_after: timedelta = DD_REPUBLISH_FORCE_AFTER,
+    force_after: timedelta | None = None,
     now: datetime | None = None,
     pipeline_runner: Callable[..., PipelineResult] | None = None,
     existing_report_finder: Callable[
@@ -407,8 +408,8 @@ def maybe_republish_dd_report(
             the pipeline.
         force: If True, bypass the same-fingerprint dedup. Reserved for
             operator-driven recovery; default callers leave it off.
-        force_after: Force-republish window. Same fingerprint repeated
-            inside this window → no-op.
+        force_after: Deprecated compatibility parameter; same fingerprints
+            now remain no-op until ``force=True``.
         now: Injectable for tests.
         pipeline_runner: Injectable ``process_site_pipeline`` for tests.
         existing_report_finder: Injectable ``find_existing_dd_report``
@@ -528,7 +529,7 @@ def maybe_republish_dd_report(
             )
             last_iso = republish_state.get(legacy_state_key)
     last_dt = _parse_iso(last_iso) if last_iso else None
-    if not force and last_dt is not None and (now - last_dt) < force_after:
+    if not force and last_dt is not None:
         logger.info(
             "DD republish skip: no_diff reason=%s site_id=%s site=%s fingerprint=%s "
             "(last republished %s ago)",
@@ -616,11 +617,10 @@ def maybe_republish_dd_report(
             failure_event_recorder=failure_event_recorder,
         )
 
-    # Record only successful report creation as the dedup boundary. Failed,
-    # incomplete, or still-waiting runs need another chance on a later scan
-    # with the same fingerprint instead of being suppressed for the force
-    # window.
-    if result.status == "report_created":
+    # Record successful report/candidate creation as the dedup boundary.
+    # Failed, incomplete, or still-waiting runs need another chance on a
+    # later scan with the same fingerprint.
+    if result.status in DEDUP_SUCCESS_STATUSES:
         republish_state[state_key] = now.isoformat()
     logger.info(
         "DD republish ran: reason=%s site_id=%s site=%s fingerprint=%s status=%s",

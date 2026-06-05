@@ -91,10 +91,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Restore DD republish dedup state
-        # Persists .dd_republish_state.json across cron ticks so the 12h
-        # DD_REPUBLISH_FORCE_AFTER window is honored. Without this the
-        # state file is born empty every run and dedup degrades to
-        # intra-run only.
+        # Persists .dd_republish_state.json across cron ticks so source
+        # fingerprints republish once. Without this the state file is
+        # born empty every run and dedup degrades to intra-run only.
         #
         # Save key includes ${{ github.run_id }} so each run writes a
         # fresh cache entry (actions/cache only writes when the exact

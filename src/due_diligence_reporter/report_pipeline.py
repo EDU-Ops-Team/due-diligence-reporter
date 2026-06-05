@@ -18,6 +18,7 @@ from typing import Any, cast
 import anthropic
 
 from .automation_event import (
+    build_dd_report_republish_candidate_event,
     build_dd_report_summary_event,
     build_source_review_required_event,
     build_vendor_gate_review_required_event,
@@ -736,6 +737,8 @@ def run_dd_report_agent(
 
     doc_id: str | None = None
     doc_url: str | None = None
+    document_role = "active"
+    republish_guard: dict[str, Any] | None = None
     cached_report_fields: dict[str, Any] = dict(initial_report_fields or {})
     if effective_site_address:
         cached_report_fields.setdefault("site.address", effective_site_address)
@@ -810,6 +813,9 @@ def run_dd_report_agent(
                 if doc_data.get("id"):
                     doc_id = doc_data["id"]
                     doc_url = doc_data.get("url")
+                    document_role = str(doc_data.get("role") or "active")
+                    guard = result.get("republish_guard")
+                    republish_guard = guard if isinstance(guard, dict) else None
                     logger.info("Created DD report: %s", doc_url)
                     trace.doc_id = doc_id
                     trace.tokens_filled = result.get("replacements_applied", 0)
@@ -870,7 +876,14 @@ def run_dd_report_agent(
     trace.final_status = "success" if doc_id else "no_report"
 
     if doc_id:
-        return {"success": True, "doc_id": doc_id, "doc_url": doc_url, "trace": trace}
+        return {
+            "success": True,
+            "doc_id": doc_id,
+            "doc_url": doc_url,
+            "trace": trace,
+            "document_role": document_role,
+            "republish_guard": republish_guard,
+        }
     return {"success": False, "error": "Agent completed without creating a report", "trace": trace}
 
 
@@ -884,7 +897,7 @@ class PipelineResult:
     """Structured result from a single-site pipeline run."""
 
     site_title: str
-    status: str  # waiting_on_docs | report_exists | report_created | report_incomplete | generation_failed | error | yielded_to_pipeline
+    status: str  # waiting_on_docs | report_exists | report_created | republish_candidate_created | report_incomplete | generation_failed | error | yielded_to_pipeline
     missing_docs: list[str] = field(default_factory=list)
     doc_id: str | None = None
     doc_url: str | None = None
@@ -1271,11 +1284,7 @@ def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
                 "Vendor SIR" if readiness.get("sir_found") else "SIR"
             )
         if not readiness.get("inspection_vendor", False):
-            missing.append(
-                "Vendor Building Inspection"
-                if readiness.get("inspection_found")
-                else "Building Inspection"
-            )
+            missing.append("Vendor Building Inspection")
         raycon_found = bool(readiness.get("raycon_scenario_found", False))
         raycon_usable = bool(readiness.get("raycon_scenario_usable", raycon_found))
         if not raycon_found:
@@ -1800,6 +1809,7 @@ def _set_open_question_state(
             "trigger_source": source_event.get("source_type", ""),
             "closed_open_item_count": len(result.closed_open_questions),
             "still_open_item_count": len(result.open_questions),
+            "outstanding_vendor_docs": result.missing_docs,
         }
 
 
@@ -1996,6 +2006,7 @@ def _record_rhodes_report_event_step(
         source_event=result.source_event,
         open_questions=result.open_questions,
         closed_open_questions=result.closed_open_questions,
+        missing_vendor_docs=result.missing_docs,
     )
     cap_status = _dd_report_event_frequency_cap(
         event,
@@ -2094,6 +2105,92 @@ def _record_rhodes_report_event_step(
     )
 
 
+def _record_republish_candidate_event_step(
+    recorder: _RunRecorder,
+    settings: Settings,
+    result: PipelineResult,
+    *,
+    site_id: str,
+    owner_user_id: str,
+    owner_email: str,
+) -> None:
+    started_at, started_monotonic = recorder.start()
+    guard: dict[str, Any] = {}
+    if isinstance(result.republish_summary, dict):
+        raw_guard = result.republish_summary.get("overwrite_guard")
+        if isinstance(raw_guard, dict):
+            guard = raw_guard
+    event = build_dd_report_republish_candidate_event(
+        site_id=site_id,
+        site_name=result.site_title,
+        run_id=recorder.run_id,
+        candidate_doc_id=result.doc_id,
+        candidate_doc_url=result.doc_url,
+        source_event=result.source_event,
+        missing_vendor_docs=result.missing_docs,
+        overwrite_guard=guard,
+    )
+    event_status, body = record_rhodes_automation_event(
+        event,
+        owner_user_id=owner_user_id,
+        owner_email=owner_email,
+        add_note=add_rhodes_site_note,
+    )
+    should_alert_chat = should_alert_google_chat(
+        event_status,
+        decision_required=event.decision_required,
+    )
+    chat_result: dict[str, Any] | None = None
+    if should_alert_chat:
+        chat_result = _post_google_chat_to_configured_webhooks(
+            settings.google_chat_webhook_url,
+            body,
+        )
+        event_status["google_chat"] = chat_result
+    result.rhodes_report_event = event_status
+    artifact = ArtifactRef(
+        kind="rhodes_note",
+        name="DDR republish candidate AutomationEvent",
+        metadata=event_status,
+    )
+    note_status = str(event_status.get("status") or "")
+    chat_status = str((chat_result or {}).get("status") or "")
+    if note_status == "created" and chat_status not in {"failed", "skipped"}:
+        recorder.record(
+            "rhodes.report_event",
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[artifact],
+        )
+        return
+    if note_status == "created" and not should_alert_chat:
+        recorder.record(
+            "rhodes.report_event",
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[artifact],
+        )
+        return
+    message = str(event_status.get("error") or event_status.get("reason") or "unknown")
+    if should_alert_chat and chat_status in {"failed", "skipped"}:
+        message = f"{message}; Google Chat fallback {chat_status}"
+    recorder.record(
+        "rhodes.report_event",
+        started_at,
+        started_monotonic,
+        "failed",
+        error=_pipeline_error(
+            recorder.run_id,
+            "rhodes.report_event",
+            "republish_candidate_event_failed",
+            message,
+        ),
+        artifacts=[artifact],
+    )
+
+
 def _dd_report_event_frequency_cap(
     event: Any,
     *,
@@ -2103,6 +2200,9 @@ def _dd_report_event_frequency_cap(
     manifest_root: Path | None = None,
 ) -> dict[str, Any] | None:
     if not getattr(event, "decision_required", False):
+        return None
+    details = getattr(event, "details", {})
+    if isinstance(details, dict) and str(details.get("Trigger source") or "").strip():
         return None
     if _detail_open_count(event) <= 0:
         return None
@@ -2453,7 +2553,8 @@ def process_site_pipeline(
             gc=gc,
             drive_folder_url=drive_folder_url,
         )
-    full_report_inputs_present = not _missing_required_docs(readiness)
+    missing_full_report_docs = _missing_required_docs(readiness)
+    full_report_inputs_present = not missing_full_report_docs
     recorder.record("readiness.check", started_at, started_monotonic, "succeeded")
     _record_sir_learning_review_step(recorder, sir_learning_review)
 
@@ -2604,6 +2705,46 @@ def process_site_pipeline(
         owner_email=p1_email or "",
     )
 
+    if agent_result.get("document_role") == "candidate":
+        candidate_result = PipelineResult(
+            site_title=site_title,
+            status="republish_candidate_created",
+            missing_docs=missing_full_report_docs,
+            doc_id=doc_id,
+            doc_url=doc_url,
+            trace_url=trace_url,
+            trace=agent_result.get("trace"),
+        )
+        _set_open_question_state(
+            candidate_result,
+            trace=agent_result.get("trace"),
+            run_id=recorder.run_id,
+            source_event=source_event,
+            open_questions_before=open_questions_before,
+            validated=False,
+        )
+        guard = agent_result.get("republish_guard")
+        if isinstance(guard, dict):
+            candidate_result.republish_summary = {
+                **(candidate_result.republish_summary or {}),
+                "overwrite_guard": guard,
+                "outstanding_vendor_docs": missing_full_report_docs,
+            }
+        _record_republish_candidate_event_step(
+            recorder,
+            settings,
+            candidate_result,
+            site_id=recorder.site_id or site_id or "",
+            owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+            owner_email=p1_email or "",
+        )
+        return _finalize_pipeline_result(
+            candidate_result,
+            recorder,
+            gc=gc,
+            drive_folder_url=drive_folder_url,
+        )
+
     started_at, started_monotonic = recorder.start()
     completeness, completeness_result = _check_generated_report(site_title, doc_id, doc_url)
     if completeness_result is not None:
@@ -2678,6 +2819,7 @@ def process_site_pipeline(
     final_result = PipelineResult(
         site_title=site_title,
         status="report_created",
+        missing_docs=missing_full_report_docs,
         doc_id=doc_id,
         doc_url=doc_url,
         pending_count=completeness.get("pending_section_count", 0),
@@ -2741,7 +2883,10 @@ def post_pipeline_result(
 
     if result.status == "waiting_on_docs":
         sir = "SIR" not in result.missing_docs
-        insp = "Building Inspection" not in result.missing_docs
+        insp = not {
+            "Building Inspection",
+            "Vendor Building Inspection",
+        }.intersection(result.missing_docs)
         lines = [
             f"DD Check -- {result.site_title}",
             "Status: WAITING ON DOCUMENTS",
@@ -2778,6 +2923,17 @@ def post_pipeline_result(
             msg += f"\nTrace: {result.trace_url}"
         if result.pending_count:
             msg += f"\nPending fields: {result.pending_count}"
+        msg += "\n" + "\n".join(_pipeline_observability_lines(result))
+
+    elif result.status == "republish_candidate_created":
+        msg = (
+            f"DDR candidate created -- {result.site_title}\n"
+            "Active DDR was not overwritten because manual edits may be present.\n"
+            f"Candidate: {result.doc_url or '(no URL)'}"
+        )
+        republish_lines = _republish_observability_lines(result)
+        if republish_lines:
+            msg += "\n" + "\n".join(republish_lines)
         msg += "\n" + "\n".join(_pipeline_observability_lines(result))
 
     elif result.status == "report_incomplete":
@@ -2876,6 +3032,10 @@ def _republish_observability_lines(result: PipelineResult) -> list[str]:
     trigger_source = str(source_event.get("source_type") or "").strip()
     if trigger_source:
         lines.append(f"Trigger source: {trigger_source}")
+    if result.missing_docs:
+        lines.append(f"Outstanding vendor docs: {', '.join(result.missing_docs)}")
+    elif trigger_source:
+        lines.append("Outstanding vendor docs: None")
     if result.closed_open_questions:
         lines.append(f"Closed open items: {len(result.closed_open_questions)}")
         for item in result.closed_open_questions[:5]:

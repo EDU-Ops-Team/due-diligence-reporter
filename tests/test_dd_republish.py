@@ -24,7 +24,6 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from due_diligence_reporter.dd_republish import (
-    DD_REPUBLISH_FORCE_AFTER,
     REASON_BUILDING_INSPECTION,
     REASON_E_OCCUPANCY,
     REASON_RAYCON,
@@ -196,6 +195,22 @@ class TestVendorSIRArrival:
         assert outcome.pipeline_status == "generation_failed"
         assert state == {}
 
+    def test_candidate_pipeline_status_updates_dedup_state(self):
+        """Protected DDR candidates should not be recreated on every sweep."""
+        runner = _pipeline_runner_factory(status="republish_candidate_created")
+        state: dict = {}
+        outcome = _call_helper(
+            reason=REASON_VENDOR_SIR,
+            fingerprint="sir-file-1:2026-05-05T10:00:00Z",
+            state=state,
+            runner=runner,
+        )
+        assert outcome.decision == "republish"
+        assert outcome.pipeline_status == "republish_candidate_created"
+        assert (
+            "site-123:vendor_sir:sir-file-1:2026-05-05T10:00:00Z" in state
+        )
+
     def test_failed_pipeline_status_records_failure_event_when_requested(self):
         recorder = MagicMock(return_value={"status": "created", "rhodes_note_id": "NOTE1"})
         runner = _pipeline_runner_factory(status="generation_failed")
@@ -282,11 +297,11 @@ class TestVendorSIRArrival:
             "AutomationEvent v1\nKind: dd_report_republish_failed",
         )
 
-    def test_same_fingerprint_inside_force_after_skips(self):
-        """Same SIR fingerprint repeated within 12h → no diff, no republish."""
+    def test_same_fingerprint_skips_even_when_old(self):
+        """Same SIR fingerprint repeated later still means no diff, no republish."""
         runner = _pipeline_runner_factory()
         recent = (
-            datetime.now(UTC) - timedelta(hours=1)
+            datetime.now(UTC) - timedelta(days=3)
         ).isoformat()
         state = {
             "site-123:vendor_sir:sir-file-1:2026-05-05T10:00:00Z": recent,
@@ -405,18 +420,30 @@ class TestRayConRegression:
         assert outcome.decision == "skip_no_diff"
         runner.assert_not_called()
 
-    def test_raycon_after_force_after_window_re_fires(self):
-        """Past the 12h force-after, the same run_id republishes again."""
+    def test_raycon_same_fingerprint_skips_until_forced(self):
+        """Same RayCon run_id does not replay on scheduled sweeps."""
         runner = _pipeline_runner_factory()
-        old = (
-            datetime.now(UTC) - timedelta(hours=DD_REPUBLISH_FORCE_AFTER.total_seconds() / 3600 + 1)
-        ).isoformat()
+        old = (datetime.now(UTC) - timedelta(days=3)).isoformat()
         state = {"site-123:raycon_scenario:rc_run_abc": old}
         outcome = _call_helper(
             reason=REASON_RAYCON,
             fingerprint="rc_run_abc",
             state=state,
             runner=runner,
+        )
+        assert outcome.decision == "skip_no_diff"
+        runner.assert_not_called()
+
+    def test_raycon_same_fingerprint_can_be_operator_forced(self):
+        runner = _pipeline_runner_factory()
+        old = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+        state = {"site-123:raycon_scenario:rc_run_abc": old}
+        outcome = _call_helper(
+            reason=REASON_RAYCON,
+            fingerprint="rc_run_abc",
+            state=state,
+            runner=runner,
+            force=True,
         )
         assert outcome.decision == "republish"
         runner.assert_called_once()
@@ -812,7 +839,7 @@ class TestSaveStateAtomic:
 class TestRayConCompositeFingerprint:
     """When RayCon recomputes the same ``run_id`` but writes fresh content
     (different ``_drive_modified_time``), the helper must republish — not
-    silently skip for up to 12h. The fingerprint plumbed by
+    silently skip as a duplicate. The fingerprint plumbed by
     ``_republish_dd_report_if_present`` is composite
     (``run_id:drive_modified_time``) so a content change always changes
     the dedup key.
@@ -832,9 +859,8 @@ class TestRayConCompositeFingerprint:
 
         existing = {"id": "dd1", "name": "Alpha Keller DD Report"}
         # Pre-seed state as if a prior run with the same run_id but an
-        # older modifiedTime fingerprint had completed 1 hour ago — well
-        # inside the 12h force-after window. Without the modifiedTime
-        # suffix this would be a "deduped" no-op.
+        # older modifiedTime fingerprint had completed earlier. Without the
+        # modifiedTime suffix this would be a "deduped" no-op.
         recent = (
             datetime.now(UTC) - timedelta(hours=1)
         ).isoformat()
@@ -940,7 +966,7 @@ class TestLegacyFingerprintMigrationDedup:
 
     def test_legacy_entry_dedups_against_live_composite_key(self):
         runner = _pipeline_runner_factory()
-        # Recent enough to be inside the force_after window.
+        # Existing successful republish for the legacy key.
         recent = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         # Migrated legacy key — no `:drive_modified_time` suffix.
         legacy_state = {"site-123:raycon_scenario:rc_run_abc": recent}

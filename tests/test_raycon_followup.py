@@ -1421,7 +1421,7 @@ class TestDDReportRepublish:
     @patch("scripts.raycon_followup.process_site_pipeline")
     @patch("scripts.raycon_followup._find_existing_dd_report")
     def test_already_deduped_run_is_noop(self, mock_find_dd, mock_pipeline):
-        """Same (site_id, raycon_run_id) within force_after window → no-op."""
+        """Same (site_id, raycon_run_id) already republished is a no-op."""
         mock_find_dd.return_value = {
             "id": "dd1",
             "name": "Alpha Keller DD Report - 2026-05-01",

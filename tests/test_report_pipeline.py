@@ -114,6 +114,33 @@ def test_dd_report_event_frequency_cap_allows_after_two_business_days(tmp_path) 
     assert cap is None
 
 
+def test_dd_report_event_frequency_cap_allows_source_triggered_updates(tmp_path) -> None:
+    _write_prior_report_event_manifest(
+        tmp_path,
+        started_at="2026-05-29T14:00:00+00:00",
+    )
+    event = build_dd_report_summary_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        run_id="new-run",
+        doc_id="doc-1",
+        doc_url="https://docs.google.com/document/d/doc-1",
+        source_event={"source_type": "vendor_sir", "fingerprint": "sir-1"},
+        open_questions=[{"display_text": "Confirm zoning use from the vendor SIR"}],
+        created_at="2026-06-01T15:00:00+00:00",
+    )
+
+    cap = _dd_report_event_frequency_cap(
+        event,
+        site_title="Alpha Keller",
+        current_run_id="new-run",
+        now=datetime(2026, 6, 1, 15, 0, tzinfo=UTC),
+        manifest_root=tmp_path,
+    )
+
+    assert cap is None
+
+
 # ---------------------------------------------------------------------------
 # match_site_in_shared_cache
 # ---------------------------------------------------------------------------
@@ -473,8 +500,10 @@ class TestProcessSitePipeline:
         mock_agent,
         mock_completeness,
         mock_rhodes_note,
+        monkeypatch,
     ):
         """Source-triggered updates do not email until the full vendor set is present."""
+        monkeypatch.setenv("VENDOR_GATE_ENABLED", "1")
         mock_readiness.return_value = {
             "sir_found": True,
             "sir_vendor": True,
@@ -517,13 +546,21 @@ class TestProcessSitePipeline:
             {},
             "system prompt",
             _make_settings(),
-            source_event={"source_type": "vendor_sir", "fingerprint": "sir-1"},
+            source_event={
+                "source_type": "vendor_sir",
+                "fingerprint": "sir-1",
+                "file_name": "Alpha Keller Vendor SIR.pdf",
+            },
             force_regenerate=True,
             site_id="SITE1",
         )
 
         assert result.status == "report_created"
+        assert result.missing_docs == ["Vendor Building Inspection", "RayCon Scenario JSON"]
         mock_email.assert_not_called()
+        body = mock_rhodes_note.call_args.kwargs["body"]
+        assert "DDR republished due to: Vendor SIR (Alpha Keller Vendor SIR.pdf)" in body
+        assert "Outstanding vendor docs: Vendor Building Inspection, RayCon Scenario JSON" in body
         email_step = next(step for step in result.steps if step.step == "notify.email")
         assert email_step.status == "skipped"
         assert email_step.skipped_reason == (

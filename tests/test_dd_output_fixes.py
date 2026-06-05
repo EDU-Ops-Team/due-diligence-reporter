@@ -7,6 +7,7 @@ import io
 import os
 import re
 import zipfile
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -987,8 +988,13 @@ class TestAsyncOffloading:
             "id": "doc123",
             "webViewLink": "https://docs.google.com/document/d/doc123",
         }
-        gc.get_document.return_value = {"body": {}}
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-doc123"}
         gc.upload_file_to_folder.return_value = {"webViewLink": ""}
+        gc.update_file_app_properties.return_value = {
+            "id": "doc123",
+            "modifiedTime": "2026-04-02T10:01:00+00:00",
+            "appProperties": {},
+        }
 
         async def run_inline(func: Any, *args: Any, **kwargs: Any) -> Any:
             return func(*args, **kwargs)
@@ -1017,6 +1023,8 @@ class TestAsyncOffloading:
         assert gc.create_document.call_args.kwargs["folder_id"] == "m1-folder"
         gc.upload_file_to_folder.assert_not_called()
         mock_to_thread.assert_awaited_once()
+        assert result["document"]["role"] == "active"
+        gc.update_file_app_properties.assert_called_once()
 
     def test_create_dd_report_rejects_drive_root_folder_url(self) -> None:
         from due_diligence_reporter.server import create_dd_report
@@ -1044,7 +1052,26 @@ class TestAsyncOffloading:
             "id": "doc-existing",
             "name": "Alpha DD Report - 04/02/2026",
             "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            "modifiedTime": "2026-04-02T10:00:00+00:00",
         }]
+        gc.get_file_metadata.return_value = {
+            "id": "doc-existing",
+            "name": "Alpha DD Report - 04/02/2026",
+            "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            "modifiedTime": "2026-04-02T10:00:00+00:00",
+            "appProperties": {
+                "ddrAutomationRevisionId": "rev-before",
+            },
+        }
+        gc.get_document.side_effect = [
+            {"body": {}, "revisionId": "rev-before"},
+            {"body": {}, "revisionId": "rev-after"},
+        ]
+        gc.update_file_app_properties.return_value = {
+            "id": "doc-existing",
+            "modifiedTime": "2026-04-02T10:01:00+00:00",
+            "appProperties": {},
+        }
         gc.docs_service = MagicMock()
         gc.drive_service = MagicMock()
         gc.upload_file_to_folder.return_value = {"webViewLink": ""}
@@ -1069,7 +1096,7 @@ class TestAsyncOffloading:
             "due_diligence_reporter.server.build_dd_report_doc",
             return_value={"applied": 0, "found_tokens": [], "not_found_tokens": []},
         ):
-            mock_datetime.now.return_value.strftime.return_value = "04/02/2026"
+            mock_datetime.now.return_value = datetime(2026, 4, 2, 10, 1, tzinfo=UTC)
             result = asyncio.run(create_dd_report(
                 site_name="Alpha",
                 drive_folder_url="https://drive.google.com/drive/folders/folder123",
@@ -1078,9 +1105,153 @@ class TestAsyncOffloading:
 
         assert result["status"] == "success"
         assert result["document"]["id"] == "doc-existing"
+        assert result["document"]["role"] == "active"
         gc.create_document.assert_not_called()
         gc.upload_file_to_folder.assert_not_called()
         mock_clear.assert_called_once_with(gc, doc_id="doc-existing")
+        gc.update_file_app_properties.assert_called_once()
+
+    def test_create_dd_report_creates_candidate_when_existing_doc_has_no_watermark(self) -> None:
+        from due_diligence_reporter.server import create_dd_report
+
+        gc = MagicMock()
+        gc.list_subfolders.return_value = [{
+            "id": "m1-folder",
+            "name": "M1 - Acquire Property",
+            "webViewLink": "https://drive.google.com/drive/folders/m1-folder",
+        }]
+        gc.list_files_in_folder.return_value = [{
+            "id": "doc-existing",
+            "name": "Alpha DD Report - 04/02/2026",
+            "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            "modifiedTime": "2026-04-03T10:00:00+00:00",
+        }]
+        gc.get_file_metadata.return_value = {
+            "id": "doc-existing",
+            "name": "Alpha DD Report - 04/02/2026",
+            "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            "modifiedTime": "2026-04-03T10:00:00+00:00",
+            "appProperties": {},
+        }
+        gc.create_document.return_value = {
+            "id": "doc-candidate",
+            "webViewLink": "https://docs.google.com/document/d/doc-candidate",
+        }
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-candidate"}
+        gc.update_file_app_properties.return_value = {
+            "id": "doc-candidate",
+            "modifiedTime": "2026-04-03T10:01:00+00:00",
+            "appProperties": {},
+        }
+        gc.docs_service = MagicMock()
+        gc.drive_service = MagicMock()
+
+        async def run_inline(func: Any, *args: Any, **kwargs: Any) -> Any:
+            return func(*args, **kwargs)
+
+        with patch(
+            "due_diligence_reporter.server.asyncio.to_thread",
+            new=AsyncMock(side_effect=run_inline),
+        ), patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ), patch(
+            "due_diligence_reporter.server._clear_document_body",
+        ) as mock_clear, patch(
+            "due_diligence_reporter.server._normalize_report_replacements",
+            return_value=({}, [], [], {}, MagicMock()),
+        ), patch(
+            "due_diligence_reporter.server.build_dd_report_doc",
+            return_value={"applied": 0, "found_tokens": [], "not_found_tokens": []},
+        ):
+            result = asyncio.run(create_dd_report(
+                site_name="Alpha",
+                drive_folder_url="https://drive.google.com/drive/folders/folder123",
+                report_data={},
+            ))
+
+        assert result["status"] == "success"
+        assert result["document"]["id"] == "doc-candidate"
+        assert result["document"]["role"] == "candidate"
+        assert result["document"]["source_doc_id"] == "doc-existing"
+        assert result["republish_guard"]["status"] == "blocked"
+        assert result["republish_guard"]["reason"] == "missing_automation_revision"
+        mock_clear.assert_not_called()
+        gc.create_document.assert_called_once()
+        assert "Candidate" in gc.create_document.call_args.kwargs["name"]
+        gc.update_file_app_properties.assert_called_once()
+
+    def test_create_dd_report_creates_candidate_when_active_revision_changed(self) -> None:
+        from due_diligence_reporter.server import create_dd_report
+
+        gc = MagicMock()
+        gc.list_subfolders.return_value = [{
+            "id": "m1-folder",
+            "name": "M1 - Acquire Property",
+            "webViewLink": "https://drive.google.com/drive/folders/m1-folder",
+        }]
+        gc.list_files_in_folder.return_value = [{
+            "id": "doc-existing",
+            "name": "Alpha DD Report - 04/02/2026",
+            "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            "modifiedTime": "2026-04-03T10:00:00+00:00",
+        }]
+        gc.get_file_metadata.return_value = {
+            "id": "doc-existing",
+            "name": "Alpha DD Report - 04/02/2026",
+            "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            "modifiedTime": "2026-04-03T10:00:00+00:00",
+            "appProperties": {
+                "ddrAutomationRevisionId": "rev-before",
+            },
+        }
+        gc.get_document.side_effect = [
+            {"body": {}, "revisionId": "rev-human-edit"},
+            {"body": {}, "revisionId": "rev-candidate"},
+        ]
+        gc.create_document.return_value = {
+            "id": "doc-candidate",
+            "webViewLink": "https://docs.google.com/document/d/doc-candidate",
+        }
+        gc.update_file_app_properties.return_value = {
+            "id": "doc-candidate",
+            "modifiedTime": "2026-04-03T10:01:00+00:00",
+            "appProperties": {},
+        }
+        gc.docs_service = MagicMock()
+        gc.drive_service = MagicMock()
+
+        async def run_inline(func: Any, *args: Any, **kwargs: Any) -> Any:
+            return func(*args, **kwargs)
+
+        with patch(
+            "due_diligence_reporter.server.asyncio.to_thread",
+            new=AsyncMock(side_effect=run_inline),
+        ), patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ), patch(
+            "due_diligence_reporter.server._clear_document_body",
+        ) as mock_clear, patch(
+            "due_diligence_reporter.server._normalize_report_replacements",
+            return_value=({}, [], [], {}, MagicMock()),
+        ), patch(
+            "due_diligence_reporter.server.build_dd_report_doc",
+            return_value={"applied": 0, "found_tokens": [], "not_found_tokens": []},
+        ):
+            result = asyncio.run(create_dd_report(
+                site_name="Alpha",
+                drive_folder_url="https://drive.google.com/drive/folders/folder123",
+                report_data={},
+            ))
+
+        assert result["status"] == "success"
+        assert result["document"]["id"] == "doc-candidate"
+        assert result["document"]["role"] == "candidate"
+        assert result["republish_guard"]["status"] == "blocked"
+        assert result["republish_guard"]["reason"] == "content_revision_changed"
+        mock_clear.assert_not_called()
+        gc.create_document.assert_called_once()
 
     def test_create_dd_report_moves_legacy_root_report_to_m1(self) -> None:
         from due_diligence_reporter.server import create_dd_report
@@ -1097,8 +1268,27 @@ class TestAsyncOffloading:
                 "id": "doc-existing",
                 "name": "Alpha DD Report - 04/02/2026",
                 "webViewLink": "https://docs.google.com/document/d/doc-existing",
+                "modifiedTime": "2026-04-02T10:00:00+00:00",
             }],
         ]
+        gc.get_file_metadata.return_value = {
+            "id": "doc-existing",
+            "name": "Alpha DD Report - 04/02/2026",
+            "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            "modifiedTime": "2026-04-02T10:00:00+00:00",
+            "appProperties": {
+                "ddrAutomationRevisionId": "rev-before",
+            },
+        }
+        gc.get_document.side_effect = [
+            {"body": {}, "revisionId": "rev-before"},
+            {"body": {}, "revisionId": "rev-after"},
+        ]
+        gc.update_file_app_properties.return_value = {
+            "id": "doc-existing",
+            "modifiedTime": "2026-04-02T10:01:00+00:00",
+            "appProperties": {},
+        }
         gc.docs_service = MagicMock()
         gc.drive_service = MagicMock()
 
@@ -1122,7 +1312,7 @@ class TestAsyncOffloading:
             "due_diligence_reporter.server.build_dd_report_doc",
             return_value={"applied": 0, "found_tokens": [], "not_found_tokens": []},
         ):
-            mock_datetime.now.return_value.strftime.return_value = "04/02/2026"
+            mock_datetime.now.return_value = datetime(2026, 4, 2, 10, 1, tzinfo=UTC)
             result = asyncio.run(create_dd_report(
                 site_name="Alpha",
                 drive_folder_url="https://drive.google.com/drive/folders/site-root",
@@ -1131,8 +1321,10 @@ class TestAsyncOffloading:
 
         assert result["status"] == "success"
         assert result["document"]["folder_id"] == "m1-folder"
+        assert result["document"]["role"] == "active"
         gc.move_file_to_folder.assert_called_once_with("doc-existing", "m1-folder")
         gc.create_document.assert_not_called()
         mock_clear.assert_called_once_with(gc, doc_id="doc-existing")
+        gc.update_file_app_properties.assert_called_once()
 
 

@@ -82,7 +82,7 @@ class TestMissingRequiredDocsVendorGate:
         }
         missing = _missing_required_docs(readiness)
         assert "Vendor SIR" in missing
-        assert "Building Inspection" in missing
+        assert "Vendor Building Inspection" in missing
         assert "RayCon Scenario JSON" in missing
 
     def test_blocks_when_only_raycon_missing(self):

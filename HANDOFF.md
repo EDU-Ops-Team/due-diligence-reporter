@@ -1,5 +1,55 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-05 - Clean DDR Republish Notifications And Revision-Safe Updates
+
+Greg asked for the DDR process to be easier to understand: republish only when
+a vendor/source doc changes, say which doc caused the republish, show which
+vendor docs are still outstanding, keep current first/final email rules, and
+avoid overwriting human edits in the DDR Google Doc.
+
+Changed:
+
+- `src/due_diligence_reporter/dd_republish.py` now treats each
+  `(site_id, source_type, fingerprint)` as a one-time scheduled republish
+  trigger. The old 12-hour same-fingerprint replay is gone; `force=True`
+  remains the explicit operator recovery path.
+- Protected DDR candidate creation now counts as a dedupe success, so the
+  hourly vendor-doc sweep does not keep creating new candidate docs for the
+  same source fingerprint.
+- `src/due_diligence_reporter/server.py` now records the last automation-owned
+  Google Docs `revisionId` in Drive `appProperties`. Existing active DDRs are
+  rebuilt in place only when the current Docs revision still matches that
+  watermark. Missing/mismatched revisions create a candidate DDR instead of
+  clearing the active DDR.
+- `src/due_diligence_reporter/automation_event.py` and
+  `src/due_diligence_reporter/report_pipeline.py` now include the trigger
+  source and outstanding vendor-doc list in DDR republish notes. Source-triggered
+  update events bypass the open-ask frequency cap so the actual vendor-doc
+  republish is visible.
+- Candidate DDR events are recorded as decision-required Rhodes notes with the
+  active DDR URL, candidate DDR URL, trigger source, outstanding vendor docs,
+  and guard reason.
+- Workflow comments in `.github/workflows/inbox-scan.yml` and
+  `.github/workflows/raycon-followup.yml` now describe one-time fingerprint
+  dedupe instead of the old 12-hour replay window.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_report_pipeline.py tests/test_automation_event.py tests/test_vendor_gate.py tests/test_dd_output_fixes.py tests/test_dd_republish.py tests/test_vendor_doc_sweep.py tests/test_raycon_followup.py::TestDDReportRepublish tests/test_workflow_contracts.py --basetemp C:\tmp\ddr-republish-final-slice -q
+uv run ruff check src\due_diligence_reporter\google_client.py src\due_diligence_reporter\server.py src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\dd_republish.py src\due_diligence_reporter\vendor_doc_sweep.py tests\test_dd_output_fixes.py tests\test_report_pipeline.py tests\test_vendor_gate.py tests\test_dd_republish.py tests\test_vendor_doc_sweep.py tests\test_raycon_followup.py
+uv run mypy src\due_diligence_reporter\google_client.py src\due_diligence_reporter\server.py src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\dd_republish.py src\due_diligence_reporter\vendor_doc_sweep.py
+git diff --check
+```
+
+Results:
+
+- Touched test slice: 201 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in 6 source files.
+- `git diff --check`: passed; Git printed LF-to-CRLF working-copy warnings for
+  touched files.
+
 ## 2026-06-04 - DDR First/Final Email Gate
 
 Greg asked to stop emailing every interim DDR update. The desired behavior is:
