@@ -112,6 +112,13 @@ def test_portfolio_gap_snapshot_triggers_aadp_remediation_without_oauth() -> Non
     assert "trilogy-group/alpha-analysis-downstream-processing" in text
     assert "AADP_REMEDIATION_REPO_TOKEN" in text
     assert "AADP_DRIVE_PARENT_FOLDER_ID" in text
+    assert (
+        "name: Trigger AADP remediation for correctable gaps\n"
+        "        if: ${{ github.event_name != 'workflow_dispatch' || inputs.trigger_remediation != 'false' }}\n"
+        "        env:\n"
+        "          AADP_DRIVE_PARENT_FOLDER_ID: ${{ vars.AADP_DRIVE_PARENT_FOLDER_ID || secrets.AADP_DRIVE_PARENT_FOLDER_ID }}\n"
+        "          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}"
+    ) in text
     assert "scripts/run_aadp_portfolio_gap_remediation.py" in text
     assert "post_portfolio_gap_summary.py" in text
     assert "OAUTH_CLIENT_ID" not in text

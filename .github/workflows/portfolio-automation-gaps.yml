@@ -106,6 +106,7 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.trigger_remediation != 'false' }}
         env:
           AADP_DRIVE_PARENT_FOLDER_ID: ${{ vars.AADP_DRIVE_PARENT_FOLDER_ID || secrets.AADP_DRIVE_PARENT_FOLDER_ID }}
+          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
         run: |
           uv run python scripts/run_aadp_portfolio_gap_remediation.py \
             --snapshot portfolio-automation-gaps.json \
