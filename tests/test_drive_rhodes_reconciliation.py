@@ -183,6 +183,57 @@ def test_reconciliation_skips_site_without_m1_folder() -> None:
     assert result["rows"][0]["reason"] == "m1_folder_missing"
 
 
+def test_reconciliation_telemetry_emits_portfolio_action_when_no_source_docs() -> None:
+    gc = _gc(
+        [
+            {
+                "id": "notes-1",
+                "name": "Alpha Test notes.txt",
+                "mimeType": "text/plain",
+                "webViewLink": "https://drive/notes-1",
+            }
+        ]
+    )
+
+    result = run_drive_rhodes_reconciliation(
+        gc,
+        site_records=[_site()],
+        dry_run=True,
+    )
+    telemetry = build_drive_rhodes_reconciliation_telemetry(
+        result,
+        run_id="drive-rhodes-reconciliation-no-source",
+        started_at="2026-06-08T22:30:00+00:00",
+        finished_at="2026-06-08T22:31:00+00:00",
+        dry_run=True,
+        trigger="workflow_dispatch",
+    )
+
+    site_action = next(
+        action
+        for action in telemetry["action_records"]
+        if action["source_workflow"] == "portfolio-gaps"
+    )
+
+    assert result["rows"][0]["reason"] == "no_recognized_m1_files"
+    assert site_action["alert_type"] == "missing_current_milestone_documents"
+    assert site_action["site_id"] == "SITE1"
+    assert site_action["site_name"] == "Alpha Test"
+    assert site_action["status"] == "needs_review"
+    assert site_action["owning_workflow"] == "ddr"
+    assert site_action["workflow_owner"] == "drive-rhodes-reconciliation"
+    assert "did not find a recognized current-milestone source document" in (
+        site_action["action_taken"]
+    )
+    assert "collect or file the source documents" in site_action["review_reason"]
+    assert "reason=no_recognized_m1_files" in site_action["evidence_summary"]
+
+    rendered = json.dumps(telemetry)
+    assert "https://drive" not in rendered
+    assert "notes-1" not in rendered
+    assert "Alpha Test notes.txt" not in rendered
+
+
 def test_reconciliation_telemetry_emits_sanitized_action_records() -> None:
     rhodes = FakeRhodesClient()
     gc = _gc(

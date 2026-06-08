@@ -1,5 +1,39 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - Portfolio Document Gap No-Source Follow-Up Actions
+
+- Beads issue `ddr-wn7` tracks this slice.
+- Drive Rhodes Reconciliation now emits sanitized
+  `source_workflow=portfolio-gaps` ActionRecord rows when a site cannot be
+  remediated because DDR found no source document path to register:
+  missing site Drive folder URL, missing M1 folder, or no recognized M1 source
+  files.
+- These rows are `status=needs_review`, owned by DDR, and tell the operator to
+  file or repair the source documents/folders before rerunning reconciliation.
+- Rhodes ownership is still reserved for actual Rhodes readback failures after
+  a registration attempt.
+- Public telemetry still omits Drive URLs, Drive file IDs, raw filenames, and
+  raw dependency errors.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_drive_rhodes_reconciliation.py -q --basetemp C:\tmp\ddr-portfolio-no-source-actions-tests
+uv run pytest tests/test_drive_rhodes_reconciliation.py tests/test_workflow_contracts.py -q --basetemp C:\tmp\ddr-portfolio-no-source-actions-contract-tests
+uv run ruff check src/due_diligence_reporter/drive_rhodes_reconciliation.py tests/test_drive_rhodes_reconciliation.py
+uv run mypy src/due_diligence_reporter/drive_rhodes_reconciliation.py
+git diff --check
+```
+
+Results:
+
+- Focused reconciliation tests: 6 passed.
+- Contract pytest: 16 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in `drive_rhodes_reconciliation.py`.
+- `git diff --check`: no whitespace errors; expected Windows LF-to-CRLF
+  warnings only.
+
 ## 2026-06-08 - Site-Level Portfolio Document Gap Readback Actions
 
 - Beads issue `ddr-pw9` tracks this slice.

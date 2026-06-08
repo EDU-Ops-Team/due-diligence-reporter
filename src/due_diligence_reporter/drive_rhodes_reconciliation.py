@@ -20,6 +20,11 @@ logger = logging.getLogger("drive_rhodes_reconciliation")
 
 RECONCILIATION_SOURCE = "drive_rhodes_reconciliation"
 RECONCILIATION_WORKFLOW_ID = "drive-rhodes-reconciliation"
+SOURCE_DOCUMENT_FOLLOW_UP_REASONS = {
+    "missing_drive_folder_url",
+    "m1_folder_missing",
+    "no_recognized_m1_files",
+}
 
 
 def run_drive_rhodes_reconciliation(
@@ -502,10 +507,8 @@ def _portfolio_gap_document_action_records(
         if not status:
             continue
         review_required = status in {"queued", "needs_review", "blocked", "error"}
-        owner = "rhodes" if status == "needs_review" else "ddr"
-        if status == "error":
-            owner = "ddr"
-        review_reason = _portfolio_gap_document_review_reason(status)
+        owner = _portfolio_gap_document_owner(row, status)
+        review_reason = _portfolio_gap_document_review_reason(row, status)
         site_id = str(row.get("site_id") or "")
         site_title = str(row.get("site_title") or "") or "Unknown site"
         milestone = _milestone_label(str(row.get("rhodes_milestone") or ""))
@@ -539,7 +542,7 @@ def _portfolio_gap_document_action_records(
                     "Associate current-milestone source documents in Rhodes and rerun "
                     "Portfolio Gaps."
                 ),
-                "action_taken": _portfolio_gap_document_action_taken(status),
+                "action_taken": _portfolio_gap_document_action_taken(row, status),
                 "as_of": as_of,
                 "evidence_summary": _portfolio_gap_document_evidence(row, status),
                 "review_required": review_required,
@@ -567,10 +570,18 @@ def _portfolio_gap_document_action_status(
         return "queued"
     if status in {"error", "failed"}:
         return "error"
+    if status == "skipped" and row.get("reason") in SOURCE_DOCUMENT_FOLLOW_UP_REASONS:
+        return "needs_review"
     return ""
 
 
-def _portfolio_gap_document_action_taken(status: str) -> str:
+def _portfolio_gap_document_owner(row: dict[str, Any], status: str) -> str:
+    if status == "needs_review" and row.get("status") == "registered":
+        return "rhodes"
+    return "ddr"
+
+
+def _portfolio_gap_document_action_taken(row: dict[str, Any], status: str) -> str:
     if status == "completed":
         return (
             "Drive Rhodes Reconciliation registered a current-milestone source "
@@ -587,6 +598,11 @@ def _portfolio_gap_document_action_taken(status: str) -> str:
             "document that would be associated in Rhodes."
         )
     if status == "needs_review":
+        if row.get("status") == "skipped":
+            return (
+                "Drive Rhodes Reconciliation checked this site but did not find a "
+                "recognized current-milestone source document to associate in Rhodes."
+            )
         return (
             "Drive Rhodes Reconciliation registered a current-milestone source "
             "document, but Rhodes readback did not verify the association."
@@ -602,17 +618,35 @@ def _portfolio_gap_document_evidence(row: dict[str, Any], status: str) -> str:
     doc_type = str(row.get("rhodes_doc_type") or row.get("ddr_doc_type") or "document")
     readback = str(row.get("rhodes_readback_status") or "not_verified")
     status_text = str(row.get("status") or status)
+    reason = str(row.get("reason") or "")
+    reason_text = f"; reason={reason}" if reason else ""
     return (
         "Drive/Rhodes reconciliation readback reported "
         f"row_status={status_text}; rhodes_readback={readback}; "
-        f"doc_type={doc_type}; milestone={milestone}."
+        f"doc_type={doc_type}; milestone={milestone}{reason_text}."
     )
 
 
-def _portfolio_gap_document_review_reason(status: str) -> str:
+def _portfolio_gap_document_review_reason(row: dict[str, Any], status: str) -> str:
     if status == "queued":
         return "Dry-run mode did not mutate Rhodes; run reconciliation without dry-run."
     if status == "needs_review":
+        if row.get("status") == "skipped":
+            reason = str(row.get("reason") or "")
+            if reason == "missing_drive_folder_url":
+                return (
+                    "DDR could not find a site Drive folder link to inspect; add or repair "
+                    "the Drive folder reference, then rerun reconciliation."
+                )
+            if reason == "m1_folder_missing":
+                return (
+                    "DDR could not find the site M1 source folder; file current-milestone "
+                    "source documents in M1, then rerun reconciliation."
+                )
+            return (
+                "DDR found no recognized current-milestone source documents in the site "
+                "M1 folder; collect or file the source documents, then rerun reconciliation."
+            )
         return "Rhodes document readback did not verify the association."
     if status == "error":
         return "Drive/Rhodes reconciliation failed for this site; raw dependency detail is hidden."
