@@ -111,6 +111,10 @@ def mark_aadp_remediation_unavailable(
                 "action_requested": ACTION_LABELS[gap_type],
                 "action_taken": "" if review_required else summary,
                 "remediation_summary": summary,
+                "evidence_summary": (
+                    "Portfolio Gaps found this alert and attempted to route it to AADP; "
+                    "no AADP remediation or source-system readback has been verified yet."
+                ),
                 "review_required": review_required,
                 "review_reason": summary if review_required else "",
                 "error_summary": summary if status == "error" else "",
@@ -171,6 +175,10 @@ def mark_ddr_document_gap_actions(
                 "remediation_summary": (
                     "DDR flagged current-milestone source document follow-up; "
                     "no document readback has been verified yet."
+                ),
+                "evidence_summary": (
+                    "Portfolio Gaps found missing current-milestone document coverage; "
+                    "DDR has not verified Rhodes/Drive document association yet."
                 ),
                 "review_required": True,
                 "review_reason": (
@@ -235,6 +243,10 @@ def mark_rhodes_snapshot_read_actions(
                 "remediation_summary": (
                     "Portfolio Gaps could not read one or more Rhodes snapshot sections "
                     "for this site; no verified readback has been captured yet."
+                ),
+                "evidence_summary": (
+                    "Portfolio Gaps found a sanitized Rhodes snapshot read failure; "
+                    "no successful Rhodes snapshot readback has been verified yet."
                 ),
                 "review_required": True,
                 "review_reason": (

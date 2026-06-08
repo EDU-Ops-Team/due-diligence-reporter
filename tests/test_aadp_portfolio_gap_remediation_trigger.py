@@ -44,6 +44,10 @@ def test_unavailable_aadp_runner_marks_p1_and_drive_actions() -> None:
     assert result["sites"][0]["remediation_actions"][0]["owning_workflow"] == "aadp"
     assert result["sites"][0]["remediation_actions"][0]["status"] == "blocked"
     assert result["sites"][0]["remediation_actions"][0]["review_required"] is True
+    assert (
+        "no AADP remediation or source-system readback has been verified yet"
+        in result["sites"][0]["remediation_actions"][0]["evidence_summary"]
+    )
     assert result["sites"][1]["remediation_actions"][0]["gap_type"] == "missing_drive_folder"
 
 
@@ -87,6 +91,10 @@ def test_ddr_document_gap_actions_mark_current_milestone_docs() -> None:
     assert actions[0]["gap_type"] == "missing_current_milestone_documents"
     assert actions[0]["status"] == "needs_review"
     assert actions[0]["current_milestone"] == "Acquiring Property"
+    assert (
+        "DDR has not verified Rhodes/Drive document association yet"
+        in actions[0]["evidence_summary"]
+    )
     assert "lease" not in json.dumps(actions[0])
     assert "remediation_actions" not in result["sites"][1]
 
@@ -167,6 +175,10 @@ def test_rhodes_snapshot_read_actions_mark_snapshot_errors() -> None:
     assert actions[0]["status"] == "needs_review"
     assert actions[0]["current_milestone"] == "Acquiring Property"
     assert actions[0]["retryable"] is True
+    assert (
+        "no successful Rhodes snapshot readback has been verified yet"
+        in actions[0]["evidence_summary"]
+    )
     rendered = json.dumps(actions[0])
     assert "person@example.com" not in rendered
     assert "internal.example" not in rendered

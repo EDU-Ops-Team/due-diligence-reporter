@@ -1,5 +1,41 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - Portfolio Gaps Evidence Summary Emission
+
+- Beads issue `ddr-h44` tracks this slice.
+- Initial `uv run ddr portfolio-gaps --json` source action records already
+  emitted sanitized `evidence_summary` values; tests now lock those fields for
+  missing P1 DRI, missing Drive folder, current-milestone document gaps, and
+  snapshot read errors.
+- `scripts/run_aadp_portfolio_gap_remediation.py` now preserves the same
+  contract when it replaces source actions during enrichment:
+  - AADP unavailable actions explain that AADP remediation/readback has not
+    been verified.
+  - DDR document-gap actions explain that Rhodes/Drive document association has
+    not been verified.
+  - Rhodes snapshot-read actions explain that successful Rhodes snapshot
+    readback has not been verified.
+- Evidence text is sanitized and does not include raw document names, emails,
+  private URLs, Rhodes request IDs, or raw dependency payloads.
+
+Verification:
+
+```powershell
+$env:TEMP='C:\tmp'; $env:TMP='C:\tmp'; uv run pytest tests/test_portfolio_automation_gaps.py tests/test_aadp_portfolio_gap_remediation_trigger.py -q --basetemp C:\tmp\ddr-portfolio-evidence-tests
+uv run ruff check scripts/run_aadp_portfolio_gap_remediation.py tests/test_aadp_portfolio_gap_remediation_trigger.py tests/test_portfolio_automation_gaps.py
+uv run mypy scripts/run_aadp_portfolio_gap_remediation.py
+git diff --check
+```
+
+Results:
+
+- Focused Portfolio Gaps / remediation tests: 9 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in the enrichment wrapper; repo still prints the known unused
+  pyproject override note.
+- `git diff --check`: no whitespace errors; expected Windows LF-to-CRLF
+  warnings only.
+
 ## 2026-06-08 - Portfolio Gaps Source Action Routing
 
 - `uv run ddr portfolio-gaps --json` now emits initial source-owned

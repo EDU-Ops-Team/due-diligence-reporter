@@ -211,9 +211,15 @@ def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
     assert actions["missing_p1_dri"]["schema_version"] == "action_record.v1"
     assert actions["missing_p1_dri"]["owning_workflow"] == "aadp"
     assert actions["missing_p1_dri"]["status"] == "queued"
+    assert "current P1 DRI" in actions["missing_p1_dri"]["evidence_summary"]
     assert actions["missing_drive_folder"]["owning_workflow"] == "aadp"
+    assert "linked site Drive folder" in actions["missing_drive_folder"]["evidence_summary"]
     assert actions["missing_current_milestone_documents"]["owning_workflow"] == "ddr"
     assert actions["missing_current_milestone_documents"]["status"] == "needs_review"
+    assert (
+        "current-milestone source documents"
+        in actions["missing_current_milestone_documents"]["evidence_summary"]
+    )
     assert actions["open_automation_failures"]["owning_workflow"] == "ddr"
     assert actions["pending_review_tasks"]["owning_workflow"] == "rhodes"
     assert "propertyConditionAssessment" not in json.dumps(actions)
@@ -254,6 +260,7 @@ def test_portfolio_snapshot_routes_snapshot_read_errors_without_sensitive_detail
     assert actions["snapshot_read_errors"]["schema_version"] == "action_record.v1"
     assert actions["snapshot_read_errors"]["owning_workflow"] == "rhodes"
     assert actions["snapshot_read_errors"]["status"] == "needs_review"
+    assert "sanitized Rhodes snapshot read error" in actions["snapshot_read_errors"]["evidence_summary"]
     assert actions["snapshot_read_errors"]["retryable"] is True
     rendered = json.dumps(actions["snapshot_read_errors"])
     assert "person@example.com" not in rendered
