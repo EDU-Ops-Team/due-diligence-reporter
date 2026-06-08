@@ -72,6 +72,73 @@ def test_pipeline_run_serializes_to_json() -> None:
     assert parsed["quality"]["score"] == 100
 
 
+def test_pipeline_run_emits_action_record_for_failed_step() -> None:
+    err = PipelineError(
+        code="report_generation_failed",
+        message="Agent completed without creating a report",
+        retryable=True,
+        operator_action="ddr rerun --run-id run-1 --step report.generate",
+    )
+    run = PipelineRun(
+        run_id="run-1",
+        site_title="Alpha Keller",
+        site_id="SITE1",
+        started_at="2026-05-14T00:00:00+00:00",
+        ended_at="2026-05-14T00:00:02+00:00",
+        final_status="generation_failed",
+        steps=[_step("failed", step="report.generate", error=err)],
+    )
+
+    record = run.to_dict()["action_records"][0]
+
+    assert record["schema_version"] == "action_record.v1"
+    assert record["action_id"] == "ddr:run-1:step:report.generate"
+    assert record["source_workflow"] == "ddr"
+    assert record["owning_workflow"] == "ddr"
+    assert record["alert_type"] == "report_generation_failed"
+    assert record["site"] == {
+        "site_id": "SITE1",
+        "name": "Alpha Keller",
+        "current_milestone": "",
+    }
+    assert record["status"] == "error"
+    assert record["review"]["required"] is True
+    assert record["error"] == {
+        "summary": "Agent completed without creating a report",
+        "retryable": True,
+    }
+
+
+def test_pipeline_run_emits_sanitized_action_record_for_open_question() -> None:
+    run = PipelineRun(
+        run_id="run-1",
+        site_title="Alpha Keller",
+        site_id="SITE1",
+        started_at="2026-05-14T00:00:00+00:00",
+        ended_at="2026-05-14T00:00:02+00:00",
+        final_status="report_incomplete",
+        steps=[_step("succeeded", step="report.generate")],
+        open_questions=[
+            {
+                "open_question_id": "zoning-use",
+                "display_text": "Confirm zoning use from the vendor SIR",
+            }
+        ],
+    )
+
+    record = run.to_dict()["action_records"][0]
+    serialized = json.dumps(record)
+
+    assert record["action_id"] == "ddr:run-1:open_question:zoning_use"
+    assert record["alert_type"] == "open_verification_item"
+    assert record["status"] == "needs_review"
+    assert record["action_requested"] == (
+        "Resolve DDR verification item and rerun or republish if needed."
+    )
+    assert record["review"]["reason"] == "DDR open verification item needs operator review."
+    assert "Confirm zoning use" not in serialized
+
+
 def test_quality_caps_failed_step_without_operator_action() -> None:
     run = PipelineRun(
         run_id="run-1",

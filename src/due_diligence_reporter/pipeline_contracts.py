@@ -166,7 +166,119 @@ class PipelineRun:
             "manifest_url": self.manifest_url,
             "failed_step": failed_step_name(self.steps),
             "next_operator_action": next_operator_action(self.steps),
+            "action_records": action_records_for_run(self),
         }
+
+
+def action_records_for_run(run: PipelineRun) -> list[dict[str, Any]]:
+    """Return dashboard-ready ActionRecord v1 facts for operator-visible issues."""
+
+    records: list[dict[str, Any]] = []
+    for step in run.steps:
+        if step.status not in {"failed", "blocked"}:
+            continue
+        records.append(_step_action_record(run, step))
+    for index, item in enumerate(run.open_questions, start=1):
+        records.append(_open_question_action_record(run, item, index))
+    return records
+
+
+def _step_action_record(run: PipelineRun, step: StepResult) -> dict[str, Any]:
+    error = step.error
+    alert_type = error.code if error else step.step
+    status = "blocked" if step.status == "blocked" else "error"
+    return {
+        "schema_version": "action_record.v1",
+        "action_id": f"ddr:{run.run_id}:step:{step.step}",
+        "source_workflow": "ddr",
+        "owning_workflow": "ddr",
+        "alert_type": _action_token(alert_type),
+        "site": _site_payload(run),
+        "severity": "critical" if step.status == "blocked" else "high",
+        "status": status,
+        "action_requested": (
+            error.operator_action
+            if error and error.operator_action
+            else step.rerun_command
+            or f"Review DDR step {step.step}."
+        ),
+        "action_taken": (
+            f"DDR recorded {step.status} step {step.step}; "
+            "no completed remediation has been verified yet."
+        ),
+        "as_of": step.ended_at or run.ended_at or run.started_at,
+        "owner": {
+            "workflow_owner": "ddr",
+            "human_owner": "",
+        },
+        "evidence": {
+            "readback": f"DDR run manifest {run.run_id} recorded step {step.step}={step.status}.",
+        },
+        "review": {
+            "required": True,
+            "reason": error.message if error else f"DDR step {step.step} needs review.",
+            "review_url": "",
+        },
+        "error": {
+            "summary": error.message if error else "",
+            "retryable": bool(error.retryable) if error else True,
+        },
+    }
+
+
+def _open_question_action_record(
+    run: PipelineRun,
+    item: dict[str, Any],
+    index: int,
+) -> dict[str, Any]:
+    question_id = str(item.get("open_question_id") or item.get("id") or index)
+    return {
+        "schema_version": "action_record.v1",
+        "action_id": f"ddr:{run.run_id}:open_question:{_action_token(question_id)}",
+        "source_workflow": "ddr",
+        "owning_workflow": "ddr",
+        "alert_type": "open_verification_item",
+        "site": _site_payload(run),
+        "severity": "medium",
+        "status": "needs_review",
+        "action_requested": "Resolve DDR verification item and rerun or republish if needed.",
+        "action_taken": (
+            "DDR captured an unresolved verification item; no completed remediation "
+            "has been verified yet."
+        ),
+        "as_of": run.ended_at or run.started_at,
+        "owner": {
+            "workflow_owner": "ddr",
+            "human_owner": "",
+        },
+        "evidence": {
+            "readback": f"DDR run manifest {run.run_id} contains an open verification item.",
+        },
+        "review": {
+            "required": True,
+            "reason": "DDR open verification item needs operator review.",
+            "review_url": "",
+        },
+        "error": {
+            "summary": "",
+            "retryable": False,
+        },
+    }
+
+
+def _site_payload(run: PipelineRun) -> dict[str, str]:
+    return {
+        "site_id": run.site_id or "",
+        "name": run.site_title,
+        "current_milestone": "",
+    }
+
+
+def _action_token(value: str) -> str:
+    token = "".join(ch.lower() if ch.isalnum() else "_" for ch in value).strip("_")
+    while "__" in token:
+        token = token.replace("__", "_")
+    return token or "unknown"
 
 
 def failed_step_name(steps: list[StepResult]) -> str | None:
