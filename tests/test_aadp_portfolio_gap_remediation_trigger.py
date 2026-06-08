@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from scripts.run_aadp_portfolio_gap_remediation import (
     mark_aadp_remediation_unavailable,
+    mark_ddr_document_gap_actions,
     run_aadp_remediation,
 )
 
@@ -43,6 +44,83 @@ def test_unavailable_aadp_runner_marks_p1_and_drive_actions() -> None:
     assert result["sites"][0]["remediation_actions"][0]["status"] == "blocked"
     assert result["sites"][0]["remediation_actions"][0]["review_required"] is True
     assert result["sites"][1]["remediation_actions"][0]["gap_type"] == "missing_drive_folder"
+
+
+def test_ddr_document_gap_actions_mark_current_milestone_docs() -> None:
+    snapshot = {
+        "sites": [
+            {
+                "site_id": "SITE1",
+                "site_name": "Alpha Austin",
+                "gap_reasons": ["missing_current_milestone_documents"],
+                "required_documents": {
+                    "milestone": {"key": "acquireProperty", "label": "Acquiring Property"},
+                    "missing": ["lease"],
+                },
+            },
+            {
+                "site_id": "SITE2",
+                "site_name": "Alpha Tulsa",
+                "gap_reasons": ["missing_p1_dri"],
+            },
+        ]
+    }
+
+    result = mark_ddr_document_gap_actions(
+        snapshot,
+        as_of="2026-06-08T13:30:00+00:00",
+    )
+
+    assert result["document_gap_remediation"] == {
+        "source": "due-diligence-reporter",
+        "status": "needs_review",
+        "as_of": "2026-06-08T13:30:00+00:00",
+        "attempted_count": 1,
+        "needs_review_count": 1,
+    }
+    actions = result["sites"][0]["remediation_actions"]
+    assert len(actions) == 1
+    assert actions[0]["schema_version"] == "action_record.v1"
+    assert actions[0]["source_workflow"] == "portfolio-gaps"
+    assert actions[0]["owning_workflow"] == "ddr"
+    assert actions[0]["gap_type"] == "missing_current_milestone_documents"
+    assert actions[0]["status"] == "needs_review"
+    assert actions[0]["current_milestone"] == "Acquiring Property"
+    assert "lease" not in json.dumps(actions[0])
+    assert "remediation_actions" not in result["sites"][1]
+
+
+def test_ddr_document_gap_actions_preserve_aadp_actions() -> None:
+    snapshot = {
+        "sites": [
+            {
+                "site_id": "SITE1",
+                "site_name": "Alpha Austin",
+                "gap_reasons": [
+                    "missing_p1_dri",
+                    "missing_current_milestone_documents",
+                ],
+                "remediation_actions": [
+                    {
+                        "source": "alpha-analysis-downstream-processing",
+                        "gap_type": "missing_p1_dri",
+                        "status": "completed",
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = mark_ddr_document_gap_actions(
+        snapshot,
+        as_of="2026-06-08T13:30:00+00:00",
+    )
+
+    actions = result["sites"][0]["remediation_actions"]
+    assert [action["source"] for action in actions] == [
+        "alpha-analysis-downstream-processing",
+        "due-diligence-reporter",
+    ]
 
 
 def test_run_aadp_remediation_imports_checked_out_runner(tmp_path) -> None:
