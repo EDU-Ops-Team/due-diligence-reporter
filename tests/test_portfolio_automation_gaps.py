@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from due_diligence_reporter.portfolio_automation_gaps import (
@@ -166,6 +167,13 @@ class FakeRhodesPortfolioClient:
         return "DRIVE1", "https://drive.google.com/drive/folders/DRIVE1"
 
 
+class SnapshotReadErrorClient(FakeRhodesPortfolioClient):
+    def list_notes(self, *, site_id: str = "", **_: Any) -> list[dict[str, Any]]:
+        if site_id == "SITE2":
+            raise RhodesError("notes failed for person@example.com at https://internal.example")
+        return super().list_notes(site_id=site_id, **_)
+
+
 def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
     result = build_portfolio_automation_gap_snapshot(
         client=FakeRhodesPortfolioClient(),  # type: ignore[arg-type]
@@ -192,6 +200,24 @@ def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
     assert tulsa["required_documents"]["milestone"]["key"] == "acquireProperty"
     assert tulsa["open_automation_failures"][0]["kind"] == "raycon_followup_alert"
     assert tulsa["pending_review_tasks"][0]["task_id"] == "TASK1"
+    actions = {action["gap_type"]: action for action in tulsa["remediation_actions"]}
+    assert set(actions) == {
+        "missing_p1_dri",
+        "missing_drive_folder",
+        "missing_current_milestone_documents",
+        "open_automation_failures",
+        "pending_review_tasks",
+    }
+    assert actions["missing_p1_dri"]["schema_version"] == "action_record.v1"
+    assert actions["missing_p1_dri"]["owning_workflow"] == "aadp"
+    assert actions["missing_p1_dri"]["status"] == "queued"
+    assert actions["missing_drive_folder"]["owning_workflow"] == "aadp"
+    assert actions["missing_current_milestone_documents"]["owning_workflow"] == "ddr"
+    assert actions["missing_current_milestone_documents"]["status"] == "needs_review"
+    assert actions["open_automation_failures"]["owning_workflow"] == "ddr"
+    assert actions["pending_review_tasks"]["owning_workflow"] == "rhodes"
+    assert "propertyConditionAssessment" not in json.dumps(actions)
+    assert "floorPlan" not in json.dumps(actions)
 
     austin = result["sites"][1]
     assert austin["required_documents"]["missing"] == []
@@ -202,6 +228,7 @@ def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
         austin["latest_source_event_fingerprint"]
         == "edu-ops-email-router:owner_added_to_thread:gmail-1"
     )
+    assert "remediation_actions" not in austin
 
 
 def test_portfolio_snapshot_can_filter_clean_sites() -> None:
@@ -212,3 +239,22 @@ def test_portfolio_snapshot_can_filter_clean_sites() -> None:
 
     assert [site["site_id"] for site in result["sites"]] == ["SITE2"]
     assert result["totals"]["sites"] == 1
+
+
+def test_portfolio_snapshot_routes_snapshot_read_errors_without_sensitive_details() -> None:
+    result = build_portfolio_automation_gap_snapshot(
+        client=SnapshotReadErrorClient(),  # type: ignore[arg-type]
+        include_clean=False,
+    )
+
+    tulsa = result["sites"][0]
+    actions = {action["gap_type"]: action for action in tulsa["remediation_actions"]}
+
+    assert "snapshot_read_errors" in tulsa["gap_reasons"]
+    assert actions["snapshot_read_errors"]["schema_version"] == "action_record.v1"
+    assert actions["snapshot_read_errors"]["owning_workflow"] == "rhodes"
+    assert actions["snapshot_read_errors"]["status"] == "needs_review"
+    assert actions["snapshot_read_errors"]["retryable"] is True
+    rendered = json.dumps(actions["snapshot_read_errors"])
+    assert "person@example.com" not in rendered
+    assert "internal.example" not in rendered

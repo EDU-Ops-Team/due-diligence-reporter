@@ -50,6 +50,15 @@ ROUTER_EVENT_KINDS = {
     "owner_missing",
     "owner_review_required",
 }
+PORTFOLIO_GAPS_SOURCE = "portfolio-gaps"
+ACTION_LABELS = {
+    "missing_p1_dri": "Missing P1 DRI",
+    "missing_drive_folder": "Missing Drive folder",
+    "missing_current_milestone_documents": "Missing current-milestone documents",
+    "open_automation_failures": "Open automation failures",
+    "pending_review_tasks": "Pending review tasks",
+    "snapshot_read_errors": "Snapshot read errors",
+}
 
 
 def build_portfolio_automation_gap_snapshot(
@@ -69,6 +78,9 @@ def build_portfolio_automation_gap_snapshot(
         _build_site_snapshot(rhodes, site)
         for site in sites
     ]
+    generated_at = datetime.now(UTC).isoformat()
+    for row in rows:
+        _attach_source_action_records(row, as_of=generated_at)
     if not include_clean:
         rows = [row for row in rows if row["gap_count"] > 0 or row["errors"]]
 
@@ -76,7 +88,7 @@ def build_portfolio_automation_gap_snapshot(
     return {
         "status": "success",
         "system_of_record": "rhodes",
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": generated_at,
         "max_sites": max_sites,
         "include_clean": include_clean,
         "totals": _build_totals(rows),
@@ -457,6 +469,203 @@ def _build_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
         "open_automation_failures": sum(len(row["open_automation_failures"]) for row in rows),
         "pending_review_tasks": sum(len(row["pending_review_tasks"]) for row in rows),
     }
+
+
+def _attach_source_action_records(site: dict[str, Any], *, as_of: str) -> None:
+    actions = [
+        action
+        for action in (
+            _source_action_record(site, gap_type, as_of=as_of)
+            for gap_type in site.get("gap_reasons", [])
+        )
+        if action
+    ]
+    if actions:
+        site["remediation_actions"] = actions
+
+
+def _source_action_record(site: dict[str, Any], gap_type: Any, *, as_of: str) -> dict[str, Any]:
+    gap = str(gap_type)
+    label = ACTION_LABELS.get(gap, gap)
+    route = _action_route(gap, site)
+    if not route:
+        return {}
+    source = str(route["source"])
+    owner = str(route["owning_workflow"])
+    status = str(route["status"])
+    site_id = str(site.get("site_id") or "")
+    site_name = str(site.get("site_name") or "Unknown site")
+    return {
+        "schema_version": "action_record.v1",
+        "source": source,
+        "source_workflow": PORTFOLIO_GAPS_SOURCE,
+        "owning_workflow": owner,
+        "workflow_owner": str(route.get("workflow_owner") or owner),
+        "gap_type": gap,
+        "alert": label,
+        "status": status,
+        "as_of": as_of,
+        "site_id": site_id,
+        "site_name": site_name,
+        "current_milestone": _current_milestone_label(site),
+        "severity": str(route.get("severity") or "medium"),
+        "action_requested": str(route["action_requested"]),
+        "action_taken": str(route["action_taken"]),
+        "remediation_summary": str(route["action_taken"]),
+        "evidence_summary": str(route["evidence_summary"]),
+        "review_required": bool(route.get("review_required")),
+        "review_reason": str(route.get("review_reason") or ""),
+        "error_summary": str(route.get("error_summary") or ""),
+        "retryable": bool(route.get("retryable")),
+        "action_id": _action_id(site_id, site_name, gap),
+    }
+
+
+def _action_route(gap: str, site: dict[str, Any]) -> dict[str, Any]:
+    if gap == "missing_p1_dri":
+        return {
+            "source": "alpha-analysis-downstream-processing",
+            "owning_workflow": "aadp",
+            "status": "queued",
+            "severity": "high",
+            "action_requested": "Assign the site's P1 DRI in Rhodes.",
+            "action_taken": (
+                "Portfolio Gaps routed the missing P1 DRI alert to AADP; "
+                "awaiting AADP remediation telemetry and Rhodes readback."
+            ),
+            "evidence_summary": "Rhodes snapshot did not expose a current P1 DRI for this site.",
+            "review_required": False,
+            "retryable": True,
+        }
+    if gap == "missing_drive_folder":
+        return {
+            "source": "alpha-analysis-downstream-processing",
+            "owning_workflow": "aadp",
+            "status": "queued",
+            "severity": "high",
+            "action_requested": "Create or link the site's Google Drive folder in Rhodes.",
+            "action_taken": (
+                "Portfolio Gaps routed the missing Drive folder alert to AADP; "
+                "awaiting AADP remediation telemetry and Drive/Rhodes readback."
+            ),
+            "evidence_summary": "Rhodes snapshot did not expose a linked site Drive folder.",
+            "review_required": False,
+            "retryable": True,
+        }
+    if gap == "missing_current_milestone_documents":
+        return {
+            "source": "due-diligence-reporter",
+            "owning_workflow": "ddr",
+            "status": "needs_review",
+            "severity": "critical",
+            "action_requested": "Associate the missing current-milestone source documents and rerun source checks.",
+            "action_taken": (
+                "Portfolio Gaps routed the current-milestone document gap to DDR; "
+                "no verified document readback has been captured yet."
+            ),
+            "evidence_summary": (
+                "Rhodes missing-document snapshot reported current-milestone source "
+                "documents that are not present or associated."
+            ),
+            "review_required": True,
+            "review_reason": "Current-milestone source documents are missing or not associated in Rhodes/Drive.",
+            "retryable": False,
+        }
+    if gap == "snapshot_read_errors":
+        return {
+            "source": "rhodes",
+            "owning_workflow": "rhodes",
+            "status": "needs_review",
+            "severity": "high",
+            "action_requested": "Restore Portfolio Gaps Rhodes snapshot reads and rerun the portfolio scan.",
+            "action_taken": (
+                "Portfolio Gaps routed a Rhodes snapshot read error to Rhodes; "
+                "no verified readback has been captured yet."
+            ),
+            "evidence_summary": "Portfolio Gaps recorded a sanitized Rhodes snapshot read error for this site.",
+            "review_required": True,
+            "review_reason": "Confirm the Rhodes API can read this site snapshot, then rerun Portfolio Gaps.",
+            "error_summary": f"Portfolio Gaps recorded {len(site.get('errors') or [])} snapshot read error(s).",
+            "retryable": True,
+        }
+    if gap == "open_automation_failures":
+        owner = _owner_for_open_failures(site)
+        return {
+            "source": owner,
+            "owning_workflow": owner,
+            "status": "needs_review",
+            "severity": "high",
+            "action_requested": "Review the failed automation event and rerun or escalate the owning workflow.",
+            "action_taken": (
+                "Portfolio Gaps routed open automation failure follow-up to the owning workflow; "
+                "no verified rerun/readback has been captured yet."
+            ),
+            "evidence_summary": (
+                f"Rhodes snapshot reported {len(site.get('open_automation_failures') or [])} "
+                "open automation failure(s)."
+            ),
+            "review_required": True,
+            "review_reason": "A previous automation event is still failed, blocked, or decision-required.",
+            "retryable": True,
+        }
+    if gap == "pending_review_tasks":
+        return {
+            "source": "rhodes",
+            "owning_workflow": "rhodes",
+            "status": "needs_review",
+            "severity": "medium",
+            "action_requested": "Assign or close the pending automation review task in Rhodes.",
+            "action_taken": (
+                "Portfolio Gaps routed pending automation review task follow-up to Rhodes; "
+                "task closure readback has not been captured yet."
+            ),
+            "evidence_summary": (
+                f"Rhodes snapshot reported {len(site.get('pending_review_tasks') or [])} "
+                "pending automation review task(s)."
+            ),
+            "review_required": True,
+            "review_reason": "A Rhodes automation review task is still open for this site.",
+            "retryable": False,
+        }
+    return {}
+
+
+def _owner_for_open_failures(site: dict[str, Any]) -> str:
+    source_owners = {
+        "alpha-analysis-downstream-processing": "aadp",
+        "aadp": "aadp",
+        "due-diligence-reporter": "ddr",
+        "ddr": "ddr",
+        "edu-ops-email-router": "email-router",
+        "email-router": "email-router",
+        "final-lease-monitor": "final-lease",
+        "final-lease": "final-lease",
+    }
+    owners = {
+        source_owners.get(str(item.get("source") or ""), "")
+        for item in site.get("open_automation_failures", [])
+        if isinstance(item, dict)
+    }
+    owners.discard("")
+    return owners.pop() if len(owners) == 1 else PORTFOLIO_GAPS_SOURCE
+
+
+def _current_milestone_label(site: dict[str, Any]) -> str:
+    milestone = site.get("current_milestone")
+    if not isinstance(milestone, dict):
+        milestone = {}
+    return _first_str(milestone, "label", "key")
+
+
+def _action_id(site_id: str, site_name: str, gap: str) -> str:
+    site_key = _action_id_part(site_id or site_name or "unknown-site")
+    gap_key = _action_id_part(gap or "unknown-gap")
+    return f"portfolio-gaps:{site_key}:{gap_key}"
+
+
+def _action_id_part(value: str) -> str:
+    cleaned = "".join(char.lower() if char.isalnum() else "-" for char in value.strip())
+    return "-".join(part for part in cleaned.split("-") if part)[:80] or "unknown"
 
 
 def _user_ref(value: Any) -> dict[str, str]:

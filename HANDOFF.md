@@ -1,5 +1,48 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - Portfolio Gaps Source Action Routing
+
+- `uv run ddr portfolio-gaps --json` now emits initial source-owned
+  `action_record.v1` rows in each gapped site's `remediation_actions` list at
+  snapshot creation time.
+- The records route each alert to one owning workflow before later remediation
+  steps run:
+  - `missing_p1_dri` and `missing_drive_folder` -> AADP, status `queued`
+  - `missing_current_milestone_documents` -> DDR, status `needs_review`
+  - `snapshot_read_errors` -> Rhodes, status `needs_review`
+  - `open_automation_failures` -> the single detected source workflow when
+    unambiguous, otherwise Portfolio Gaps
+  - `pending_review_tasks` -> Rhodes
+- The existing AADP/DDR/Rhodes enrichment steps still replace matching
+  `remediation_actions` for the same gap/source with completed, blocked, or
+  error status after they attempt remediation.
+- Source action records intentionally do not include outstanding document names,
+  raw Rhodes errors, emails, or private URLs.
+
+Verification:
+
+```powershell
+$env:TEMP='C:\tmp'; $env:TMP='C:\tmp'; uv run pytest tests/test_portfolio_automation_gaps.py tests/test_aadp_portfolio_gap_remediation_trigger.py
+uv run ruff check src/due_diligence_reporter/portfolio_automation_gaps.py tests/test_portfolio_automation_gaps.py
+uv run mypy src/
+git diff --check
+```
+
+Results:
+
+- Focused Portfolio Gaps/remediation tests: 9 passed.
+- Scoped ruff: all checks passed.
+- Mypy: no issues in 44 source files.
+- `git diff --check`: no whitespace errors; expected Windows LF-to-CRLF
+  warnings only.
+- Full `uv run pytest tests --ignore=tests/_tmp` was attempted with
+  `TEMP/TMP=C:\tmp`: 1100 passed, 14 failed. The failures were pre-existing
+  outside this slice: assignment API signature tests, prompt compactness, and
+  sender-filter mocks for `build_site_summary`.
+- Full `uv run pytest` without ignores also hit pre-existing Windows
+  `PermissionError` collection failures in locked `pytest-cache-files-*`
+  directories, so those dirs were not deleted.
+
 ## 2026-06-08 - Alpha Phasing Plan DDR Integration
 
 Greg approved the default goal for `ddr-411`: integrate Alpha Phasing Plan as
