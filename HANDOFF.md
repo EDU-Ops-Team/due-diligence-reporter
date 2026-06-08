@@ -1,5 +1,44 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - DDR Document Gap Action State Queue
+
+- Beads issue `ddr-3mc` tracks this slice.
+- Portfolio Gaps current-milestone document gap actions now make the DDR route
+  explicit instead of stopping at generic review wording:
+  - `owning_workflow=ddr`
+  - `workflow_owner=drive-rhodes-reconciliation`
+  - `status=queued`
+  - `retryable=true`
+- The source action text points at DDR Drive Rhodes Reconciliation or
+  source-document follow-up, then a Portfolio Gaps rerun.
+- Completion is still not inferred. The action remains open until later
+  Rhodes/Drive readback proves the required documents are associated.
+- The AADP remediation enrichment wrapper now preserves the same contract and
+  emits a stable `action_id` for document gap rows.
+- Process docs now state that Portfolio Gaps emits ActionRecord telemetry for
+  document gaps, but closure requires later Rhodes/Drive readback evidence.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_aadp_portfolio_gap_remediation_trigger.py tests/test_portfolio_automation_gaps.py tests/test_workflow_contracts.py -q --basetemp C:\tmp\ddr-doc-gap-action-state-tests
+uv run ruff check scripts/run_aadp_portfolio_gap_remediation.py src/due_diligence_reporter/portfolio_automation_gaps.py tests/test_aadp_portfolio_gap_remediation_trigger.py tests/test_portfolio_automation_gaps.py
+uv run mypy scripts/run_aadp_portfolio_gap_remediation.py src/due_diligence_reporter/portfolio_automation_gaps.py
+git diff --check
+```
+
+Results:
+
+- Focused pytest: 18 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in the two source files; repo still prints the known unused
+  pyproject override note.
+- `git diff --check`: no whitespace errors; expected Windows LF-to-CRLF
+  warnings only.
+- Dashboard projection smoke in `workflow-telemetry-center` confirmed the new
+  row projects as `status=queued` with
+  `workflow_owner=drive-rhodes-reconciliation`.
+
 ## 2026-06-08 - Portfolio Gaps Evidence Summary Emission
 
 - Beads issue `ddr-h44` tracks this slice.

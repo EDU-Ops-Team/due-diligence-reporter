@@ -78,9 +78,10 @@ def test_ddr_document_gap_actions_mark_current_milestone_docs() -> None:
 
     assert result["document_gap_remediation"] == {
         "source": "due-diligence-reporter",
-        "status": "needs_review",
+        "status": "queued",
         "as_of": "2026-06-08T13:30:00+00:00",
         "attempted_count": 1,
+        "queued_count": 1,
         "needs_review_count": 1,
     }
     actions = result["sites"][0]["remediation_actions"]
@@ -88,13 +89,20 @@ def test_ddr_document_gap_actions_mark_current_milestone_docs() -> None:
     assert actions[0]["schema_version"] == "action_record.v1"
     assert actions[0]["source_workflow"] == "portfolio-gaps"
     assert actions[0]["owning_workflow"] == "ddr"
+    assert actions[0]["workflow_owner"] == "drive-rhodes-reconciliation"
     assert actions[0]["gap_type"] == "missing_current_milestone_documents"
-    assert actions[0]["status"] == "needs_review"
+    assert actions[0]["status"] == "queued"
+    assert actions[0]["action_id"] == (
+        "portfolio-gaps:site1:missing-current-milestone-documents"
+    )
     assert actions[0]["current_milestone"] == "Acquiring Property"
+    assert "Drive Rhodes Reconciliation" in actions[0]["action_requested"]
+    assert "Drive-to-Rhodes reconciliation path" in actions[0]["action_taken"]
     assert (
-        "DDR has not verified Rhodes/Drive document association yet"
+        "no later Rhodes/Drive readback has verified the documents are associated yet"
         in actions[0]["evidence_summary"]
     )
+    assert actions[0]["retryable"] is True
     assert "lease" not in json.dumps(actions[0])
     assert "remediation_actions" not in result["sites"][1]
 

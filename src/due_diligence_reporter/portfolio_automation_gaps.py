@@ -556,20 +556,26 @@ def _action_route(gap: str, site: dict[str, Any]) -> dict[str, Any]:
         return {
             "source": "due-diligence-reporter",
             "owning_workflow": "ddr",
-            "status": "needs_review",
+            "workflow_owner": "drive-rhodes-reconciliation",
+            "status": "queued",
             "severity": "critical",
-            "action_requested": "Associate the missing current-milestone source documents and rerun source checks.",
+            "action_requested": (
+                "Run DDR Drive Rhodes Reconciliation or source-document follow-up, "
+                "then rerun Portfolio Gaps."
+            ),
             "action_taken": (
-                "Portfolio Gaps routed the current-milestone document gap to DDR; "
-                "no verified document readback has been captured yet."
+                "Portfolio Gaps queued the current-milestone document gap for "
+                "DDR's Drive-to-Rhodes reconciliation path; completion is pending "
+                "verified document association readback."
             ),
             "evidence_summary": (
                 "Rhodes missing-document snapshot reported current-milestone source "
-                "documents that are not present or associated."
+                "documents that are not present or associated; no later Rhodes/Drive "
+                "readback has verified the documents are associated."
             ),
             "review_required": True,
             "review_reason": "Current-milestone source documents are missing or not associated in Rhodes/Drive.",
-            "retryable": False,
+            "retryable": True,
         }
     if gap == "snapshot_read_errors":
         return {

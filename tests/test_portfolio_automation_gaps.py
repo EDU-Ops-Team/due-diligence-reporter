@@ -215,11 +215,19 @@ def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
     assert actions["missing_drive_folder"]["owning_workflow"] == "aadp"
     assert "linked site Drive folder" in actions["missing_drive_folder"]["evidence_summary"]
     assert actions["missing_current_milestone_documents"]["owning_workflow"] == "ddr"
-    assert actions["missing_current_milestone_documents"]["status"] == "needs_review"
     assert (
-        "current-milestone source documents"
+        actions["missing_current_milestone_documents"]["workflow_owner"]
+        == "drive-rhodes-reconciliation"
+    )
+    assert actions["missing_current_milestone_documents"]["status"] == "queued"
+    assert "Drive Rhodes Reconciliation" in actions[
+        "missing_current_milestone_documents"
+    ]["action_requested"]
+    assert (
+        "no later Rhodes/Drive readback"
         in actions["missing_current_milestone_documents"]["evidence_summary"]
     )
+    assert actions["missing_current_milestone_documents"]["retryable"] is True
     assert actions["open_automation_failures"]["owning_workflow"] == "ddr"
     assert actions["pending_review_tasks"]["owning_workflow"] == "rhodes"
     assert "propertyConditionAssessment" not in json.dumps(actions)

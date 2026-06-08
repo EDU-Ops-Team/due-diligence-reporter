@@ -144,6 +144,7 @@ def mark_ddr_document_gap_actions(
         "status": "skipped",
         "as_of": as_of,
         "attempted_count": 0,
+        "queued_count": 0,
         "needs_review_count": 0,
     }
     for site in _list_dicts(enriched.get("sites")):
@@ -156,29 +157,33 @@ def mark_ddr_document_gap_actions(
                 "source": DDR_SOURCE,
                 "source_workflow": PORTFOLIO_GAPS_SOURCE,
                 "owning_workflow": "ddr",
-                "workflow_owner": "ddr",
+                "workflow_owner": "drive-rhodes-reconciliation",
                 "gap_type": gap_type,
                 "alert": label,
-                "status": "needs_review",
+                "status": "queued",
                 "as_of": as_of,
                 "site_id": _site_id(site),
                 "site_name": _site_name(site),
                 "current_milestone": _current_milestone_label(site),
+                "action_id": _action_id(_site_id(site), _site_name(site), gap_type),
                 "action_requested": (
-                    "Review or associate the missing current-milestone source "
-                    "documents for this site."
+                    "Run DDR Drive Rhodes Reconciliation or source-document follow-up, "
+                    "then rerun Portfolio Gaps."
                 ),
                 "action_taken": (
-                    "DDR flagged current-milestone source document follow-up; "
-                    "no document readback has been verified yet."
+                    "DDR queued the current-milestone document gap for the "
+                    "Drive-to-Rhodes reconciliation path; completion is pending "
+                    "verified document association readback."
                 ),
                 "remediation_summary": (
-                    "DDR flagged current-milestone source document follow-up; "
-                    "no document readback has been verified yet."
+                    "DDR queued the current-milestone document gap for the "
+                    "Drive-to-Rhodes reconciliation path; completion is pending "
+                    "verified document association readback."
                 ),
                 "evidence_summary": (
                     "Portfolio Gaps found missing current-milestone document coverage; "
-                    "DDR has not verified Rhodes/Drive document association yet."
+                    "no later Rhodes/Drive readback has verified the documents are "
+                    "associated yet."
                 ),
                 "review_required": True,
                 "review_reason": (
@@ -186,13 +191,14 @@ def mark_ddr_document_gap_actions(
                     "in Rhodes/Drive."
                 ),
                 "error_summary": "",
-                "retryable": False,
+                "retryable": True,
             }
             _replace_action(site, action)
+            remediation["queued_count"] = int(remediation["queued_count"]) + 1
             remediation["needs_review_count"] = int(remediation["needs_review_count"]) + 1
 
     if int(remediation["attempted_count"]):
-        remediation["status"] = "needs_review"
+        remediation["status"] = "queued"
     enriched["document_gap_remediation"] = remediation
     return enriched
 
@@ -299,6 +305,17 @@ def _replace_action(site: dict[str, Any], action: dict[str, Any]) -> None:
 
 def _action_key(action: dict[str, Any]) -> str:
     return _normalize_key(str(action.get("gap_type") or action.get("alert") or ""))
+
+
+def _action_id(site_id: str, site_name: str, gap: str) -> str:
+    site_key = _action_id_part(site_id or site_name or "unknown-site")
+    gap_key = _action_id_part(gap or "unknown-gap")
+    return f"portfolio-gaps:{site_key}:{gap_key}"
+
+
+def _action_id_part(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return normalized[:80] or "unknown"
 
 
 def _gap_reasons(site: dict[str, Any]) -> set[str]:
