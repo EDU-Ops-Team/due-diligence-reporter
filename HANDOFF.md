@@ -1,5 +1,20 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - Portfolio Gaps Uses Real AADP Firestore Database
+
+- The `Portfolio Automation Gaps` workflow now passes
+  `PIPELINE_STATUS_FIRESTORE_DATABASE=edu-ops-email-router` to the AADP
+  remediation runner.
+- Evidence: project `ap-automation-464623` has Firestore database
+  `edu-ops-email-router`; reads against `(default)` returned 404, so the old
+  env value could let AADP remediation run while source WorkflowRun persistence
+  silently fell back to memory.
+- `tests/test_workflow_contracts.py` now locks the corrected database value in
+  the Portfolio Gaps remediation workflow contract.
+
+Verification pending in this handoff entry until tests are rerun after the
+database-name patch.
+
 ## 2026-06-08 - Portfolio Gaps Passes AADP Telemetry Env
 
 - The `Portfolio Automation Gaps` workflow now passes AADP pipeline status
@@ -7,7 +22,7 @@
   step:
   - `PIPELINE_STATUS_STORE=firestore`
   - `PIPELINE_STATUS_FIRESTORE_PROJECT_ID=ap-automation-464623`
-  - `PIPELINE_STATUS_FIRESTORE_DATABASE=(default)`
+  - `PIPELINE_STATUS_FIRESTORE_DATABASE=edu-ops-email-router`
   - `PIPELINE_STATUS_FIRESTORE_COLLECTION=alphaAnalysisPipelineStatus`
   - `GCP_FIRESTORE_SERVICE_ACCOUNT_JSON`
 - The workflow emits a GitHub Actions warning if
