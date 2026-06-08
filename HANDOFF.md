@@ -1,5 +1,39 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - DDR ActionRecord v1 Manifest Emission
+
+Greg wants the dashboard to show not only workflow health, but the actual alert,
+owning workflow, action taken, status, and as-of time for operator-visible
+issues. DDR run manifests now emit sanitized `action_records` alongside the
+existing step and open-question summary.
+
+Changed:
+
+- `src/due_diligence_reporter/pipeline_contracts.py` now includes
+  `action_records` in `PipelineRun.to_dict()`.
+- Failed or blocked DDR steps emit an ActionRecord v1 row with the DDR run ID,
+  step, site, status, operator action, readback evidence, and retryability.
+- Open DDR verification items emit sanitized `needs_review` ActionRecord rows
+  without duplicating the open-question display text into the dashboard action
+  surface.
+- `tests/test_pipeline_contracts.py` covers failed-step and open-question
+  ActionRecord serialization.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_report_pipeline.py tests/test_pipeline_contracts.py -q --basetemp C:\tmp\ddr-action-records-report-pipeline-clean
+uv run ruff check src/due_diligence_reporter/pipeline_contracts.py tests/test_pipeline_contracts.py
+uv run mypy src/due_diligence_reporter/pipeline_contracts.py
+```
+
+Results:
+
+- Focused pytest: 62 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in `pipeline_contracts.py`; the repo still prints the known
+  unused pyproject override note.
+
 ## 2026-06-05 - Portfolio Gaps AADP Remediation Trigger
 
 Greg wanted Portfolio Gaps alerts to show what action agents took instead of
