@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import MagicMock
 
 from due_diligence_reporter.drive_rhodes_reconciliation import (
+    build_drive_rhodes_reconciliation_telemetry,
     run_drive_rhodes_reconciliation,
 )
 
@@ -21,7 +23,7 @@ class FakeRhodesClient:
         doc_type: str | None = None,
         milestone: str | None = None,
     ) -> dict[str, Any] | None:
-        for document in self.documents:
+        for document in [*self.documents, *self.registered_documents]:
             if document.get("driveFileId") == drive_file_id:
                 return document
         return None
@@ -104,7 +106,11 @@ def test_reconciliation_registers_unlinked_m1_source_docs() -> None:
     )
 
     assert result["registered"] == 1
+    assert result["registered_verified"] == 1
+    assert result["registered_unverified"] == 0
     assert result["skipped"] == 1
+    registered = [row for row in result["rows"] if row["status"] == "registered"][0]
+    assert registered["rhodes_readback_status"] == "verified"
     assert rhodes.registered_documents[0]["docType"] == "siteInvestigationReport"
     assert rhodes.registered_documents[0]["milestone"] == "acquireProperty"
     assert "Registered by DDR drive_rhodes_reconciliation." in (
@@ -175,3 +181,50 @@ def test_reconciliation_skips_site_without_m1_folder() -> None:
     assert result["recognized_files"] == 0
     assert result["skipped"] == 1
     assert result["rows"][0]["reason"] == "m1_folder_missing"
+
+
+def test_reconciliation_telemetry_emits_sanitized_action_records() -> None:
+    rhodes = FakeRhodesClient()
+    gc = _gc(
+        [
+            {
+                "id": "sir-1",
+                "name": "Alpha Test SIR.pdf",
+                "mimeType": "application/pdf",
+                "webViewLink": "https://drive/sir-1",
+            }
+        ]
+    )
+    result = run_drive_rhodes_reconciliation(
+        gc,
+        site_records=[_site()],
+        rhodes_client=rhodes,  # type: ignore[arg-type]
+    )
+
+    telemetry = build_drive_rhodes_reconciliation_telemetry(
+        result,
+        run_id="drive-rhodes-reconciliation-123",
+        started_at="2026-06-08T21:30:00+00:00",
+        finished_at="2026-06-08T21:31:00+00:00",
+        trigger="schedule",
+        workflow_run_url="https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/123",
+    )
+
+    assert telemetry["source_type"] == "drive_rhodes_reconciliation"
+    assert telemetry["workflow_id"] == "ddr"
+    assert telemetry["subworkflow_id"] == "drive-rhodes-reconciliation"
+    assert telemetry["status"] == "success"
+    assert telemetry["counts"]["registered_verified"] == 1
+    assert telemetry["steps"][3]["key"] == "readback_verification"
+    assert telemetry["steps"][3]["status"] == "success"
+    assert telemetry["action_records"][0]["schema_version"] == "action_record.v1"
+    assert telemetry["action_records"][0]["source_workflow"] == "ddr"
+    assert telemetry["action_records"][0]["workflow_owner"] == "drive-rhodes-reconciliation"
+    assert telemetry["action_records"][0]["workflow_owner"] == "drive-rhodes-reconciliation"
+    assert telemetry["action_records"][0]["status"] == "completed"
+    assert "Rhodes readback verified 1" in telemetry["action_records"][0]["evidence_summary"]
+
+    rendered = json.dumps(telemetry)
+    assert "https://drive" not in rendered
+    assert "sir-1" not in rendered
+    assert "Alpha Test SIR.pdf" not in rendered

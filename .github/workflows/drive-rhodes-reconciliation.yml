@@ -107,9 +107,21 @@ jobs:
         env:
           INPUT_SITE: ${{ inputs.site }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           args=()
           if [ "${INPUT_DRY_RUN:-}" = "true" ]; then args+=(--dry-run); fi
           if [ -n "${INPUT_SITE:-}" ]; then args+=(--site "$INPUT_SITE"); fi
-          uv run python scripts/drive_rhodes_reconciliation.py "${args[@]}"
+          mkdir -p reports/telemetry
+          uv run python scripts/drive_rhodes_reconciliation.py "${args[@]}" \
+            --telemetry-output reports/telemetry/drive-rhodes-reconciliation-telemetry.json \
+            --run-id "drive-rhodes-reconciliation-${{ github.run_id }}" \
+            --trigger "${{ github.event_name }}" \
+            --workflow-run-url "${GITHUB_RUN_URL}"
+
+      - name: Upload reconciliation telemetry artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: drive-rhodes-reconciliation-telemetry
+          path: reports/telemetry/drive-rhodes-reconciliation-telemetry.json

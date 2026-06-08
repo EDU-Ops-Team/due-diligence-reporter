@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 _project_root = Path(__file__).parent.parent
@@ -18,6 +20,7 @@ load_dotenv(_project_root / ".env")
 
 from due_diligence_reporter.config import get_settings  # noqa: E402
 from due_diligence_reporter.drive_rhodes_reconciliation import (  # noqa: E402
+    build_drive_rhodes_reconciliation_telemetry,
     run_drive_rhodes_reconciliation,
 )
 from due_diligence_reporter.google_client import GoogleClient  # noqa: E402
@@ -30,7 +33,16 @@ logging.basicConfig(
 logger = logging.getLogger("drive_rhodes_reconciliation")
 
 
-def main(*, dry_run: bool = False, site: str = "") -> None:
+def main(
+    *,
+    dry_run: bool = False,
+    site: str = "",
+    telemetry_output: str = "",
+    run_id: str = "",
+    trigger: str = "",
+    workflow_run_url: str = "",
+) -> None:
+    started_at = datetime.now(UTC).isoformat()
     settings = get_settings()
     gc = GoogleClient.from_oauth_config(
         client_config_path=str(settings.get_client_config_path()),
@@ -58,6 +70,7 @@ def main(*, dry_run: bool = False, site: str = "") -> None:
         dry_run=dry_run,
         rhodes_client=rhodes,
     )
+    finished_at = datetime.now(UTC).isoformat()
 
     print(
         "Drive Rhodes reconciliation: "
@@ -78,10 +91,38 @@ def main(*, dry_run: bool = False, site: str = "") -> None:
             f"{row.get('status')}:{row.get('reason') or '-'}"
         )
 
+    if telemetry_output.strip():
+        output_path = Path(telemetry_output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        telemetry = build_drive_rhodes_reconciliation_telemetry(
+            result,
+            run_id=run_id.strip() or f"drive-rhodes-reconciliation-{finished_at}",
+            started_at=started_at,
+            finished_at=finished_at,
+            dry_run=dry_run,
+            trigger=trigger,
+            workflow_run_url=workflow_run_url,
+        )
+        output_path.write_text(
+            json.dumps(telemetry, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--site", default="", help="Optional site id/name/address substring")
+    parser.add_argument("--telemetry-output", default="", help="Optional telemetry JSON output path")
+    parser.add_argument("--run-id", default="", help="Optional dashboard telemetry run id")
+    parser.add_argument("--trigger", default="", help="Optional trigger label for telemetry")
+    parser.add_argument("--workflow-run-url", default="", help="Optional GitHub Actions run URL")
     args = parser.parse_args()
-    main(dry_run=args.dry_run, site=args.site)
+    main(
+        dry_run=args.dry_run,
+        site=args.site,
+        telemetry_output=args.telemetry_output,
+        run_id=args.run_id,
+        trigger=args.trigger,
+        workflow_run_url=args.workflow_run_url,
+    )

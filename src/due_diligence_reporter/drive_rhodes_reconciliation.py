@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from .classifier import classify_document
@@ -18,6 +19,7 @@ from .rhodes import (
 logger = logging.getLogger("drive_rhodes_reconciliation")
 
 RECONCILIATION_SOURCE = "drive_rhodes_reconciliation"
+RECONCILIATION_WORKFLOW_ID = "drive-rhodes-reconciliation"
 
 
 def run_drive_rhodes_reconciliation(
@@ -49,6 +51,18 @@ def run_drive_rhodes_reconciliation(
         "sites_scanned": len(site_records),
         "recognized_files": sum(1 for row in rows if row.get("drive_file_id")),
         "registered": sum(1 for row in rows if row.get("status") == "registered"),
+        "registered_verified": sum(
+            1
+            for row in rows
+            if row.get("status") == "registered"
+            and row.get("rhodes_readback_status") == "verified"
+        ),
+        "registered_unverified": sum(
+            1
+            for row in rows
+            if row.get("status") == "registered"
+            and row.get("rhodes_readback_status") != "verified"
+        ),
         "already_registered": sum(
             1 for row in rows if row.get("status") == "already_registered"
         ),
@@ -189,7 +203,353 @@ def _reconcile_file(
         source=RECONCILIATION_SOURCE,
         client=rhodes_client,
     )
-    return {**base, **registration}
+    row = {**base, **registration}
+    if row.get("status") == "registered":
+        verified = _find_existing_document(
+            rhodes_client,
+            site_id=site_id,
+            drive_file_id=drive_file_id,
+            doc_type=mapping.doc_type,
+            milestone=mapping.milestone,
+        )
+        if verified is not None:
+            row["rhodes_readback_status"] = "verified"
+            row["rhodes_readback_document_id"] = _document_id(verified) or str(
+                row.get("rhodes_document_id") or ""
+            )
+        else:
+            row["rhodes_readback_status"] = "missing"
+    elif row.get("status") == "already_registered":
+        row["rhodes_readback_status"] = "verified"
+    return row
+
+
+def build_drive_rhodes_reconciliation_telemetry(
+    result: dict[str, Any],
+    *,
+    run_id: str,
+    started_at: str,
+    finished_at: str,
+    dry_run: bool = False,
+    trigger: str = "",
+    workflow_run_url: str = "",
+) -> dict[str, Any]:
+    """Build a sanitized dashboard telemetry artifact for reconciliation runs."""
+
+    counts = _telemetry_counts(result)
+    status = _telemetry_status(counts, dry_run=dry_run)
+    return {
+        "schema_version": "workflow_run.v1",
+        "source_type": "drive_rhodes_reconciliation",
+        "workflow_id": "ddr",
+        "workflow_name": "Due Diligence Reporter",
+        "subworkflow_id": RECONCILIATION_WORKFLOW_ID,
+        "subworkflow_name": "Drive Rhodes Reconciliation",
+        "run_id": run_id,
+        "source_ref": "Drive Rhodes Reconciliation",
+        "trigger": trigger or "manual",
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "status": status,
+        "summary": _telemetry_summary(counts, dry_run=dry_run),
+        "counts": counts,
+        "steps": _telemetry_steps(counts, dry_run=dry_run),
+        "action_records": _telemetry_action_records(
+            counts,
+            run_id=run_id,
+            as_of=finished_at,
+            dry_run=dry_run,
+        ),
+        "artifacts": [
+            {
+                "label": "GitHub Actions run",
+                "kind": "github_actions_run",
+                "uri": workflow_run_url,
+            }
+        ] if workflow_run_url else [],
+        "rows": [_public_row(row) for row in _list_dicts(result.get("rows"))],
+    }
+
+
+def _telemetry_counts(result: dict[str, Any]) -> dict[str, int]:
+    return {
+        "sites_scanned": _int(result.get("sites_scanned")),
+        "recognized_files": _int(result.get("recognized_files")),
+        "registered": _int(result.get("registered")),
+        "registered_verified": _int(result.get("registered_verified")),
+        "registered_unverified": _int(result.get("registered_unverified")),
+        "already_registered": _int(result.get("already_registered")),
+        "would_register": _int(result.get("would_register")),
+        "skipped": _int(result.get("skipped")),
+        "errors": _int(result.get("errors")),
+    }
+
+
+def _telemetry_status(counts: dict[str, int], *, dry_run: bool) -> str:
+    if counts["errors"] or counts["registered_unverified"]:
+        return "needs_review"
+    if dry_run and counts["would_register"]:
+        return "needs_review"
+    return "success"
+
+
+def _telemetry_summary(counts: dict[str, int], *, dry_run: bool) -> str:
+    mode = "dry-run scanned" if dry_run else "scanned"
+    return (
+        f"Drive Rhodes Reconciliation {mode} {counts['sites_scanned']} site(s), "
+        f"recognized {counts['recognized_files']} M1 source file(s), "
+        f"registered {counts['registered']} document(s), verified "
+        f"{counts['registered_verified']} new registration(s), found "
+        f"{counts['already_registered']} already linked document(s), and recorded "
+        f"{counts['errors']} error(s)."
+    )
+
+
+def _telemetry_steps(counts: dict[str, int], *, dry_run: bool) -> list[dict[str, Any]]:
+    registration_status = "success"
+    if counts["errors"]:
+        registration_status = "failed"
+    elif counts["registered_unverified"] or (dry_run and counts["would_register"]):
+        registration_status = "needs_review"
+    readback_status = "success" if not counts["registered_unverified"] else "needs_review"
+    return [
+        {
+            "key": "site_scan",
+            "label": "Rhodes sites scanned",
+            "status": "success",
+            "required": True,
+            "nominal": True,
+            "category": "rhodes",
+            "detail": f"sites={counts['sites_scanned']}",
+        },
+        {
+            "key": "m1_file_scan",
+            "label": "M1 source files scanned",
+            "status": "success",
+            "required": True,
+            "nominal": True,
+            "category": "drive",
+            "detail": f"recognized_files={counts['recognized_files']}",
+        },
+        {
+            "key": "rhodes_registration",
+            "label": "Rhodes document registration attempted",
+            "status": registration_status,
+            "required": True,
+            "nominal": registration_status == "success",
+            "category": "rhodes",
+            "detail": (
+                f"registered={counts['registered']}; already_registered="
+                f"{counts['already_registered']}; errors={counts['errors']}"
+            ),
+        },
+        {
+            "key": "readback_verification",
+            "label": "Rhodes document readback verified",
+            "status": readback_status,
+            "required": True,
+            "nominal": readback_status == "success",
+            "category": "rhodes",
+            "detail": (
+                f"verified={counts['registered_verified'] + counts['already_registered']}; "
+                f"unverified={counts['registered_unverified']}"
+            ),
+        },
+    ]
+
+
+def _telemetry_action_records(
+    counts: dict[str, int],
+    *,
+    run_id: str,
+    as_of: str,
+    dry_run: bool,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    if counts["registered_verified"]:
+        records.append(
+            _action_record(
+                run_id=run_id,
+                alert_type="document_registration_verified",
+                status="completed",
+                severity="low",
+                action_requested="Register recognized M1 source documents in Rhodes.",
+                action_taken=(
+                    "Drive Rhodes Reconciliation registered recognized M1 source "
+                    "documents and verified Rhodes document readback."
+                ),
+                evidence_summary=(
+                    f"Rhodes readback verified {counts['registered_verified']} new "
+                    "document registration(s) by Drive file ID."
+                ),
+                as_of=as_of,
+                retryable=False,
+            )
+        )
+    if counts["already_registered"]:
+        records.append(
+            _action_record(
+                run_id=run_id,
+                alert_type="document_already_registered",
+                status="skipped_already_corrected",
+                severity="low",
+                action_requested="Confirm recognized M1 source documents are linked in Rhodes.",
+                action_taken=(
+                    "Drive Rhodes Reconciliation found recognized M1 source documents "
+                    "already registered in Rhodes."
+                ),
+                evidence_summary=(
+                    f"Rhodes readback found {counts['already_registered']} existing "
+                    "document link(s) by Drive file ID."
+                ),
+                as_of=as_of,
+                retryable=False,
+            )
+        )
+    if counts["registered_unverified"]:
+        records.append(
+            _action_record(
+                run_id=run_id,
+                alert_type="document_registration_readback_missing",
+                status="needs_review",
+                severity="high",
+                owning_workflow="rhodes",
+                workflow_owner="rhodes",
+                action_requested=(
+                    "Verify Rhodes document registration readback for recently "
+                    "registered Drive files."
+                ),
+                action_taken=(
+                    "Drive Rhodes Reconciliation registered recognized M1 source "
+                    "documents, but follow-up Rhodes readback did not verify every "
+                    "document association."
+                ),
+                evidence_summary=(
+                    f"{counts['registered_unverified']} new registration(s) lacked "
+                    "verified Rhodes readback by Drive file ID."
+                ),
+                as_of=as_of,
+                retryable=True,
+                review_reason="Rhodes document readback did not verify every new registration.",
+            )
+        )
+    if dry_run and counts["would_register"]:
+        records.append(
+            _action_record(
+                run_id=run_id,
+                alert_type="document_registration_dry_run",
+                status="queued",
+                severity="medium",
+                action_requested="Run Drive Rhodes Reconciliation without dry-run mode.",
+                action_taken=(
+                    "Drive Rhodes Reconciliation dry-run found recognized M1 source "
+                    "documents that would be registered."
+                ),
+                evidence_summary=(
+                    f"Dry-run found {counts['would_register']} document(s) that still "
+                    "need Rhodes registration."
+                ),
+                as_of=as_of,
+                retryable=True,
+                review_reason="Dry-run mode did not mutate Rhodes.",
+            )
+        )
+    if counts["errors"]:
+        records.append(
+            _action_record(
+                run_id=run_id,
+                alert_type="document_registration_failed",
+                status="error",
+                severity="high",
+                action_requested="Repair the Drive/Rhodes reconciliation blocker and rerun.",
+                action_taken=(
+                    "Drive Rhodes Reconciliation hit sanitized Drive/Rhodes errors while "
+                    "trying to reconcile source documents."
+                ),
+                evidence_summary=(
+                    f"Reconciliation recorded {counts['errors']} sanitized error row(s); "
+                    "raw dependency details are hidden from dashboard telemetry."
+                ),
+                as_of=as_of,
+                retryable=True,
+                review_reason="One or more site or document registration rows failed.",
+            )
+        )
+    return records
+
+
+def _action_record(
+    *,
+    run_id: str,
+    alert_type: str,
+    status: str,
+    severity: str,
+    action_requested: str,
+    action_taken: str,
+    evidence_summary: str,
+    as_of: str,
+    owning_workflow: str = "ddr",
+    workflow_owner: str = RECONCILIATION_WORKFLOW_ID,
+    retryable: bool,
+    review_reason: str = "",
+) -> dict[str, Any]:
+    review_required = status in {"queued", "needs_review", "blocked", "error"}
+    return {
+        "schema_version": "action_record.v1",
+        "action_id": f"{RECONCILIATION_WORKFLOW_ID}:{_action_token(run_id)}:{alert_type}",
+        "source_workflow": "ddr",
+        "owning_workflow": owning_workflow,
+        "workflow_owner": workflow_owner,
+        "alert_type": alert_type,
+        "severity": severity,
+        "status": status,
+        "site_name": "Portfolio",
+        "site_id": "",
+        "current_milestone": "",
+        "action_requested": action_requested,
+        "action_taken": action_taken,
+        "as_of": as_of,
+        "evidence_summary": evidence_summary,
+        "review_required": review_required,
+        "review_reason": review_reason,
+        "error_summary": review_reason if status == "error" else "",
+        "retryable": retryable,
+    }
+
+
+def _public_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "site_id": str(row.get("site_id") or ""),
+        "site_title": str(row.get("site_title") or ""),
+        "ddr_doc_type": str(row.get("ddr_doc_type") or ""),
+        "rhodes_doc_type": str(row.get("rhodes_doc_type") or ""),
+        "rhodes_milestone": str(row.get("rhodes_milestone") or ""),
+        "status": str(row.get("status") or ""),
+        "reason": _safe_reason(str(row.get("reason") or "")),
+        "rhodes_readback_status": str(row.get("rhodes_readback_status") or ""),
+    }
+
+
+def _safe_reason(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_.:-]", "_", value)[:120]
+
+
+def _action_token(value: str) -> str:
+    token = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return token[:120] or "unknown"
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _list_dicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def _find_existing_document(

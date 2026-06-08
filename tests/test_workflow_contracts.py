@@ -97,6 +97,16 @@ def test_long_running_mutating_workflows_have_timeouts() -> None:
     assert "timeout-minutes: 60" in _workflow_text("drive-rhodes-reconciliation.yml")
 
 
+def test_drive_rhodes_reconciliation_uploads_dashboard_telemetry() -> None:
+    text = _workflow_text("drive-rhodes-reconciliation.yml")
+
+    assert "--telemetry-output reports/telemetry/drive-rhodes-reconciliation-telemetry.json" in text
+    assert '--run-id "drive-rhodes-reconciliation-${{ github.run_id }}"' in text
+    assert "Upload reconciliation telemetry artifact" in text
+    assert "name: drive-rhodes-reconciliation-telemetry" in text
+    assert "reports/telemetry/drive-rhodes-reconciliation-telemetry.json" in text
+
+
 def test_vendor_doc_republish_scheduled_runs_are_gated_by_repo_variable() -> None:
     text = _workflow_text("vendor-doc-republish-sweep.yml")
 

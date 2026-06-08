@@ -1,5 +1,48 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - Drive Rhodes Reconciliation Telemetry Artifact
+
+- Beads issue `ddr-aav` tracks this slice.
+- `drive-rhodes-reconciliation.yml` now emits a sanitized dashboard telemetry
+  artifact at `reports/telemetry/drive-rhodes-reconciliation-telemetry.json`
+  and uploads it as GitHub artifact `drive-rhodes-reconciliation-telemetry`.
+- `scripts/drive_rhodes_reconciliation.py` accepts `--telemetry-output`,
+  `--run-id`, `--trigger`, and `--workflow-run-url` so scheduled/manual runs
+  can publish a stable WorkflowRun v1 artifact.
+- `run_drive_rhodes_reconciliation` now records post-registration Rhodes
+  readback status:
+  - new registrations with readback become `registered_verified`
+  - new registrations without readback become `registered_unverified`
+  - already-linked files count as verified readback
+- The source artifact emits aggregate ActionRecord v1 rows for verified
+  registrations, already-corrected registrations, readback-missing rows,
+  dry-run would-register rows, and registration errors.
+- Public action rows use `source_workflow=ddr` for tab ownership and
+  `workflow_owner=drive-rhodes-reconciliation` for the responsible
+  subworkflow. This keeps reconciliation action status under the DDR tab while
+  preserving the subworkflow owner.
+- The public telemetry intentionally omits Drive URLs, Drive file IDs, raw
+  filenames, and raw dependency errors. Row-level details are reduced to site
+  identity, doc type/milestone, status, sanitized reason, and Rhodes readback
+  status.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_drive_rhodes_reconciliation.py tests/test_workflow_contracts.py -q --basetemp C:\tmp\ddr-drive-rhodes-telemetry-tests
+uv run ruff check src/due_diligence_reporter/drive_rhodes_reconciliation.py scripts/drive_rhodes_reconciliation.py tests/test_drive_rhodes_reconciliation.py tests/test_workflow_contracts.py
+uv run mypy src/due_diligence_reporter/drive_rhodes_reconciliation.py
+git diff --check
+```
+
+Results:
+
+- Focused pytest: 15 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in `drive_rhodes_reconciliation.py`.
+- `git diff --check`: no whitespace errors; expected Windows LF-to-CRLF
+  warnings only.
+
 ## 2026-06-08 - DDR Document Gap Action State Queue
 
 - Beads issue `ddr-3mc` tracks this slice.
