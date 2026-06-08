@@ -1,5 +1,51 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - Portfolio Snapshot Read Error Action Telemetry
+
+- Portfolio Gaps snapshot read errors were still reaching the dashboard as
+  `Awaiting action telemetry` because the enrichment wrapper only emitted
+  actions for AADP-owned P1 DRI / Drive-folder gaps and DDR-owned document
+  gaps.
+- `scripts/run_aadp_portfolio_gap_remediation.py` now emits Rhodes-owned
+  `action_record.v1` rows for `snapshot_read_errors`:
+  - `source_workflow=portfolio-gaps`
+  - `owning_workflow=rhodes`
+  - `workflow_owner=rhodes`
+  - status `needs_review`
+  - retryable `true`
+- Public action text is sanitized. Raw per-site read errors remain in the
+  source snapshot for troubleshooting, but the public action record only says
+  Portfolio Gaps could not read Rhodes snapshot sections and needs the Rhodes
+  read path restored plus a rerun.
+- Commit pushed to `main` as `b04d8b1`
+  (`Route portfolio snapshot read errors to Rhodes`).
+
+Verification:
+
+```powershell
+uv run pytest tests/test_aadp_portfolio_gap_remediation_trigger.py tests/test_workflow_contracts.py -q --basetemp C:\tmp\ddr-snapshot-read-actions-tests-2
+uv run ruff check scripts/run_aadp_portfolio_gap_remediation.py tests/test_aadp_portfolio_gap_remediation_trigger.py tests/test_workflow_contracts.py
+uv run mypy scripts/run_aadp_portfolio_gap_remediation.py
+git diff --check
+```
+
+Results:
+
+- Focused Portfolio Gaps / workflow contract tests: 15 passed.
+- Scoped ruff: all checks passed.
+- Scoped mypy: no issues in the enrichment wrapper; repo still prints the
+  known unused pyproject override note.
+- `git diff --check`: no whitespace errors; expected Windows LF-to-CRLF
+  warnings only.
+- Broader `uv run pytest` is not currently clean outside this slice:
+  collection hits stale temp cache directories with Windows permission errors;
+  `uv run pytest tests --ignore=tests/_tmp` then reports 13 unrelated existing
+  failures in assignment and sender-filter tests.
+- Broader `uv run ruff check .` is not currently clean outside this slice due
+  to unrelated existing lint in `scripts/reprocess_mislabeled.py`,
+  `tests/test_cds_verification.py`, `tests/test_opening_plan.py`, and
+  `tests/test_sender_filter.py`.
+
 ## 2026-06-08 - Portfolio Gaps Uses Real AADP Firestore Database
 
 - The `Portfolio Automation Gaps` workflow now passes
