@@ -1,5 +1,41 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - Portfolio Gaps Passes AADP Telemetry Env
+
+- The `Portfolio Automation Gaps` workflow now passes AADP pipeline status
+  Firestore settings into the `Trigger AADP remediation for correctable gaps`
+  step:
+  - `PIPELINE_STATUS_STORE=firestore`
+  - `PIPELINE_STATUS_FIRESTORE_PROJECT_ID=ap-automation-464623`
+  - `PIPELINE_STATUS_FIRESTORE_DATABASE=(default)`
+  - `PIPELINE_STATUS_FIRESTORE_COLLECTION=alphaAnalysisPipelineStatus`
+  - `GCP_FIRESTORE_SERVICE_ACCOUNT_JSON`
+- The workflow emits a GitHub Actions warning if
+  `GCP_FIRESTORE_SERVICE_ACCOUNT_JSON` is not configured, because AADP
+  remediation would still run but source WorkflowRun facts would not persist to
+  the dashboard-readable Firestore store.
+- Verified current repo secrets include `GCP_FIRESTORE_SERVICE_ACCOUNT_JSON`,
+  so the scheduled workflow should have the credential once this change is on
+  `main`.
+- `tests/test_workflow_contracts.py` now locks the AADP telemetry env contract
+  for the Portfolio Gaps remediation step.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_workflow_contracts.py -q --basetemp C:\tmp\ddr-aadp-telemetry-contract
+uv run ruff check tests\test_workflow_contracts.py
+git diff --check
+gh secret list -R GFooteGK1/due-diligence-reporter
+```
+
+Results:
+
+- Workflow contract tests: 8 passed.
+- Ruff: all checks passed.
+- `git diff --check`: passed with expected Windows LF-to-CRLF notices only.
+- GitHub secret list confirmed `GCP_FIRESTORE_SERVICE_ACCOUNT_JSON` exists.
+
 ## 2026-06-08 - Portfolio Document Gap Action Telemetry
 
 Portfolio Gaps already routes missing P1 DRI and Drive-folder alerts to AADP,

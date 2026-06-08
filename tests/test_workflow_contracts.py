@@ -117,8 +117,14 @@ def test_portfolio_gap_snapshot_triggers_aadp_remediation_without_oauth() -> Non
         "        if: ${{ github.event_name != 'workflow_dispatch' || inputs.trigger_remediation != 'false' }}\n"
         "        env:\n"
         "          AADP_DRIVE_PARENT_FOLDER_ID: ${{ vars.AADP_DRIVE_PARENT_FOLDER_ID || secrets.AADP_DRIVE_PARENT_FOLDER_ID }}\n"
+        "          GCP_FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}\n"
+        "          PIPELINE_STATUS_FIRESTORE_COLLECTION: alphaAnalysisPipelineStatus\n"
+        "          PIPELINE_STATUS_FIRESTORE_DATABASE: (default)\n"
+        "          PIPELINE_STATUS_FIRESTORE_PROJECT_ID: ap-automation-464623\n"
+        "          PIPELINE_STATUS_STORE: firestore\n"
         "          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}"
     ) in text
+    assert "AADP telemetry not persisted" in text
     assert "scripts/run_aadp_portfolio_gap_remediation.py" in text
     assert "post_portfolio_gap_summary.py" in text
     assert "OAUTH_CLIENT_ID" not in text
