@@ -2558,6 +2558,33 @@ def process_site_pipeline(
     recorder.record("readiness.check", started_at, started_monotonic, "succeeded")
     _record_sir_learning_review_step(recorder, sir_learning_review)
 
+    if source_event and force_regenerate and missing_full_report_docs:
+        waiting_result = PipelineResult(
+            site_title=site_title,
+            status="waiting_on_docs",
+            missing_docs=missing_full_report_docs,
+        )
+        _set_open_question_state(
+            waiting_result,
+            trace=None,
+            run_id=recorder.run_id,
+            source_event=source_event,
+            open_questions_before=open_questions_before,
+            validated=False,
+        )
+        recorder.record(
+            "report.generate",
+            *recorder.start(),
+            "skipped",
+            skipped_reason="source_triggered_republish_waiting_on_docs",
+        )
+        return _finalize_pipeline_result(
+            waiting_result,
+            recorder,
+            gc=gc,
+            drive_folder_url=drive_folder_url,
+        )
+
     if rhodes_owner_context is None and not (p1_name and p1_email):
         started_at, started_monotonic = recorder.start()
         rhodes_owner_context = _resolve_rhodes_owner_for_pipeline(site_title, site_address)

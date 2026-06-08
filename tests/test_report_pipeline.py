@@ -493,7 +493,7 @@ class TestProcessSitePipeline:
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline._email_pipeline_report")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
-    def test_interim_update_skips_email_when_vendor_inputs_remain_missing(
+    def test_source_triggered_republish_waits_when_vendor_inputs_remain_missing(
         self,
         mock_readiness,
         mock_email,
@@ -502,7 +502,7 @@ class TestProcessSitePipeline:
         mock_rhodes_note,
         monkeypatch,
     ):
-        """Source-triggered updates do not email until the full vendor set is present."""
+        """Source-triggered updates wait until the full vendor set is present."""
         monkeypatch.setenv("VENDOR_GATE_ENABLED", "1")
         mock_readiness.return_value = {
             "sir_found": True,
@@ -555,17 +555,27 @@ class TestProcessSitePipeline:
             site_id="SITE1",
         )
 
-        assert result.status == "report_created"
+        assert result.status == "waiting_on_docs"
         assert result.missing_docs == ["Vendor Building Inspection", "RayCon Scenario JSON"]
+        mock_agent.assert_not_called()
+        mock_completeness.assert_not_called()
         mock_email.assert_not_called()
-        body = mock_rhodes_note.call_args.kwargs["body"]
-        assert "DDR republished due to: Vendor SIR (Alpha Keller Vendor SIR.pdf)" in body
-        assert "Outstanding vendor docs: Vendor Building Inspection, RayCon Scenario JSON" in body
-        email_step = next(step for step in result.steps if step.step == "notify.email")
-        assert email_step.status == "skipped"
-        assert email_step.skipped_reason == (
-            "interim DDR update; full vendor input set not present"
+        mock_rhodes_note.assert_not_called()
+        generate_step = next(step for step in result.steps if step.step == "report.generate")
+        assert generate_step.status == "skipped"
+        assert generate_step.skipped_reason == (
+            "source_triggered_republish_waiting_on_docs"
         )
+        assert result.republish_summary == {
+            "trigger_source": "vendor_sir",
+            "closed_open_item_count": 0,
+            "still_open_item_count": 0,
+            "outstanding_vendor_docs": [
+                "Vendor Building Inspection",
+                "RayCon Scenario JSON",
+            ],
+        }
+        assert not any(step.step == "notify.email" for step in result.steps)
 
     @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
     @patch("due_diligence_reporter.server.check_report_completeness")

@@ -97,6 +97,15 @@ def test_long_running_mutating_workflows_have_timeouts() -> None:
     assert "timeout-minutes: 60" in _workflow_text("drive-rhodes-reconciliation.yml")
 
 
+def test_vendor_doc_republish_scheduled_runs_are_gated_by_repo_variable() -> None:
+    text = _workflow_text("vendor-doc-republish-sweep.yml")
+
+    assert (
+        "if: ${{ github.event_name != 'schedule' || "
+        "vars.VENDOR_DOC_REPUBLISH_SWEEP_ENABLED == 'true' }}"
+    ) in text
+
+
 def test_portfolio_gap_snapshot_triggers_aadp_remediation_without_oauth() -> None:
     text = _workflow_text("portfolio-automation-gaps.yml")
 

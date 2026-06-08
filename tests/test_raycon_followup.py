@@ -17,6 +17,7 @@ from scripts.raycon_followup import (
     _find_block_plan,
     _find_published_doc,
     _fresh_dedup_alerts,
+    _is_failed_scenario_alert,
     _load_site_summaries,
     _mark_notified_alerts,
     _notify_raycon_followup_rows,
@@ -522,6 +523,48 @@ class TestFailedScenarioAlerts:
         assert dispatch_state["bp_file_1"]["job_id"] == "job-retry"
         mock_post.assert_called_once()
         mock_save.assert_not_called()
+
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_callback_failed_status_does_not_dispatch_recovery(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "validation_failed",
+            "raycon_run_id": "rc_callback",
+            "validation": {
+                "passed": False,
+                "errors": ["capacity count is not defensible"],
+            },
+            "_drive_modified_time": "2026-06-08T15:18:41Z",
+        }
+
+        dispatch_state: dict = {}
+        row = _process_site(
+            MagicMock(),
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+            retry_failed_scenarios=False,
+        )
+
+        assert "raycon run failed" in row["alert"]
+        assert row["dispatch_skipped"] == "callback_terminal_status"
+        assert row["block_plan_file_id"] == "bp_file_1"
+        assert row["raycon_run_id"] == "rc_callback"
+        assert dispatch_state == {}
+        mock_post.assert_not_called()
 
     @patch("scripts.raycon_followup.post_raycon_job")
     @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
@@ -1163,9 +1206,26 @@ class TestNotificationDedupState:
 
         assert new_state["Owner Mentioned"] == now.isoformat()
         assert new_state["Chat Posted"] == now.isoformat()
+        assert new_state["Owner Failed Chat Posted"] == now.isoformat()
         assert "Owner Mentioned Without Note ID" not in new_state
-        assert "Owner Failed Chat Posted" not in new_state
         assert "Not Delivered" not in new_state
+
+
+class TestAlertClassification:
+    def test_failed_scenario_alerts_are_not_stuck_site_alerts(self):
+        assert _is_failed_scenario_alert(
+            {
+                "site": "Alpha Beethoven",
+                "alert": "raycon run failed: capacity count is not defensible",
+                "raycon_status": "validation_failed",
+            }
+        )
+        assert not _is_failed_scenario_alert(
+            {
+                "site": "Alpha Keller",
+                "alert": "no raycon_scenario.json after 1:00:00",
+            }
+        )
 
 
 class TestRayConFollowupEventNotification:
@@ -1305,7 +1365,7 @@ class TestRayConFollowupEventNotification:
 
     @patch("scripts.raycon_followup._post_chat")
     @patch("scripts.raycon_followup.add_rhodes_site_note")
-    def test_owner_note_failure_remains_delivery_failure_even_with_chat(
+    def test_owner_note_failure_with_chat_fallback_counts_as_delivered(
         self,
         mock_add_note,
         mock_post_chat,
@@ -1339,7 +1399,7 @@ class TestRayConFollowupEventNotification:
 
         mock_add_note.assert_called_once()
         mock_post_chat.assert_called_once()
-        assert failures == rows
+        assert failures == []
         assert rows[0]["raycon_followup_event"]["google_chat"] == {
             "status": "posted"
         }

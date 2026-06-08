@@ -106,7 +106,9 @@ LEGACY_DD_REPUBLISH_STATE_PATH = (
 # force-after parameter. Normal scheduled dedupe is now permanent per
 # ``(site_id, reason, fingerprint)`` until ``force=True`` is supplied.
 DD_REPUBLISH_FORCE_AFTER = timedelta.max
-DEDUP_SUCCESS_STATUSES = frozenset({"report_created", "republish_candidate_created"})
+DEDUP_SUCCESS_STATUSES = frozenset(
+    {"report_created", "republish_candidate_created", "waiting_on_docs"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -617,9 +619,10 @@ def maybe_republish_dd_report(
             failure_event_recorder=failure_event_recorder,
         )
 
-    # Record successful report/candidate creation as the dedup boundary.
-    # Failed, incomplete, or still-waiting runs need another chance on a
-    # later scan with the same fingerprint.
+    # Record successful report/candidate creation, or an intentional
+    # source-triggered waiting state, as the dedup boundary. Failed and
+    # incomplete runs still need another chance on a later scan with the
+    # same fingerprint.
     if result.status in DEDUP_SUCCESS_STATUSES:
         republish_state[state_key] = now.isoformat()
     logger.info(

@@ -328,8 +328,6 @@ def _raycon_followup_notification_succeeded(row: dict[str, Any]) -> bool:
         and str(event_status.get("rhodes_note_id") or "").strip()
     ):
         return True
-    if _row_has_site_owner(row):
-        return False
     google_chat = event_status.get("google_chat")
     return isinstance(google_chat, dict) and google_chat.get("status") == "posted"
 
@@ -371,6 +369,12 @@ def _error_alert_dedup_key(row: dict[str, Any]) -> str:
     if not site or not message:
         return ""
     return f"{site}:error:{message[:250]}"
+
+
+def _is_failed_scenario_alert(row: dict[str, Any]) -> bool:
+    status = str(row.get("raycon_status") or "").strip()
+    message = str(row.get("alert") or "").strip()
+    return bool(status) or message.startswith("raycon run failed:")
 
 
 def _site_filter(site_summary: dict[str, Any], needle: str | None) -> bool:
@@ -966,11 +970,17 @@ def _handle_failed_scenario(
     dispatch_state: dict[str, dict[str, Any]] | None,
     dry_run: bool,
     redispatch_after: timedelta,
+    retry_failed_scenario: bool = True,
 ) -> dict[str, Any]:
     base_row = _failed_scenario_base_row(site_name, scenario, report_fields)
     reason = base_row["alert"].removeprefix("raycon run failed: ")
     block_plan_file_id = str(block_plan.get("id", "")).strip()
     if dispatch_state is None or not block_plan_file_id:
+        return base_row
+
+    if not retry_failed_scenario:
+        base_row["block_plan_file_id"] = block_plan_file_id
+        base_row["dispatch_skipped"] = "callback_terminal_status"
         return base_row
 
     status_result = _poll_dispatch_state_status(block_plan_file_id, dispatch_state)
@@ -1147,6 +1157,7 @@ def _process_site(
     redispatch_after: timedelta = timedelta(minutes=30),
     skip_dd_republish: bool = False,
     dd_republish_callback: Any = None,
+    retry_failed_scenarios: bool = True,
 ) -> dict[str, Any]:
     """Return a per-site result row for the run summary.
 
@@ -1298,6 +1309,7 @@ def _process_site(
             dispatch_state=dispatch_state,
             dry_run=dry_run,
             redispatch_after=redispatch_after,
+            retry_failed_scenario=retry_failed_scenarios,
         )
 
     # Scenario JSON is here and the run succeeded — publish the report
@@ -1581,6 +1593,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     results: list[dict[str, Any]] = []
+    retry_failed_scenarios = not bool(args.run_id or args.raycon_status)
     for site_summary in summaries:
         try:
             row = _process_site(
@@ -1592,6 +1605,7 @@ def main(argv: list[str] | None = None) -> int:
                 redispatch_after=redispatch_after,
                 skip_dd_republish=args.skip_dd_republish,
                 dd_republish_callback=_dd_republish_callback,
+                retry_failed_scenarios=retry_failed_scenarios,
             )
         except Exception as e:
             logger.exception("Unhandled error for site '%s'", site_summary.get("title"))
@@ -1616,28 +1630,44 @@ def main(argv: list[str] | None = None) -> int:
     notification_failures: list[dict[str, Any]] = []
 
     if alerts:
-        fresh_alerts = _fresh_dedup_alerts(alerts, dedup_state)
-        if fresh_alerts:
-            notification_failures.extend(
-                _notify_raycon_followup_rows(
-                    fresh_alerts,
-                    settings,
-                    run_id=event_run_id,
-                    alert_type="stuck_site",
-                    message_field="alert",
-                    heading="RayCon scenario follow-up: stuck sites",
+        alert_groups = (
+            (
+                "failed_scenario",
+                "RayCon scenario follow-up: failed scenarios",
+                [row for row in alerts if _is_failed_scenario_alert(row)],
+            ),
+            (
+                "stuck_site",
+                "RayCon scenario follow-up: stuck sites",
+                [row for row in alerts if not _is_failed_scenario_alert(row)],
+            ),
+        )
+        for alert_type, heading, grouped_alerts in alert_groups:
+            if not grouped_alerts:
+                continue
+            fresh_alerts = _fresh_dedup_alerts(grouped_alerts, dedup_state)
+            if fresh_alerts:
+                notification_failures.extend(
+                    _notify_raycon_followup_rows(
+                        fresh_alerts,
+                        settings,
+                        run_id=event_run_id,
+                        alert_type=alert_type,
+                        message_field="alert",
+                        heading=heading,
+                    )
                 )
-            )
-            new_state = _mark_notified_alerts(fresh_alerts, dedup_state)
-            alert_state_changed = alert_state_changed or new_state != dedup_state
-            dedup_state = new_state
-        suppressed = len(alerts) - len(fresh_alerts)
-        if suppressed:
-            logger.info(
-                "Suppressed %d stuck-site alert(s) within %s dedup window",
-                suppressed,
-                ALERT_DEDUP_WINDOW,
-            )
+                new_state = _mark_notified_alerts(fresh_alerts, dedup_state)
+                alert_state_changed = alert_state_changed or new_state != dedup_state
+                dedup_state = new_state
+            suppressed = len(grouped_alerts) - len(fresh_alerts)
+            if suppressed:
+                logger.info(
+                    "Suppressed %d %s alert(s) within %s dedup window",
+                    suppressed,
+                    alert_type,
+                    ALERT_DEDUP_WINDOW,
+                )
 
     if errors:
         for row in errors:

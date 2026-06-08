@@ -29,6 +29,7 @@ env:
 
 jobs:
   vendor-doc-republish-sweep:
+    if: ${{ github.event_name != 'schedule' || vars.VENDOR_DOC_REPUBLISH_SWEEP_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
 

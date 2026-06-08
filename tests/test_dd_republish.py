@@ -211,6 +211,22 @@ class TestVendorSIRArrival:
             "site-123:vendor_sir:sir-file-1:2026-05-05T10:00:00Z" in state
         )
 
+    def test_waiting_on_docs_updates_dedup_state(self):
+        """Missing full inputs should not recreate the same source-triggered work."""
+        runner = _pipeline_runner_factory(status="waiting_on_docs")
+        state: dict = {}
+        outcome = _call_helper(
+            reason=REASON_VENDOR_SIR,
+            fingerprint="sir-file-1:2026-05-05T10:00:00Z",
+            state=state,
+            runner=runner,
+        )
+        assert outcome.decision == "republish"
+        assert outcome.pipeline_status == "waiting_on_docs"
+        assert (
+            "site-123:vendor_sir:sir-file-1:2026-05-05T10:00:00Z" in state
+        )
+
     def test_failed_pipeline_status_records_failure_event_when_requested(self):
         recorder = MagicMock(return_value={"status": "created", "rhodes_note_id": "NOTE1"})
         runner = _pipeline_runner_factory(status="generation_failed")
