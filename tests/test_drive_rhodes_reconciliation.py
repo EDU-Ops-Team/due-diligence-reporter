@@ -223,6 +223,20 @@ def test_reconciliation_telemetry_emits_sanitized_action_records() -> None:
     assert telemetry["action_records"][0]["workflow_owner"] == "drive-rhodes-reconciliation"
     assert telemetry["action_records"][0]["status"] == "completed"
     assert "Rhodes readback verified 1" in telemetry["action_records"][0]["evidence_summary"]
+    site_action = next(
+        action
+        for action in telemetry["action_records"]
+        if action["source_workflow"] == "portfolio-gaps"
+    )
+    assert site_action["alert_type"] == "missing_current_milestone_documents"
+    assert site_action["site_id"] == "SITE1"
+    assert site_action["site_name"] == "Alpha Test"
+    assert site_action["current_milestone"] == "Acquiring Property"
+    assert site_action["owning_workflow"] == "ddr"
+    assert site_action["workflow_owner"] == "drive-rhodes-reconciliation"
+    assert site_action["status"] == "completed"
+    assert "verified document readback" in site_action["action_taken"]
+    assert "rhodes_readback=verified" in site_action["evidence_summary"]
 
     rendered = json.dumps(telemetry)
     assert "https://drive" not in rendered

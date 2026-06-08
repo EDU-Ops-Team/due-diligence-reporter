@@ -1,5 +1,40 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - Site-Level Portfolio Document Gap Readback Actions
+
+- Beads issue `ddr-pw9` tracks this slice.
+- `drive-rhodes-reconciliation` telemetry still emits the existing aggregate
+  DDR ActionRecord rows, and now also emits sanitized site-level
+  `source_workflow=portfolio-gaps` ActionRecord rows for current-milestone
+  document-gap remediation.
+- Site-level rows are keyed by site, Rhodes milestone, and sanitized document
+  type, not by Drive file ID, Drive URL, raw filename, or raw dependency error.
+- Verified registrations become `status=completed` with
+  `workflow_owner=drive-rhodes-reconciliation`; already-associated documents
+  become `skipped_already_corrected`; unverified Rhodes readback routes to
+  `owning_workflow=rhodes`; dry-run rows remain `queued`; row errors become
+  sanitized `error` actions.
+- These rows let the dashboard update the original Portfolio Gaps site alert
+  after DDR/Drive/Rhodes readback runs, instead of leaving the site table stuck
+  at the initial queued action.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_drive_rhodes_reconciliation.py tests/test_workflow_contracts.py -q --basetemp C:\tmp\ddr-portfolio-readback-actions-contract-tests-2
+uv run ruff check src/due_diligence_reporter/drive_rhodes_reconciliation.py tests/test_drive_rhodes_reconciliation.py
+uv run mypy src/due_diligence_reporter/drive_rhodes_reconciliation.py
+git diff --check
+```
+
+Results:
+
+- Focused contract pytest: 15 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in `drive_rhodes_reconciliation.py`.
+- `git diff --check`: no whitespace errors; expected Windows LF-to-CRLF
+  warnings only.
+
 ## 2026-06-08 - Drive Rhodes Reconciliation Telemetry Artifact
 
 - Beads issue `ddr-aav` tracks this slice.
