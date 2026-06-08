@@ -16,12 +16,16 @@ from typing import Any, cast
 AADP_SOURCE = "alpha-analysis-downstream-processing"
 DDR_SOURCE = "due-diligence-reporter"
 PORTFOLIO_GAPS_SOURCE = "portfolio-gaps"
+RHODES_SOURCE = "rhodes"
 ACTION_LABELS = {
     "missing_p1_dri": "Missing P1 DRI",
     "missing_drive_folder": "Missing Drive folder",
 }
 DDR_ACTION_LABELS = {
     "missing_current_milestone_documents": "Missing current-milestone documents",
+}
+RHODES_ACTION_LABELS = {
+    "snapshot_read_errors": "Snapshot read errors",
 }
 MAX_ERROR_LENGTH = 240
 
@@ -185,6 +189,72 @@ def mark_ddr_document_gap_actions(
     return enriched
 
 
+def mark_rhodes_snapshot_read_actions(
+    snapshot: dict[str, Any],
+    *,
+    as_of: str,
+) -> dict[str, Any]:
+    """Emit Rhodes-owned action telemetry for snapshot read errors."""
+
+    enriched = copy.deepcopy(snapshot)
+    remediation: dict[str, Any] = {
+        "source": RHODES_SOURCE,
+        "status": "skipped",
+        "as_of": as_of,
+        "attempted_count": 0,
+        "needs_review_count": 0,
+    }
+    for site in _list_dicts(enriched.get("sites")):
+        for gap_type, label in RHODES_ACTION_LABELS.items():
+            if gap_type not in _gap_reasons(site):
+                continue
+            remediation["attempted_count"] = int(remediation["attempted_count"]) + 1
+            error_count = len(_list_dicts(site.get("errors")))
+            if error_count <= 0 and isinstance(site.get("errors"), list):
+                error_count = len(site["errors"])
+            action = {
+                "schema_version": "action_record.v1",
+                "source": RHODES_SOURCE,
+                "source_workflow": PORTFOLIO_GAPS_SOURCE,
+                "owning_workflow": "rhodes",
+                "workflow_owner": "rhodes",
+                "gap_type": gap_type,
+                "alert": label,
+                "status": "needs_review",
+                "as_of": as_of,
+                "site_id": _site_id(site),
+                "site_name": _site_name(site),
+                "current_milestone": _current_milestone_label(site),
+                "action_requested": (
+                    "Restore Portfolio Gaps Rhodes snapshot reads and rerun the snapshot."
+                ),
+                "action_taken": (
+                    "Portfolio Gaps could not read one or more Rhodes snapshot sections "
+                    "for this site; no verified readback has been captured yet."
+                ),
+                "remediation_summary": (
+                    "Portfolio Gaps could not read one or more Rhodes snapshot sections "
+                    "for this site; no verified readback has been captured yet."
+                ),
+                "review_required": True,
+                "review_reason": (
+                    "Rhodes snapshot reads failed for this site; confirm the Rhodes API "
+                    "read path and rerun Portfolio Gaps."
+                ),
+                "error_summary": (
+                    f"Portfolio Gaps recorded {error_count} Rhodes snapshot read error(s)."
+                ),
+                "retryable": True,
+            }
+            _replace_action(site, action)
+            remediation["needs_review_count"] = int(remediation["needs_review_count"]) + 1
+
+    if int(remediation["attempted_count"]):
+        remediation["status"] = "needs_review"
+    enriched["snapshot_read_remediation"] = remediation
+    return enriched
+
+
 def _load_aadp_remediator(aadp_repo: Path) -> Callable[..., dict[str, Any]] | None:
     src = aadp_repo / "src"
     if not src.is_dir():
@@ -310,9 +380,11 @@ def main(argv: list[str] | None = None) -> int:
         max_actions=max(0, int(args.max_actions)),
     )
     enriched = mark_ddr_document_gap_actions(enriched, as_of=_iso(_utc_now()))
+    enriched = mark_rhodes_snapshot_read_actions(enriched, as_of=_iso(_utc_now()))
     _write_json(output_path, enriched)
     remediation = _dict(enriched.get("remediation"))
     document_gap_remediation = _dict(enriched.get("document_gap_remediation"))
+    snapshot_read_remediation = _dict(enriched.get("snapshot_read_remediation"))
     print(
         "AADP remediation trigger "
         f"status={remediation.get('status', 'unknown')} "
@@ -325,6 +397,11 @@ def main(argv: list[str] | None = None) -> int:
         "DDR document gap action emission "
         f"status={document_gap_remediation.get('status', 'unknown')} "
         f"needs_review={document_gap_remediation.get('needs_review_count', 0)}"
+    )
+    print(
+        "Rhodes snapshot read action emission "
+        f"status={snapshot_read_remediation.get('status', 'unknown')} "
+        f"needs_review={snapshot_read_remediation.get('needs_review_count', 0)}"
     )
     return 0
 
