@@ -190,6 +190,14 @@ SUMMARY_TOKEN_BASES: tuple[tuple[str, str], ...] = (
     ("open_date", "RayCon"),
 )
 
+ALPHA_PHASING_TOKENS: tuple[str, ...] = (
+    "exec.alpha_phasing_phase_i_scope",
+    "exec.alpha_phasing_phase_ii_scope",
+    "exec.alpha_phasing_phase_ii_allowance",
+    "exec.alpha_phasing_recommended_timing",
+    "exec.alpha_phasing_quality_bar_status",
+)
+
 COST_TOKEN_BASES: tuple[str, ...] = (
     "cost_demolition",
     "cost_framing_doors",
@@ -230,6 +238,8 @@ def _build_template_tokens() -> list[str]:
         for metric, _source in SUMMARY_TOKEN_BASES:
             tokens.append(f"exec.{scenario}_{metric}")
 
+    tokens.extend(ALPHA_PHASING_TOKENS)
+
     for base in COST_TOKEN_BASES:
         for scenario in SCENARIOS:
             tokens.append(f"exec.{base}_{scenario}")
@@ -244,6 +254,7 @@ def _build_template_tokens() -> list[str]:
         "sources.e_occupancy_link",
         "sources.school_approval_link",
         "sources.opening_plan_link",
+        "sources.alpha_phasing_plan_link",
     ])
     return tokens
 
@@ -272,11 +283,15 @@ TOKEN_SOURCES: dict[str, str] = {
     "exec.tradeoffs_and_deficiencies": "Agent",
     "sources.rebl_link": "REBL",
     "sources.opening_plan_link": "Agent",
+    "sources.alpha_phasing_plan_link": "Alpha Phasing Plan",
 }
 
 for scenario in SCENARIOS:
     for metric, source in SUMMARY_TOKEN_BASES:
         TOKEN_SOURCES[f"exec.{scenario}_{metric}"] = source
+
+for token in ALPHA_PHASING_TOKENS:
+    TOKEN_SOURCES[token] = "Alpha Phasing Plan"
 
 for base in COST_TOKEN_BASES:
     for scenario in SCENARIOS:
@@ -294,6 +309,7 @@ LINK_TOKENS: frozenset[str] = frozenset({
     "sources.e_occupancy_link",
     "sources.school_approval_link",
     "sources.opening_plan_link",
+    "sources.alpha_phasing_plan_link",
     "meta.drive_folder_url",
 })
 
@@ -306,6 +322,7 @@ LINK_DISPLAY_LABELS: dict[str, str] = {
     "sources.e_occupancy_link": "View E-Occupancy",
     "sources.school_approval_link": "View School Approval",
     "sources.opening_plan_link": "View Opening Plan",
+    "sources.alpha_phasing_plan_link": "View Alpha Phasing Plan",
     "meta.drive_folder_url": "View Site Folder",
 }
 
@@ -336,6 +353,8 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "appendix.rebl_link": "sources.rebl_link",
     "appendix.floorplan_viability_link": "sources.block_plan_link",
     "appendix.isp_link": "sources.block_plan_link",
+    "appendix.alpha_phasing_plan_link": "sources.alpha_phasing_plan_link",
+    "sources.alpha_phasing_link": "sources.alpha_phasing_plan_link",
 }
 
 LEGACY_V2_ALIASES: dict[str, str] = {

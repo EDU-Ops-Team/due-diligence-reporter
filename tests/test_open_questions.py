@@ -7,6 +7,7 @@ from due_diligence_reporter.open_questions import (
     extract_open_questions_from_report_data,
     load_latest_open_questions,
     source_event_from_drive_file,
+    source_type_for_doc_type,
 )
 
 
@@ -92,6 +93,54 @@ def test_source_event_uses_drive_id_modified_time_fingerprint() -> None:
 
     assert event.fingerprint == "file-1:2026-05-26T10:00:00Z"
     assert event.source_type == "school_approval_report"
+
+
+def test_phasing_open_item_maps_to_alpha_phasing_source() -> None:
+    questions = extract_open_questions_from_report_data(
+        {
+            "verification.open_items": (
+                "- Confirm Phase II deferred scope and allowance from the budget tracker."
+            )
+        },
+        created_run="run-1",
+    )
+
+    assert len(questions) == 1
+    assert questions[0].affected_ddr_field == "Buildout Phasing"
+    assert questions[0].expected_source_type == "alpha_phasing_plan_report"
+
+
+def test_alpha_phasing_doc_type_maps_to_source_type() -> None:
+    assert (
+        source_type_for_doc_type("alpha_phasing_plan_report")
+        == "alpha_phasing_plan_report"
+    )
+
+
+def test_alpha_phasing_source_event_can_close_phasing_open_item() -> None:
+    previous = extract_open_questions_from_report_data(
+        {
+            "verification.open_items": (
+                "- Confirm Phase II deferred scope and allowance from the budget tracker."
+            )
+        },
+        created_run="run-1",
+    )
+
+    closed = close_open_questions(
+        previous,
+        [],
+        source_event={
+            "source_type": "alpha_phasing_plan_report",
+            "drive_url": "https://drive/phasing",
+        },
+        closed_run="run-2",
+    )
+
+    assert [item.expected_source_type for item in closed] == [
+        "alpha_phasing_plan_report"
+    ]
+    assert closed[0].evidence_source == "https://drive/phasing"
 
 
 def test_load_latest_open_questions_reads_latest_matching_manifest(tmp_path) -> None:

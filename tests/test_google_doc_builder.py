@@ -310,6 +310,14 @@ class TestTokenCoverage:
             for metric in ("capacity", "open_date", "capex"):
                 cls._BUILDER_TOKENS.add(f"exec.{scenario}_{metric}")
 
+        cls._BUILDER_TOKENS.update([
+            "exec.alpha_phasing_phase_i_scope",
+            "exec.alpha_phasing_phase_ii_scope",
+            "exec.alpha_phasing_phase_ii_allowance",
+            "exec.alpha_phasing_recommended_timing",
+            "exec.alpha_phasing_quality_bar_status",
+        ])
+
         # Cost breakdown tokens
         for row_key, _ in _COST_BREAKDOWN_ROWS:
             for scenario in ("fastest_open", "max_capacity"):
@@ -347,6 +355,14 @@ class TestTokenCoverage:
             for metric in ("capacity", "capex", "open_date"):
                 current_tokens.add(f"exec.{scenario}_{metric}")
 
+        current_tokens.update([
+            "exec.alpha_phasing_phase_i_scope",
+            "exec.alpha_phasing_phase_ii_scope",
+            "exec.alpha_phasing_phase_ii_allowance",
+            "exec.alpha_phasing_recommended_timing",
+            "exec.alpha_phasing_quality_bar_status",
+        ])
+
         # exec cost breakdown (12 rows × 2 scenarios = 24)
         cost_keys = [
             "cost_demolition", "cost_framing_doors", "cost_mep_fire_life_safety",
@@ -366,11 +382,12 @@ class TestTokenCoverage:
             "sources.sir_link", "sources.inspection_link",
             "sources.block_plan_link", "sources.rebl_link",
             "sources.e_occupancy_link", "sources.school_approval_link",
-            "sources.opening_plan_link",
+            "sources.opening_plan_link", "sources.alpha_phasing_plan_link",
         ])
 
-        # 8 meta + 8 exec summary/direct + 6 scenario summary + 24 cost + 2 narrative + 7 sources = 55
-        assert len(current_tokens) == 55, f"Expected 55 tokens, got {len(current_tokens)}"
+        # 8 meta + 8 exec summary/direct + 6 scenario summary + 5 phasing
+        # + 24 cost + 2 narrative + 8 sources = 61
+        assert len(current_tokens) == 61, f"Expected 61 tokens, got {len(current_tokens)}"
 
         # All template tokens should be covered by the builder
         missing = current_tokens - self._BUILDER_TOKENS
@@ -478,6 +495,11 @@ class TestBuildDdReportDoc:
             "exec.max_capacity_capacity": "125 students",
             "exec.max_capacity_capex": "$812,000",
             "exec.max_capacity_open_date": "11/26",
+            "exec.alpha_phasing_phase_i_scope": "Open with four classrooms and code-required life safety.",
+            "exec.alpha_phasing_phase_ii_scope": "Lobby refresh; outdoor shade.",
+            "exec.alpha_phasing_phase_ii_allowance": "$120k",
+            "exec.alpha_phasing_recommended_timing": "Winter break after opening.",
+            "exec.alpha_phasing_quality_bar_status": "Q1 target with 2 confirmed Phase II gaps.",
             "exec.acquisition_conditions": "- Landlord must provide 6-month TI window\n- ADA ramp required",
             "exec.tradeoffs_and_deficiencies": "- No dedicated outdoor playspace\n- Fire alarm > 15 years old",
             "sources.sir_link": "https://drive.google.com/file/d/sir123",
@@ -487,6 +509,7 @@ class TestBuildDdReportDoc:
             "sources.e_occupancy_link": "https://drive.google.com/file/d/eocc123",
             "sources.school_approval_link": "https://drive.google.com/file/d/sa123",
             "sources.opening_plan_link": "https://drive.google.com/file/d/op123",
+            "sources.alpha_phasing_plan_link": "https://drive.google.com/file/d/phasing123",
         }
         # Cost breakdown tokens
         cost_keys = [
@@ -651,6 +674,10 @@ class TestBuildDdReportDocRequestStructure:
             ),
             "exec.direct_viable_buildout": "Fastest Open",
             "exec.alpha_fit": "Yes",
+            "exec.alpha_phasing_phase_i_scope": "Open with minimum code and classroom scope.",
+            "exec.alpha_phasing_phase_ii_scope": "Finish quality-bar gaps after opening.",
+            "exec.alpha_phasing_phase_ii_allowance": "$90k",
+            "exec.alpha_phasing_recommended_timing": "Winter break.",
             VERIFICATION_OPEN_ITEMS_KEY: (
                 "- Pull ZIMAS case records and LADBS CO history\n"
                 "- Confirm correct lease address with landlord"
@@ -672,6 +699,7 @@ class TestBuildDdReportDocRequestStructure:
             inserted_text.index("Executive Summary\n")
             < inserted_text.index("Direct Answer\n")
             < inserted_text.index("Buildout Analysis\n")
+            < inserted_text.index("Alpha Phasing Plan\n")
             < inserted_text.index("Detailed Cost Breakdown\n")
             < inserted_text.index("Supporting Notes\n")
             < inserted_text.index("Open Items to Verify\n")

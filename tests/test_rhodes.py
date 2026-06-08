@@ -422,6 +422,10 @@ def test_ddr_doc_type_mapping_covers_inbox_supported_docs() -> None:
     )
     assert map_ddr_doc_type_to_rhodes("block_plan").doc_type == "floorPlan"  # type: ignore[union-attr]
     assert map_ddr_doc_type_to_rhodes("isp").doc_type == "other"  # type: ignore[union-attr]
+    alpha_phasing_mapping = map_ddr_doc_type_to_rhodes("alpha_phasing_plan_report")
+    assert alpha_phasing_mapping is not None
+    assert alpha_phasing_mapping.doc_type == "other"
+    assert alpha_phasing_mapping.milestone == "acquireProperty"
 
 
 def test_register_rhodes_document_for_upload_registers_mapped_drive_file() -> None:

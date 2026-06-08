@@ -42,6 +42,12 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
                     "modifiedTime": "2026-05-26T11:00:00Z",
                     "webViewLink": "https://drive/raycon-1",
                 },
+                {
+                    "id": "phasing-1",
+                    "name": "Alpha Phasing Plan - Alpha Test.xlsx",
+                    "modifiedTime": "2026-05-26T11:30:00Z",
+                    "webViewLink": "https://drive/phasing-1",
+                },
             ]
         return [
             {
@@ -60,6 +66,7 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
     assert {event["source_type"] for event in events} == {
         "vendor_sir",
         "raycon_scenario",
+        "alpha_phasing_plan_report",
         "school_approval_report",
     }
     assert any(event["fingerprint"] == "sir-1:2026-05-26T10:00:00Z" for event in events)

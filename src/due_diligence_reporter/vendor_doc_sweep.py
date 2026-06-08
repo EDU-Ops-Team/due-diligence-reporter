@@ -23,6 +23,7 @@ CORE_SWEEP_DOC_TYPES = {
     "raycon_scenario_json",
     "e_occupancy_report",
     "school_approval_report",
+    "alpha_phasing_plan_report",
 }
 
 RepublishCallback = Callable[..., Any]
@@ -50,7 +51,7 @@ def collect_core_source_events(
         candidates.update(_list_m1_documents_by_type(gc, m1_folder_id))
 
     # Some legacy/manual uploads can land at the site root. Include only the
-    # five core v1 source types; the helper will still no-op when no DDR exists.
+    # core source types; the helper will still no-op when no DDR exists.
     root_folder_id = _folder_id_from_url(drive_folder_url)
     if root_folder_id:
         for file_info in gc.list_files_in_folder(root_folder_id):

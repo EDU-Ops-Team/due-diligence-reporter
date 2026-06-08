@@ -92,7 +92,7 @@ DD_REPORT_EVENT_FREQUENCY_CAP_BUSINESS_DAYS = 2
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "list_drive_documents",
-        "description": "List matched shared DD source reports plus site-folder artifacts found in the site folder or its M1 subfolder. Results may include Block Plan PDFs and derived reports such as Capacity Brainlift, RayCon Scenario, Opening Plan, and DD reports. Each file includes a doc_type field. Pass the full request site_name and site_address so shared-folder matching cannot use city-only evidence.",
+        "description": "List matched shared DD source reports plus site-folder artifacts found in the site folder or its M1 subfolder. Results may include Block Plan PDFs and derived reports such as Capacity Brainlift, RayCon Scenario, Opening Plan, Alpha Phasing Plan, and DD reports. Each file includes a doc_type field. Pass the full request site_name and site_address so shared-folder matching cannot use city-only evidence.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -172,6 +172,41 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "apply_alpha_phasing_plan_skill",
+        "description": "Create and publish the Alpha Phasing Plan workbook after source reads, E-Occupancy, School Approval, and RayCon context are available. Pass only confirmed phasing inputs; if deferred Phase II scope is not confirmed, call the tool with the missing fields so it returns concrete verification.open_items instead of inventing scope. On success, copy returned report_data_fields into create_dd_report, including sources.alpha_phasing_plan_link and exec.alpha_phasing_* summary fields.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "site_name": {"type": "string"},
+                "site_id": {"type": "string", "default": "", "description": "Rhodes site ID when available; enables Rhodes document registration"},
+                "site_address": {"type": "string", "default": ""},
+                "drive_folder_url": {"type": "string"},
+                "source_of_truth": {"type": "string", "description": "Confirmed phasing source, live sheet, budget tracker, or source document name/link"},
+                "quality_bar_target": {"type": "string", "description": "Quality bar target, e.g. Q1 / Standard"},
+                "opening_target_date": {"type": "string"},
+                "must_complete_before_opening": {"type": "string", "description": "Confirmed Phase I opening scope"},
+                "deferred_scopes": {"type": "array", "items": {"type": "string"}, "description": "Confirmed Phase II deferred scopes only"},
+                "phase_i_scope_summary": {"type": "string", "default": ""},
+                "phase_i_budget_items": {"type": "array", "items": {"type": "object"}, "default": []},
+                "phase_ii_budget_items": {"type": "array", "items": {"type": "object"}, "default": []},
+                "phase_ii_total_allowance": {"type": "string", "default": ""},
+                "recommended_timing": {"type": "string", "default": ""},
+                "render_deck_inputs": {"type": "array", "items": {"type": "object"}, "default": []},
+                "source_notes": {"type": "array", "items": {"type": "string"}, "default": []},
+                "budget_tracker_url": {"type": "string", "default": ""},
+            },
+            "required": [
+                "site_name",
+                "drive_folder_url",
+                "source_of_truth",
+                "quality_bar_target",
+                "opening_target_date",
+                "must_complete_before_opening",
+                "deferred_scopes",
+            ],
+        },
+    },
+    {
         "name": "create_dd_report",
         "description": "Create a completed DD report Google Doc. The report_data dict must use exact current template token keys (e.g. 'exec.c_zoning', 'exec.fastest_open_capex', 'sources.sir_link'). Copy report_data_fields from skill tools directly into report_data. Pass token_evidence for source traceability.",
         "input_schema": {
@@ -199,7 +234,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "save_skill_report",
-        "description": "Save a skill assessment (E-Occupancy or School Approval) as a standalone Google Doc in the site's M1 subfolder. Pass the FULL result dict from apply_e_occupancy_skill or apply_school_approval_skill as skill_data — the tool formats it into a readable document. Returns doc_url for inclusion in sources.* tokens.",
+        "description": "Save a skill assessment (E-Occupancy, School Approval, Capacity Brainlift, or RayCon Scenario) as a standalone Google Doc in the site's M1 subfolder. Alpha Phasing Plan uses apply_alpha_phasing_plan_skill because its required output is an Excel workbook. Pass the FULL result dict from the skill tool as skill_data — the tool formats it into a readable document. Returns doc_url for inclusion in sources.* tokens.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -243,6 +278,7 @@ async def route_tool_call(tool_name: str, tool_input: dict[str, Any]) -> Any:
         "lookup_rhodes_site_owner": srv.lookup_rhodes_site_owner,
         "apply_e_occupancy_skill": srv.apply_e_occupancy_skill,
         "apply_school_approval_skill": srv.apply_school_approval_skill,
+        "apply_alpha_phasing_plan_skill": srv.apply_alpha_phasing_plan_skill,
         "create_dd_report": srv.create_dd_report,
         "check_report_completeness": srv.check_report_completeness,
         "save_skill_report": srv.save_skill_report,
@@ -270,6 +306,7 @@ def _canonicalize_site_tool_input(
     site_title: str,
     drive_folder_url: str | None,
     site_address: str | None,
+    site_id: str | None = None,
 ) -> dict[str, Any]:
     """Keep agent tool calls anchored to the pipeline's canonical site context."""
     canonical = dict(tool_input)
@@ -278,16 +315,24 @@ def _canonicalize_site_tool_input(
         "list_drive_documents",
         "apply_e_occupancy_skill",
         "apply_school_approval_skill",
+        "apply_alpha_phasing_plan_skill",
         "create_dd_report",
         "save_skill_report",
         "send_dd_report_email",
     }:
         canonical["site_name"] = site_title
+    if site_id and tool_name in {
+        "lookup_rhodes_site_owner",
+        "apply_alpha_phasing_plan_skill",
+        "create_dd_report",
+    }:
+        canonical["site_id"] = site_id
 
     if drive_folder_url and tool_name in {
         "list_drive_documents",
         "apply_e_occupancy_skill",
         "apply_school_approval_skill",
+        "apply_alpha_phasing_plan_skill",
         "create_dd_report",
         "save_skill_report",
     }:
@@ -297,6 +342,7 @@ def _canonicalize_site_tool_input(
         "lookup_rhodes_site_owner",
         "list_drive_documents",
         "apply_school_approval_skill",
+        "apply_alpha_phasing_plan_skill",
         "create_dd_report",
     }:
         canonical["site_address"] = site_address
@@ -528,6 +574,7 @@ def check_site_readiness_direct(
             "sir_found": False, "isp_found": False, "inspection_found": False,
             "report_exists": False,
             "e_occupancy_report_found": False, "school_approval_report_found": False,
+            "alpha_phasing_plan_report_found": False,
             "error": "bad_url",
         }
 
@@ -560,6 +607,7 @@ def check_site_readiness_direct(
         "dd_report": None,
         "e_occupancy_report": None,
         "school_approval_report": None,
+        "alpha_phasing_plan_report": None,
     }
     for f in site_folder_files:
         dt = f.get("doc_type", "unknown")
@@ -654,6 +702,9 @@ def check_site_readiness_direct(
         "report_exists": files_by_type["dd_report"] is not None,
         "e_occupancy_report_found": files_by_type["e_occupancy_report"] is not None,
         "school_approval_report_found": files_by_type["school_approval_report"] is not None,
+        "alpha_phasing_plan_report_found": (
+            files_by_type["alpha_phasing_plan_report"] is not None
+        ),
         "all_files": ai_generated_site_files,
         "sir_learning_review": sir_learning_review.to_dict(),
     }
@@ -671,6 +722,7 @@ def run_dd_report_agent(
     *,
     drive_folder_url: str | None = None,
     site_address: str | None = None,
+    site_id: str | None = None,
     initial_report_fields: dict[str, Any] | None = None,
     rhodes_owner_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -698,6 +750,7 @@ def run_dd_report_agent(
     run_start = time.monotonic()
 
     request_lines = [f"Generate a DD Report for: {site_title}"]
+    effective_site_id = (site_id or "").strip()
     effective_site_address = site_address
     if effective_site_address:
         request_lines.append(f"Site address: {effective_site_address}")
@@ -716,6 +769,9 @@ def run_dd_report_agent(
         owner_status = str(rhodes_owner_context.get("status") or "").strip()
         rhodes_drive_url = str(rhodes_owner_context.get("drive_folder_url") or "").strip()
         rhodes_site_address = str(rhodes_owner_context.get("site_address") or "").strip()
+        rhodes_site_id = str(rhodes_owner_context.get("site_id") or "").strip()
+        if rhodes_site_id and not effective_site_id:
+            effective_site_id = rhodes_site_id
         if rhodes_site_address and not effective_site_address:
             effective_site_address = rhodes_site_address
             request_lines.append(f"Rhodes site address: {rhodes_site_address}")
@@ -730,6 +786,8 @@ def run_dd_report_agent(
             )
         elif owner_status:
             request_lines.append(f"Rhodes P1 DRI / site owner lookup status: {owner_status}")
+    if effective_site_id:
+        request_lines.append(f"Rhodes site ID: {effective_site_id}")
 
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": "\n".join(request_lines)},
@@ -780,6 +838,7 @@ def run_dd_report_agent(
                 tool_use.name,
                 dict(tool_use.input),
                 site_title=site_title,
+                site_id=effective_site_id,
                 drive_folder_url=effective_drive_folder_url,
                 site_address=effective_site_address,
             )
@@ -1554,6 +1613,7 @@ def _run_pipeline_agent(
     *,
     drive_folder_url: str | None = None,
     site_address: str | None = None,
+    site_id: str | None = None,
     initial_report_fields: dict[str, Any] | None = None,
     rhodes_owner_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, PipelineResult | None]:
@@ -1585,6 +1645,7 @@ def _run_pipeline_agent(
             settings.anthropic_report_model,
             drive_folder_url=drive_folder_url,
             site_address=site_address,
+            site_id=site_id,
             initial_report_fields=initial_report_fields,
             rhodes_owner_context=rhodes_owner_context,
         )
@@ -2633,6 +2694,7 @@ def process_site_pipeline(
         settings,
         drive_folder_url=drive_folder_url,
         site_address=site_address,
+        site_id=recorder.site_id or site_id,
         initial_report_fields=initial_report_fields,
         rhodes_owner_context=rhodes_owner_context,
     )

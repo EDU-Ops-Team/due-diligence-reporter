@@ -16,6 +16,7 @@ SourceType = Literal[
     "raycon_scenario",
     "e_occupancy_report",
     "school_approval_report",
+    "alpha_phasing_plan_report",
 ]
 
 OpenQuestionStatus = Literal["open", "closed"]
@@ -25,6 +26,7 @@ SOURCE_TYPE_BUILDING_INSPECTION: SourceType = "building_inspection"
 SOURCE_TYPE_RAYCON_SCENARIO: SourceType = "raycon_scenario"
 SOURCE_TYPE_E_OCCUPANCY: SourceType = "e_occupancy_report"
 SOURCE_TYPE_SCHOOL_APPROVAL: SourceType = "school_approval_report"
+SOURCE_TYPE_ALPHA_PHASING_PLAN: SourceType = "alpha_phasing_plan_report"
 
 CORE_SOURCE_TYPES: frozenset[SourceType] = frozenset(
     {
@@ -33,6 +35,7 @@ CORE_SOURCE_TYPES: frozenset[SourceType] = frozenset(
         SOURCE_TYPE_RAYCON_SCENARIO,
         SOURCE_TYPE_E_OCCUPANCY,
         SOURCE_TYPE_SCHOOL_APPROVAL,
+        SOURCE_TYPE_ALPHA_PHASING_PLAN,
     }
 )
 
@@ -43,6 +46,7 @@ DOC_TYPE_TO_SOURCE_TYPE: dict[str, SourceType] = {
     "raycon_scenario_report": SOURCE_TYPE_RAYCON_SCENARIO,
     "e_occupancy_report": SOURCE_TYPE_E_OCCUPANCY,
     "school_approval_report": SOURCE_TYPE_SCHOOL_APPROVAL,
+    "alpha_phasing_plan_report": SOURCE_TYPE_ALPHA_PHASING_PLAN,
 }
 
 REPORT_OPEN_ITEM_KEYS = (
@@ -325,6 +329,15 @@ def _infer_affected_field(text: str) -> str:
         return "Occupancy path"
     if "permit" in lower or "ahj" in lower:
         return "Permit Timeline"
+    if (
+        "phasing" in lower
+        or "phase ii" in lower
+        or "deferred scope" in lower
+        or "quality bar" in lower
+        or "budget tracker" in lower
+        or "allowance" in lower
+    ):
+        return "Buildout Phasing"
     if "construction" in lower or "buildout" in lower or "raycon" in lower:
         return "Construction Timeline"
     return "Open Items to Verify"
@@ -336,6 +349,16 @@ def _infer_expected_source_type(text: str) -> SourceType:
         return SOURCE_TYPE_SCHOOL_APPROVAL
     if "e-occupancy" in lower or "occupancy" in lower or "egress" in lower:
         return SOURCE_TYPE_E_OCCUPANCY
+    if (
+        "alpha phasing" in lower
+        or "phasing plan" in lower
+        or "phase ii" in lower
+        or "deferred scope" in lower
+        or "quality bar" in lower
+        or "budget tracker" in lower
+        or "allowance" in lower
+    ):
+        return SOURCE_TYPE_ALPHA_PHASING_PLAN
     if "raycon" in lower or "scenario" in lower or "construction" in lower:
         return SOURCE_TYPE_RAYCON_SCENARIO
     if "inspection" in lower or "fire/life" in lower or "building condition" in lower:

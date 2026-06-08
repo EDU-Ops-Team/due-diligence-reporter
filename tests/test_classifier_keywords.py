@@ -171,6 +171,20 @@ class TestClassifyByKeywordsRayconScenario:
         )
 
 
+class TestClassifyByKeywordsAlphaPhasingPlan:
+    def test_alpha_phasing_plan(self):
+        assert classify_by_keywords("Alpha Phasing Plan - Alpha Keller.xlsx") == (
+            "alpha_phasing_plan_report",
+            0.95,
+        )
+
+    def test_phase_i_phase_ii_quality_plan(self):
+        assert classify_by_keywords("Phase I Phase II Quality Bar Plan - Alpha Keller.xlsx") == (
+            "alpha_phasing_plan_report",
+            0.95,
+        )
+
+
 class TestClassifyByKeywordsDDReport:
     def test_dd_report(self):
         assert classify_by_keywords("DD Report - Alpha Tampa.pdf") == (

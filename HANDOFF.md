@@ -1,5 +1,58 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - Alpha Phasing Plan DDR Integration
+
+Greg approved the default goal for `ddr-411`: integrate Alpha Phasing Plan as
+a first-class DDR enrichment, not a first-round DDR blocker and not a final
+vendor-readiness gate until explicitly changed.
+
+Changed:
+
+- Added `alpha_phasing_plan_report` classification, M1 recognition, source-event
+  mapping, vendor-doc sweep inclusion, and open-question inference/closure.
+- Added `apply_alpha_phasing_plan_skill`, which validates minimum phasing
+  inputs, refuses to invent generic Phase II scope, generates the required
+  six-tab XLSX workbook, uploads it to the site's M1 folder, and returns
+  `sources.alpha_phasing_plan_link` plus compact `exec.alpha_phasing_*` fields.
+- Added schema tokens and Google Doc rendering for a compact "Alpha Phasing
+  Plan" subsection after Buildout Analysis and before Detailed Cost Breakdown.
+  The full detail remains in the workbook; Referenced Reports now has a
+  distinct Alpha Phasing Plan row.
+- Added Rhodes registration for the generated workbook. Greg approved logging
+  DDR support docs as `other` when no specific LocationOS document type exists,
+  so `alpha_phasing_plan_report` maps to Rhodes `docType=other` /
+  `milestone=acquireProperty`; registration is idempotent by Drive file ID and
+  remains non-blocking if Rhodes is unavailable or no `site_id` is known.
+- Updated `docs/process/HOW-IT-WORKS.md`, `docs/prompts/prompt_v4.md`, and
+  `docs/templates/Site_DD_Report_Template_V4.md` with the process placement,
+  source handling, token contract, Rhodes support-doc behavior, and
+  missing-input behavior.
+- Beads closed: `ddr-411.2`, `ddr-411.3`, `ddr-411.4`, `ddr-411.5`,
+  `ddr-411.6`, `ddr-411.7`, `ddr-411.8`, and epic `ddr-411`.
+
+Open:
+
+- No open Alpha Phasing Plan beads remain. Broader auto-registration for other
+  generated DDR support documents can be tracked separately if the team wants
+  `save_skill_report` outputs registered in Rhodes too.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_alpha_phasing_plan.py tests/test_classifier_keywords.py tests/test_open_questions.py tests/test_vendor_doc_sweep.py tests/test_report_schema.py tests/test_google_doc_builder.py tests/test_report_pipeline.py tests/test_rhodes.py tests/test_drive_rhodes_reconciliation.py -q --basetemp C:\tmp\ddr-alpha-rhodes-tests
+uv run ruff check src/due_diligence_reporter/alpha_phasing_plan.py src/due_diligence_reporter/classifier.py src/due_diligence_reporter/open_questions.py src/due_diligence_reporter/vendor_doc_sweep.py src/due_diligence_reporter/report_schema.py src/due_diligence_reporter/google_doc_builder.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/server.py src/due_diligence_reporter/m1_lookup.py src/due_diligence_reporter/rhodes.py tests/test_alpha_phasing_plan.py tests/test_classifier_keywords.py tests/test_open_questions.py tests/test_vendor_doc_sweep.py tests/test_report_schema.py tests/test_google_doc_builder.py tests/test_report_pipeline.py tests/test_rhodes.py tests/test_drive_rhodes_reconciliation.py
+uv run mypy src/due_diligence_reporter/alpha_phasing_plan.py src/due_diligence_reporter/classifier.py src/due_diligence_reporter/open_questions.py src/due_diligence_reporter/vendor_doc_sweep.py src/due_diligence_reporter/report_schema.py src/due_diligence_reporter/google_doc_builder.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/server.py src/due_diligence_reporter/m1_lookup.py src/due_diligence_reporter/rhodes.py
+git diff --check
+```
+
+Results:
+
+- Focused pytest: 310 passed.
+- Scoped ruff: all checks passed.
+- Scoped mypy: no issues in 10 source files.
+- `git diff --check`: no whitespace errors; expected Windows LF-to-CRLF
+  warnings only.
+
 ## 2026-06-08 - Portfolio Snapshot Read Error Action Telemetry
 
 - Portfolio Gaps snapshot read errors were still reaching the dashboard as

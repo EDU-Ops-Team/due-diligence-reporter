@@ -1,8 +1,8 @@
 # Due Diligence Reporter â€” How It Works
 
-**Version:** 4.2.0
+**Version:** 4.3.0
 **Team:** EDU Ops Intelligence
-**Last Updated:** 2026-05-26
+**Last Updated:** 2026-06-08
 
 ---
 
@@ -15,14 +15,14 @@ Current V4.2 behavior:
 - First-round readiness is `SIR found AND no existing DDR`. Missing vendor docs do not block the first publish.
 - Rhodes / LocationOS is the source of truth for site ID, Drive folder URL, P1 DRI / site owner, and registered document links.
 - Open verification items are stored as structured run state and rendered only as `Open Items to Verify` in the DDR body.
-- Existing DDRs are republished in place when one of the five core source types changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, or School Approval report.
+- Existing DDRs are republished in place when one of the six core source types changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, School Approval report, or Alpha Phasing Plan.
 - The active source sweep entrypoint is `scripts/vendor_doc_republish_sweep.py`; it scans active Rhodes sites with linked Drive folders and calls the shared `dd_republish` path.
 
 Legacy mode summary:
 
 1. **Interactive** â€” A human gives it a site name in chat via MCP Hive. The agent gathers data, runs analytical skills, and produces an executive-ready Google Doc.
 2. **Event-Driven (Inbox Scan)** -- A scheduled script scans the `edu.ops@trilogy.com` inbox for new site documents, matches them to Rhodes site records, uploads them to the matched site's M1 folder, and registers the Drive file on the Rhodes site record.
-3. **Daily Sweep (Safety Net â€” 9 AM)** â€” A scheduled script scans all site folders in active DD stages. When a site has an SIR / AI SIR and no existing report, it triggers first-round report generation. Vendor SIR, Building Inspection, RayCon, and other documents upgrade the report through republish paths as they land.
+3. **Daily Sweep (Safety Net - 9 AM)** - A scheduled script scans all site folders in active DD stages. When a site has an SIR / AI SIR and no existing report, it triggers first-round report generation. Vendor SIR, Building Inspection, RayCon, E-Occupancy, School Approval, and Alpha Phasing documents upgrade the report through republish paths as they land.
 
 The agent gathers facts. It does not make recommendations. The decision belongs to the leadership team.
 
@@ -32,13 +32,28 @@ The agent gathers facts. It does not make recommendations. The decision belongs 
 
 The V4 DD Report is a **structured executive one-pager** -- not the multi-page narrative of the original report. It uses structured checklists, pick-menu dimensions, and bare values instead of prose paragraphs.
 
-**56 template tokens** across three sections:
+**61 template tokens** across three sections:
 
 | Section | Count | What it covers |
 |---------|-------|----------------|
 | **meta** | 8 | Site name, address, school type, marketing name, report date, prepared by, site ID, Drive folder link |
-| **exec** | 40 | "Can this school be open in time for the current school year?" card, direct answer, two build scenarios, detailed cost breakdown, lease conditions, trade-offs |
-| **sources** | 7 | Links to SIR, Building Inspection, Block Plan, site record, E-Occupancy Assessment, School Approval Assessment, and Opening Plan |
+| **exec** | 45 | "Can this school be open in time for the current school year?" card, direct answer, two build scenarios, Alpha Phasing Plan summary, detailed cost breakdown, lease conditions, trade-offs |
+| **sources** | 8 | Links to SIR, Building Inspection, Block Plan, site record, E-Occupancy Assessment, School Approval Assessment, Opening Plan, and Alpha Phasing Plan |
+
+### Alpha Phasing Plan
+
+Run `apply_alpha_phasing_plan_skill` after the source reads and the E-Occupancy, School Approval, and RayCon context are available, but before `create_dd_report`. This is an enrichment step, not a first-round publish blocker and not part of the final vendor-readiness gate.
+
+The tool publishes an Excel workbook in the site's M1 folder, auto-registers the workbook on the Rhodes site record as an `other` support document for the `acquireProperty` milestone when `site_id` is available, and returns a DDR source link plus a compact Buildout Analysis summary:
+
+- `sources.alpha_phasing_plan_link`
+- `exec.alpha_phasing_phase_i_scope`
+- `exec.alpha_phasing_phase_ii_scope`
+- `exec.alpha_phasing_phase_ii_allowance`
+- `exec.alpha_phasing_recommended_timing`
+- `exec.alpha_phasing_quality_bar_status`
+
+If the confirmed source of truth, quality-bar target, opening target date, Phase I opening scope, or Phase II deferred scope is missing, the tool returns concrete `verification.open_items` instead of creating generic Phase II line items.
 
 ### "Can this school be open in time for the current school year?" card
 
@@ -136,7 +151,7 @@ Claude AI Agent â—„â”€â”€â”€â”€â”€â”€â”€
 â”‚  â”œâ”€ read_drive_document      (Drive file reader)         â”‚
 â”‚  â”œâ”€ apply_e_occupancy_skill  (E-Occ scoring)             â”‚
 â”‚  â”œâ”€ apply_school_approval_skill (State registration)     â”‚
-â”‚  â”œâ”€ get_cost_estimate        (RayCon API)                â”‚
+â”‚  â”œâ”€ apply_alpha_phasing_plan_skill (Phasing workbook)    â”‚
 â”‚  â”œâ”€ create_dd_report         (Template copy + fill)      â”‚
 â”‚  â”œâ”€ check_site_readiness     (Doc presence gate)         â”‚
 â”‚  â”œâ”€ check_report_completeness (Token scan)               â”‚
@@ -197,6 +212,7 @@ For each unprocessed email with PDF attachments:
 | `building_inspection` | `propertyConditionAssessment` | `acquireProperty` |
 | `block_plan` | `floorPlan` | `acquireProperty` |
 | `isp` | `other` | `acquireProperty` |
+| `alpha_phasing_plan_report` | `other` | `acquireProperty` |
 
 Current Phase 2 behavior uses the matched Rhodes site record from Phase 1 (`site_title`, `matched_site_id`, address, and Drive folder URL). Older references below to site matching being inactive are stale and retained only until this process doc is fully cleaned up.
 
@@ -212,7 +228,7 @@ Material automation outcomes render through `src/due_diligence_reporter/automati
 
 The read-only `portfolio_automation_gap_snapshot` MCP tool rolls those Rhodes records up across active sites. It reads Rhodes-linked Drive folder status, the site's current P1 milestone, Rhodes' milestone-specific missing-document breakdown, `AutomationEvent v1` notes, pending automation review tasks, and P1 DRI assignment status, then returns per-site gap reasons plus portfolio totals. Document gaps are only reported for the current milestone, so future-milestone documents are not called out before the site reaches that work. It does not write to Rhodes, Drive, Gmail, or Chat. Operators can run the same check with `uv run ddr portfolio-gaps`; the `Portfolio Automation Gaps` workflow runs the check on weekdays, stores both a text summary and JSON artifact, and posts a compact Google Chat summary when the Rhodes-backed snapshot contains gaps.
 
-**Drive-to-Rhodes reconciliation:** `scripts/drive_rhodes_reconciliation.py` is the safety sweep for files that already exist in a site's `M1 - Acquire Property` folder. It loads Rhodes-linked sites, scans each M1 folder, classifies recognized DDR source files, and idempotently registers missing Rhodes document records by Drive file ID. The scheduled `Drive Rhodes Reconciliation` workflow runs this backfill on weekdays; manual runs can pass `--dry-run` / workflow `dry_run=true` to report what would be registered without writing to Rhodes. Generated or unmapped reports are surfaced as skipped rows instead of being forced into unsafe Rhodes document types.
+**Drive-to-Rhodes reconciliation:** `scripts/drive_rhodes_reconciliation.py` is the safety sweep for files that already exist in a site's `M1 - Acquire Property` folder. It loads Rhodes-linked sites, scans each M1 folder, classifies recognized DDR source files, and idempotently registers missing Rhodes document records by Drive file ID. The scheduled `Drive Rhodes Reconciliation` workflow runs this backfill on weekdays; manual runs can pass `--dry-run` / workflow `dry_run=true` to report what would be registered without writing to Rhodes. Generated support documents are registered when they have an explicit mapping, such as Alpha Phasing Plan -> `other` / `acquireProperty`; unmapped reports are surfaced as skipped rows instead of being forced into unsafe Rhodes document types.
 
 ### Phase 2 â€” Per-Site Pipeline
 
@@ -376,7 +392,7 @@ team can run the review process in `docs/process/sir-learning-loop.md`.
 
 ### Step 5 â€” Run Skill Tools
 
-Three skill tools analyze the source data and produce structured outputs. The first two auto-publish full assessment documents to the site's Drive folder when `site_name` and `drive_folder_url` are provided.
+Three skill tools analyze the source data and produce structured outputs. E-Occupancy and School Approval publish Google Docs; Alpha Phasing publishes an Excel workbook. These enrichment tools should run after source reads and before `create_dd_report`.
 
 **E-Occupancy Skill** â€” `apply_e_occupancy_skill(building_type_description, stories, ..., ibc_occupancy_group, fire_area_sqft, has_below_grade_space, already_sprinklered, construction_type, max_travel_distance_ft, existing_exit_count, projected_occupant_load, site_name, drive_folder_url)`
 1. Loads the hosted `ease-of-conversion` skill and rating-band reference from Ops-Skills (`OPS_SKILLS_REPO_PATH`, the sibling Ops-Skills checkout, or the installed Ops Skills plugin cache)
@@ -393,10 +409,13 @@ Three skill tools analyze the source data and produce structured outputs. The fi
 2. Applies the hosted skill baseline/rules version for approval type, archetype, gating status, timeline, and required steps
 3. Publishes assessment â†’ `sources.school_approval_link`
 
-**Cost Estimate** â€” `get_cost_estimate(total_building_sf, rooms=[...])`
-1. Uses ISP room list if available; otherwise auto-generates rooms from SF
-2. Calls Building Optimizer Pricing API at two finish levels
-3. Returns per-tier cost estimates
+**Alpha Phasing Plan** - `apply_alpha_phasing_plan_skill(site_name, site_address, drive_folder_url, source_of_truth, quality_bar_target, opening_target_date, must_complete_before_opening, deferred_scopes, ...)`
+1. Loads the hosted `alpha-phasing-plan` skill from Ops-Skills.
+2. Requires confirmed Phase I opening scope and confirmed Phase II deferred scope.
+3. Publishes a workbook with Executive Summary, Quality Bar Matrix, Phase I Budget Schedule, Phase II Budget Schedule, Render Deck Inputs, and Source Notes tabs.
+4. Registers the workbook on Rhodes as `other` / `acquireProperty` when the pipeline has a `site_id`.
+5. Returns `sources.alpha_phasing_plan_link` and compact `exec.alpha_phasing_*` summary fields.
+6. If minimum inputs are missing, returns concrete `verification.open_items` and does not publish generic Phase II scope.
 
 ---
 
@@ -517,7 +536,7 @@ For each site folder in the Drive root:
   3. If report exists -> skip
   4. If ready -> run Claude agent loop:
      a. check_site_readiness -> list_drive_documents -> read available first-round sources
-     b. apply_e_occupancy_skill + apply_school_approval_skill + get_cost_estimate
+     b. apply_e_occupancy_skill + apply_school_approval_skill + apply_alpha_phasing_plan_skill when confirmed phasing inputs exist
      c. create_dd_report (with normalize_report_data + compute_deltas)
      d. check_report_completeness
      e. If complete -> send first/final email only when the email gate passes
@@ -592,7 +611,7 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 | File | What It Is |
 |------|-----------|
 | `docs/prompts/prompt_v4.md` | Agent system prompt -- V4 first-round workflow, exec summary format, report data schema |
-| `src/due_diligence_reporter/server.py` | MCP server â€” 13 tools + embedded skill logic |
+| `src/due_diligence_reporter/server.py` | MCP server - Drive, Rhodes, skill publisher, DDR rendering, and notification tools |
 | `src/due_diligence_reporter/report_pipeline.py` | Shared pipeline â€” readiness check, Claude agent loop, notifications |
 | `src/due_diligence_reporter/report_schema.py` | Template token list (28), alias map (26), `normalize_report_data()`, `compute_deltas()` |
 | `src/due_diligence_reporter/classifier.py` | Three-tier document classification (regex â†’ LLM filename â†’ LLM content) |
@@ -605,7 +624,7 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 | `src/due_diligence_reporter/utils.py` | PDF extraction, placeholder builder, email, Google Chat |
 | `scripts/daily_dd_check.py` | Daily sweep â€” stage-filtered readiness check + report pipeline |
 | `scripts/scan_inbox.py` | Inbox scan + per-site report pipeline trigger |
-| `scripts/vendor_doc_republish_sweep.py` | Active source sweep for vendor/RayCon/E-Occupancy/School Approval updates |
+| `scripts/vendor_doc_republish_sweep.py` | Active source sweep for vendor/RayCon/E-Occupancy/School Approval/Alpha Phasing updates |
 | `tests/test_report_schema.py` | Schema integrity + normalization + delta tests (24 tests) |
 | `tests/test_report_pipeline.py` | Pipeline tool routing + readiness tests (13 tests) |
 | `tests/test_inbox_scanner.py` | Inbox scanner tests (19 tests) |

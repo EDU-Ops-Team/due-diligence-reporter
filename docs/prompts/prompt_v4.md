@@ -45,8 +45,8 @@ The first-round scope is:
   returned `drive_folder_url`. Do not invent folder IDs, document IDs, site IDs,
   or links.
 - Publish first-round DDRs from an AI SIR / research baseline when no current
-  DD report exists. Do not wait for vendor SIR, Building Inspection, RayCon, or
-  downstream reports.
+  DD report exists. Do not wait for vendor SIR, Building Inspection, RayCon,
+  Alpha Phasing Plan, or downstream reports.
 - Do not fabricate missing facts. Use sourced gap labels and add open items.
 - Do not compute construction costs yourself. RayCon cost and schedule values
   come from a RayCon Scenario report or team-provided sourced override.
@@ -71,13 +71,19 @@ The first-round scope is:
 4. Read the AI SIR / SIR first. If no SIR or AI SIR baseline exists, do not
    create the report.
 5. Read any relevant available documents: Building Inspection, Block Plan,
-   E-Occupancy report, School Approval report, RayCon Scenario report, Opening
-   Plan, DD report, or other source files tied to this site.
+   E-Occupancy report, School Approval report, RayCon Scenario report, Alpha
+   Phasing Plan, Opening Plan, DD report, or other source files tied to this site.
 6. If a current DD report already exists, do not create a duplicate unless the
    run is explicitly a republish.
-7. Build `report_data` using exact current template token keys.
-8. Build `token_evidence` with short source support for every material field.
-9. Call `create_dd_report(site_name, drive_folder_url, report_data,
+7. If confirmed phasing inputs exist, call `apply_alpha_phasing_plan_skill`
+   after source reads and before `create_dd_report`. Pass `site_id` when Rhodes
+   context supplied one so the workbook is registered as an `other` support
+   document for `acquireProperty`. If required phasing inputs are missing, let
+   the tool return concrete `verification.open_items`; do not invent Phase II
+   scope or generic allowances.
+8. Build `report_data` using exact current template token keys.
+9. Build `token_evidence` with short source support for every material field.
+10. Call `create_dd_report(site_name, drive_folder_url, report_data,
    site_address=site_address, token_evidence=evidence)` so the builder can
    resolve the required REBL Site ID deterministically.
 
@@ -95,6 +101,7 @@ Use `doc_type` from `list_drive_documents`:
 | `e_occupancy_report` | Occupancy conversion score, IBC path, and occupancy blockers. |
 | `school_approval_report` | State education approval type, timeline, and gating requirements. |
 | `raycon_scenario_report` | Authoritative scenario capex and construction timeline values. |
+| `alpha_phasing_plan_report` | Published Alpha Phasing Plan workbook and compact Phase I / Phase II buildout summary. |
 | `opening_plan_report` | Existing opening-plan source link only. Do not generate a new opening plan in the normal DDR run. |
 | `dd_report` | Existing/generated report; do not use as source evidence for a new DDR. |
 | `capacity_brainlift_report` | Historical context only. Do not generate a new Capacity Brainlift. |
@@ -109,6 +116,7 @@ Use source documents by human label in report text and source notes:
 - `E-Occupancy Report`
 - `School Approval Report`
 - `RayCon Scenario`
+- `Alpha Phasing Plan`
 - `Opening Plan`
 - `Project note <MM/DD>`
 
@@ -141,9 +149,9 @@ Do not write vague items like `Need more research` or `Vendor docs pending`.
 
 The system stores these items as structured open-question state. Do not include
 question IDs, run IDs, fingerprints, or closure metadata in the report text.
-When a vendor SIR, Building Inspection, RayCon scenario, E-Occupancy report, or
-School Approval report arrives, the pipeline republish process is responsible
-for closing items after a validated rerun.
+When a vendor SIR, Building Inspection, RayCon scenario, E-Occupancy report,
+School Approval report, or Alpha Phasing Plan arrives, the pipeline republish
+process is responsible for closing items after a validated rerun.
 
 ---
 
@@ -331,6 +339,44 @@ affects the first-round answer.
 
 ---
 
+## Alpha Phasing Plan Rules
+
+Alpha Phasing is an enrichment step, not a first-round publish blocker. Run
+`apply_alpha_phasing_plan_skill` only after source reads and any available
+E-Occupancy, School Approval, and RayCon context are available.
+
+When a Rhodes site ID is available, pass it to the tool. The generated workbook
+is a DDR support document and is logged to Rhodes as `docType=other` with
+`milestone=acquireProperty` until LocationOS exposes a more specific type.
+
+Minimum required phasing inputs:
+
+- Site name and address.
+- Confirmed source of truth or budget tracker.
+- Quality-bar target.
+- Opening target date.
+- Phase I scope required before opening.
+- Confirmed Phase II deferred scopes.
+
+Do not pre-populate Phase II line items with generic assumptions. If confirmed
+deferred scope is absent, call the tool with the missing fields so it returns
+`verification.open_items`; do not create a placeholder workbook.
+
+When the tool succeeds, copy all returned `report_data_fields` into
+`report_data`. The DDR renders the compact phasing summary under Buildout
+Analysis and the workbook link under Referenced Reports.
+
+Use these tokens:
+
+- `sources.alpha_phasing_plan_link`
+- `exec.alpha_phasing_phase_i_scope`
+- `exec.alpha_phasing_phase_ii_scope`
+- `exec.alpha_phasing_phase_ii_allowance`
+- `exec.alpha_phasing_recommended_timing`
+- `exec.alpha_phasing_quality_bar_status`
+
+---
+
 ## Narrative Fields
 
 `exec.acquisition_conditions`:
@@ -401,6 +447,16 @@ Use these tokens for both `fastest_open` and `max_capacity`:
 - `exec.<scenario>_capex`
 - `exec.<scenario>_open_date`
 
+### Alpha Phasing Summary
+
+| Token | Source |
+|---|---|
+| `exec.alpha_phasing_phase_i_scope` | `apply_alpha_phasing_plan_skill` |
+| `exec.alpha_phasing_phase_ii_scope` | `apply_alpha_phasing_plan_skill` |
+| `exec.alpha_phasing_phase_ii_allowance` | `apply_alpha_phasing_plan_skill` |
+| `exec.alpha_phasing_recommended_timing` | `apply_alpha_phasing_plan_skill` |
+| `exec.alpha_phasing_quality_bar_status` | `apply_alpha_phasing_plan_skill` |
+
 ### Cost Breakdown
 
 Use the cost category token patterns in the Scenario and Cost Rules section.
@@ -423,6 +479,7 @@ Use the cost category token patterns in the Scenario and Cost Rules section.
 | `sources.e_occupancy_link` | E-Occupancy report Drive link |
 | `sources.school_approval_link` | School Approval report Drive link |
 | `sources.opening_plan_link` | Existing Opening Plan link if found |
+| `sources.alpha_phasing_plan_link` | Alpha Phasing Plan workbook link if published |
 
 ---
 

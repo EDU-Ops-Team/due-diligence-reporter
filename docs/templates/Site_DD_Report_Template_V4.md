@@ -34,6 +34,14 @@
 | **Open Date** | {{exec.fastest_open_open_date}} | {{exec.max_capacity_open_date}} |
 | **CAPEX** | {{exec.fastest_open_capex}} | {{exec.max_capacity_capex}} |
 
+| Alpha Phasing Plan |
+| :---- |
+| **Phase I Opening Scope:** {{exec.alpha_phasing_phase_i_scope}} |
+| **Phase II Deferred Scope:** {{exec.alpha_phasing_phase_ii_scope}} |
+| **Phase II Allowance:** {{exec.alpha_phasing_phase_ii_allowance}} |
+| **Recommended Phase II Timing:** {{exec.alpha_phasing_recommended_timing}} |
+| **Quality Bar Status:** {{exec.alpha_phasing_quality_bar_status}} |
+
 | Detailed Cost Breakdown |
 | :---- |
 
@@ -68,6 +76,7 @@
 | **Ease of Conversion Report** | {{sources.e_occupancy_link}} |
 | **School Approval Report** | {{sources.school_approval_link}} |
 | **Opening Plan** | {{sources.opening_plan_link}} |
+| **Alpha Phasing Plan** | {{sources.alpha_phasing_plan_link}} |
 
 ## **Source Notes**
 

@@ -76,6 +76,22 @@ def test_canonicalize_site_tool_input_adds_address_for_school_approval() -> None
     assert canonical["address"] == "421 E 11th St, Tulsa, OK 74120"
 
 
+def test_canonicalize_site_tool_input_adds_context_for_alpha_phasing() -> None:
+    canonical = _canonicalize_site_tool_input(
+        "apply_alpha_phasing_plan_skill",
+        {"site_name": "Wrong", "drive_folder_url": "wrong"},
+        site_title="Alpha Tulsa",
+        drive_folder_url="https://drive.google.com/drive/folders/site123",
+        site_address="421 E 11th St, Tulsa, OK 74120",
+        site_id="SITE1",
+    )
+
+    assert canonical["site_name"] == "Alpha Tulsa"
+    assert canonical["drive_folder_url"] == "https://drive.google.com/drive/folders/site123"
+    assert canonical["site_address"] == "421 E 11th St, Tulsa, OK 74120"
+    assert canonical["site_id"] == "SITE1"
+
+
 def test_dd_report_event_frequency_cap_blocks_two_business_days(tmp_path) -> None:
     _write_prior_report_event_manifest(
         tmp_path,
@@ -1474,6 +1490,7 @@ class TestProcessSitePipeline:
         assert result.rhodes_report_event is not None
         assert result.rhodes_report_event["rhodes_note_id"] == "NOTE1"
         assert result.quality_band in {"green", "yellow", "orange", "red"}
+        assert mock_agent.call_args.kwargs["site_id"] == "SITE1"
         assert not any(step.step.startswith("publish.") for step in result.steps)
         gc.upload_file_to_folder.assert_not_called()
 
@@ -1490,6 +1507,7 @@ class TestCheckSiteReadinessDirect:
             {"id": "m1-bi", "name": "Alpha Keller Building Inspection Report.pdf"},
             {"id": "dd-1", "name": "Alpha Keller DD Report - 04/20/2026"},
             {"id": "eocc-1", "name": "E-Occupancy Assessment - Alpha Keller"},
+            {"id": "phase-1", "name": "Alpha Phasing Plan - Alpha Keller.xlsx"},
         ]
 
         result = check_site_readiness_direct(
@@ -1504,6 +1522,7 @@ class TestCheckSiteReadinessDirect:
         assert result["isp_found"] is False
         assert result["report_exists"] is True
         assert result["e_occupancy_report_found"] is True
+        assert result["alpha_phasing_plan_report_found"] is True
 
     def test_falls_back_to_shared_cache_when_m1_missing(self):
         # When the site folder has no source docs, the legacy shared-folder
@@ -1888,9 +1907,12 @@ class TestAgentToolMerging:
             "claude-test",
             drive_folder_url="https://drive.google.com/drive/folders/folder123",
             site_address="5400 Beethoven St, Los Angeles, CA 90066",
+            site_id="SITE1",
         )
 
         assert result["success"] is True
+        user_content = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        assert "Rhodes site ID: SITE1" in user_content
         list_input = mock_route_tool_call_sync.call_args_list[0].args[1]
         assert list_input["site_name"] == "Alpha Los Angeles 5400 Beethoven St"
         assert list_input["site_address"] == "5400 Beethoven St, Los Angeles, CA 90066"
@@ -1899,6 +1921,7 @@ class TestAgentToolMerging:
         assert create_input["site_name"] == "Alpha Los Angeles 5400 Beethoven St"
         assert create_input["drive_folder_url"].endswith("/folder123")
         assert create_input["site_address"] == "5400 Beethoven St, Los Angeles, CA 90066"
+        assert create_input["site_id"] == "SITE1"
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")

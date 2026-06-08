@@ -100,12 +100,14 @@ _SOURCE_DOC_ROWS: list[tuple[str, str]] = [
     ("E-Occupancy Assessment", "sources.e_occupancy_link"),
     ("School Approval Assessment", "sources.school_approval_link"),
     ("Opening Plan", "sources.opening_plan_link"),
+    ("Alpha Phasing Plan", "sources.alpha_phasing_plan_link"),
 ]
 
 _AI_GENERATED_SOURCE_TOKENS: frozenset[str] = frozenset({
     "sources.e_occupancy_link",
     "sources.school_approval_link",
     "sources.opening_plan_link",
+    "sources.alpha_phasing_plan_link",
 })
 
 _SOURCE_WARNING_PATTERNS: tuple[str, ...] = (
@@ -142,6 +144,7 @@ _LINK_GAP_LABELS: dict[str, str] = {
     "sources.e_occupancy_link": "[Not found - E-Occupancy report not yet in Drive folder]",
     "sources.school_approval_link": "[Not found - School Approval Assessment]",
     "sources.opening_plan_link": "[Not found - Opening Plan]",
+    "sources.alpha_phasing_plan_link": "[Not found - Alpha Phasing Plan]",
     "meta.drive_folder_url": "",
 }
 
@@ -158,6 +161,11 @@ _SUMMARY_TOKEN_LABELS: dict[str, str] = {
     "exec.c_construction_timeline": "Construction Timelines",
     "exec.direct_viable_buildout": "Direct Viable Buildout",
     "exec.alpha_fit": "Alpha Fit",
+    "exec.alpha_phasing_phase_i_scope": "Phase I Opening Scope",
+    "exec.alpha_phasing_phase_ii_scope": "Phase II Deferred Scope",
+    "exec.alpha_phasing_phase_ii_allowance": "Phase II Allowance",
+    "exec.alpha_phasing_recommended_timing": "Recommended Phase II Timing",
+    "exec.alpha_phasing_quality_bar_status": "Quality Bar Status",
     "exec.acquisition_conditions": "Acquisition Conditions",
     "exec.tradeoffs_and_deficiencies": "Tradeoffs and Deficiencies",
 }
@@ -839,6 +847,26 @@ def _reference_type_label(token: str) -> str:
     return "Source folder"
 
 
+_ALPHA_PHASING_SUMMARY_ROWS: tuple[tuple[str, str], ...] = (
+    ("Phase I Opening Scope", "exec.alpha_phasing_phase_i_scope"),
+    ("Phase II Deferred Scope", "exec.alpha_phasing_phase_ii_scope"),
+    ("Phase II Allowance", "exec.alpha_phasing_phase_ii_allowance"),
+    ("Recommended Phase II Timing", "exec.alpha_phasing_recommended_timing"),
+    ("Quality Bar Status", "exec.alpha_phasing_quality_bar_status"),
+)
+
+
+def _has_alpha_phasing_summary(replacements: dict[str, str]) -> bool:
+    """Return True when the DDR has Alpha Phasing content worth rendering."""
+
+    if str(replacements.get("sources.alpha_phasing_plan_link") or "").strip():
+        return True
+    return any(
+        str(replacements.get(token) or "").strip()
+        for _label, token in _ALPHA_PHASING_SUMMARY_ROWS
+    )
+
+
 # ---------------------------------------------------------------------------
 # Partial-on-purpose banner
 # ---------------------------------------------------------------------------
@@ -1376,6 +1404,53 @@ def build_dd_report_doc(
             _batch_update(docs_service, doc_id, style_requests)
 
     # ── Phase 5: Cost Breakdown section ──────────────────────────────────
+    if _has_alpha_phasing_summary(replacements):
+        doc = docs_service.documents().get(documentId=doc_id).execute()
+        body_content = doc.get("body", {}).get("content", [])
+        end_idx = _doc_end_index(body_content)
+
+        b4 = _DocBuilder(start_index=end_idx)
+        b4.insert_text("\n")
+        b4.insert_heading("Alpha Phasing Plan", level=3)
+        for label, token in _ALPHA_PHASING_SUMMARY_ROWS:
+            value = _resolve_value(replacements, token, "")
+            if not value.strip():
+                continue
+            label_start, label_end = b4.insert_text(f"{label}: ")
+            b4.style_text(
+                label_start,
+                label_end,
+                bold=True,
+                font_size=10,
+                font_family="Arial",
+            )
+            value_start, value_end = b4.insert_text(f"{value}\n")
+            b4.style_text(
+                value_start,
+                value_end - 1,
+                font_size=10,
+                font_family="Arial",
+            )
+        display, url = _resolve_link_value(replacements, "sources.alpha_phasing_plan_link")
+        if url:
+            label_start, label_end = b4.insert_text("Workbook: ")
+            b4.style_text(
+                label_start,
+                label_end,
+                bold=True,
+                font_size=10,
+                font_family="Arial",
+            )
+            link_start, link_end = b4.insert_text(f"{display}\n")
+            b4.style_text(
+                link_start,
+                link_end - 1,
+                font_size=10,
+                font_family="Arial",
+                link_url=url,
+            )
+        _batch_update(docs_service, doc_id, b4.requests)
+
     doc = docs_service.documents().get(documentId=doc_id).execute()
     body_content = doc.get("body", {}).get("content", [])
     end_idx = _doc_end_index(body_content)
