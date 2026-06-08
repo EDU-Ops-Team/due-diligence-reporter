@@ -14,10 +14,14 @@ from pathlib import Path
 from typing import Any, cast
 
 AADP_SOURCE = "alpha-analysis-downstream-processing"
+DDR_SOURCE = "due-diligence-reporter"
 PORTFOLIO_GAPS_SOURCE = "portfolio-gaps"
 ACTION_LABELS = {
     "missing_p1_dri": "Missing P1 DRI",
     "missing_drive_folder": "Missing Drive folder",
+}
+DDR_ACTION_LABELS = {
+    "missing_current_milestone_documents": "Missing current-milestone documents",
 }
 MAX_ERROR_LENGTH = 240
 
@@ -119,6 +123,68 @@ def mark_aadp_remediation_unavailable(
     return enriched
 
 
+def mark_ddr_document_gap_actions(
+    snapshot: dict[str, Any],
+    *,
+    as_of: str,
+) -> dict[str, Any]:
+    """Emit DDR-owned action telemetry for current-milestone document gaps."""
+
+    enriched = copy.deepcopy(snapshot)
+    remediation: dict[str, Any] = {
+        "source": DDR_SOURCE,
+        "status": "skipped",
+        "as_of": as_of,
+        "attempted_count": 0,
+        "needs_review_count": 0,
+    }
+    for site in _list_dicts(enriched.get("sites")):
+        for gap_type, label in DDR_ACTION_LABELS.items():
+            if gap_type not in _gap_reasons(site):
+                continue
+            remediation["attempted_count"] = int(remediation["attempted_count"]) + 1
+            action = {
+                "schema_version": "action_record.v1",
+                "source": DDR_SOURCE,
+                "source_workflow": PORTFOLIO_GAPS_SOURCE,
+                "owning_workflow": "ddr",
+                "workflow_owner": "ddr",
+                "gap_type": gap_type,
+                "alert": label,
+                "status": "needs_review",
+                "as_of": as_of,
+                "site_id": _site_id(site),
+                "site_name": _site_name(site),
+                "current_milestone": _current_milestone_label(site),
+                "action_requested": (
+                    "Review or associate the missing current-milestone source "
+                    "documents for this site."
+                ),
+                "action_taken": (
+                    "DDR flagged current-milestone source document follow-up; "
+                    "no document readback has been verified yet."
+                ),
+                "remediation_summary": (
+                    "DDR flagged current-milestone source document follow-up; "
+                    "no document readback has been verified yet."
+                ),
+                "review_required": True,
+                "review_reason": (
+                    "Current-milestone source documents are missing or not associated "
+                    "in Rhodes/Drive."
+                ),
+                "error_summary": "",
+                "retryable": False,
+            }
+            _replace_action(site, action)
+            remediation["needs_review_count"] = int(remediation["needs_review_count"]) + 1
+
+    if int(remediation["attempted_count"]):
+        remediation["status"] = "needs_review"
+    enriched["document_gap_remediation"] = remediation
+    return enriched
+
+
 def _load_aadp_remediator(aadp_repo: Path) -> Callable[..., dict[str, Any]] | None:
     src = aadp_repo / "src"
     if not src.is_dir():
@@ -137,12 +203,13 @@ def _load_aadp_remediator(aadp_repo: Path) -> Callable[..., dict[str, Any]] | No
 def _replace_action(site: dict[str, Any], action: dict[str, Any]) -> None:
     existing = _list_dicts(site.get("remediation_actions"))
     key = _action_key(action)
+    source = str(action.get("source") or "")
     site["remediation_actions"] = [
         item
         for item in existing
         if not (
             _action_key(item) == key
-            and str(item.get("source") or "") == AADP_SOURCE
+            and str(item.get("source") or "") == source
         )
     ]
     site["remediation_actions"].append(action)
@@ -163,6 +230,13 @@ def _site_id(site: dict[str, Any]) -> str:
 
 def _site_name(site: dict[str, Any]) -> str:
     return _first_str(site, "site_name", "name", "title", "marketingName") or "Unknown site"
+
+
+def _current_milestone_label(site: dict[str, Any]) -> str:
+    current = _dict(site.get("current_milestone"))
+    required_documents = _dict(site.get("required_documents"))
+    milestone = current or _dict(required_documents.get("milestone"))
+    return _first_str(milestone, "label", "key")
 
 
 def _first_str(value: dict[str, Any], *keys: str) -> str:
@@ -235,8 +309,10 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=bool(args.dry_run),
         max_actions=max(0, int(args.max_actions)),
     )
+    enriched = mark_ddr_document_gap_actions(enriched, as_of=_iso(_utc_now()))
     _write_json(output_path, enriched)
     remediation = _dict(enriched.get("remediation"))
+    document_gap_remediation = _dict(enriched.get("document_gap_remediation"))
     print(
         "AADP remediation trigger "
         f"status={remediation.get('status', 'unknown')} "
@@ -244,6 +320,11 @@ def main(argv: list[str] | None = None) -> int:
         f"success={remediation.get('success_count', 0)} "
         f"needs_review={remediation.get('needs_review_count', 0)} "
         f"errors={remediation.get('error_count', 0)}"
+    )
+    print(
+        "DDR document gap action emission "
+        f"status={document_gap_remediation.get('status', 'unknown')} "
+        f"needs_review={document_gap_remediation.get('needs_review_count', 0)}"
     )
     return 0
 

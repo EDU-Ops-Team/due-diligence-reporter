@@ -1,5 +1,43 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-08 - Portfolio Document Gap Action Telemetry
+
+Portfolio Gaps already routes missing P1 DRI and Drive-folder alerts to AADP,
+but missing current-milestone document alerts were still falling back to the
+dashboard's `Not routed yet` state. The enrichment wrapper now emits a
+DDR-owned ActionRecord v1 row for those document gaps, so operators can see the
+owning workflow, status, action taken, and as-of time.
+
+Changed:
+
+- `scripts/run_aadp_portfolio_gap_remediation.py` now appends DDR-owned
+  `needs_review` actions for `missing_current_milestone_documents` after AADP
+  remediation enrichment runs.
+- The action text is sanitized and does not enumerate missing document names in
+  the public action row; it states that DDR flagged current-milestone source
+  document follow-up and no document readback has been verified yet.
+- Existing AADP P1 DRI / Drive-folder remediation actions are preserved because
+  action replacement is now scoped by both gap type and source workflow.
+- `tests/test_aadp_portfolio_gap_remediation_trigger.py` covers DDR document
+  gap action emission and preservation of existing AADP actions.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_aadp_portfolio_gap_remediation_trigger.py tests/test_workflow_contracts.py -q --basetemp C:\tmp\ddr-doc-gap-actions-tests-2
+uv run ruff check scripts/run_aadp_portfolio_gap_remediation.py tests/test_aadp_portfolio_gap_remediation_trigger.py tests/test_workflow_contracts.py
+uv run mypy scripts/run_aadp_portfolio_gap_remediation.py
+git diff --check
+```
+
+Results:
+
+- Focused pytest: 13 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in the enrichment wrapper; the repo still prints the known
+  unused pyproject override note.
+- `git diff --check`: passed with expected Windows LF-to-CRLF notices only.
+
 ## 2026-06-08 - DDR ActionRecord v1 Manifest Emission
 
 Greg wants the dashboard to show not only workflow health, but the actual alert,
