@@ -171,6 +171,28 @@ def test_reconciliation_dry_run_reports_would_register_without_writing() -> None
     assert rhodes.registered_documents == []
     assert result["rows"][0]["rhodes_doc_type"] == "propertyConditionAssessment"
 
+    telemetry = build_drive_rhodes_reconciliation_telemetry(
+        result,
+        run_id="drive-rhodes-reconciliation-dry-run",
+        started_at="2026-06-08T22:30:00+00:00",
+        finished_at="2026-06-08T22:31:00+00:00",
+        dry_run=True,
+        trigger="workflow_dispatch",
+        workflow_run_url="https://github.com/GFooteGK1/due-diligence-reporter/actions/runs/123",
+    )
+    dry_run_action = next(
+        action
+        for action in telemetry["action_records"]
+        if action["alert_type"] == "document_registration_dry_run"
+    )
+
+    assert dry_run_action["review_required"] is True
+    assert dry_run_action["review_url"].endswith("/actions/runs/123")
+    assert "1 document(s)" in dry_run_action["evidence_summary"]
+    rendered = json.dumps(dry_run_action)
+    assert "https://drive" not in rendered
+    assert "inspection-1" not in rendered
+
 
 def test_reconciliation_skips_site_without_m1_folder() -> None:
     gc = MagicMock()

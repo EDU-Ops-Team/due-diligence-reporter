@@ -265,6 +265,7 @@ def build_drive_rhodes_reconciliation_telemetry(
             run_id=run_id,
             as_of=finished_at,
             dry_run=dry_run,
+            workflow_run_url=workflow_run_url,
             rows=public_rows,
         ),
         "artifacts": [
@@ -371,6 +372,7 @@ def _telemetry_action_records(
     run_id: str,
     as_of: str,
     dry_run: bool,
+    workflow_run_url: str,
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
@@ -460,6 +462,7 @@ def _telemetry_action_records(
                 as_of=as_of,
                 retryable=True,
                 review_reason="Dry-run mode did not mutate Rhodes.",
+                review_url=workflow_run_url,
             )
         )
     if counts["errors"]:
@@ -681,9 +684,10 @@ def _action_record(
     workflow_owner: str = RECONCILIATION_WORKFLOW_ID,
     retryable: bool,
     review_reason: str = "",
+    review_url: str = "",
 ) -> dict[str, Any]:
     review_required = status in {"queued", "needs_review", "blocked", "error"}
-    return {
+    record = {
         "schema_version": "action_record.v1",
         "action_id": f"{RECONCILIATION_WORKFLOW_ID}:{_action_token(run_id)}:{alert_type}",
         "source_workflow": "ddr",
@@ -704,6 +708,9 @@ def _action_record(
         "error_summary": review_reason if status == "error" else "",
         "retryable": retryable,
     }
+    if review_url:
+        record["review_url"] = review_url
+    return record
 
 
 def _public_row(row: dict[str, Any]) -> dict[str, Any]:
