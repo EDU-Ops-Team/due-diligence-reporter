@@ -1,5 +1,43 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-09 - DDR Dry-Run Promotion Review Surface
+
+- Beads issue `ddr-2aa` tracked this slice and is closed locally.
+- Drive Rhodes Reconciliation dry-run aggregate ActionRecords now include
+  `review_url` when the workflow run URL is available. This lets the dashboard
+  mark that a review surface exists without publishing the raw URL.
+- This intentionally does not auto-promote a broad dry run to mutation. The
+  verified dry run found 323 document(s) that would be registered, so this
+  remains review-gated until there is explicit approval or a narrower site
+  filter.
+- Commit pushed to `main`: `1b5b885` (`Mark DDR dry-run actions with review
+  surface`).
+- Safe verification run completed successfully:
+  `Drive Rhodes Reconciliation` GitHub Actions run `27206572885`, triggered
+  with `dry_run=true` on commit `1b5b885`.
+- Downloaded telemetry artifact verified:
+  - status `needs_review`
+  - scanned 63 site(s)
+  - recognized 505 M1 source file(s)
+  - found 23 already linked document(s)
+  - queued 323 document(s) for possible Rhodes registration
+  - dry-run aggregate ActionRecord has `review_required=true` and
+    `review_url` ending in `/actions/runs/27206572885`
+  - no Drive URL, Drive file ID sample, or local path appeared in the dry-run
+    ActionRecord.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_drive_rhodes_reconciliation.py::test_reconciliation_dry_run_reports_would_register_without_writing -q --basetemp C:\tmp\ddr-review-surface-focused
+uv run pytest tests/test_drive_rhodes_reconciliation.py tests/test_workflow_contracts.py -q --basetemp C:\tmp\ddr-review-surface-tests
+uv run ruff check src/due_diligence_reporter/drive_rhodes_reconciliation.py tests/test_drive_rhodes_reconciliation.py
+uv run mypy src/due_diligence_reporter/drive_rhodes_reconciliation.py
+git diff --check
+gh workflow run "Drive Rhodes Reconciliation" --repo GFooteGK1/due-diligence-reporter --ref main -f dry_run=true
+gh run watch 27206572885 --repo GFooteGK1/due-diligence-reporter --exit-status
+```
+
 ## 2026-06-08 - Portfolio Document Gap No-Source Follow-Up Actions
 
 - Beads issue `ddr-wn7` tracks this slice.
