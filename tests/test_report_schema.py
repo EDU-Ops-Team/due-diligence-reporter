@@ -389,6 +389,12 @@ class TestPipelineToolDefinitions:
         tool_names = [tool["name"] for tool in TOOL_DEFINITIONS]
         assert "save_skill_report" in tool_names
 
+    def test_opening_plan_tool_exists(self) -> None:
+        from due_diligence_reporter.report_pipeline import TOOL_DEFINITIONS
+
+        tool_names = [tool["name"] for tool in TOOL_DEFINITIONS]
+        assert "apply_opening_plan_skill" in tool_names
+
     def test_rhodes_owner_lookup_tool_exists(self) -> None:
         from due_diligence_reporter.report_pipeline import TOOL_DEFINITIONS
 

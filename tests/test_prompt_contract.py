@@ -23,7 +23,6 @@ def test_prompt_v4_excludes_stale_workflow_rules() -> None:
     retired_system = "W" + "rike"
     old_report_version = "V" + "3"
     stale_phrases = [
-        "apply_opening_plan_skill",
         "Always** call `send_dd_report_email`",
         "Every DD Report answers four questions",
         "How to Use Me",
@@ -48,7 +47,7 @@ def test_prompt_v4_keeps_first_round_contract() -> None:
     text = _prompt_text()
     required_phrases = [
         "Version:** 4.0.0",
-        "Last Updated:** 2026-05-27",
+        "Last Updated:** 2026-06-09",
         "V4 prompt contract",
         "first-round DDR",
         "current school year (8/12 or 9/8)",
@@ -66,6 +65,10 @@ def test_prompt_v4_keeps_first_round_contract() -> None:
         "Source notes render after the Referenced Reports",
         "does not render in",
         "After `create_dd_report` returns a document, stop.",
+        "apply_opening_plan_skill",
+        "Opening Plan is a normal DDR enrichment step",
+        "still call the tool and let it return",
+        "Always call",
     ]
 
     for phrase in required_phrases:

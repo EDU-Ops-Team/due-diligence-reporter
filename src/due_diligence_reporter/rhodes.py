@@ -265,6 +265,10 @@ DDR_DOC_TYPE_TO_RHODES: dict[str, RhodesDocumentMapping] = {
     ),
     "block_plan": RhodesDocumentMapping("floorPlan", milestone="acquireProperty"),
     "isp": RhodesDocumentMapping("other", milestone="acquireProperty"),
+    "opening_plan_report": RhodesDocumentMapping(
+        "other",
+        milestone="acquireProperty",
+    ),
     "alpha_phasing_plan_report": RhodesDocumentMapping(
         "other",
         milestone="acquireProperty",

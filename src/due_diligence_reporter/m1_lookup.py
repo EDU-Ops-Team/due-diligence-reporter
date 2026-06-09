@@ -37,6 +37,7 @@ M1_RECOGNIZED_DOC_TYPES = {
     "raycon_scenario_json",
     "e_occupancy_report",
     "school_approval_report",
+    "opening_plan_report",
     "alpha_phasing_plan_report",
 }
 

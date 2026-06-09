@@ -1,5 +1,39 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-09 - Opening Plan Integrated Into DDR Publish Flow
+
+- Beads issue `ddr-q75` tracks this implementation slice.
+- Opening Plan now runs as a normal DDR enrichment step after source reads and
+  School Approval context, before Alpha Phasing and `create_dd_report`.
+- `apply_opening_plan_skill` is now exposed to the report-pipeline agent,
+  receives canonical site name, address, Drive folder URL, and Rhodes `site_id`,
+  and returns `report_data_fields["sources.opening_plan_link"]`.
+- The tool now checks the site's M1 folder for an existing Opening Plan before
+  checking `ANTHROPIC_API_KEY`, so republish runs reuse an existing document and
+  avoid duplicates. New or reused Opening Plans are registered to Rhodes as
+  `opening_plan_report` -> `docType=other`, `milestone=acquireProperty` when a
+  `site_id` is available.
+- M1/readiness recognition, prompt contract text, process docs, schema source
+  attribution, Rhodes mapping, and Mermaid process flow were aligned to the new
+  flow.
+
+Validation:
+
+```powershell
+uv run pytest tests/test_opening_plan.py tests/test_report_pipeline.py::test_canonicalize_site_tool_input_adds_context_for_opening_plan tests/test_report_pipeline.py::test_canonicalize_site_tool_input_adds_context_for_alpha_phasing tests/test_report_pipeline.py::test_canonicalize_site_tool_input_does_not_add_site_id_to_create_report tests/test_report_pipeline.py::TestCheckSiteReadinessDirect::test_picks_up_source_docs_from_site_folder_m1 tests/test_prompt_contract.py tests/test_report_schema.py::TestPipelineToolDefinitions tests/test_rhodes.py::test_ddr_doc_type_mapping_covers_inbox_supported_docs -q --basetemp C:\tmp\ddr-opening-plan-tests
+uv run ruff check src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\m1_lookup.py src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\report_schema.py tests\test_opening_plan.py tests\test_report_pipeline.py tests\test_prompt_contract.py tests\test_report_schema.py tests\test_rhodes.py
+uv run mypy src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\m1_lookup.py src\due_diligence_reporter\report_schema.py
+git diff --check
+```
+
+Results:
+
+- Focused pytest: 34 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in 5 source files.
+- `git diff --check`: no whitespace errors; expected Windows LF-to-CRLF
+  warnings only.
+
 ## 2026-06-09 - DDR Dry-Run Promotion Review Surface
 
 - Beads issue `ddr-2aa` tracked this slice and is closed locally.
@@ -36,6 +70,95 @@ uv run mypy src/due_diligence_reporter/drive_rhodes_reconciliation.py
 git diff --check
 gh workflow run "Drive Rhodes Reconciliation" --repo GFooteGK1/due-diligence-reporter --ref main -f dry_run=true
 gh run watch 27206572885 --repo GFooteGK1/due-diligence-reporter --exit-status
+```
+
+## 2026-06-09 - Armonk DDR Vendor-Doc Republish Sweep With Notifications Disabled
+
+- Beads issue `ddr-5ry` tracks this one-off run.
+- Greg asked to run the current DDR process against `Alpha Armonk 355 Main St`
+  without sending Chat or email messages.
+- Ran `scripts/vendor_doc_republish_sweep.py` through a Python wrapper that set
+  `GOOGLE_CHAT_WEBHOOK_URL`, `EMAIL_SENDER`, `EMAIL_APP_PASSWORD`,
+  `DD_REPORT_EMAIL_RECIPIENTS`, and `GLOBAL_EMAIL_CC` to empty strings before
+  importing DDR modules. The settings preflight printed all notification
+  booleans as `False`.
+- The sweep matched one Rhodes site and three material source events:
+  `raycon_scenario`, `school_approval_report`, and `vendor_sir`.
+- All three source-triggered runs stopped at `waiting_on_docs` because
+  `Building Inspection` is still outstanding. No new DDR/candidate document was
+  produced in this run; `report.generate` was skipped with
+  `source_triggered_republish_waiting_on_docs`.
+- Local manifests:
+  - `20260609124315-alpha-armonk-355-main-st-f10619a1`:
+    `raycon_scenario`, quality `94/green`
+  - `20260609124339-alpha-armonk-355-main-st-6d1185f4`:
+    `school_approval_report`, quality `94/green`
+  - `20260609124401-alpha-armonk-355-main-st-5e53f1d7`:
+    `vendor_sir`, quality `94/green`
+- Verification: `uv run ddr status --run-id ...` returned `waiting_on_docs`,
+  failed step `(none)`, SIR review `ready_for_review` for all three manifests.
+  `Select-String` over the three manifests found no `notify.email`,
+  `google_chat`, or `send_dd_report_email` entries.
+- `.dd_republish_state.json` now includes the three Armonk fingerprints, so a
+  normal scheduled sweep will not replay these same source events unless the
+  source modified time/fingerprint changes or an operator runs a force path.
+
+## 2026-06-09 - Armonk DDR Phasing Verification With Notifications Disabled
+
+- Beads issue `ddr-8zq` tracked this verification and is closed locally.
+  Follow-up `ddr-dj0` tracks the remaining Armonk-specific input blocker:
+  confirmed Phase II deferred scope is missing, so the Alpha Phasing workbook
+  cannot be published yet.
+- Greg asked to ignore the missing `Building Inspection` gate temporarily and
+  rerun the DDR process for `Alpha Armonk 355 Main St` without Chat or email
+  messages, to verify the new Alpha Phasing Plan step.
+- Notification safeguards used for the live verification:
+  `GOOGLE_CHAT_WEBHOOK_URL`, `EMAIL_SENDER`, `EMAIL_APP_PASSWORD`,
+  `DD_REPORT_EMAIL_RECIPIENTS`, and `GLOBAL_EMAIL_CC` were blanked before DDR
+  imports; Rhodes report-event posting was monkeypatched to record
+  `operator_disabled_notifications_for_phasing_verification` instead of
+  sending an operator-visible event.
+- First phasing verification run:
+  `20260609125908-alpha-armonk-355-main-st-b2bdff9f` failed in
+  `report.generate` because `_canonicalize_site_tool_input` injected `site_id`
+  into `create_dd_report`, whose server function does not accept that argument.
+  Fixed by only passing `site_id` to `lookup_rhodes_site_owner` and
+  `apply_alpha_phasing_plan_skill`.
+- Second run after the canonicalizer fix:
+  `20260609130704-alpha-armonk-355-main-st-3e70272a` created a protected DDR
+  republish candidate but did not reach the phasing tool because the active
+  prompt still said to call it only "if confirmed phasing inputs exist."
+- Prompt/process fix: `docs/prompts/prompt_v4.md` now requires calling
+  `apply_alpha_phasing_plan_skill` after source reads and before
+  `create_dd_report`; the tool returns `verification.open_items` rather than
+  publishing a placeholder workbook when phasing inputs are incomplete.
+  `docs/process/HOW-IT-WORKS.md` was aligned with that contract.
+- Latest live verification run:
+  `20260609131456-alpha-armonk-355-main-st-50db28ed` completed with
+  status `republish_candidate_created`, failed step `(none)`, quality
+  `81/yellow`, and SIR review `ready_for_review`.
+- Latest candidate details:
+  - Active protected DDR:
+    `https://docs.google.com/document/d/1zDGJCXgFNz3Cy6LMLtP0mvBXS9DObHf03C1SZ4ceyyk/edit?usp=drivesdk`
+  - Candidate DDR:
+    `https://docs.google.com/document/d/1XIQB38AtkJPRSvQb9PuOM5pWcEXPB-FQp06m0bueVqU/edit?usp=drivesdk`
+  - Manifest:
+    `.ddr-runs/20260609131456-alpha-armonk-355-main-st-50db28ed.json`
+- Outcome: the Armonk run now reaches the Alpha Phasing verification path, but
+  it did not publish a workbook because confirmed Phase II deferred scope is
+  absent. The manifest captured the open question:
+  `Confirm Alpha Phasing Plan Phase II deferred scope so the Alpha Phasing Plan workbook can be published.`
+- Verification completed:
+  `uv run ddr status --run-id 20260609131456-alpha-armonk-355-main-st-50db28ed`
+  returned `republish_candidate_created`, failed step `(none)`, quality
+  `81/yellow`.
+
+Validation:
+
+```powershell
+uv run pytest tests/test_report_pipeline.py::test_canonicalize_site_tool_input_adds_context_for_alpha_phasing tests/test_report_pipeline.py::test_canonicalize_site_tool_input_does_not_add_site_id_to_create_report tests/test_prompt_contract.py tests/test_alpha_phasing_plan.py -q --basetemp C:\tmp\ddr-armonk-phasing-tests
+uv run ruff check src\due_diligence_reporter\report_pipeline.py tests\test_report_pipeline.py tests\test_prompt_contract.py tests\test_alpha_phasing_plan.py
+git diff --check
 ```
 
 ## 2026-06-08 - Portfolio Document Gap No-Source Follow-Up Actions

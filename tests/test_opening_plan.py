@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import asyncio
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from due_diligence_reporter.server import (
     _OPENING_PLAN_SKILL_DIR,
     _build_opening_plan_prompt,
     _load_opening_plan_skill_files,
+    apply_opening_plan_skill,
 )
-
 
 # ---------------------------------------------------------------------------
 # Skill file loading
@@ -147,11 +145,7 @@ class TestApplyOpeningPlanSkill:
     in this test suite.
     """
 
-    import asyncio as _asyncio
-
     def _call(self, **kwargs):
-        import asyncio
-        from due_diligence_reporter.server import apply_opening_plan_skill
         return asyncio.run(apply_opening_plan_skill(**kwargs))
 
     def test_missing_site_name_returns_error(self):
@@ -197,10 +191,19 @@ class TestApplyOpeningPlanSkill:
 
         mock_gc = MagicMock()
         mock_gc.list_subfolders.return_value = [{"name": "M1 - Permitting", "id": "m1_folder_id"}]
+        mock_gc.list_files_in_folder.return_value = []
         mock_gc.create_document.return_value = {
             "id": "new_doc_id",
             "webViewLink": "https://docs.google.com/document/d/new_doc_id",
         }
+        register_rhodes = MagicMock(
+            return_value={
+                "status": "registered",
+                "rhodes_doc_type": "other",
+                "rhodes_milestone": "acquireProperty",
+                "rhodes_document_id": "DOC1",
+            }
+        )
 
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
             with patch("anthropic.Anthropic") as mock_anthropic_mod:
@@ -211,17 +214,70 @@ class TestApplyOpeningPlanSkill:
                 with patch(
                     "due_diligence_reporter.server._make_google_client",
                     return_value=mock_gc,
+                ), patch(
+                    "due_diligence_reporter.server.register_rhodes_document_for_upload",
+                    register_rhodes,
                 ):
                     result = self._call(
                         site_name="Alpha Test",
                         site_address="123 Main St",
                         sir_content="SIR CONTENT",
                         drive_folder_url="https://drive.google.com/drive/folders/abc123",
+                        site_id="SITE1",
                     )
 
         assert result["status"] == "success"
+        assert result["doc_type"] == "opening_plan_report"
         assert result["doc_url"] == "https://docs.google.com/document/d/new_doc_id"
+        assert (
+            result["report_data_fields"]["sources.opening_plan_link"]
+            == "https://docs.google.com/document/d/new_doc_id"
+        )
+        assert result["rhodes_registration"]["status"] == "registered"
         mock_gc.create_document.assert_called_once()
         call_kwargs = mock_gc.create_document.call_args
         assert "Opening Plan - Alpha Test" in str(call_kwargs)
         assert call_kwargs.kwargs.get("folder_id") == "m1_folder_id"
+        register_kwargs = register_rhodes.call_args.kwargs
+        assert register_kwargs["site_id"] == "SITE1"
+        assert register_kwargs["ddr_doc_type"] == "opening_plan_report"
+        assert register_kwargs["source"] == "apply_opening_plan_skill"
+
+    def test_reuses_existing_opening_plan_without_generation(self):
+        mock_gc = MagicMock()
+        mock_gc.list_subfolders.return_value = [{"name": "M1 - Permitting", "id": "m1_folder_id"}]
+        mock_gc.list_files_in_folder.return_value = [
+            {
+                "id": "existing_doc_id",
+                "name": "Opening Plan - Alpha Test",
+                "webViewLink": "https://docs.google.com/document/d/existing_doc_id",
+            }
+        ]
+        register_rhodes = MagicMock(return_value={"status": "already_registered"})
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}):
+            with patch("anthropic.Anthropic") as mock_anthropic_mod:
+                with patch(
+                    "due_diligence_reporter.server._make_google_client",
+                    return_value=mock_gc,
+                ), patch(
+                    "due_diligence_reporter.server.register_rhodes_document_for_upload",
+                    register_rhodes,
+                ):
+                    result = self._call(
+                        site_name="Alpha Test",
+                        site_address="123 Main St",
+                        sir_content="SIR CONTENT",
+                        drive_folder_url="https://drive.google.com/drive/folders/abc123",
+                        site_id="SITE1",
+                    )
+
+        assert result["status"] == "success"
+        assert result["reused_existing"] is True
+        assert result["doc_id"] == "existing_doc_id"
+        assert (
+            result["report_data_fields"]["sources.opening_plan_link"]
+            == "https://docs.google.com/document/d/existing_doc_id"
+        )
+        mock_anthropic_mod.assert_not_called()
+        mock_gc.create_document.assert_not_called()

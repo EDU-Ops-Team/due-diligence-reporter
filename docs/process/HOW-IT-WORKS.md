@@ -212,6 +212,7 @@ For each unprocessed email with PDF attachments:
 | `building_inspection` | `propertyConditionAssessment` | `acquireProperty` |
 | `block_plan` | `floorPlan` | `acquireProperty` |
 | `isp` | `other` | `acquireProperty` |
+| `opening_plan_report` | `other` | `acquireProperty` |
 | `alpha_phasing_plan_report` | `other` | `acquireProperty` |
 
 Current Phase 2 behavior uses the matched Rhodes site record from Phase 1 (`site_title`, `matched_site_id`, address, and Drive folder URL). Older references below to site matching being inactive are stale and retained only until this process doc is fully cleaned up.
@@ -394,7 +395,7 @@ team can run the review process in `docs/process/sir-learning-loop.md`.
 
 ### Step 5 â€” Run Skill Tools
 
-Three skill tools analyze the source data and produce structured outputs. E-Occupancy and School Approval publish Google Docs; Alpha Phasing publishes an Excel workbook. These enrichment tools should run after source reads and before `create_dd_report`.
+Four skill tools analyze the source data and produce structured outputs. E-Occupancy, School Approval, and Opening Plan publish Google Docs; Alpha Phasing publishes an Excel workbook. These enrichment tools should run after source reads and before `create_dd_report`.
 
 **E-Occupancy Skill** â€” `apply_e_occupancy_skill(building_type_description, stories, ..., ibc_occupancy_group, fire_area_sqft, has_below_grade_space, already_sprinklered, construction_type, max_travel_distance_ft, existing_exit_count, projected_occupant_load, site_name, drive_folder_url)`
 1. Loads the hosted `ease-of-conversion` skill and rating-band reference from Ops-Skills (`OPS_SKILLS_REPO_PATH`, the sibling Ops-Skills checkout, or the installed Ops Skills plugin cache)
@@ -410,6 +411,12 @@ Three skill tools analyze the source data and produce structured outputs. E-Occu
 1. Loads the hosted `school-approval` skill from Ops-Skills (`OPS_SKILLS_REPO_PATH`, the sibling Ops-Skills checkout, or the installed Ops Skills plugin cache)
 2. Applies the hosted skill baseline/rules version for approval type, archetype, gating status, timeline, and required steps
 3. Publishes assessment â†’ `sources.school_approval_link`
+
+**Opening Plan** - `apply_opening_plan_skill(site_name, site_address, sir_content, drive_folder_url, site_id, school_approval_data, building_inspection_content, target_open_date)`
+1. Runs the deterministic Pass 1 Opening Plan v2 workflow from the SIR baseline, with School Approval and Building Inspection text when available.
+2. Reuses an existing M1 Opening Plan when present, so republish runs do not create duplicates.
+3. Publishes a Google Doc in the site's M1 folder and registers it on Rhodes as `other` / `acquireProperty` when the pipeline has a `site_id`.
+4. Returns `sources.opening_plan_link` for inclusion in the DDR Referenced Reports table.
 
 **Alpha Phasing Plan** - `apply_alpha_phasing_plan_skill(site_name, site_address, drive_folder_url, source_of_truth, quality_bar_target, opening_target_date, must_complete_before_opening, deferred_scopes, ...)`
 1. Loads the hosted `alpha-phasing-plan` skill from Ops-Skills.
@@ -538,7 +545,7 @@ For each site folder in the Drive root:
   3. If report exists -> skip
   4. If ready -> run Claude agent loop:
      a. check_site_readiness -> list_drive_documents -> read available first-round sources
-     b. apply_e_occupancy_skill + apply_school_approval_skill + apply_alpha_phasing_plan_skill when confirmed phasing inputs exist
+     b. apply_e_occupancy_skill + apply_school_approval_skill + apply_opening_plan_skill + apply_alpha_phasing_plan_skill (Opening Plan reuses existing docs; Alpha Phasing returns open items instead of a workbook when phasing inputs are incomplete)
      c. create_dd_report (with normalize_report_data + compute_deltas)
      d. check_report_completeness
      e. If complete -> send first/final email only when the email gate passes

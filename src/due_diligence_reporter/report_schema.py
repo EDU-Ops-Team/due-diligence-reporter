@@ -282,7 +282,7 @@ TOKEN_SOURCES: dict[str, str] = {
     "exec.acquisition_conditions": "Agent",
     "exec.tradeoffs_and_deficiencies": "Agent",
     "sources.rebl_link": "REBL",
-    "sources.opening_plan_link": "Agent",
+    "sources.opening_plan_link": "Opening Plan",
     "sources.alpha_phasing_plan_link": "Alpha Phasing Plan",
 }
 

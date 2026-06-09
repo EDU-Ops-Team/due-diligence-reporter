@@ -92,6 +92,38 @@ def test_canonicalize_site_tool_input_adds_context_for_alpha_phasing() -> None:
     assert canonical["site_id"] == "SITE1"
 
 
+def test_canonicalize_site_tool_input_adds_context_for_opening_plan() -> None:
+    canonical = _canonicalize_site_tool_input(
+        "apply_opening_plan_skill",
+        {"site_name": "Wrong", "drive_folder_url": "wrong", "sir_content": "SIR"},
+        site_title="Alpha Tulsa",
+        drive_folder_url="https://drive.google.com/drive/folders/site123",
+        site_address="421 E 11th St, Tulsa, OK 74120",
+        site_id="SITE1",
+    )
+
+    assert canonical["site_name"] == "Alpha Tulsa"
+    assert canonical["drive_folder_url"] == "https://drive.google.com/drive/folders/site123"
+    assert canonical["site_address"] == "421 E 11th St, Tulsa, OK 74120"
+    assert canonical["site_id"] == "SITE1"
+
+
+def test_canonicalize_site_tool_input_does_not_add_site_id_to_create_report() -> None:
+    canonical = _canonicalize_site_tool_input(
+        "create_dd_report",
+        {"report_data": {}},
+        site_title="Alpha Tulsa",
+        drive_folder_url="https://drive.google.com/drive/folders/site123",
+        site_address="421 E 11th St, Tulsa, OK 74120",
+        site_id="SITE1",
+    )
+
+    assert canonical["site_name"] == "Alpha Tulsa"
+    assert canonical["drive_folder_url"] == "https://drive.google.com/drive/folders/site123"
+    assert canonical["site_address"] == "421 E 11th St, Tulsa, OK 74120"
+    assert "site_id" not in canonical
+
+
 def test_dd_report_event_frequency_cap_blocks_two_business_days(tmp_path) -> None:
     _write_prior_report_event_manifest(
         tmp_path,
@@ -1507,6 +1539,7 @@ class TestCheckSiteReadinessDirect:
             {"id": "m1-bi", "name": "Alpha Keller Building Inspection Report.pdf"},
             {"id": "dd-1", "name": "Alpha Keller DD Report - 04/20/2026"},
             {"id": "eocc-1", "name": "E-Occupancy Assessment - Alpha Keller"},
+            {"id": "op-1", "name": "Opening Plan - Alpha Keller"},
             {"id": "phase-1", "name": "Alpha Phasing Plan - Alpha Keller.xlsx"},
         ]
 
@@ -1522,6 +1555,7 @@ class TestCheckSiteReadinessDirect:
         assert result["isp_found"] is False
         assert result["report_exists"] is True
         assert result["e_occupancy_report_found"] is True
+        assert result["opening_plan_report_found"] is True
         assert result["alpha_phasing_plan_report_found"] is True
 
     def test_falls_back_to_shared_cache_when_m1_missing(self):

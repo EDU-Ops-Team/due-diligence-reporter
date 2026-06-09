@@ -1934,6 +1934,7 @@ async def apply_opening_plan_skill(
     site_address: str,
     sir_content: str,
     drive_folder_url: str = "",
+    site_id: str = "",
     school_approval_data: str = "",
     building_inspection_content: str = "",
     target_open_date: str = "",
@@ -1949,6 +1950,7 @@ async def apply_opening_plan_skill(
         site_address: Full property address.
         sir_content: Full text of the SIR document (read via read_drive_document).
         drive_folder_url: Site's Google Drive folder URL. Triggers auto-publish if set.
+        site_id: Optional Rhodes site ID used to register the generated support document.
         school_approval_data: Optional School Approval report text for edu regulatory section.
         building_inspection_content: Optional Building Inspection text.
         target_open_date: Optional target open date if known from site record.
@@ -1965,7 +1967,67 @@ async def apply_opening_plan_skill(
             "message": "site_name, site_address, and sir_content are all required",
         }
 
+    def _opening_plan_fields(doc_url: str) -> dict[str, str]:
+        return {"sources.opening_plan_link": doc_url} if doc_url.strip() else {}
+
+    def _register_opening_plan(
+        *,
+        doc_id: str,
+        doc_url: str,
+        doc_name: str,
+    ) -> dict[str, Any]:
+        return register_rhodes_document_for_upload(
+            site_id=site_id,
+            ddr_doc_type="opening_plan_report",
+            title=doc_name,
+            drive_file_id=doc_id,
+            drive_url=doc_url,
+            mime_type="application/vnd.google-apps.document",
+            original_filename=doc_name,
+            source="apply_opening_plan_skill",
+        )
+
     def _work() -> dict[str, Any]:
+        gc: GoogleClient | None = None
+        target_folder_id = ""
+        if drive_folder_url:
+            folder_id = extract_folder_id_from_url(drive_folder_url)
+            if folder_id:
+                try:
+                    gc = _make_google_client()
+                    target_folder = _get_or_create_m1_folder(gc, folder_id)
+                    target_folder_id = str(target_folder.get("id") or "").strip()
+                    if target_folder_id:
+                        existing_docs = _list_m1_documents_by_type(gc, target_folder_id)
+                        existing = existing_docs.get("opening_plan_report")
+                        if existing is not None:
+                            doc_url = str(existing.get("webViewLink") or "").strip()
+                            doc_id = str(existing.get("id") or "").strip()
+                            doc_name = str(existing.get("name") or "").strip()
+                            return {
+                                "status": "success",
+                                "source_usable": True,
+                                "doc_type": "opening_plan_report",
+                                "source_type": "opening_plan_report",
+                                "doc_url": doc_url,
+                                "doc_id": doc_id,
+                                "doc_name": doc_name,
+                                "reused_existing": True,
+                                "rhodes_registration": _register_opening_plan(
+                                    doc_id=doc_id,
+                                    doc_url=doc_url,
+                                    doc_name=doc_name,
+                                ),
+                                "report_data_fields": _opening_plan_fields(doc_url),
+                                "message": f"Reused existing '{doc_name}' in Drive",
+                            }
+                except Exception as e:
+                    logger.warning(
+                        "Failed to inspect existing Opening Plan for '%s': %s",
+                        site_name,
+                        e,
+                    )
+
         import anthropic
 
         settings = get_settings()
@@ -2015,27 +2077,42 @@ async def apply_opening_plan_skill(
 
         result: dict[str, Any] = {
             "status": "success",
+            "source_usable": True,
+            "doc_type": "opening_plan_report",
+            "source_type": "opening_plan_report",
             "plan_content": plan_content,
             "doc_url": "",
             "doc_id": "",
+            "report_data_fields": {},
         }
 
         if drive_folder_url and plan_content:
             folder_id = extract_folder_id_from_url(drive_folder_url)
             if folder_id:
                 try:
-                    gc = _make_google_client()
                     doc_name = f"Opening Plan - {site_name}"
-                    target_folder = _get_or_create_m1_folder(gc, folder_id)
-                    target_folder_id = target_folder["id"]
+                    if gc is None:
+                        gc = _make_google_client()
+                    if not target_folder_id:
+                        target_folder = _get_or_create_m1_folder(gc, folder_id)
+                        target_folder_id = str(target_folder["id"])
 
                     doc = gc.create_document(
                         name=doc_name,
                         folder_id=target_folder_id,
                         text_content=plan_content,
                     )
-                    result["doc_url"] = doc.get("webViewLink", "")
-                    result["doc_id"] = doc.get("id", "")
+                    doc_url = str(doc.get("webViewLink") or "").strip()
+                    doc_id = str(doc.get("id") or "").strip()
+                    result["doc_url"] = doc_url
+                    result["doc_id"] = doc_id
+                    result["doc_name"] = doc_name
+                    result["rhodes_registration"] = _register_opening_plan(
+                        doc_id=doc_id,
+                        doc_url=doc_url,
+                        doc_name=doc_name,
+                    )
+                    result["report_data_fields"] = _opening_plan_fields(doc_url)
                     logger.info("Opening Plan published: %s", result["doc_url"])
                 except Exception as e:
                     logger.warning("Failed to publish Opening Plan to Drive: %s", e)
