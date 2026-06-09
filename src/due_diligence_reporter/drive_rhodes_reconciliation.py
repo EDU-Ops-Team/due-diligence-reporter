@@ -20,11 +20,6 @@ logger = logging.getLogger("drive_rhodes_reconciliation")
 
 RECONCILIATION_SOURCE = "drive_rhodes_reconciliation"
 RECONCILIATION_WORKFLOW_ID = "drive-rhodes-reconciliation"
-SOURCE_DOCUMENT_FOLLOW_UP_REASONS = {
-    "missing_drive_folder_url",
-    "m1_folder_missing",
-    "no_recognized_m1_files",
-}
 
 
 def run_drive_rhodes_reconciliation(
@@ -266,7 +261,6 @@ def build_drive_rhodes_reconciliation_telemetry(
             as_of=finished_at,
             dry_run=dry_run,
             workflow_run_url=workflow_run_url,
-            rows=public_rows,
         ),
         "artifacts": [
             {
@@ -373,7 +367,6 @@ def _telemetry_action_records(
     as_of: str,
     dry_run: bool,
     workflow_run_url: str,
-    rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     if counts["registered_verified"]:
@@ -486,188 +479,7 @@ def _telemetry_action_records(
                 review_reason="One or more site or document registration rows failed.",
             )
         )
-    records.extend(
-        _portfolio_gap_document_action_records(
-            rows,
-            run_id=run_id,
-            as_of=as_of,
-            dry_run=dry_run,
-        )
-    )
     return records
-
-
-def _portfolio_gap_document_action_records(
-    rows: list[dict[str, Any]],
-    *,
-    run_id: str,
-    as_of: str,
-    dry_run: bool,
-) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for index, row in enumerate(rows, start=1):
-        status = _portfolio_gap_document_action_status(row, dry_run=dry_run)
-        if not status:
-            continue
-        review_required = status in {"queued", "needs_review", "blocked", "error"}
-        owner = _portfolio_gap_document_owner(row, status)
-        review_reason = _portfolio_gap_document_review_reason(row, status)
-        site_id = str(row.get("site_id") or "")
-        site_title = str(row.get("site_title") or "") or "Unknown site"
-        milestone = _milestone_label(str(row.get("rhodes_milestone") or ""))
-        doc_type = str(row.get("rhodes_doc_type") or row.get("ddr_doc_type") or "")
-        records.append(
-            {
-                "schema_version": "action_record.v1",
-                "action_id": (
-                    "portfolio-gaps:"
-                    f"{_action_token(site_id or site_title)}:"
-                    f"{_action_token(str(row.get('rhodes_milestone') or 'milestone'))}:"
-                    f"{_action_token(doc_type or str(index))}:"
-                    "missing-current-milestone-documents"
-                ),
-                "source_workflow": "portfolio-gaps",
-                "owning_workflow": owner,
-                "workflow_owner": (
-                    "rhodes" if owner == "rhodes" else RECONCILIATION_WORKFLOW_ID
-                ),
-                "alert_type": "missing_current_milestone_documents",
-                "severity": (
-                    "medium"
-                    if status in {"completed", "skipped_already_corrected"}
-                    else "high"
-                ),
-                "status": status,
-                "site_name": site_title,
-                "site_id": site_id,
-                "current_milestone": milestone,
-                "action_requested": (
-                    "Associate current-milestone source documents in Rhodes and rerun "
-                    "Portfolio Gaps."
-                ),
-                "action_taken": _portfolio_gap_document_action_taken(row, status),
-                "as_of": as_of,
-                "evidence_summary": _portfolio_gap_document_evidence(row, status),
-                "review_required": review_required,
-                "review_reason": review_reason,
-                "error_summary": review_reason if status == "error" else "",
-                "retryable": status in {"queued", "needs_review", "error"},
-                "related_run_id": run_id,
-            }
-        )
-    return records
-
-
-def _portfolio_gap_document_action_status(
-    row: dict[str, Any],
-    *,
-    dry_run: bool,
-) -> str:
-    status = str(row.get("status") or "")
-    readback = str(row.get("rhodes_readback_status") or "")
-    if status == "registered":
-        return "completed" if readback == "verified" else "needs_review"
-    if status == "already_registered":
-        return "skipped_already_corrected"
-    if status == "would_register" or (dry_run and status == "registered"):
-        return "queued"
-    if status in {"error", "failed"}:
-        return "error"
-    if status == "skipped" and row.get("reason") in SOURCE_DOCUMENT_FOLLOW_UP_REASONS:
-        return "needs_review"
-    return ""
-
-
-def _portfolio_gap_document_owner(row: dict[str, Any], status: str) -> str:
-    if status == "needs_review" and row.get("status") == "registered":
-        return "rhodes"
-    return "ddr"
-
-
-def _portfolio_gap_document_action_taken(row: dict[str, Any], status: str) -> str:
-    if status == "completed":
-        return (
-            "Drive Rhodes Reconciliation registered a current-milestone source "
-            "document in Rhodes and verified document readback."
-        )
-    if status == "skipped_already_corrected":
-        return (
-            "Drive Rhodes Reconciliation found the current-milestone source "
-            "document already associated in Rhodes."
-        )
-    if status == "queued":
-        return (
-            "Drive Rhodes Reconciliation dry-run found a current-milestone source "
-            "document that would be associated in Rhodes."
-        )
-    if status == "needs_review":
-        if row.get("status") == "skipped":
-            return (
-                "Drive Rhodes Reconciliation checked this site but did not find a "
-                "recognized current-milestone source document to associate in Rhodes."
-            )
-        return (
-            "Drive Rhodes Reconciliation registered a current-milestone source "
-            "document, but Rhodes readback did not verify the association."
-        )
-    return (
-        "Drive Rhodes Reconciliation hit a sanitized Drive/Rhodes error while "
-        "associating a current-milestone source document."
-    )
-
-
-def _portfolio_gap_document_evidence(row: dict[str, Any], status: str) -> str:
-    milestone = _milestone_label(str(row.get("rhodes_milestone") or ""))
-    doc_type = str(row.get("rhodes_doc_type") or row.get("ddr_doc_type") or "document")
-    readback = str(row.get("rhodes_readback_status") or "not_verified")
-    status_text = str(row.get("status") or status)
-    reason = str(row.get("reason") or "")
-    reason_text = f"; reason={reason}" if reason else ""
-    return (
-        "Drive/Rhodes reconciliation readback reported "
-        f"row_status={status_text}; rhodes_readback={readback}; "
-        f"doc_type={doc_type}; milestone={milestone}{reason_text}."
-    )
-
-
-def _portfolio_gap_document_review_reason(row: dict[str, Any], status: str) -> str:
-    if status == "queued":
-        return "Dry-run mode did not mutate Rhodes; run reconciliation without dry-run."
-    if status == "needs_review":
-        if row.get("status") == "skipped":
-            reason = str(row.get("reason") or "")
-            if reason == "missing_drive_folder_url":
-                return (
-                    "DDR could not find a site Drive folder link to inspect; add or repair "
-                    "the Drive folder reference, then rerun reconciliation."
-                )
-            if reason == "m1_folder_missing":
-                return (
-                    "DDR could not find the site M1 source folder; file current-milestone "
-                    "source documents in M1, then rerun reconciliation."
-                )
-            return (
-                "DDR found no recognized current-milestone source documents in the site "
-                "M1 folder; collect or file the source documents, then rerun reconciliation."
-            )
-        return "Rhodes document readback did not verify the association."
-    if status == "error":
-        return "Drive/Rhodes reconciliation failed for this site; raw dependency detail is hidden."
-    return ""
-
-
-def _milestone_label(value: str) -> str:
-    labels = {
-        "acquireProperty": "Acquiring Property",
-        "openSchool": "Opening School",
-    }
-    if value in labels:
-        return labels[value]
-    cleaned = value.strip()
-    if not cleaned:
-        return ""
-    spaced = re.sub(r"(?<!^)(?=[A-Z])", " ", cleaned)
-    return " ".join(part.capitalize() for part in spaced.replace("_", " ").split())
 
 
 def _action_record(

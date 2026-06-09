@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 
 from scripts.run_aadp_portfolio_gap_remediation import (
     mark_aadp_remediation_unavailable,
-    mark_ddr_document_gap_actions,
     mark_rhodes_snapshot_read_actions,
     run_aadp_remediation,
 )
@@ -17,7 +16,7 @@ def test_unavailable_aadp_runner_marks_p1_and_drive_actions() -> None:
             {
                 "site_id": "SITE1",
                 "site_name": "Alpha Austin",
-                "gap_reasons": ["missing_p1_dri", "missing_current_milestone_documents"],
+                "gap_reasons": ["missing_p1_dri"],
             },
             {
                 "site_id": "SITE2",
@@ -49,95 +48,6 @@ def test_unavailable_aadp_runner_marks_p1_and_drive_actions() -> None:
         in result["sites"][0]["remediation_actions"][0]["evidence_summary"]
     )
     assert result["sites"][1]["remediation_actions"][0]["gap_type"] == "missing_drive_folder"
-
-
-def test_ddr_document_gap_actions_mark_current_milestone_docs() -> None:
-    snapshot = {
-        "sites": [
-            {
-                "site_id": "SITE1",
-                "site_name": "Alpha Austin",
-                "gap_reasons": ["missing_current_milestone_documents"],
-                "required_documents": {
-                    "milestone": {"key": "acquireProperty", "label": "Acquiring Property"},
-                    "missing": ["lease"],
-                },
-            },
-            {
-                "site_id": "SITE2",
-                "site_name": "Alpha Tulsa",
-                "gap_reasons": ["missing_p1_dri"],
-            },
-        ]
-    }
-
-    result = mark_ddr_document_gap_actions(
-        snapshot,
-        as_of="2026-06-08T13:30:00+00:00",
-    )
-
-    assert result["document_gap_remediation"] == {
-        "source": "due-diligence-reporter",
-        "status": "queued",
-        "as_of": "2026-06-08T13:30:00+00:00",
-        "attempted_count": 1,
-        "queued_count": 1,
-        "needs_review_count": 1,
-    }
-    actions = result["sites"][0]["remediation_actions"]
-    assert len(actions) == 1
-    assert actions[0]["schema_version"] == "action_record.v1"
-    assert actions[0]["source_workflow"] == "portfolio-gaps"
-    assert actions[0]["owning_workflow"] == "ddr"
-    assert actions[0]["workflow_owner"] == "drive-rhodes-reconciliation"
-    assert actions[0]["gap_type"] == "missing_current_milestone_documents"
-    assert actions[0]["status"] == "queued"
-    assert actions[0]["action_id"] == (
-        "portfolio-gaps:site1:missing-current-milestone-documents"
-    )
-    assert actions[0]["current_milestone"] == "Acquiring Property"
-    assert "Drive Rhodes Reconciliation" in actions[0]["action_requested"]
-    assert "Drive-to-Rhodes reconciliation path" in actions[0]["action_taken"]
-    assert (
-        "no later Rhodes/Drive readback has verified the documents are associated yet"
-        in actions[0]["evidence_summary"]
-    )
-    assert actions[0]["retryable"] is True
-    assert "lease" not in json.dumps(actions[0])
-    assert "remediation_actions" not in result["sites"][1]
-
-
-def test_ddr_document_gap_actions_preserve_aadp_actions() -> None:
-    snapshot = {
-        "sites": [
-            {
-                "site_id": "SITE1",
-                "site_name": "Alpha Austin",
-                "gap_reasons": [
-                    "missing_p1_dri",
-                    "missing_current_milestone_documents",
-                ],
-                "remediation_actions": [
-                    {
-                        "source": "alpha-analysis-downstream-processing",
-                        "gap_type": "missing_p1_dri",
-                        "status": "completed",
-                    }
-                ],
-            }
-        ]
-    }
-
-    result = mark_ddr_document_gap_actions(
-        snapshot,
-        as_of="2026-06-08T13:30:00+00:00",
-    )
-
-    actions = result["sites"][0]["remediation_actions"]
-    assert [action["source"] for action in actions] == [
-        "alpha-analysis-downstream-processing",
-        "due-diligence-reporter",
-    ]
 
 
 def test_rhodes_snapshot_read_actions_mark_snapshot_errors() -> None:

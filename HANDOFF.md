@@ -1,5 +1,43 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-09 - Portfolio Gaps Document-Missing Alerts Removed
+
+- Beads issue `ddr-9ga` tracks this slice.
+- Portfolio Gaps still reads Rhodes missing-document coverage and keeps it in
+  the raw per-site `required_documents` context, but missing current-milestone
+  documents no longer count as Portfolio Gaps.
+- `portfolio_automation_gaps` no longer adds
+  `missing_current_milestone_documents` to `gap_reasons`, no longer includes
+  `missing_required_documents` in portfolio totals, and no longer emits
+  source ActionRecords for document coverage.
+- The Portfolio Gaps Chat formatter no longer includes document-missing counts
+  or labels, and it skips stale document-only snapshots instead of posting a
+  notification.
+- The AADP remediation wrapper no longer appends DDR-owned
+  `document_gap_remediation` actions for document gaps.
+- Drive Rhodes Reconciliation no longer backfeeds document-registration rows as
+  `source_workflow=portfolio-gaps`; document registration and readback health
+  remains under DDR reconciliation telemetry.
+- The `ddr portfolio-gaps` operator summary no longer prints missing
+  current-milestone docs as a gap line.
+
+Validation:
+
+```powershell
+uv run pytest tests/test_portfolio_automation_gaps.py tests/test_portfolio_gap_notifications.py tests/test_aadp_portfolio_gap_remediation_trigger.py tests/test_drive_rhodes_reconciliation.py tests/test_ddr_cli.py tests/test_workflow_contracts.py -q --basetemp C:\tmp\ddr-portfolio-doc-gap-removal-tests-2
+uv run ruff check scripts/run_aadp_portfolio_gap_remediation.py src/due_diligence_reporter/portfolio_automation_gaps.py src/due_diligence_reporter/portfolio_gap_notifications.py src/due_diligence_reporter/drive_rhodes_reconciliation.py src/due_diligence_reporter/ddr_cli.py tests/test_portfolio_automation_gaps.py tests/test_portfolio_gap_notifications.py tests/test_aadp_portfolio_gap_remediation_trigger.py tests/test_drive_rhodes_reconciliation.py tests/test_ddr_cli.py
+uv run mypy scripts/run_aadp_portfolio_gap_remediation.py src/due_diligence_reporter/portfolio_automation_gaps.py src/due_diligence_reporter/portfolio_gap_notifications.py src/due_diligence_reporter/drive_rhodes_reconciliation.py src/due_diligence_reporter/ddr_cli.py
+git diff --check
+```
+
+Results:
+
+- Focused pytest: 37 passed.
+- Ruff: all checks passed.
+- Mypy: no issues in 5 source files.
+- `git diff --check`: no whitespace errors; expected Windows LF-to-CRLF
+  warnings only.
+
 ## 2026-06-09 - Opening Plan Integrated Into DDR Publish Flow
 
 - Beads issue `ddr-q75` tracks this implementation slice.

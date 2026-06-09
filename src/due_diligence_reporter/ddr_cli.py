@@ -248,7 +248,6 @@ def _print_portfolio_gaps(args: argparse.Namespace) -> None:
     print(f"Sites with gaps: {totals.get('sites_with_gaps', 0)}")
     print(f"Missing P1 DRI: {totals.get('missing_p1_dri', 0)}")
     print(f"Missing Drive folder: {totals.get('missing_drive_folder', 0)}")
-    print(f"Missing current-milestone docs: {totals.get('missing_required_documents', 0)}")
     print(f"Open automation failures: {totals.get('open_automation_failures', 0)}")
     print(f"Pending review tasks: {totals.get('pending_review_tasks', 0)}")
     if not sites:
@@ -260,7 +259,6 @@ def _print_portfolio_gaps(args: argparse.Namespace) -> None:
         print(f"   Site ID: {site.get('site_id') or '(missing)'}")
         print(f"   Owner routing: {site.get('owner_routing_status') or '(unknown)'}")
         _print_site_gap_line(site)
-        _print_required_docs_line(site)
         _print_latest_ddr_line(site)
         _print_open_failures(site)
         _print_pending_tasks(site)
@@ -274,17 +272,6 @@ def _print_site_gap_line(site: dict[str, Any]) -> None:
     drive_status = drive_folder.get("status") or "(unknown)"
     drive_message = drive_folder.get("message") or drive_folder.get("url") or ""
     print(f"   Drive folder: {drive_status}{f' - {drive_message}' if drive_message else ''}")
-
-
-def _print_required_docs_line(site: dict[str, Any]) -> None:
-    required_documents = site.get("required_documents") or {}
-    missing = required_documents.get("missing") or []
-    milestone = required_documents.get("milestone") or {}
-    label = milestone.get("label") or milestone.get("key") or "current milestone"
-    print(
-        "   Missing current-milestone docs "
-        f"({label}): {', '.join(str(item) for item in missing) or '(none)'}"
-    )
 
 
 def _print_latest_ddr_line(site: dict[str, Any]) -> None:

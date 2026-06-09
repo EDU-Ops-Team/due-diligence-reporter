@@ -8,6 +8,7 @@ from typing import Any
 from .rhodes_events import post_google_chat_to_configured_webhooks
 
 PostMessage = Callable[[str, str], None]
+DOC_CONTEXT_REASONS = {"missing_current_milestone_documents"}
 
 
 def format_portfolio_gap_chat_message(
@@ -20,7 +21,7 @@ def format_portfolio_gap_chat_message(
 
     totals = _dict(snapshot.get("totals"))
     sites = [_dict(site) for site in _list(snapshot.get("sites"))]
-    sites_with_gaps = _int(totals.get("sites_with_gaps"))
+    sites_with_gaps = _alert_site_count(sites)
     total_sites = _int(totals.get("sites"))
 
     lines = [
@@ -30,7 +31,6 @@ def format_portfolio_gap_chat_message(
             "Counts: "
             f"missing P1 DRI={_int(totals.get('missing_p1_dri'))}; "
             f"missing Drive folder={_int(totals.get('missing_drive_folder'))}; "
-            f"missing current-milestone docs={_int(totals.get('missing_required_documents'))}; "
             f"open automation failures={_int(totals.get('open_automation_failures'))}; "
             f"pending review tasks={_int(totals.get('pending_review_tasks'))}"
         ),
@@ -38,11 +38,11 @@ def format_portfolio_gap_chat_message(
     if run_url.strip():
         lines.append(f"Run: {run_url.strip()}")
 
-    gap_sites = [site for site in sites if _int(site.get("gap_count")) > 0 or site.get("errors")]
+    gap_sites = [site for site in sites if _site_has_alert_gap(site)]
     if gap_sites:
         lines.append("Top sites:")
         for site in gap_sites[:max_sites]:
-            reasons = ", ".join(_reason_label(str(reason)) for reason in _list(site.get("gap_reasons")))
+            reasons = ", ".join(_reason_label(reason) for reason in _alert_reasons(site))
             if not reasons:
                 reasons = "snapshot_read_errors"
             lines.append(f"- {site.get('site_name') or 'Unknown site'}: {reasons}")
@@ -59,8 +59,9 @@ def post_portfolio_gap_chat_summary(
 ) -> dict[str, Any]:
     """Post a Chat summary when the snapshot contains portfolio gaps."""
 
-    totals = _dict(snapshot.get("totals"))
-    if _int(totals.get("sites_with_gaps")) <= 0:
+    sites = [_dict(site) for site in _list(snapshot.get("sites"))]
+    sites_with_gaps = _alert_site_count(sites)
+    if sites_with_gaps <= 0:
         return {"status": "skipped", "reason": "no_gaps"}
     if not webhook_urls.strip():
         return {"status": "skipped", "reason": "missing_google_chat_webhook_url"}
@@ -74,7 +75,7 @@ def post_portfolio_gap_chat_summary(
     if post_message is not None:
         kwargs["post_message"] = post_message
     result = post_google_chat_to_configured_webhooks(webhook_urls, text, **kwargs)
-    result["sites_with_gaps"] = _int(totals.get("sites_with_gaps"))
+    result["sites_with_gaps"] = sites_with_gaps
     return result
 
 
@@ -93,11 +94,26 @@ def _int(value: Any) -> int:
         return 0
 
 
+def _alert_site_count(sites: list[dict[str, Any]]) -> int:
+    return sum(1 for site in sites if _site_has_alert_gap(site))
+
+
+def _site_has_alert_gap(site: dict[str, Any]) -> bool:
+    return bool(_alert_reasons(site) or site.get("errors"))
+
+
+def _alert_reasons(site: dict[str, Any]) -> list[str]:
+    return [
+        str(reason)
+        for reason in _list(site.get("gap_reasons"))
+        if str(reason) not in DOC_CONTEXT_REASONS
+    ]
+
+
 def _reason_label(reason: str) -> str:
     labels = {
         "missing_p1_dri": "missing P1 DRI",
         "missing_drive_folder": "missing Drive folder",
-        "missing_current_milestone_documents": "missing current-milestone docs",
         "open_automation_failures": "open automation failures",
         "pending_review_tasks": "pending review tasks",
         "snapshot_read_errors": "snapshot read errors",

@@ -185,7 +185,7 @@ def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
     assert result["totals"]["sites_with_gaps"] == 1
     assert result["totals"]["missing_p1_dri"] == 1
     assert result["totals"]["missing_drive_folder"] == 1
-    assert result["totals"]["missing_required_documents"] == 1
+    assert "missing_required_documents" not in result["totals"]
     assert result["totals"]["open_automation_failures"] == 1
     assert result["totals"]["pending_review_tasks"] == 1
 
@@ -198,13 +198,13 @@ def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
         "floorPlan",
     ]
     assert tulsa["required_documents"]["milestone"]["key"] == "acquireProperty"
+    assert "missing_current_milestone_documents" not in tulsa["gap_reasons"]
     assert tulsa["open_automation_failures"][0]["kind"] == "raycon_followup_alert"
     assert tulsa["pending_review_tasks"][0]["task_id"] == "TASK1"
     actions = {action["gap_type"]: action for action in tulsa["remediation_actions"]}
     assert set(actions) == {
         "missing_p1_dri",
         "missing_drive_folder",
-        "missing_current_milestone_documents",
         "open_automation_failures",
         "pending_review_tasks",
     }
@@ -214,20 +214,6 @@ def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
     assert "current P1 DRI" in actions["missing_p1_dri"]["evidence_summary"]
     assert actions["missing_drive_folder"]["owning_workflow"] == "aadp"
     assert "linked site Drive folder" in actions["missing_drive_folder"]["evidence_summary"]
-    assert actions["missing_current_milestone_documents"]["owning_workflow"] == "ddr"
-    assert (
-        actions["missing_current_milestone_documents"]["workflow_owner"]
-        == "drive-rhodes-reconciliation"
-    )
-    assert actions["missing_current_milestone_documents"]["status"] == "queued"
-    assert "Drive Rhodes Reconciliation" in actions[
-        "missing_current_milestone_documents"
-    ]["action_requested"]
-    assert (
-        "no later Rhodes/Drive readback"
-        in actions["missing_current_milestone_documents"]["evidence_summary"]
-    )
-    assert actions["missing_current_milestone_documents"]["retryable"] is True
     assert actions["open_automation_failures"]["owning_workflow"] == "ddr"
     assert actions["pending_review_tasks"]["owning_workflow"] == "rhodes"
     assert "propertyConditionAssessment" not in json.dumps(actions)

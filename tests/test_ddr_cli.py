@@ -202,7 +202,6 @@ def test_ddr_portfolio_gaps_prints_operator_summary(monkeypatch, capsys) -> None
                 "sites_with_gaps": 1,
                 "missing_p1_dri": 1,
                 "missing_drive_folder": 1,
-                "missing_required_documents": 1,
                 "open_automation_failures": 1,
                 "pending_review_tasks": 1,
             },
@@ -214,7 +213,6 @@ def test_ddr_portfolio_gaps_prints_operator_summary(monkeypatch, capsys) -> None
                     "gap_reasons": [
                         "missing_p1_dri",
                         "missing_drive_folder",
-                        "missing_current_milestone_documents",
                     ],
                     "drive_folder": {
                         "status": "missing",
@@ -255,10 +253,8 @@ def test_ddr_portfolio_gaps_prints_operator_summary(monkeypatch, capsys) -> None
     assert "Sites with gaps: 1" in out
     assert "Alpha Tulsa 6940 S Utica Ave" in out
     assert "Owner routing: missing_owner" in out
-    assert (
-        "Missing current-milestone docs (Acquiring Property): "
-        "propertyConditionAssessment, floorPlan"
-    ) in out
+    assert "Missing current-milestone docs" not in out
+    assert "propertyConditionAssessment" not in out
     assert "raycon_followup_alert failed raycon-1" in out
     assert "Assign P1 DRI for Alpha Tulsa (new, TASK1)" in out
 

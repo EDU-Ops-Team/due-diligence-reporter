@@ -205,7 +205,7 @@ def test_reconciliation_skips_site_without_m1_folder() -> None:
     assert result["rows"][0]["reason"] == "m1_folder_missing"
 
 
-def test_reconciliation_telemetry_emits_portfolio_action_when_no_source_docs() -> None:
+def test_reconciliation_telemetry_does_not_emit_portfolio_action_when_no_source_docs() -> None:
     gc = _gc(
         [
             {
@@ -231,24 +231,12 @@ def test_reconciliation_telemetry_emits_portfolio_action_when_no_source_docs() -
         trigger="workflow_dispatch",
     )
 
-    site_action = next(
+    assert result["rows"][0]["reason"] == "no_recognized_m1_files"
+    assert [
         action
         for action in telemetry["action_records"]
         if action["source_workflow"] == "portfolio-gaps"
-    )
-
-    assert result["rows"][0]["reason"] == "no_recognized_m1_files"
-    assert site_action["alert_type"] == "missing_current_milestone_documents"
-    assert site_action["site_id"] == "SITE1"
-    assert site_action["site_name"] == "Alpha Test"
-    assert site_action["status"] == "needs_review"
-    assert site_action["owning_workflow"] == "ddr"
-    assert site_action["workflow_owner"] == "drive-rhodes-reconciliation"
-    assert "did not find a recognized current-milestone source document" in (
-        site_action["action_taken"]
-    )
-    assert "collect or file the source documents" in site_action["review_reason"]
-    assert "reason=no_recognized_m1_files" in site_action["evidence_summary"]
+    ] == []
 
     rendered = json.dumps(telemetry)
     assert "https://drive" not in rendered
@@ -296,20 +284,11 @@ def test_reconciliation_telemetry_emits_sanitized_action_records() -> None:
     assert telemetry["action_records"][0]["workflow_owner"] == "drive-rhodes-reconciliation"
     assert telemetry["action_records"][0]["status"] == "completed"
     assert "Rhodes readback verified 1" in telemetry["action_records"][0]["evidence_summary"]
-    site_action = next(
+    assert [
         action
         for action in telemetry["action_records"]
         if action["source_workflow"] == "portfolio-gaps"
-    )
-    assert site_action["alert_type"] == "missing_current_milestone_documents"
-    assert site_action["site_id"] == "SITE1"
-    assert site_action["site_name"] == "Alpha Test"
-    assert site_action["current_milestone"] == "Acquiring Property"
-    assert site_action["owning_workflow"] == "ddr"
-    assert site_action["workflow_owner"] == "drive-rhodes-reconciliation"
-    assert site_action["status"] == "completed"
-    assert "verified document readback" in site_action["action_taken"]
-    assert "rhodes_readback=verified" in site_action["evidence_summary"]
+    ] == []
 
     rendered = json.dumps(telemetry)
     assert "https://drive" not in rendered

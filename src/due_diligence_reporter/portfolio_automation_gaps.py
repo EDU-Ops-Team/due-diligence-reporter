@@ -54,7 +54,6 @@ PORTFOLIO_GAPS_SOURCE = "portfolio-gaps"
 ACTION_LABELS = {
     "missing_p1_dri": "Missing P1 DRI",
     "missing_drive_folder": "Missing Drive folder",
-    "missing_current_milestone_documents": "Missing current-milestone documents",
     "open_automation_failures": "Open automation failures",
     "pending_review_tasks": "Pending review tasks",
     "snapshot_read_errors": "Snapshot read errors",
@@ -142,7 +141,6 @@ def _build_site_snapshot(rhodes: RhodesClient, site: dict[str, Any]) -> dict[str
     latest_event = _latest_event(events)
 
     gap_reasons = _gap_reasons(
-        required_docs=required_docs,
         drive_folder=drive_folder,
         p1_dri=p1_dri,
         open_failures=open_failures,
@@ -434,7 +432,6 @@ def _event_fingerprint(event: dict[str, Any] | None) -> str:
 
 def _gap_reasons(
     *,
-    required_docs: dict[str, Any],
     drive_folder: dict[str, str],
     p1_dri: dict[str, str],
     open_failures: list[dict[str, str]],
@@ -446,8 +443,6 @@ def _gap_reasons(
         reasons.append("missing_p1_dri")
     if drive_folder["status"] != "linked":
         reasons.append("missing_drive_folder")
-    if required_docs["missing"]:
-        reasons.append("missing_current_milestone_documents")
     if open_failures:
         reasons.append("open_automation_failures")
     if pending_tasks:
@@ -463,9 +458,6 @@ def _build_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
         "sites_with_gaps": sum(1 for row in rows if row["gap_count"] > 0),
         "missing_p1_dri": sum(1 for row in rows if "missing_p1_dri" in row["gap_reasons"]),
         "missing_drive_folder": sum(1 for row in rows if "missing_drive_folder" in row["gap_reasons"]),
-        "missing_required_documents": sum(
-            1 for row in rows if "missing_current_milestone_documents" in row["gap_reasons"]
-        ),
         "open_automation_failures": sum(len(row["open_automation_failures"]) for row in rows),
         "pending_review_tasks": sum(len(row["pending_review_tasks"]) for row in rows),
     }
@@ -550,31 +542,6 @@ def _action_route(gap: str, site: dict[str, Any]) -> dict[str, Any]:
             ),
             "evidence_summary": "Rhodes snapshot did not expose a linked site Drive folder.",
             "review_required": False,
-            "retryable": True,
-        }
-    if gap == "missing_current_milestone_documents":
-        return {
-            "source": "due-diligence-reporter",
-            "owning_workflow": "ddr",
-            "workflow_owner": "drive-rhodes-reconciliation",
-            "status": "queued",
-            "severity": "critical",
-            "action_requested": (
-                "Run DDR Drive Rhodes Reconciliation or source-document follow-up, "
-                "then rerun Portfolio Gaps."
-            ),
-            "action_taken": (
-                "Portfolio Gaps queued the current-milestone document gap for "
-                "DDR's Drive-to-Rhodes reconciliation path; completion is pending "
-                "verified document association readback."
-            ),
-            "evidence_summary": (
-                "Rhodes missing-document snapshot reported current-milestone source "
-                "documents that are not present or associated; no later Rhodes/Drive "
-                "readback has verified the documents are associated."
-            ),
-            "review_required": True,
-            "review_reason": "Current-milestone source documents are missing or not associated in Rhodes/Drive.",
             "retryable": True,
         }
     if gap == "snapshot_read_errors":

@@ -13,7 +13,6 @@ def _snapshot(*, sites_with_gaps: int = 1) -> dict:
             "sites_with_gaps": sites_with_gaps,
             "missing_p1_dri": 1,
             "missing_drive_folder": 1,
-            "missing_required_documents": 1,
             "open_automation_failures": 1,
             "pending_review_tasks": 1,
         },
@@ -24,7 +23,6 @@ def _snapshot(*, sites_with_gaps: int = 1) -> dict:
                 "gap_reasons": [
                     "missing_p1_dri",
                     "missing_drive_folder",
-                    "missing_current_milestone_documents",
                 ],
             }
         ]
@@ -39,17 +37,38 @@ def test_format_portfolio_gap_chat_message_summarizes_counts_and_top_sites() -> 
     assert "Portfolio automation gaps need review" in message
     assert "Sites with gaps: 1 / 2" in message
     assert "missing P1 DRI=1" in message
-    assert "missing current-milestone docs=1" in message
+    assert "missing current-milestone docs" not in message
     assert "Run: https://actions/run/1" in message
     assert (
-        "Alpha Tulsa 6940 S Utica Ave: missing P1 DRI, missing Drive folder, "
-        "missing current-milestone docs"
+        "Alpha Tulsa 6940 S Utica Ave: missing P1 DRI, missing Drive folder"
     ) in message
 
 
 def test_post_portfolio_gap_chat_summary_skips_when_clean() -> None:
     result = post_portfolio_gap_chat_summary(
         _snapshot(sites_with_gaps=0),
+        webhook_urls="https://chat.example/hook",
+    )
+
+    assert result == {"status": "skipped", "reason": "no_gaps"}
+
+
+def test_post_portfolio_gap_chat_summary_skips_document_only_snapshots() -> None:
+    result = post_portfolio_gap_chat_summary(
+        {
+            "totals": {
+                "sites": 1,
+                "sites_with_gaps": 1,
+                "missing_required_documents": 1,
+            },
+            "sites": [
+                {
+                    "site_name": "Alpha Tulsa",
+                    "gap_count": 1,
+                    "gap_reasons": ["missing_current_milestone_documents"],
+                }
+            ],
+        },
         webhook_urls="https://chat.example/hook",
     )
 

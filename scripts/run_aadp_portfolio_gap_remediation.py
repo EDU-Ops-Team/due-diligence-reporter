@@ -14,15 +14,11 @@ from pathlib import Path
 from typing import Any, cast
 
 AADP_SOURCE = "alpha-analysis-downstream-processing"
-DDR_SOURCE = "due-diligence-reporter"
 PORTFOLIO_GAPS_SOURCE = "portfolio-gaps"
 RHODES_SOURCE = "rhodes"
 ACTION_LABELS = {
     "missing_p1_dri": "Missing P1 DRI",
     "missing_drive_folder": "Missing Drive folder",
-}
-DDR_ACTION_LABELS = {
-    "missing_current_milestone_documents": "Missing current-milestone documents",
 }
 RHODES_ACTION_LABELS = {
     "snapshot_read_errors": "Snapshot read errors",
@@ -131,78 +127,6 @@ def mark_aadp_remediation_unavailable(
     return enriched
 
 
-def mark_ddr_document_gap_actions(
-    snapshot: dict[str, Any],
-    *,
-    as_of: str,
-) -> dict[str, Any]:
-    """Emit DDR-owned action telemetry for current-milestone document gaps."""
-
-    enriched = copy.deepcopy(snapshot)
-    remediation: dict[str, Any] = {
-        "source": DDR_SOURCE,
-        "status": "skipped",
-        "as_of": as_of,
-        "attempted_count": 0,
-        "queued_count": 0,
-        "needs_review_count": 0,
-    }
-    for site in _list_dicts(enriched.get("sites")):
-        for gap_type, label in DDR_ACTION_LABELS.items():
-            if gap_type not in _gap_reasons(site):
-                continue
-            remediation["attempted_count"] = int(remediation["attempted_count"]) + 1
-            action = {
-                "schema_version": "action_record.v1",
-                "source": DDR_SOURCE,
-                "source_workflow": PORTFOLIO_GAPS_SOURCE,
-                "owning_workflow": "ddr",
-                "workflow_owner": "drive-rhodes-reconciliation",
-                "gap_type": gap_type,
-                "alert": label,
-                "status": "queued",
-                "as_of": as_of,
-                "site_id": _site_id(site),
-                "site_name": _site_name(site),
-                "current_milestone": _current_milestone_label(site),
-                "action_id": _action_id(_site_id(site), _site_name(site), gap_type),
-                "action_requested": (
-                    "Run DDR Drive Rhodes Reconciliation or source-document follow-up, "
-                    "then rerun Portfolio Gaps."
-                ),
-                "action_taken": (
-                    "DDR queued the current-milestone document gap for the "
-                    "Drive-to-Rhodes reconciliation path; completion is pending "
-                    "verified document association readback."
-                ),
-                "remediation_summary": (
-                    "DDR queued the current-milestone document gap for the "
-                    "Drive-to-Rhodes reconciliation path; completion is pending "
-                    "verified document association readback."
-                ),
-                "evidence_summary": (
-                    "Portfolio Gaps found missing current-milestone document coverage; "
-                    "no later Rhodes/Drive readback has verified the documents are "
-                    "associated yet."
-                ),
-                "review_required": True,
-                "review_reason": (
-                    "Current-milestone source documents are missing or not associated "
-                    "in Rhodes/Drive."
-                ),
-                "error_summary": "",
-                "retryable": True,
-            }
-            _replace_action(site, action)
-            remediation["queued_count"] = int(remediation["queued_count"]) + 1
-            remediation["needs_review_count"] = int(remediation["needs_review_count"]) + 1
-
-    if int(remediation["attempted_count"]):
-        remediation["status"] = "queued"
-    enriched["document_gap_remediation"] = remediation
-    return enriched
-
-
 def mark_rhodes_snapshot_read_actions(
     snapshot: dict[str, Any],
     *,
@@ -307,17 +231,6 @@ def _action_key(action: dict[str, Any]) -> str:
     return _normalize_key(str(action.get("gap_type") or action.get("alert") or ""))
 
 
-def _action_id(site_id: str, site_name: str, gap: str) -> str:
-    site_key = _action_id_part(site_id or site_name or "unknown-site")
-    gap_key = _action_id_part(gap or "unknown-gap")
-    return f"portfolio-gaps:{site_key}:{gap_key}"
-
-
-def _action_id_part(value: str) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
-    return normalized[:80] or "unknown"
-
-
 def _gap_reasons(site: dict[str, Any]) -> set[str]:
     value = site.get("gap_reasons")
     return {str(item) for item in value} if isinstance(value, list) else set()
@@ -408,11 +321,9 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=bool(args.dry_run),
         max_actions=max(0, int(args.max_actions)),
     )
-    enriched = mark_ddr_document_gap_actions(enriched, as_of=_iso(_utc_now()))
     enriched = mark_rhodes_snapshot_read_actions(enriched, as_of=_iso(_utc_now()))
     _write_json(output_path, enriched)
     remediation = _dict(enriched.get("remediation"))
-    document_gap_remediation = _dict(enriched.get("document_gap_remediation"))
     snapshot_read_remediation = _dict(enriched.get("snapshot_read_remediation"))
     print(
         "AADP remediation trigger "
@@ -421,11 +332,6 @@ def main(argv: list[str] | None = None) -> int:
         f"success={remediation.get('success_count', 0)} "
         f"needs_review={remediation.get('needs_review_count', 0)} "
         f"errors={remediation.get('error_count', 0)}"
-    )
-    print(
-        "DDR document gap action emission "
-        f"status={document_gap_remediation.get('status', 'unknown')} "
-        f"needs_review={document_gap_remediation.get('needs_review_count', 0)}"
     )
     print(
         "Rhodes snapshot read action emission "
