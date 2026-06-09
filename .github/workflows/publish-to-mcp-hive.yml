@@ -57,7 +57,7 @@ jobs:
           [ -n "${{ secrets.EMAIL_SENDER }}" ] || { echo "EMAIL_SENDER missing"; exit 1; }
           [ -n "${{ secrets.EMAIL_APP_PASSWORD }}" ] || { echo "EMAIL_APP_PASSWORD missing"; exit 1; }
           [ -n "${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}" ] || { echo "DD_REPORT_EMAIL_RECIPIENTS missing"; exit 1; }
-          [ -n "${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}" ] || { echo "GOOGLE_CHAT_WEBHOOK_URL missing"; exit 1; }
+          [ -n "${{ secrets.DDR_GOOGLE_CHAT_WEBHOOK_URL }}" ] || { echo "DDR_GOOGLE_CHAT_WEBHOOK_URL missing"; exit 1; }
           # RAYCON_WEBHOOK_SECRET is optional: RayCon's /v1/jobs is public
           # under the current /v1/* rollout. When set, we sign the body
           # with HMAC-SHA256 so we're ready the day RayCon flips on
@@ -85,7 +85,7 @@ jobs:
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           DD_REPORT_EMAIL_RECIPIENTS: ${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}
           GLOBAL_EMAIL_CC: ${{ secrets.GLOBAL_EMAIL_CC }}
-          GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+          DDR_GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.DDR_GOOGLE_CHAT_WEBHOOK_URL }}
           OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
           OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
           OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
@@ -111,7 +111,7 @@ jobs:
           echo "EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}" >> .env
           echo "DD_REPORT_EMAIL_RECIPIENTS=${DD_REPORT_EMAIL_RECIPIENTS}" >> .env
           echo "GLOBAL_EMAIL_CC=${GLOBAL_EMAIL_CC}" >> .env
-          echo "GOOGLE_CHAT_WEBHOOK_URL=${GOOGLE_CHAT_WEBHOOK_URL}" >> .env
+          echo "DDR_GOOGLE_CHAT_WEBHOOK_URL=${DDR_GOOGLE_CHAT_WEBHOOK_URL}" >> .env
           echo "OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID}" >> .env
           echo "OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}" >> .env
           echo "OAUTH_REFRESH_TOKEN=${OAUTH_REFRESH_TOKEN}" >> .env
@@ -143,7 +143,7 @@ jobs:
               "EMAIL_APP_PASSWORD",
               "DD_REPORT_EMAIL_RECIPIENTS",
               "GLOBAL_EMAIL_CC",
-              "GOOGLE_CHAT_WEBHOOK_URL",
+              "DDR_GOOGLE_CHAT_WEBHOOK_URL",
               "OAUTH_CLIENT_ID",
               "OAUTH_CLIENT_SECRET",
               "OAUTH_REFRESH_TOKEN",
