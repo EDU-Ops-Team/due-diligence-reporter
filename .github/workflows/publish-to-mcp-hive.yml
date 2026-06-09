@@ -57,7 +57,6 @@ jobs:
           [ -n "${{ secrets.EMAIL_SENDER }}" ] || { echo "EMAIL_SENDER missing"; exit 1; }
           [ -n "${{ secrets.EMAIL_APP_PASSWORD }}" ] || { echo "EMAIL_APP_PASSWORD missing"; exit 1; }
           [ -n "${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}" ] || { echo "DD_REPORT_EMAIL_RECIPIENTS missing"; exit 1; }
-          [ -n "${{ secrets.DDR_GOOGLE_CHAT_WEBHOOK_URL }}" ] || { echo "DDR_GOOGLE_CHAT_WEBHOOK_URL missing"; exit 1; }
           # RAYCON_WEBHOOK_SECRET is optional: RayCon's /v1/jobs is public
           # under the current /v1/* rollout. When set, we sign the body
           # with HMAC-SHA256 so we're ready the day RayCon flips on

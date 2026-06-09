@@ -34,6 +34,9 @@ expected Windows LF-to-CRLF warnings.
 - Updated DDR GitHub Actions workflows (`daily-dd-check`, `inbox-scan`,
   `vendor-doc-republish-sweep`, `raycon-followup`, `publish-to-mcp-hive`, and
   `portfolio-automation-gaps`) to use `secrets.DDR_GOOGLE_CHAT_WEBHOOK_URL`.
+- `DDR_GOOGLE_CHAT_WEBHOOK_URL` is intentionally optional in workflow
+  preflights. Missing process-specific Chat config must not route DDR events to
+  the generic Ops Skill Announcement webhook or block non-Chat workflow work.
 - Added config and workflow-contract coverage proving the DDR-specific webhook
   is used and `secrets.GOOGLE_CHAT_WEBHOOK_URL` is not referenced by workflows.
 

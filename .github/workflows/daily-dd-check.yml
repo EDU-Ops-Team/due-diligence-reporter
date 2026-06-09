@@ -46,7 +46,6 @@ jobs:
           [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ]            || { echo "[ERROR] OAUTH_CLIENT_ID missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ]        || { echo "[ERROR] OAUTH_CLIENT_SECRET missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ]        || { echo "[ERROR] OAUTH_REFRESH_TOKEN missing"; exit 1; }
-          [ -n "${{ secrets.DDR_GOOGLE_CHAT_WEBHOOK_URL }}" ]    || { echo "[ERROR] DDR_GOOGLE_CHAT_WEBHOOK_URL missing"; exit 1; }
           [ -n "${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}" ] || { echo "[ERROR] DD_REPORT_EMAIL_RECIPIENTS missing"; exit 1; }
           [ -n "${{ secrets.EMAIL_SENDER }}" ]               || { echo "[ERROR] EMAIL_SENDER missing"; exit 1; }
           [ -n "${{ secrets.EMAIL_APP_PASSWORD }}" ]         || { echo "[ERROR] EMAIL_APP_PASSWORD missing"; exit 1; }
