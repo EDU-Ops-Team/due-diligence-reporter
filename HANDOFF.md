@@ -1,5 +1,56 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-09 - Portfolio Gaps Emits WorkflowRun Telemetry
+
+- The scheduled `portfolio-automation-gaps` workflow now captures start/finish
+  timing, preserves the Chat notification result, and uploads
+  `reports/telemetry/portfolio-automation-gaps-telemetry.json`.
+- Added `scripts/build_portfolio_gap_telemetry.py` and
+  `portfolio_gap_telemetry.py` to convert the Portfolio Gaps snapshot plus
+  notification result into a sanitized `workflow_run.v1` artifact with
+  source-owned `action_records` and site gap rows.
+- The emitted telemetry keeps missing-doc coverage out of operator gap rows and
+  does not publish raw Drive URLs, P1 emails, required-doc lists, local paths,
+  or dependency internals.
+- `scripts/post_portfolio_gap_summary.py` now supports `--result-output` so
+  the notification outcome can be carried into the workflow telemetry artifact.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_portfolio_gap_telemetry.py tests/test_portfolio_gap_notifications.py tests/test_workflow_contracts.py tests/test_config.py -q --basetemp C:\tmp\ddr-portfolio-telemetry-script
+uv run ruff check src/due_diligence_reporter/portfolio_gap_telemetry.py scripts/build_portfolio_gap_telemetry.py scripts/post_portfolio_gap_summary.py tests/test_portfolio_gap_telemetry.py tests/test_workflow_contracts.py tests/test_config.py src/due_diligence_reporter/config.py
+git diff --check
+```
+
+Results: 21 tests passed; Ruff passed; `git diff --check` reported only
+expected Windows LF-to-CRLF warnings.
+
+## 2026-06-09 - DDR Chat Route Is Process-Specific
+
+- DDR automation notifications now read `DDR_GOOGLE_CHAT_WEBHOOK_URL` through
+  `Settings.google_chat_webhook_url`; the generic `GOOGLE_CHAT_WEBHOOK_URL`
+  no longer populates the setting.
+- Updated DDR GitHub Actions workflows (`daily-dd-check`, `inbox-scan`,
+  `vendor-doc-republish-sweep`, `raycon-followup`, `publish-to-mcp-hive`, and
+  `portfolio-automation-gaps`) to use `secrets.DDR_GOOGLE_CHAT_WEBHOOK_URL`.
+- `DDR_GOOGLE_CHAT_WEBHOOK_URL` is intentionally optional in workflow
+  preflights. Missing process-specific Chat config must not route DDR events to
+  the generic Ops Skill Announcement webhook or block non-Chat workflow work.
+- Added config and workflow-contract coverage proving the DDR-specific webhook
+  is used and `secrets.GOOGLE_CHAT_WEBHOOK_URL` is not referenced by workflows.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_config.py tests/test_workflow_contracts.py tests/test_portfolio_gap_notifications.py -q --basetemp C:\tmp\ddr-chat-routing-tests
+uv run ruff check src/due_diligence_reporter/config.py tests/test_config.py tests/test_workflow_contracts.py scripts/daily_dd_check.py scripts/scan_inbox.py scripts/raycon_followup.py
+git diff --check
+```
+
+Results: 18 tests passed; Ruff passed; `git diff --check` reported only
+expected Windows LF-to-CRLF warnings.
+
 ## 2026-06-09 - Portfolio Gaps Document-Missing Alerts Removed
 
 - Beads issue `ddr-9ga` tracks this slice.

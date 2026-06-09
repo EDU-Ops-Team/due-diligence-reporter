@@ -51,6 +51,12 @@ def test_workflow_dispatch_site_inputs_are_not_interpolated_in_shell() -> None:
         assert "${{ inputs.trigger_remediation }}" not in shell
 
 
+def test_workflows_do_not_use_generic_ops_skill_chat_webhook() -> None:
+    for workflow_path in (ROOT / ".github" / "workflows").glob("*.yml"):
+        text = workflow_path.read_text(encoding="utf-8")
+        assert "secrets.GOOGLE_CHAT_WEBHOOK_URL" not in text, workflow_path.name
+
+
 def test_publish_to_mcp_hive_never_packages_generated_secret_files() -> None:
     text = _workflow_text("publish-to-mcp-hive.yml")
 
@@ -125,7 +131,8 @@ def test_portfolio_gap_snapshot_triggers_aadp_remediation_without_oauth() -> Non
         "        env:\n"
         "          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}"
     ) in text
-    assert "GOOGLE_CHAT_WEBHOOK_URL" in text
+    assert "DDR_GOOGLE_CHAT_WEBHOOK_URL" in text
+    assert "secrets.GOOGLE_CHAT_WEBHOOK_URL" not in text
     assert "portfolio-gaps" in text
     assert "portfolio-automation-gaps.json" in text
     assert "trilogy-group/alpha-analysis-downstream-processing" in text
@@ -146,6 +153,12 @@ def test_portfolio_gap_snapshot_triggers_aadp_remediation_without_oauth() -> Non
     assert "AADP telemetry not persisted" in text
     assert "scripts/run_aadp_portfolio_gap_remediation.py" in text
     assert "post_portfolio_gap_summary.py" in text
+    assert "--result-output portfolio-automation-gaps-notification.json" in text
+    assert "Build dashboard telemetry artifact" in text
+    assert "if: ${{ always() }}" in text
+    assert "scripts/build_portfolio_gap_telemetry.py" in text
+    assert "--output reports/telemetry/portfolio-automation-gaps-telemetry.json" in text
+    assert "reports/telemetry/portfolio-automation-gaps-telemetry.json" in text
     assert "OAUTH_CLIENT_ID" not in text
     assert "OAUTH_REFRESH_TOKEN" not in text
 

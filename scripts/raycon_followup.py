@@ -38,7 +38,7 @@ Run:
 Env:
     OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET / OAUTH_REFRESH_TOKEN
     GOOGLE_DRIVE_ROOT_FOLDER_ID
-    GOOGLE_CHAT_WEBHOOK_URL  (optional; fallback alert sink)
+    DDR_GOOGLE_CHAT_WEBHOOK_URL  (optional; fallback alert sink)
 """
 
 from __future__ import annotations

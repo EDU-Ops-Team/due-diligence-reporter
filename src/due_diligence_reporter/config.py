@@ -213,7 +213,12 @@ class Settings(BaseSettings):
 
     # Google Chat
     google_chat_webhook_url: str = Field(
-        "", description="Comma-separated Google Chat incoming webhook URLs for notifications"
+        "",
+        validation_alias="DDR_GOOGLE_CHAT_WEBHOOK_URL",
+        description=(
+            "Comma-separated Google Chat incoming webhook URLs for DDR notifications. "
+            "DDR automation intentionally does not read the generic GOOGLE_CHAT_WEBHOOK_URL."
+        ),
     )
     raycon_followup_extra_mention_user_ids: str = Field(
         "",
