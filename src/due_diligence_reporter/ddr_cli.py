@@ -9,6 +9,7 @@ from typing import Any
 
 from .pipeline_manifest import load_run_manifest
 from .portfolio_automation_gaps import build_portfolio_automation_gap_snapshot
+from .review_execution import execute_ddr_review_requests
 from .sir_review_queue import QUEUE_STATUSES, READY_STATUS, load_sir_review_queue
 from .sir_trends import (
     DEFAULT_SINCE,
@@ -94,6 +95,15 @@ def main(argv: list[str] | None = None) -> None:
         help="Print the raw snapshot JSON instead of the operator summary",
     )
 
+    review_execution_parser = subparsers.add_parser(
+        "review-execution",
+        help="Consume dashboard review execution requests and emit DDR action readback",
+    )
+    review_execution_parser.add_argument("--review-requests", required=True)
+    review_execution_parser.add_argument("--output", required=True)
+    review_execution_parser.add_argument("--max-actions", type=int, default=0)
+    review_execution_parser.add_argument("--dry-run", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command == "status":
         _print_status(load_run_manifest(args.run_id))
@@ -111,6 +121,8 @@ def main(argv: list[str] | None = None) -> None:
         _print_sir_monthly_summary(args)
     elif args.command == "portfolio-gaps":
         _print_portfolio_gaps(args)
+    elif args.command == "review-execution":
+        _run_review_execution(args)
 
 
 def _print_status(manifest: dict[str, Any]) -> None:
@@ -263,6 +275,29 @@ def _print_portfolio_gaps(args: argparse.Namespace) -> None:
         _print_open_failures(site)
         _print_pending_tasks(site)
         _print_site_errors(site)
+
+
+def _run_review_execution(args: argparse.Namespace) -> None:
+    request_path = Path(args.review_requests)
+    output_path = Path(args.output)
+    payload = json.loads(request_path.read_text(encoding="utf-8"))
+    result = execute_ddr_review_requests(
+        payload,
+        max_actions=args.max_actions,
+        dry_run=bool(args.dry_run),
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    execution = result["execution"]
+    print(
+        "DDR review execution "
+        f"status={execution['status']} "
+        f"attempted={execution['attempted_count']} "
+        f"success={execution['success_count']} "
+        f"needs_review={execution['needs_review_count']} "
+        f"blocked={execution['blocked_count']} "
+        f"errors={execution['error_count']}"
+    )
 
 
 def _print_site_gap_line(site: dict[str, Any]) -> None:

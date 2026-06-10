@@ -1,5 +1,70 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-10 - Dashboard Review Execution Consumer Added
+
+- Beads issue `ddr-e4t` tracks this slice.
+- Added the source-owned DDR review-execution command:
+  ```powershell
+  uv run ddr review-execution `
+    --review-requests <path> `
+    --output <path> `
+    [--max-actions N] `
+    [--dry-run]
+  ```
+- The command consumes dashboard-approved `review_execution_requests.v1`
+  payloads for DDR-owned requests only:
+  - `owning_workflow=ddr`;
+  - known DDR owner keys;
+  - or source `action_id` values prefixed with `ddr:`.
+- The command emits a sanitized `ddr_review_execution_result.v1` artifact with:
+  - `runs[]` using `workflow_id=ddr`,
+    `source_type=review_execution_result`, and
+    `subworkflow_id=ddr-review-execution`;
+  - source-owned `action_records`;
+  - execution summaries keyed back to the original source `action_id`;
+  - echoed request context sanitized for emails, URLs, local paths, request
+    IDs, and secret/config names.
+- The first implementation is conservative and non-mutating. It does not rerun
+  report generation, publish docs, write Drive/Rhodes, or send Chat. Unsafe
+  report-generation, source-read, inbox-scan, RayCon follow-up, vendor-doc, and
+  reconciliation requests return `needs_review` or `blocked` until the source
+  run/document context is safe. `markNotApplicable` returns
+  `skipped_already_corrected`.
+- Workflow Telemetry Center invokes this command through
+  `scripts/execute-ddr-review-requests.ps1` and deploys its status to
+  `https://site-nu-seven-29.vercel.app`.
+- Scheduler proof from WTC after registration:
+  - task: `Workflow Telemetry Dashboard Auto Deploy`;
+  - last run time: `6/10/2026 12:48:54 PM` CT;
+  - last result: `0`;
+  - live dashboard `monitor_last_checked_at`:
+    `2026-06-10T12:48:57.626749-05:00`;
+  - DDR bridge exit code: `0`.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_review_execution.py tests/test_ddr_cli.py -q --basetemp C:\tmp\ddr-review-execution-origin-tests
+uv run ruff check src\due_diligence_reporter\review_execution.py src\due_diligence_reporter\ddr_cli.py tests\test_review_execution.py tests\test_ddr_cli.py
+uv run mypy --explicit-package-bases src\due_diligence_reporter\review_execution.py src\due_diligence_reporter\ddr_cli.py
+uv run python -B -c "import ast, pathlib; paths=['src/due_diligence_reporter/review_execution.py','src/due_diligence_reporter/ddr_cli.py','tests/test_review_execution.py','tests/test_ddr_cli.py']; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8'), filename=p) for p in paths]; print('ddr ast ok')"
+```
+
+Results: focused pytest passed with 13 tests; focused Ruff passed; focused mypy
+passed; AST parse passed.
+
+Known repo-wide gate caveats from the original local validation worktree:
+
+- `uv run pytest tests --ignore=tests/_tmp --basetemp C:\tmp\ddr-review-execution-tests-all`
+  still has 13 unrelated pre-existing failures:
+  - 11 in `tests/test_assignment.py` around `assign_p1()` /
+    `build_site_counts()` signature drift;
+  - 2 in `tests/test_sender_filter.py` around the missing
+    `due_diligence_reporter.inbox_scanner.build_site_summary` patch target.
+- `uv run ruff check .` still has unrelated pre-existing issues in
+  `scripts\reprocess_mislabeled.py`, `tests\test_cds_verification.py`, and
+  `tests\test_sender_filter.py`.
+
 ## 2026-06-09 - RayCon Alpha Capacity Live Proof Completed
 
 - RayCon commit `e385f6328dd58399d6051ed7f735c72a11c007a7` was pushed to

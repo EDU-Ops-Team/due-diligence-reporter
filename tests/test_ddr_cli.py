@@ -281,3 +281,44 @@ def test_ddr_portfolio_gaps_can_print_json(monkeypatch, capsys) -> None:
     assert calls == [{"max_sites": 10, "include_clean": True}]
     assert payload["system_of_record"] == "rhodes"
     assert payload["sites"] == []
+
+
+def test_ddr_review_execution_cli_writes_result(tmp_path, capsys) -> None:
+    requests_path = tmp_path / "requests.json"
+    output_path = tmp_path / "result.json"
+    requests_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "review_execution_requests.v1",
+                "requests": [
+                    {
+                        "request_id": "review-request:decision-cli",
+                        "decision_id": "decision-cli",
+                        "action_id": "ddr:run-cli:step:report.generate",
+                        "decision": "approve",
+                        "owning_workflow": "ddr",
+                        "alert_type": "report_generation_failed",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ddr_cli.main([
+        "review-execution",
+        "--review-requests",
+        str(requests_path),
+        "--output",
+        str(output_path),
+    ])
+
+    out = capsys.readouterr().out
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert "DDR review execution status=needs_review" in out
+    assert payload["schema_version"] == "ddr_review_execution_result.v1"
+    assert payload["execution"]["source"] == "ddr"
+    assert payload["requests"][0]["execution_action"]["source_action_id"] == (
+        "ddr:run-cli:step:report.generate"
+    )
+    assert payload["runs"][0]["workflow_id"] == "ddr"
