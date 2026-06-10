@@ -1,5 +1,69 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-09 - RayCon Alpha Capacity Live Proof Completed
+
+- RayCon commit `e385f6328dd58399d6051ed7f735c72a11c007a7` was pushed to
+  `b-randongee/RayCon.git`, built as
+  `gcr.io/brandon-gee/raycon-api:e385f6328dd58399d6051ed7f735c72a11c007a7`,
+  and deployed to Cloud Run revision `raycon-api-00201-99g`.
+- Both RayCon service URLs reported `/version.git_commit` as
+  `e385f6328dd58399d6051ed7f735c72a11c007a7` before DDR dispatch.
+- DDR release commit `bae01f4a0fc107c77bafc2397faa4fb6304989b3` was merged
+  with current `origin/main` as
+  `e6b685b79adf967dff089f1b9833b32dee8c079a` and pushed to GitHub `main`.
+  The local validation checkout's `origin` still points at the dirty canonical
+  local repo, so it may show ahead of local origin even though GitHub is current.
+- Scoped Miami Beach proof command ran non-dry-run with notifications and DD
+  republish suppressed:
+  `uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --redispatch-after-minutes 0 --skip-dd-republish --suppress-notifications --require-raycon-git-commit e385f6328dd58399d6051ed7f735c72a11c007a7`.
+- DDR generated and uploaded the Alpha Capacity artifact
+  `Alpha Capacity Analysis - Alpha Miami Beach 300 71st 3rd - 10dPoeXlUcuY.json`
+  with Drive file ID `151mE4BLJO9fl4nbSlrzEy44iC70xmzoQ`.
+- Dispatch attached Alpha Capacity with `capacity_analysis_status=generated`,
+  `capacity_analysis_attached=true`, and `capacity_analysis_signature=114-199`.
+  RayCon returned a non-cached job
+  `2679119b11f664bed8b6a63b6d6e36c5` with idempotency segment
+  `capacity:alpha:114-199`.
+- RayCon wrote/updated M1 `raycon_scenario.json` Drive file
+  `1YGmrdxtWXfiTA0hp8JuXMtoIrudYu1Wy`, modified
+  `2026-06-10T01:43:08.718Z`, with run
+  `rc_20260610013800_1c6ea7eff8`, `status=completed`,
+  `validation.passed=true`, and zero validation errors.
+- JSON readback verified:
+  - `analysis.site_context.capacity_analysis.source_system=alpha_capacity_analysis`
+  - `provenance.capacity_analysis.source_system=alpha_capacity_analysis`
+  - Fastest Path `capacity_students=114`, `grand_total=1353726`,
+    `timeline_weeks=10`
+  - Max Capacity `capacity_students=199`, `grand_total=1852736`,
+    `timeline_weeks=14`
+  - Both scenario `capacity_trace.source_system` values are
+    `alpha_capacity_analysis`.
+- RayCon emitted two non-blocking Alpha Capacity caveats about restroom, egress,
+  fire/life-safety, HVAC, and plan-review proof gaps, but validation still
+  passed and the published capacity follows Alpha Capacity Analysis.
+- The optional MatterBot scout follow-up was still `scout_running` at final
+  status check. This did not block the DDR proof because the construction
+  estimate artifact was already written, validation-passed, and readable from
+  M1.
+
+Verification:
+
+```powershell
+npm.cmd test
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_client.py tests\test_raycon_followup.py -q --basetemp C:\tmp\ddr-raycon-alpha-release
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_portfolio_gap_telemetry.py tests\test_workflow_contracts.py tests\test_config.py -q --basetemp C:\tmp\ddr-raycon-alpha-merge-release-2
+uv run ruff check src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\raycon_client.py src\due_diligence_reporter\portfolio_gap_telemetry.py src\due_diligence_reporter\config.py scripts\raycon_followup.py scripts\build_portfolio_gap_telemetry.py scripts\post_portfolio_gap_summary.py tests\test_alpha_capacity_analysis.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_portfolio_gap_telemetry.py tests\test_workflow_contracts.py tests\test_config.py
+uv run mypy src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\raycon_client.py src\due_diligence_reporter\portfolio_gap_telemetry.py src\due_diligence_reporter\config.py
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+```
+
+Results: RayCon root tests passed (`13 passed` frontend/root, `198 passed`;
+API `20 passed`, `275 passed`); DDR final focused release pytest passed
+(`167 passed`); merged DDR release/portfolio pytest passed (`186 passed`);
+Ruff passed; mypy passed; RayCon `/version` matched the deployed SHA; live
+Miami Beach proof produced Alpha-sourced Fastest Path and Max Capacity priced
+estimates.
+
 ## 2026-06-09 - Portfolio Gaps Emits WorkflowRun Telemetry
 
 - The scheduled `portfolio-automation-gaps` workflow now captures start/finish
