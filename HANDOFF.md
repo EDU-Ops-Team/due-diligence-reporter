@@ -33,12 +33,16 @@
 - Workflow Telemetry Center invokes this command through
   `scripts/execute-ddr-review-requests.ps1` and deploys its status to
   `https://site-nu-seven-29.vercel.app`.
+- Pushed commit `8b447d7` (`Add DDR dashboard review execution`) to
+  `GFooteGK1/due-diligence-reporter` `main`.
 - Scheduler proof from WTC after registration:
   - task: `Workflow Telemetry Dashboard Auto Deploy`;
-  - last run time: `6/10/2026 12:48:54 PM` CT;
+  - DDR repo path:
+    `C:\Users\foote\Documents\Codex\2026-06-04\research-analyst-i-need-to-be\work\ddr-review-execution-main`;
+  - last run time: `6/10/2026 1:01:00 PM` CT;
   - last result: `0`;
   - live dashboard `monitor_last_checked_at`:
-    `2026-06-10T12:48:57.626749-05:00`;
+    `2026-06-10T13:00:34.397803-05:00`;
   - DDR bridge exit code: `0`.
 
 Verification:
