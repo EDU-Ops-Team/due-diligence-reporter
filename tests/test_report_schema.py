@@ -102,8 +102,8 @@ class TestNormalization:
         assert replacements["sources.rebl_link"] == "https://rebl3.vercel.app/site/alpha-test-site"
         assert replacements["meta.site_name"] == "Alpha Test"
         assert unmatched == ["rebl.site_id", "rebl.url"]
-        assert sources["exec.fastest_open_capacity"] == "Capacity Brainlift"
-        assert sources["exec.max_capacity_capacity"] == "Capacity Brainlift"
+        assert sources["exec.fastest_open_capacity"] == "Alpha Capacity Analysis"
+        assert sources["exec.max_capacity_capacity"] == "Alpha Capacity Analysis"
         assert sources["exec.fastest_open_capex"] == "RayCon"
         assert sources["exec.fastest_open_open_date"] == "RayCon"
         assert sources["meta.rebl_site_id"] == "alias:rebl.site_id"
@@ -394,6 +394,12 @@ class TestPipelineToolDefinitions:
 
         tool_names = [tool["name"] for tool in TOOL_DEFINITIONS]
         assert "apply_opening_plan_skill" in tool_names
+
+    def test_alpha_capacity_analysis_tool_exists(self) -> None:
+        from due_diligence_reporter.report_pipeline import TOOL_DEFINITIONS
+
+        tool_names = [tool["name"] for tool in TOOL_DEFINITIONS]
+        assert "apply_alpha_capacity_analysis_skill" in tool_names
 
     def test_rhodes_owner_lookup_tool_exists(self) -> None:
         from due_diligence_reporter.report_pipeline import TOOL_DEFINITIONS

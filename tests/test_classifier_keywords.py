@@ -162,6 +162,12 @@ class TestClassifyByKeywordsCapacityBrainlift:
             0.95,
         )
 
+    def test_alpha_capacity_analysis(self):
+        assert classify_by_keywords("Alpha Capacity Analysis - Alpha Keller.json") == (
+            "capacity_brainlift_report",
+            0.95,
+        )
+
 
 class TestClassifyByKeywordsRayconScenario:
     def test_raycon_scenario(self):

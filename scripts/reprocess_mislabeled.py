@@ -31,7 +31,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # Ensure project src is on path when running as a script
@@ -96,7 +96,7 @@ def main() -> int:
 
     since = args.since
     if not since:
-        since = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y/%m/%d")
+        since = (datetime.now(UTC) - timedelta(days=14)).strftime("%Y/%m/%d")
     else:
         # Gmail accepts YYYY/MM/DD
         since = since.replace("-", "/")

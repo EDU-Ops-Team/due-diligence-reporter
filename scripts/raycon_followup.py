@@ -16,6 +16,10 @@ This script runs on a 5-minute cadence (``raycon-followup.yml``) and:
      ``raycon_scenario.json`` is missing, calls ``post_raycon_job``
      directly so Block Plans that arrive via any non-email path
      (manual upload, recovery, migration) still trigger RayCon.
+     Before dispatch, it attaches the Alpha Capacity Analysis artifact
+     from M1 when present, or generates one from the Block Plan PDF so
+     RayCon prices against DDR's authoritative Strict/Fast Path and Max
+     Capacity counts.
      Dispatches are deduped per ``block_plan_file_id`` via
      ``.raycon_dispatch_state.json`` and only re-fire after
      ``--redispatch-after-minutes`` (default 30). RayCon's ``/v1/jobs``
@@ -34,6 +38,8 @@ Run:
     uv run python scripts/raycon_followup.py             # all active sites
     uv run python scripts/raycon_followup.py --site Keller  # single site
     uv run python scripts/raycon_followup.py --dry-run   # detect only
+    uv run python scripts/raycon_followup.py --site-id <id> \
+        --require-raycon-git-commit <sha>  # guarded post-deploy proof
 
 Env:
     OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET / OAUTH_REFRESH_TOKEN
@@ -47,11 +53,13 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 _project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(_project_root / "src"))
@@ -62,6 +70,10 @@ load_dotenv(_project_root / ".env")
 
 import requests  # noqa: E402
 
+from due_diligence_reporter.alpha_capacity_analysis import (  # noqa: E402
+    generate_alpha_capacity_analysis_artifact,
+    run_alpha_capacity_analysis,
+)
 from due_diligence_reporter.automation_event import (  # noqa: E402
     build_raycon_followup_alert_event,
 )
@@ -83,10 +95,12 @@ from due_diligence_reporter.raycon_client import (  # noqa: E402
     RAYCON_IN_PROGRESS_STATUSES,
     RAYCON_TERMINAL_STATUSES,
     RayConSchemaError,
+    alpha_capacity_counts_signature,
     get_raycon_job_status,
     post_raycon_job,
     raycon_payload_failed,
     raycon_scenario_to_report_fields,
+    read_alpha_capacity_analysis_from_m1,
     read_raycon_scenario_from_m1,
 )
 from due_diligence_reporter.raycon_runtime_state_store import (  # noqa: E402
@@ -109,6 +123,7 @@ from due_diligence_reporter.rhodes_events import (  # noqa: E402
 from due_diligence_reporter.server import save_skill_report  # noqa: E402
 from due_diligence_reporter.utils import (  # noqa: E402
     extract_folder_id_from_url,
+    extract_text_from_pdf_bytes,
 )
 
 logging.basicConfig(
@@ -716,7 +731,293 @@ def _csv_values(value: str) -> list[str]:
     return [part.strip() for part in str(value or "").split(",") if part.strip()]
 
 
+def _load_runtime_env_file(env_file: str) -> None:
+    """Load an external runtime env file and anchor relative credential paths."""
+
+    env_path = Path(env_file).expanduser().resolve()
+    load_dotenv(env_path, override=True)
+    env_dir = env_path.parent
+    for env_name, default_relative in (
+        ("GOOGLE_CLIENT_CONFIG", "credentials/client_secrets.json"),
+        ("GOOGLE_TOKEN_FILE", ".gcp-saved-tokens.json"),
+    ):
+        configured = str(os.getenv(env_name, "") or "").strip()
+        path = Path(configured) if configured else Path(default_relative)
+        if path.is_absolute():
+            continue
+        os.environ[env_name] = str(env_dir / path)
+
+
+def _raycon_version_url_from_jobs_url(jobs_url: str) -> str:
+    """Return the public /version URL for a configured RayCon jobs URL."""
+
+    parsed = urlparse(str(jobs_url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("RAYCON_JOBS_URL must be an absolute http(s) URL")
+    return urlunparse((parsed.scheme, parsed.netloc, "/version", "", "", ""))
+
+
+def _git_commit_matches(expected: str, actual: str) -> bool:
+    expected_clean = str(expected or "").strip()
+    actual_clean = str(actual or "").strip()
+    if not expected_clean or not actual_clean:
+        return False
+    return (
+        expected_clean == actual_clean
+        or (
+            len(expected_clean) >= 7
+            and len(actual_clean) >= 7
+            and (
+                expected_clean.startswith(actual_clean)
+                or actual_clean.startswith(expected_clean)
+            )
+        )
+    )
+
+
+def _verify_raycon_git_commit(
+    *,
+    jobs_url: str,
+    expected_commit: str,
+    timeout_seconds: int = 15,
+) -> tuple[bool, str]:
+    """Check RayCon /version before a controlled proof run dispatches jobs."""
+
+    expected = str(expected_commit or "").strip()
+    if not expected:
+        return True, ""
+    try:
+        version_url = _raycon_version_url_from_jobs_url(jobs_url)
+        response = requests.get(version_url, timeout=timeout_seconds)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return False, f"RayCon /version preflight failed: {exc}"
+    actual = str(payload.get("git_commit", "") if isinstance(payload, dict) else "").strip()
+    if _git_commit_matches(expected, actual):
+        return True, actual
+    return (
+        False,
+        (
+            "RayCon /version git_commit mismatch: "
+            f"expected {expected}, got {actual or '(missing)'}"
+        ),
+    )
+
+
+def _capacity_analysis_summary(result: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key in (
+        "capacity_analysis_status",
+        "capacity_analysis_attached",
+        "capacity_analysis_file_id",
+        "capacity_analysis_url",
+        "capacity_analysis_error",
+        "capacity_analysis_signature",
+        "capacity_analysis_preview",
+    ):
+        value = result.get(key)
+        if value not in (None, ""):
+            summary[key] = value
+    return summary
+
+
+def _capacity_analysis_for_dispatch(
+    gc: GoogleClient,
+    *,
+    m1_folder_id: str,
+    m1_files: list[dict[str, Any]] | None,
+    site_name: str,
+    site_address: str,
+    block_plan: dict[str, Any],
+    total_building_sf: int | None,
+    upload_artifact: bool = True,
+) -> dict[str, Any]:
+    """Return RayCon-ready Alpha Capacity Analysis payload for dispatch.
+
+    The helper is deliberately non-throwing: a missing or failed capacity run
+    should be visible in the row/state. The caller decides whether that result
+    is sufficient to dispatch RayCon; the automated DDR Block Plan path requires
+    complete Strict/Fast Path and Max Capacity counts.
+    """
+
+    try:
+        candidate_files = m1_files if isinstance(m1_files, list) else []
+        capacity_file_id, capacity_payload = read_alpha_capacity_analysis_from_m1(
+            gc,
+            m1_folder_id,
+            m1_files=candidate_files,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Alpha Capacity Analysis lookup failed for site=%s m1_folder_id=%s: %s",
+            site_name,
+            m1_folder_id,
+            exc,
+        )
+    else:
+        if capacity_file_id and isinstance(capacity_payload, dict):
+            signature = alpha_capacity_counts_signature(capacity_payload)
+            return {
+                "capacity_analysis_status": "attached_existing",
+                "capacity_analysis_attached": True,
+                "capacity_analysis_file_id": capacity_file_id,
+                "capacity_analysis_signature": signature,
+                "capacity_analysis": capacity_payload,
+            }
+
+    block_plan_file_id = str(block_plan.get("id", "")).strip()
+    if not block_plan_file_id:
+        return {
+            "capacity_analysis_status": "missing",
+            "capacity_analysis_attached": False,
+            "capacity_analysis_error": "block plan missing Drive file id",
+        }
+
+    try:
+        raw_bytes_any: Any = gc.download_file_bytes(block_plan_file_id)
+    except Exception as exc:
+        logger.warning(
+            "Block Plan download for Alpha Capacity Analysis failed for "
+            "site=%s block_plan_file_id=%s: %s",
+            site_name,
+            block_plan_file_id,
+            exc,
+        )
+        return {
+            "capacity_analysis_status": "missing",
+            "capacity_analysis_attached": False,
+            "capacity_analysis_error": f"block plan download failed: {exc}",
+        }
+
+    if not isinstance(raw_bytes_any, (bytes, bytearray)):
+        return {
+            "capacity_analysis_status": "missing",
+            "capacity_analysis_attached": False,
+            "capacity_analysis_error": "block plan download did not return bytes",
+        }
+
+    block_plan_bytes = bytes(raw_bytes_any)
+    block_plan_name = str(block_plan.get("name", "") or "Block Plan.pdf")
+    block_plan_mime_type = str(
+        block_plan.get("mimeType") or "application/pdf"
+    ).strip() or "application/pdf"
+    if (
+        "pdf" in block_plan_mime_type.lower()
+        or block_plan_name.lower().endswith(".pdf")
+    ):
+        block_plan_content = extract_text_from_pdf_bytes(block_plan_bytes)
+    else:
+        block_plan_content = block_plan_bytes.decode("utf-8", errors="replace")
+
+    try:
+        if upload_artifact:
+            generated = generate_alpha_capacity_analysis_artifact(
+                gc,
+                m1_folder_id=m1_folder_id,
+                site_name=site_name,
+                site_address=site_address,
+                block_plan_content=block_plan_content,
+                total_building_sf=total_building_sf,
+                block_plan_file_id=block_plan_file_id,
+                block_plan_file_bytes=block_plan_bytes,
+                block_plan_file_name=block_plan_name,
+                block_plan_mime_type=block_plan_mime_type,
+            )
+        else:
+            generated = run_alpha_capacity_analysis(
+                site_name=site_name,
+                site_address=site_address,
+                block_plan_content=block_plan_content,
+                total_building_sf=total_building_sf,
+                block_plan_file_id=block_plan_file_id,
+                block_plan_file_bytes=block_plan_bytes,
+                block_plan_file_name=block_plan_name,
+                block_plan_mime_type=block_plan_mime_type,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Alpha Capacity Analysis generation failed for site=%s "
+            "block_plan_file_id=%s: %s",
+            site_name,
+            block_plan_file_id,
+            exc,
+        )
+        return {
+            "capacity_analysis_status": "error",
+            "capacity_analysis_attached": False,
+            "capacity_analysis_error": f"generation failed: {exc}",
+        }
+
+    capacity_file_id = str(generated.get("capacity_analysis_file_id", "") or "")
+    capacity_payload = generated.get("capacity_analysis")
+    if not upload_artifact and generated.get("status") == "success":
+        capacity_payload = generated
+
+    if (
+        generated.get("status") == "success"
+        and isinstance(capacity_payload, dict)
+        and (capacity_file_id or not upload_artifact)
+    ):
+        signature = alpha_capacity_counts_signature(capacity_payload)
+        if signature:
+            return {
+                "capacity_analysis_status": "generated" if upload_artifact else "preview_success",
+                "capacity_analysis_attached": True,
+                "capacity_analysis_file_id": capacity_file_id,
+                "capacity_analysis_url": str(generated.get("capacity_analysis_url", "") or ""),
+                "capacity_analysis_signature": signature,
+                "capacity_analysis_preview": not upload_artifact,
+                "capacity_analysis": capacity_payload,
+            }
+        return {
+            "capacity_analysis_status": (
+                "generation_incomplete" if upload_artifact else "preview_incomplete"
+            ),
+            "capacity_analysis_attached": False,
+            "capacity_analysis_file_id": capacity_file_id,
+            "capacity_analysis_url": str(generated.get("capacity_analysis_url", "") or ""),
+            "capacity_analysis_preview": not upload_artifact,
+            "capacity_analysis_error": (
+                "Alpha Capacity Analysis did not return both Strict/Fast Path "
+                "and Max Capacity counts."
+            ),
+        }
+
+    status = str(generated.get("status", "") or "missing")
+    message = str(generated.get("message", "") or "capacity analysis not produced")
+    return {
+        "capacity_analysis_status": status,
+        "capacity_analysis_attached": False,
+        "capacity_analysis_error": message,
+    }
+
+
+def _prior_dispatch_has_current_capacity(
+    prior: dict[str, Any],
+    capacity_result: dict[str, Any],
+) -> bool:
+    """Return whether prior dispatch already used the current capacity input."""
+
+    if not capacity_result.get("capacity_analysis_attached"):
+        return True
+    if not prior.get("capacity_analysis_attached"):
+        return False
+    current_signature = str(
+        capacity_result.get("capacity_analysis_signature", "") or ""
+    ).strip()
+    prior_signature = str(prior.get("capacity_analysis_signature", "") or "").strip()
+    if current_signature:
+        return prior_signature == current_signature
+    current_file_id = str(
+        capacity_result.get("capacity_analysis_file_id", "") or ""
+    ).strip()
+    prior_file_id = str(prior.get("capacity_analysis_file_id", "") or "").strip()
+    return bool(current_file_id and prior_file_id == current_file_id)
+
+
 def _dispatch_raycon_job(
+    gc: GoogleClient,
     site_summary: dict[str, Any],
     block_plan: dict[str, Any],
     m1_folder_id: str,
@@ -724,7 +1025,10 @@ def _dispatch_raycon_job(
     *,
     dry_run: bool,
     redispatch_after: timedelta,
+    m1_files: list[dict[str, Any]] | None = None,
     now: datetime | None = None,
+    require_capacity_for_dispatch: bool = False,
+    preview_capacity_analysis: bool = False,
 ) -> dict[str, Any]:
     """Fire ``post_raycon_job`` for a site whose Block Plan is present but
     has no ``raycon_scenario.json`` yet, deduped by ``block_plan_file_id``.
@@ -734,6 +1038,7 @@ def _dispatch_raycon_job(
 
       - ``{"dispatched": True, "raycon_run_id": str, "status": str}``
       - ``{"dispatch_skipped": "recently dispatched", "last_dispatch": ISO, "dispatch_count": int}``
+      - ``{"dispatch_skipped": "capacity_analysis_not_available", ...}``
       - ``{"dispatch_skipped": "dry_run", ...}``
       - ``{"dispatch_error": str}`` — caller decides whether to alert
 
@@ -752,19 +1057,7 @@ def _dispatch_raycon_job(
     if not block_plan_file_id:
         return {"dispatch_error": "block plan missing Drive file id"}
 
-    # Dedup: skip if we dispatched this same block_plan_file_id within the
-    # redispatch window. Different Block Plans (new uploads) get new file
-    # IDs and therefore always pass through.
     prior = dispatch_state.get(block_plan_file_id)
-    if prior:
-        last_iso = str(prior.get("last_dispatch", ""))
-        last_dt = _parse_iso(last_iso)
-        if last_dt is not None and (now - last_dt) < redispatch_after:
-            return {
-                "dispatch_skipped": "recently dispatched",
-                "last_dispatch": last_iso,
-                "dispatch_count": int(prior.get("count", 0)),
-            }
 
     site_id = str(site_summary.get("id", "")).strip()
     site_address = str(site_summary.get("address", "")).strip()
@@ -795,24 +1088,73 @@ def _dispatch_raycon_job(
     except (TypeError, ValueError):
         total_building_sf = None
 
+    capacity_result: dict[str, Any] = {}
+    if not dry_run or preview_capacity_analysis:
+        capacity_result = _capacity_analysis_for_dispatch(
+            gc,
+            m1_folder_id=m1_folder_id,
+            m1_files=m1_files,
+            site_name=site_name,
+            site_address=site_address,
+            block_plan=block_plan,
+            total_building_sf=total_building_sf,
+            upload_artifact=not dry_run,
+        )
+    if require_capacity_for_dispatch and not capacity_result.get(
+        "capacity_analysis_attached"
+    ):
+        return {
+            "dispatch_skipped": "capacity_analysis_not_available",
+            **_capacity_analysis_summary(capacity_result),
+        }
+
     if dry_run:
         return {
             "dispatch_skipped": "dry_run",
             "would_dispatch": True,
             "block_plan_file_id": block_plan_file_id,
+            **_capacity_analysis_summary(capacity_result),
         }
 
+    # Dedup: skip if this same block_plan_file_id was dispatched within the
+    # redispatch window and that dispatch already had equivalent capacity
+    # input. A legacy/prior no-capacity dispatch may be superseded immediately
+    # once DDR can attach a complete Alpha Capacity artifact, because RayCon's
+    # durable job key now distinguishes capacity-backed jobs.
+    if prior:
+        last_iso = str(prior.get("last_dispatch", ""))
+        last_dt = _parse_iso(last_iso)
+        if (
+            last_dt is not None
+            and (now - last_dt) < redispatch_after
+            and _prior_dispatch_has_current_capacity(prior, capacity_result)
+        ):
+            return {
+                "dispatch_skipped": "recently dispatched",
+                "last_dispatch": last_iso,
+                "dispatch_count": int(prior.get("count", 0)),
+                **_capacity_analysis_summary(capacity_result),
+            }
+    raycon_job_kwargs: dict[str, Any] = {
+        "site_id": site_id,
+        "site_name": site_name,
+        "address": site_address,
+        "drive_folder_url": drive_folder_url,
+        "m1_folder_id": m1_folder_id,
+        "block_plan_file_id": block_plan_file_id,
+        "block_plan_url": block_plan_url,
+        "total_building_sf": total_building_sf,
+    }
+    capacity_file_id = str(
+        capacity_result.get("capacity_analysis_file_id", "") or ""
+    ).strip()
+    capacity_payload = capacity_result.get("capacity_analysis")
+    if capacity_file_id and isinstance(capacity_payload, dict):
+        raycon_job_kwargs["capacity_analysis_file_id"] = capacity_file_id
+        raycon_job_kwargs["capacity_analysis"] = capacity_payload
+
     try:
-        response = post_raycon_job(
-            site_id=site_id,
-            site_name=site_name,
-            address=site_address,
-            drive_folder_url=drive_folder_url,
-            m1_folder_id=m1_folder_id,
-            block_plan_file_id=block_plan_file_id,
-            block_plan_url=block_plan_url,
-            total_building_sf=total_building_sf,
-        )
+        response = post_raycon_job(**raycon_job_kwargs)
     except Exception as e:
         logger.warning(
             "RayCon dispatch failed for site=%s block_plan_file_id=%s: %s",
@@ -846,6 +1188,7 @@ def _dispatch_raycon_job(
         "status_url": status_url or None,
         "status": status,
         "raycon_job": response,
+        **_capacity_analysis_summary(capacity_result),
     }
     return {
         "dispatched": True,
@@ -854,6 +1197,7 @@ def _dispatch_raycon_job(
         "status_url_present": bool(status_url),
         "status": status,
         "block_plan_file_id": block_plan_file_id,
+        **_capacity_analysis_summary(capacity_result),
     }
 
 
@@ -929,6 +1273,7 @@ def _failed_scenario_dispatch_row(
         "status": dispatch_result.get("status"),
         "status_url_present": dispatch_result.get("status_url_present"),
         "block_plan_file_id": dispatch_result.get("block_plan_file_id"),
+        **_capacity_analysis_summary(dispatch_result),
     }
 
 
@@ -960,6 +1305,7 @@ def _failed_scenario_status_row(
 
 
 def _handle_failed_scenario(
+    gc: GoogleClient,
     site_summary: dict[str, Any],
     site_name: str,
     block_plan: dict[str, Any],
@@ -970,7 +1316,9 @@ def _handle_failed_scenario(
     dispatch_state: dict[str, dict[str, Any]] | None,
     dry_run: bool,
     redispatch_after: timedelta,
+    m1_files: list[dict[str, Any]] | None = None,
     retry_failed_scenario: bool = True,
+    preview_capacity_analysis: bool = False,
 ) -> dict[str, Any]:
     base_row = _failed_scenario_base_row(site_name, scenario, report_fields)
     reason = base_row["alert"].removeprefix("raycon run failed: ")
@@ -992,12 +1340,16 @@ def _handle_failed_scenario(
         return status_row
 
     dispatch_result = _dispatch_raycon_job(
+        gc,
         site_summary,
         block_plan,
         m1_folder_id,
         dispatch_state,
         dry_run=dry_run,
         redispatch_after=redispatch_after,
+        m1_files=m1_files,
+        require_capacity_for_dispatch=True,
+        preview_capacity_analysis=preview_capacity_analysis,
     )
     if dispatch_result.get("dispatched"):
         return {
@@ -1012,6 +1364,7 @@ def _handle_failed_scenario(
         }
     if dispatch_result.get("dispatch_skipped"):
         base_row["dispatch_skipped"] = dispatch_result.get("dispatch_skipped")
+        base_row.update(_capacity_analysis_summary(dispatch_result))
     return base_row
 
 
@@ -1158,6 +1511,7 @@ def _process_site(
     skip_dd_republish: bool = False,
     dd_republish_callback: Any = None,
     retry_failed_scenarios: bool = True,
+    preview_capacity_analysis: bool = False,
 ) -> dict[str, Any]:
     """Return a per-site result row for the run summary.
 
@@ -1213,26 +1567,139 @@ def _process_site(
             )
         status = str(status_result.get("status", "") or "").strip().lower()
         if status in RAYCON_TERMINAL_STATUSES and status != "completed":
+            prior = (dispatch_state or {}).get(block_plan_file_id) or {}
+            if (
+                dispatch_state is not None
+                and block_plan_file_id
+                and prior.get("last_dispatch")
+                and not prior.get("capacity_analysis_attached")
+            ):
+                recovery_dispatch_result = _dispatch_raycon_job(
+                    gc,
+                    site_summary,
+                    block_plan,
+                    m1_folder_id,
+                    dispatch_state,
+                    dry_run=dry_run,
+                    redispatch_after=redispatch_after,
+                    m1_files=m1_files,
+                    now=now,
+                    require_capacity_for_dispatch=True,
+                    preview_capacity_analysis=preview_capacity_analysis,
+                )
+                if recovery_dispatch_result.get("dispatched"):
+                    recovery_dispatch_row: dict[str, Any] = {
+                        "site": site_name,
+                        "dispatched": True,
+                        "dispatch_reason": "terminal_no_capacity_recovery",
+                        "previous_status": status,
+                        "job_id": recovery_dispatch_result.get("job_id"),
+                        "raycon_run_id": recovery_dispatch_result.get(
+                            "raycon_run_id"
+                        ),
+                        "status": recovery_dispatch_result.get("status"),
+                        "status_url_present": recovery_dispatch_result.get(
+                            "status_url_present"
+                        ),
+                        "block_plan_file_id": recovery_dispatch_result.get(
+                            "block_plan_file_id"
+                        ),
+                        **_capacity_analysis_summary(recovery_dispatch_result),
+                    }
+                    return recovery_dispatch_row
+                if recovery_dispatch_result.get("dispatch_error"):
+                    return {
+                        "site": site_name,
+                        "error": (
+                            "raycon terminal-status recovery: "
+                            f"{recovery_dispatch_result['dispatch_error']}"
+                        ),
+                        "previous_status": status,
+                        "block_plan_file_id": block_plan_file_id,
+                    }
             return {
                 "site": site_name,
                 "alert": f"raycon job terminal status: {status}",
                 "block_plan_file_id": block_plan_file_id,
             }
         if status == "completed":
+            completed_prior = (dispatch_state or {}).get(block_plan_file_id) or {}
+            if (
+                dispatch_state is not None
+                and block_plan_file_id
+                and completed_prior.get("last_dispatch")
+                and not completed_prior.get("capacity_analysis_attached")
+            ):
+                completed_recovery_dispatch_result = _dispatch_raycon_job(
+                    gc,
+                    site_summary,
+                    block_plan,
+                    m1_folder_id,
+                    dispatch_state,
+                    dry_run=dry_run,
+                    redispatch_after=redispatch_after,
+                    m1_files=m1_files,
+                    now=now,
+                    require_capacity_for_dispatch=True,
+                    preview_capacity_analysis=preview_capacity_analysis,
+                )
+                if completed_recovery_dispatch_result.get("dispatched"):
+                    return {
+                        "site": site_name,
+                        "dispatched": True,
+                        "dispatch_reason": "completed_no_capacity_recovery",
+                        "previous_status": status,
+                        "job_id": completed_recovery_dispatch_result.get("job_id"),
+                        "raycon_run_id": completed_recovery_dispatch_result.get(
+                            "raycon_run_id"
+                        ),
+                        "status": completed_recovery_dispatch_result.get("status"),
+                        "status_url_present": completed_recovery_dispatch_result.get(
+                            "status_url_present"
+                        ),
+                        "block_plan_file_id": completed_recovery_dispatch_result.get(
+                            "block_plan_file_id"
+                        ),
+                        **_capacity_analysis_summary(
+                            completed_recovery_dispatch_result
+                        ),
+                    }
+                if completed_recovery_dispatch_result.get("dispatch_error"):
+                    return {
+                        "site": site_name,
+                        "error": (
+                            "raycon completed-status recovery: "
+                            f"{completed_recovery_dispatch_result['dispatch_error']}"
+                        ),
+                        "previous_status": status,
+                        "block_plan_file_id": block_plan_file_id,
+                    }
             return {
                 "site": site_name,
                 "alert": "raycon completed but raycon_scenario.json is not visible in M1",
                 "block_plan_file_id": block_plan_file_id,
             }
         if status in RAYCON_IN_PROGRESS_STATUSES:
-            progress_row: dict[str, Any] = {
-                "site": site_name,
-                "skipped": f"raycon job {status}",
-                "block_plan_file_id": block_plan_file_id,
-            }
-            if is_stuck:
-                progress_row["alert"] = f"raycon job still {status} after {alert_after}"
-            return progress_row
+            prior = (dispatch_state or {}).get(block_plan_file_id) or {}
+            last_dispatch_dt = _parse_iso(str(prior.get("last_dispatch", "") or ""))
+            status_age_reference = last_dispatch_dt or bp_modified
+            within_redispatch_window = (
+                status_age_reference is not None
+                and (now - status_age_reference) < redispatch_after
+            )
+            if within_redispatch_window and (
+                prior.get("capacity_analysis_attached") or last_dispatch_dt is None
+            ):
+                progress_row: dict[str, Any] = {
+                    "site": site_name,
+                    "skipped": f"raycon job {status}",
+                    "block_plan_file_id": block_plan_file_id,
+                }
+                if is_stuck:
+                    progress_row["alert"] = (
+                        f"raycon job still {status} after {alert_after}"
+                    )
+                return progress_row
 
         # Safety-net dispatch: try to (re-)fire RayCon for this Block Plan
         # before we decide whether to alert. If RayCon is just slow, this
@@ -1241,13 +1708,17 @@ def _process_site(
         dispatch_result: dict[str, Any] = {}
         if dispatch_state is not None:
             dispatch_result = _dispatch_raycon_job(
+                gc,
                 site_summary,
                 block_plan,
                 m1_folder_id,
                 dispatch_state,
                 dry_run=dry_run,
                 redispatch_after=redispatch_after,
+                m1_files=m1_files,
                 now=now,
+                require_capacity_for_dispatch=True,
+                preview_capacity_analysis=preview_capacity_analysis,
             )
 
         # Successful dispatch is the headline outcome for this site.
@@ -1260,6 +1731,7 @@ def _process_site(
                 "status": dispatch_result.get("status"),
                 "status_url_present": dispatch_result.get("status_url_present"),
                 "block_plan_file_id": dispatch_result.get("block_plan_file_id"),
+                **_capacity_analysis_summary(dispatch_result),
             }
             if bp_modified is not None:
                 dispatch_row["block_plan_modified"] = bp_modified.isoformat()
@@ -1282,11 +1754,13 @@ def _process_site(
                 "alert": f"no raycon_scenario.json after {alert_after}",
                 "block_plan_modified": bp_modified.isoformat() if bp_modified else None,
                 "dispatch_skipped": dispatch_result.get("dispatch_skipped"),
+                **_capacity_analysis_summary(dispatch_result),
             }
         return {
             "site": site_name,
             "skipped": "scenario JSON not yet present",
             "dispatch_skipped": dispatch_result.get("dispatch_skipped"),
+            **_capacity_analysis_summary(dispatch_result),
         }
 
     # Scenario JSON is here — but did the run actually succeed? RayCon
@@ -1300,6 +1774,7 @@ def _process_site(
         if block_plan is None:
             return _failed_scenario_base_row(site_name, scenario, report_fields)
         return _handle_failed_scenario(
+            gc,
             site_summary,
             site_name,
             block_plan,
@@ -1309,7 +1784,9 @@ def _process_site(
             dispatch_state=dispatch_state,
             dry_run=dry_run,
             redispatch_after=redispatch_after,
+            m1_files=m1_files,
             retry_failed_scenario=retry_failed_scenarios,
+            preview_capacity_analysis=preview_capacity_analysis,
         )
 
     # Scenario JSON is here and the run succeeded — publish the report
@@ -1414,6 +1891,15 @@ def _parse_iso(s: str) -> datetime | None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--env-file",
+        default=None,
+        help=(
+            "Optional .env path to load before building settings. Useful for "
+            "running a checked-out validation branch against an existing local "
+            "runtime config without copying secrets."
+        ),
+    )
     parser.add_argument("--site", help="Filter to sites whose title or address contains this substring")
     parser.add_argument("--dry-run", action="store_true", help="Detect only; don't publish docs")
     parser.add_argument(
@@ -1439,6 +1925,33 @@ def main(argv: list[str] | None = None) -> int:
             "Disable the event-driven DD Report republish that fires when a "
             "RayCon Scenario Doc is published. Emergency override; default "
             "behavior is to republish."
+        ),
+    )
+    parser.add_argument(
+        "--suppress-notifications",
+        action="store_true",
+        help=(
+            "Do not post Rhodes or Google Chat notifications for alerts/errors. "
+            "Use for controlled single-site validation runs where Drive/RayCon "
+            "writes are intentional but operator alerts would be noisy."
+        ),
+    )
+    parser.add_argument(
+        "--preview-capacity-analysis",
+        action="store_true",
+        help=(
+            "With --dry-run, run Alpha Capacity Analysis without uploading the "
+            "artifact so a scoped validation can show whether RayCon would "
+            "receive complete Fast Path/Max capacity counts."
+        ),
+    )
+    parser.add_argument(
+        "--require-raycon-git-commit",
+        default=None,
+        help=(
+            "Optional deploy-proof guard. Before reading Drive or dispatching "
+            "jobs, fetch RayCon /version from RAYCON_JOBS_URL and exit non-zero "
+            "unless git_commit matches this full or short SHA."
         ),
     )
     # Rec. 2: RayCon callback receiver. When --site-id is set, scope the
@@ -1488,7 +2001,20 @@ def main(argv: list[str] | None = None) -> int:
             args.raycon_status or "(none)",
         )
 
+    if args.env_file:
+        _load_runtime_env_file(args.env_file)
+
     settings = get_settings()
+    version_ok, version_message = _verify_raycon_git_commit(
+        jobs_url=settings.raycon_jobs_url,
+        expected_commit=args.require_raycon_git_commit or "",
+    )
+    if not version_ok:
+        logger.error("%s", version_message)
+        return 1
+    if args.require_raycon_git_commit:
+        logger.info("RayCon /version git_commit verified: %s", version_message)
+
     gc = GoogleClient.from_oauth_config(
         client_config_path=str(settings.get_client_config_path()),
         token_file_path=str(settings.get_token_file_path()),
@@ -1606,6 +2132,7 @@ def main(argv: list[str] | None = None) -> int:
                 skip_dd_republish=args.skip_dd_republish,
                 dd_republish_callback=_dd_republish_callback,
                 retry_failed_scenarios=retry_failed_scenarios,
+                preview_capacity_analysis=args.preview_capacity_analysis,
             )
         except Exception as e:
             logger.exception("Unhandled error for site '%s'", site_summary.get("title"))
@@ -1624,6 +2151,24 @@ def main(argv: list[str] | None = None) -> int:
     dispatched = [r for r in results if r.get("dispatched")]
     alerts = [r for r in results if r.get("alert")]
     errors = [r for r in results if r.get("error")]
+
+    if args.suppress_notifications:
+        if alerts or errors:
+            logger.info(
+                "RayCon follow-up notifications suppressed by "
+                "--suppress-notifications: alerts=%d errors=%d",
+                len(alerts),
+                len(errors),
+            )
+        logger.info(
+            "Run complete: published=%d dispatched=%d alerts=%d errors=%d total_sites=%d",
+            len(published),
+            len(dispatched),
+            len(alerts),
+            len(errors),
+            len(results),
+        )
+        return 0 if not errors else 1
 
     alert_state_changed = False
     dedup_state = _load_alert_state() if alerts or errors else {}

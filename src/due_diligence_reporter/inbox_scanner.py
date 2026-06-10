@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
+from .alpha_capacity_analysis import generate_alpha_capacity_analysis_artifact
 from .automation_event import (
     build_document_registration_failed_event,
     build_inbox_manual_review_required_event,
@@ -457,6 +458,16 @@ def _build_site_summary(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+build_site_summary = _build_site_summary
+_DEFAULT_BUILD_SITE_SUMMARY = build_site_summary
+
+
+def _site_summary_builder(record: dict[str, Any]) -> dict[str, Any]:
+    if build_site_summary is not _DEFAULT_BUILD_SITE_SUMMARY:
+        return build_site_summary(record)
+    return _build_site_summary(record)
+
+
 def _is_cancelled_site(site_summary: dict[str, Any]) -> bool:
     status = str(
         site_summary.get("rhodes_status") or site_summary.get("status") or ""
@@ -763,9 +774,11 @@ def _run_block_plan_downstream(
     gc: GoogleClient,
     *,
     site_summary: dict[str, Any],
-    block_plan_content: str,  # noqa: ARG001 — retained for caller compatibility
+    block_plan_content: str,
     block_plan_url: str,
     block_plan_file_id: str,
+    block_plan_file_bytes: bytes | None = None,
+    block_plan_file_name: str = "Block Plan.pdf",
 ) -> list[dict[str, Any]]:
     """Hand the Block Plan off to RayCon's async ``/v1/jobs`` endpoint.
 
@@ -783,11 +796,17 @@ def _run_block_plan_downstream(
        the JSON when it lands, and publishes the RayCon Scenario
        Google Doc. (Implemented in scripts/raycon_followup.py.)
 
-    No long inline wait. ``block_plan_content`` is retained so callers
-    don't need to be touched, but RayCon now reads the PDF directly from
-    Drive via ``block_plan_file_id``.
+    No long inline wait. RayCon reads the PDF directly from Drive via
+    ``block_plan_file_id``. DDR also passes extracted text plus PDF bytes to
+    Alpha Capacity Analysis when an external capacity artifact is not already
+    present, so image-only PDFs do not silently skip the capacity source of
+    truth.
     """
-    from .raycon_client import post_raycon_job
+    from .raycon_client import (
+        alpha_capacity_counts_signature,
+        post_raycon_job,
+        read_alpha_capacity_analysis_from_m1,
+    )
 
     site_id = str(site_summary.get("id", "")).strip()
     site_name = str(site_summary.get("title", "")).strip()
@@ -829,16 +848,128 @@ def _run_block_plan_downstream(
     except (TypeError, ValueError):
         total_building_sf = None
 
-    response = post_raycon_job(
-        site_id=site_id,
-        site_name=site_name,
-        address=site_address,
-        drive_folder_url=drive_folder_url,
-        m1_folder_id=m1_folder_id,
-        block_plan_file_id=block_plan_file_id,
-        block_plan_url=block_plan_url,
-        total_building_sf=total_building_sf,
-    )
+    capacity_analysis_file_id: str | None = None
+    capacity_analysis: dict[str, Any] | None = None
+    capacity_analysis_status = "missing"
+    capacity_analysis_error = ""
+    capacity_analysis_url = ""
+    try:
+        capacity_analysis_file_id, capacity_analysis = read_alpha_capacity_analysis_from_m1(
+            gc,
+            m1_folder_id,
+        )
+        if capacity_analysis_file_id and capacity_analysis:
+            capacity_analysis_status = "attached_existing"
+    except Exception as exc:
+        capacity_analysis_status = "lookup_error"
+        capacity_analysis_error = str(exc)
+        logger.warning(
+            "Could not read Alpha Capacity Analysis from M1 folder %s for site=%s; "
+            "will not dispatch RayCon without external capacity payload: %s",
+            m1_folder_id,
+            site_name,
+            exc,
+        )
+    if not capacity_analysis_file_id and (block_plan_content.strip() or block_plan_file_bytes):
+        generated_capacity = generate_alpha_capacity_analysis_artifact(
+            gc,
+            m1_folder_id=m1_folder_id,
+            site_name=site_name,
+            site_address=site_address,
+            block_plan_content=block_plan_content,
+            total_building_sf=total_building_sf,
+            block_plan_file_id=block_plan_file_id,
+            block_plan_file_bytes=block_plan_file_bytes,
+            block_plan_file_name=block_plan_file_name,
+        )
+        if generated_capacity.get("status") == "success":
+            generated_payload = generated_capacity.get("capacity_analysis")
+            generated_file_id = str(
+                generated_capacity.get("capacity_analysis_file_id", "") or ""
+            )
+            generated_signature = (
+                alpha_capacity_counts_signature(generated_payload)
+                if isinstance(generated_payload, dict)
+                else ""
+            )
+            if isinstance(generated_payload, dict) and generated_file_id and generated_signature:
+                capacity_analysis = generated_payload
+                capacity_analysis_file_id = generated_file_id
+                capacity_analysis_url = str(
+                    generated_capacity.get("capacity_analysis_url", "") or ""
+                )
+                capacity_analysis_status = "generated"
+            else:
+                capacity_analysis_status = "generation_incomplete"
+                capacity_analysis_error = (
+                    "Alpha Capacity Analysis succeeded but did not return a JSON "
+                    "artifact with both Strict/Fast Path and Max Capacity counts."
+                )
+        else:
+            capacity_analysis_status = str(
+                generated_capacity.get("status", "") or "missing"
+            )
+            capacity_analysis_error = str(
+                generated_capacity.get("message")
+                or generated_capacity.get("error")
+                or "capacity analysis not produced"
+            )
+            logger.warning(
+                "Alpha Capacity Analysis artifact not generated for site=%s "
+                "block_plan_file_id=%s: %s",
+                site_name,
+                block_plan_file_id,
+                generated_capacity.get("message") or generated_capacity.get("error"),
+            )
+
+    raycon_job_kwargs: dict[str, Any] = {
+        "site_id": site_id,
+        "site_name": site_name,
+        "address": site_address,
+        "drive_folder_url": drive_folder_url,
+        "m1_folder_id": m1_folder_id,
+        "block_plan_file_id": block_plan_file_id,
+        "block_plan_url": block_plan_url,
+        "total_building_sf": total_building_sf,
+    }
+    if capacity_analysis_file_id and capacity_analysis:
+        raycon_job_kwargs["capacity_analysis_file_id"] = capacity_analysis_file_id
+        raycon_job_kwargs["capacity_analysis"] = capacity_analysis
+    capacity_analysis_attached = bool(capacity_analysis_file_id and capacity_analysis)
+
+    if not capacity_analysis_attached:
+        logger.warning(
+            "Skipping RayCon job dispatch for site=%s block_plan_file_id=%s: "
+            "Alpha Capacity Analysis did not produce both Strict/Fast Path "
+            "and Max Capacity counts.",
+            site_name,
+            block_plan_file_id,
+        )
+        return [
+            {
+                "doc_type": "raycon_scenario_request",
+                "block_plan_file_id": block_plan_file_id,
+                "job_id": "",
+                "idempotency_key": "",
+                "raycon_run_id": "",
+                "retry_after_seconds": "",
+                "status_url_present": False,
+                "cached": "",
+                "status": "blocked_capacity_analysis_not_available",
+                "dispatch_skipped": "capacity_analysis_not_available",
+                "capacity_analysis_status": capacity_analysis_status,
+                "capacity_analysis_attached": False,
+                "capacity_analysis_file_id": capacity_analysis_file_id or "",
+                "capacity_analysis_url": capacity_analysis_url,
+                "capacity_analysis_error": capacity_analysis_error
+                or (
+                    "Alpha Capacity Analysis did not produce both Strict/Fast Path "
+                    "and Max Capacity counts."
+                ),
+            }
+        ]
+
+    response = post_raycon_job(**raycon_job_kwargs)
     raycon_run_id = str(response.get("raycon_run_id", "") or "").strip()
     job_id = str(response.get("job_id", "")).strip()
     logger.info(
@@ -860,6 +991,11 @@ def _run_block_plan_downstream(
             "status_url_present": bool(response.get("status_url")),
             "cached": str(response.get("cached", "") or ""),
             "status": str(response.get("status", "accepted")),
+            "capacity_analysis_status": capacity_analysis_status,
+            "capacity_analysis_attached": capacity_analysis_attached,
+            "capacity_analysis_file_id": capacity_analysis_file_id or "",
+            "capacity_analysis_url": capacity_analysis_url,
+            "capacity_analysis_error": capacity_analysis_error,
         }
     ]
 
@@ -1186,7 +1322,7 @@ def process_email(
                 confidence,
                 filename,
             )
-            review_site_summary = _build_site_summary(matched_record) if matched_record else None
+            review_site_summary = _site_summary_builder(matched_record) if matched_record else None
             review_item = _manual_review_item(
                 filename=filename,
                 doc_type=doc_type,
@@ -1249,7 +1385,7 @@ def process_email(
             review_needed = True
             continue
 
-        site_summary = _build_site_summary(matched_record) if matched_record else {}
+        site_summary = _site_summary_builder(matched_record) if matched_record else {}
         # All supported doc types route to the matched site's M1 subfolder.
         # The legacy shared-folder targets (sir_folder_id, building_inspection_folder_id,
         # isp_folder_id) are no longer used by the live scanner — they remain
@@ -1723,6 +1859,8 @@ def process_email(
                         block_plan_content=block_plan_content,
                         block_plan_url=str(drive_file.get("webViewLink", "")),
                         block_plan_file_id=str(drive_file.get("id", "")),
+                        block_plan_file_bytes=file_bytes,
+                        block_plan_file_name=str(drive_file.get("name", "") or filename),
                     )
                 except Exception as e:
                     logger.warning(

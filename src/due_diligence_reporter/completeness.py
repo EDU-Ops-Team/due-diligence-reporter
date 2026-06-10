@@ -56,8 +56,9 @@ def raycon_token_paths() -> list[str]:
 
     These are the tokens that go pending when ``raycon_scenario.json``
     has not yet landed. Per ``report_schema.TOKEN_SOURCES``, capacity
-    summary tokens are sourced from the Capacity Brainlift (the agent),
-    not RayCon, so they're excluded here.
+    summary tokens are sourced from Alpha Capacity Analysis, not RayCon,
+    so they're excluded here even when RayCon carries the capacity values
+    through in ``raycon_scenario.json``.
     """
     paths: list[str] = []
     for scenario in ("fastest_open", "max_capacity"):

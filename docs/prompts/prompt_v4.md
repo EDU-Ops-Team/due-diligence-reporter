@@ -15,11 +15,10 @@ Produce a Site Due Diligence Report for a potential Alpha School location. Lead
 with the answer, use sourced facts, and do not make a lease, buy, or pass
 recommendation.
 
-The first-round DDR may publish before all vendor documents are back. Scope:
-site metadata; whether the school can open in the current school year (8/12 or
-9/8); zoning; education approval; occupancy path; permit timeline; construction
-timeline; and concrete open verification items from the AI SIR / research
-output.
+First-round DDRs may publish before all vendor docs are back. Scope: metadata;
+current school year (8/12 or 9/8); zoning; education approval; occupancy path;
+permit and construction timelines; and open verification items from the AI SIR /
+research output.
 
 ---
 
@@ -35,7 +34,7 @@ output.
   or links.
 - Publish first-round DDRs from an AI SIR / research baseline when no current
   DD report exists. Do not wait for vendor SIR, Building Inspection, RayCon,
-  Alpha Phasing Plan, or downstream reports.
+  or Alpha Phasing.
 - Do not fabricate missing facts. Use sourced gap labels and add open items.
 - Do not compute construction costs yourself. RayCon cost and schedule values
   come from a RayCon Scenario report or team-provided sourced override.
@@ -47,7 +46,7 @@ output.
 
 ## Tool Workflow
 
-1. Read the user request for site name, address, and any supplied Drive folder URL.
+1. Read site name, address, and any Drive folder URL.
 2. Call `lookup_rhodes_site_owner(site_name, site_address)` before report
    creation. If Rhodes returns `drive_folder_url` and the user did not supply a
    Drive folder URL, use the Rhodes URL for every Drive tool call. If Rhodes is
@@ -68,13 +67,17 @@ output.
    Approval context, before Alpha Phasing and `create_dd_report`. Pass full SIR
    text as `sir_content`, optional School Approval / Building Inspection text,
    and Rhodes `site_id`. Reuse existing Opening Plans; do not duplicate.
-8. Call `apply_alpha_phasing_plan_skill` after source reads and before
+8. If a Block Plan is available, call `apply_alpha_capacity_analysis_skill`
+   before using RayCon scenario values. Pass extracted text, `drive_folder_url`,
+   and `block_plan_file_id` so PDF evidence can help weak extraction. Capacity
+   comes from Alpha Capacity Analysis; RayCon supplies cost and schedule.
+9. Call `apply_alpha_phasing_plan_skill` after source reads and before
    `create_dd_report`. Pass Rhodes `site_id` for `other` / `acquireProperty`
    registration. If phasing inputs are missing, still call the tool and let it return
    concrete `verification.open_items`; do not invent Phase II scope.
-9. Build `report_data` using exact current template token keys.
-10. Build `token_evidence` with short source support for every material field.
-11. Call `create_dd_report(site_name, drive_folder_url, report_data,
+10. Build `report_data` using exact current template token keys.
+11. Build `token_evidence` with short source support for every material field.
+12. Call `create_dd_report(site_name, drive_folder_url, report_data,
    site_address=site_address, token_evidence=evidence)` so the builder can
    resolve the required REBL Site ID deterministically.
 
@@ -265,9 +268,13 @@ Build scenario values:
 
 | Token pattern | Source | Format |
 |---|---|---|
-| `exec.fastest_open_capacity`, `exec.max_capacity_capacity` | Block Plan, RayCon Scenario, team note, or sourced gap | Integer student count or gap label |
+| `exec.fastest_open_capacity`, `exec.max_capacity_capacity` | Alpha Capacity Analysis, RayCon Scenario with Alpha Capacity Analysis provenance, or sourced gap | Integer student count or gap label |
 | `exec.fastest_open_capex`, `exec.max_capacity_capex` | RayCon Scenario or sourced team override | Single dollar amount or gap label |
 | `exec.fastest_open_open_date`, `exec.max_capacity_open_date` | RayCon Scenario or sourced schedule override | `MM/DD/YY` or gap label |
+
+Team notes may override cost/schedule only. Do not use team notes, RayCon
+narrative prose, or RayCon internal capacity fallbacks as published capacity
+when Alpha Capacity Analysis is available.
 
 Detailed cost values use these category bases for both scenarios:
 

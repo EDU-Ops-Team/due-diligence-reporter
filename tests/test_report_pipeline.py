@@ -92,6 +92,26 @@ def test_canonicalize_site_tool_input_adds_context_for_alpha_phasing() -> None:
     assert canonical["site_id"] == "SITE1"
 
 
+def test_canonicalize_site_tool_input_adds_context_for_alpha_capacity() -> None:
+    canonical = _canonicalize_site_tool_input(
+        "apply_alpha_capacity_analysis_skill",
+        {
+            "site_name": "Wrong",
+            "drive_folder_url": "wrong",
+            "block_plan_content": "Block Plan",
+        },
+        site_title="Alpha Tulsa",
+        drive_folder_url="https://drive.google.com/drive/folders/site123",
+        site_address="421 E 11th St, Tulsa, OK 74120",
+        site_id="SITE1",
+    )
+
+    assert canonical["site_name"] == "Alpha Tulsa"
+    assert canonical["drive_folder_url"] == "https://drive.google.com/drive/folders/site123"
+    assert canonical["site_address"] == "421 E 11th St, Tulsa, OK 74120"
+    assert "site_id" not in canonical
+
+
 def test_canonicalize_site_tool_input_adds_context_for_opening_plan() -> None:
     canonical = _canonicalize_site_tool_input(
         "apply_opening_plan_skill",
@@ -1955,7 +1975,7 @@ class TestAgentToolMerging:
         assert create_input["site_name"] == "Alpha Los Angeles 5400 Beethoven St"
         assert create_input["drive_folder_url"].endswith("/folder123")
         assert create_input["site_address"] == "5400 Beethoven St, Los Angeles, CA 90066"
-        assert create_input["site_id"] == "SITE1"
+        assert "site_id" not in create_input
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")

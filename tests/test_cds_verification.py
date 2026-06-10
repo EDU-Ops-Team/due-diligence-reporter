@@ -12,8 +12,6 @@ Covers:
 
 from __future__ import annotations
 
-import pytest
-
 from due_diligence_reporter.cds_verification import (
     VerificationItem,
     VerificationReport,
@@ -25,7 +23,6 @@ from due_diligence_reporter.cds_verification import (
     _infer_authority,
     generate_cds_verification_report,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: sample SIR content

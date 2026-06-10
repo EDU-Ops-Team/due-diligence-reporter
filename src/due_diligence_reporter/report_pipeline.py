@@ -190,6 +190,22 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "apply_alpha_capacity_analysis_skill",
+        "description": "Run hosted Ops-Skills alpha-capacity-analysis from Block Plan text. Pass the full extracted Block Plan text from read_drive_document, plus site_name, site_address, drive_folder_url, block_plan_file_id, and total_building_sf when known. On success, DDR saves a machine-readable Alpha Capacity Analysis JSON artifact in M1 and returns report_data_fields for exec.fastest_open_capacity and exec.max_capacity_capacity. RayCon consumes the JSON artifact for pricing; do not use this tool for construction cost.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "site_name": {"type": "string"},
+                "site_address": {"type": "string", "default": ""},
+                "block_plan_content": {"type": "string"},
+                "drive_folder_url": {"type": "string", "default": ""},
+                "block_plan_file_id": {"type": "string", "default": ""},
+                "total_building_sf": {"type": "integer", "default": 0},
+            },
+            "required": ["site_name", "block_plan_content"],
+        },
+    },
+    {
         "name": "apply_alpha_phasing_plan_skill",
         "description": "Create and publish the Alpha Phasing Plan workbook after source reads, E-Occupancy, School Approval, and RayCon context are available. Pass only confirmed phasing inputs; if deferred Phase II scope is not confirmed, call the tool with the missing fields so it returns concrete verification.open_items instead of inventing scope. On success, copy returned report_data_fields into create_dd_report, including sources.alpha_phasing_plan_link and exec.alpha_phasing_* summary fields.",
         "input_schema": {
@@ -297,6 +313,7 @@ async def route_tool_call(tool_name: str, tool_input: dict[str, Any]) -> Any:
         "apply_e_occupancy_skill": srv.apply_e_occupancy_skill,
         "apply_school_approval_skill": srv.apply_school_approval_skill,
         "apply_opening_plan_skill": srv.apply_opening_plan_skill,
+        "apply_alpha_capacity_analysis_skill": srv.apply_alpha_capacity_analysis_skill,
         "apply_alpha_phasing_plan_skill": srv.apply_alpha_phasing_plan_skill,
         "create_dd_report": srv.create_dd_report,
         "check_report_completeness": srv.check_report_completeness,
@@ -335,6 +352,7 @@ def _canonicalize_site_tool_input(
         "apply_e_occupancy_skill",
         "apply_school_approval_skill",
         "apply_opening_plan_skill",
+        "apply_alpha_capacity_analysis_skill",
         "apply_alpha_phasing_plan_skill",
         "create_dd_report",
         "save_skill_report",
@@ -353,6 +371,7 @@ def _canonicalize_site_tool_input(
         "apply_e_occupancy_skill",
         "apply_school_approval_skill",
         "apply_opening_plan_skill",
+        "apply_alpha_capacity_analysis_skill",
         "apply_alpha_phasing_plan_skill",
         "create_dd_report",
         "save_skill_report",
@@ -364,6 +383,7 @@ def _canonicalize_site_tool_input(
         "list_drive_documents",
         "apply_school_approval_skill",
         "apply_opening_plan_skill",
+        "apply_alpha_capacity_analysis_skill",
         "apply_alpha_phasing_plan_skill",
         "create_dd_report",
     }:

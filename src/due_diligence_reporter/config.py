@@ -151,6 +151,10 @@ class Settings(BaseSettings):
         "gpt-4o-mini",
         description="OpenAI model used for shared-folder site matching",
     )
+    openai_capacity_model: str = Field(
+        "gpt-4o",
+        description="OpenAI model used to run Alpha Capacity Analysis from Block Plans",
+    )
     anthropic_report_model: str = Field(
         "claude-sonnet-4-6",
         description="Anthropic model used for DD report generation",

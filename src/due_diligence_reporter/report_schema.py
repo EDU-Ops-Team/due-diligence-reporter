@@ -185,7 +185,7 @@ SCENARIOS: tuple[str, ...] = (
 )
 
 SUMMARY_TOKEN_BASES: tuple[tuple[str, str], ...] = (
-    ("capacity", "Capacity Brainlift"),
+    ("capacity", "Alpha Capacity Analysis"),
     ("capex", "RayCon"),
     ("open_date", "RayCon"),
 )

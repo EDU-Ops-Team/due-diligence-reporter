@@ -1,5 +1,1620 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-09 - Completion Audit Against Original Goal
+
+Goal: make the DDR/RayCon Block Plan flow reliably produce Fast Path and Max
+Capacity construction estimates, with capacity numbers sourced from
+`ops-skills:alpha-capacity-analysis` and RayCon consuming those numbers for
+pricing rather than independently owning published capacity.
+
+Audit result: **not complete yet**. Local DDR and RayCon implementations are
+aligned and validated, but the required live proof is still missing because
+production RayCon remains on `git_commit=7cba48d`.
+
+Requirement-by-requirement status:
+
+| Requirement | Current evidence | Status |
+| --- | --- | --- |
+| DDR gets capacity numbers from `ops-skills:alpha-capacity-analysis` | `src/due_diligence_reporter/alpha_capacity_analysis.py` loads `alpha-capacity-analysis` plus referenced rulesets through `load_ops_skill_file(...)`, normalizes outputs with `source_system=alpha_capacity_analysis`, and can fall back to explicit Block Plan capacity schedules only when printed in the same Block Plan. | Implemented locally |
+| DDR creates and attaches a reusable Alpha Capacity artifact | `generate_alpha_capacity_analysis_artifact(...)` writes the normalized JSON artifact to M1 and returns `capacity_analysis`, `capacity_analysis_file_id`, and `capacity_analysis_url`; tests cover artifact upload and filename generation. | Implemented locally |
+| DDR does not auto-dispatch RayCon when complete Alpha counts are unavailable | Inbox and RayCon follow-up paths return `dispatch_skipped=capacity_analysis_not_available` / `blocked_capacity_analysis_not_available` when no complete Strict/Fast Path and Max payload exists. Focused tests cover this guard. | Implemented locally |
+| DDR can recover old failed/no-capacity RayCon scenarios once Alpha Capacity exists | RayCon follow-up stores `capacity_analysis_signature`, detects old failed/completed/no-capacity states, and redispatches when complete Alpha capacity becomes available. Focused tests cover Miami Beach `114-199` signatures and recovery cases. | Implemented locally |
+| RayCon uses Alpha counts for Fast Path and Max Capacity pricing | `api/src/rayconJobs.js` normalizes Alpha Capacity payloads, applies external capacity overrides, passes `capacitySource=alpha_capacity_analysis`, `mvpCapacity`, and `idealCapacity` into `estimate_costs`, and emits Alpha provenance/capacity traces. Focused RayCon tests cover Miami Beach `114/199`. | Implemented locally |
+| RayCon does not let generic/manual capacity inputs own published capacity | RayCon requires Alpha identity (`source_system`, `capacity_source`, `source_label`, or `skill_name`) before trusting external counts. `api/src/rayTools.js` ignores `mvpCapacity`/`idealCapacity` unless `capacitySource=alpha_capacity_analysis`; prompt/schema no longer tell Ray to pass arbitrary capacities. Tests cover generic `114/199` payloads being ignored. | Implemented locally |
+| RayCon idempotency avoids reusing old no-capacity jobs after Alpha Capacity attaches | `api/src/index.js` adds `capacity:alpha:<strict>-<max>` only for complete Alpha-identified payloads and separates incomplete Alpha artifacts. Tests cover no-capacity, partial, complete, comma-formatted, and generic payload keys. | Implemented locally |
+| Miami Beach proof site can produce Alpha Capacity `114-199` before dispatch | Dry-run preview against `Alpha Miami Beach 300 71st 3rd` attaches preview Alpha Capacity with `capacity_analysis_signature=114-199` and `dispatch_skipped=dry_run`. | Verified dry-run |
+| Live production proof produces `raycon_scenario.json` with Alpha Capacity provenance and priced Fast Path/Max Capacity estimates | Production RayCon `/version` still reports `git_commit=7cba48d`; local RayCon changes are not deployed. The guarded proof must wait for commit/deploy and then run with `--require-raycon-git-commit <new-sha>`. | Missing live proof |
+
+Most recent focused validation supporting this audit:
+
+```powershell
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_client.py tests\test_raycon_followup.py -q --basetemp C:\tmp\ddr-raycon-alpha-contract-ready
+uv run ruff check src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\raycon_client.py scripts\raycon_followup.py tests\test_alpha_capacity_analysis.py tests\test_raycon_client.py tests\test_raycon_followup.py
+uv run mypy src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\raycon_client.py
+npx.cmd vitest run src\rayconJobs.test.js src\jobsRoute.test.js src\rayTools.test.js src\openApiSpec.test.js src\deployManifest.test.js -t "Alpha Capacity|capacity|source-selection|deploy|OpenAPI|capacity guesses|generic capacity"
+npm.cmd test
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+```
+
+Most recent results:
+
+- DDR focused pytest: `167 passed`.
+- DDR focused Ruff: passed.
+- DDR focused mypy: success in 2 source files.
+- RayCon focused Vitest: `5 passed`, `34 passed`, `104 skipped`.
+- RayCon root `npm.cmd test`: frontend/root `13 passed`, `198 passed`; API
+  `20 passed`, `275 passed`.
+- Production `/version`: `git_commit=7cba48d`.
+
+Do not mark the goal complete until the live proof verifies:
+
+1. RayCon `/version.git_commit` equals the new committed/deployed SHA.
+2. Miami Beach non-dry-run follow-up dispatches with Alpha Capacity signature
+   `114-199`.
+3. M1 receives/updates `raycon_scenario.json`.
+4. The scenario JSON has Alpha Capacity provenance and publishes/prices Fast
+   Path `114` plus Max Capacity `199`.
+
+## 2026-06-09 - RayCon Version Guard Verified Against Live Production
+
+- Confirmed the RayCon checkout is on `main...origin/main` with dirty
+  validated changes and remote `origin=https://github.com/b-randongee/RayCon.git`.
+- Confirmed local RayCon `HEAD` is still
+  `7cba48d2ed315bf3028983edfa4cbb2cd3a3322f`; production `/version` reports
+  short `git_commit=7cba48d`, so the local validated changes are not deployed.
+- Ran the DDR RayCon follow-up proof command with
+  `--require-raycon-git-commit deadbeef` against production. It exited nonzero
+  before Google Client initialization and before any Drive/Rhodes work, with:
+  `RayCon /version git_commit mismatch: expected deadbeef, got 7cba48d`.
+- This verifies the intended live-proof guard: after RayCon is committed and
+  deployed, use the actual new SHA in `--require-raycon-git-commit` so DDR
+  cannot dispatch the Miami Beach proof to the old deployed service.
+
+Verification:
+
+```powershell
+git status --branch --short
+git remote -v
+git rev-parse HEAD
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --skip-dd-republish --suppress-notifications --require-raycon-git-commit deadbeef
+```
+
+Result:
+
+- RayCon branch: `main...origin/main`.
+- RayCon remote: `origin https://github.com/b-randongee/RayCon.git`.
+- RayCon local HEAD: `7cba48d2ed315bf3028983edfa4cbb2cd3a3322f`.
+- Guard proof exited `1` before Google Client startup with the expected
+  `/version` mismatch message.
+
+## 2026-06-09 - Deploy-Readiness Audit Refreshed
+
+- Re-audited the current RayCon and DDR diffs for rollout safety. The added
+  secret scan found only fake test status URLs and documentation/test
+  placeholders; no real API keys or private keys were found in added lines.
+- Confirmed the only untracked RayCon file is
+  `scripts/deploy-raycon-cloud-run.mjs`, and the only untracked DDR files are
+  `src/due_diligence_reporter/alpha_capacity_analysis.py` and
+  `tests/test_alpha_capacity_analysis.py`.
+- Re-ran focused cross-repo contract gates:
+  DDR Alpha Capacity/RayCon handoff tests passed, RayCon focused
+  capacity/source/deploy tests passed, syntax checks passed, and both repos'
+  diff checks passed with expected Windows LF/CRLF warnings only.
+- Re-ran full RayCon `npm.cmd test` on the current tree. Frontend/root and API
+  tests passed.
+- Production RayCon still reports `/version git_commit=7cba48d`; do not run
+  the non-dry-run Miami Beach proof until RayCon is committed and deployed.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_client.py tests\test_raycon_followup.py -q --basetemp C:\tmp\ddr-raycon-alpha-contract-ready
+uv run ruff check src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\raycon_client.py scripts\raycon_followup.py tests\test_alpha_capacity_analysis.py tests\test_raycon_client.py tests\test_raycon_followup.py
+uv run mypy src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\raycon_client.py
+npx.cmd vitest run src\rayconJobs.test.js src\jobsRoute.test.js src\rayTools.test.js src\openApiSpec.test.js src\deployManifest.test.js -t "Alpha Capacity|capacity|source-selection|deploy|OpenAPI|capacity guesses|generic capacity"
+node -c api\src\index.js
+node -c api\src\rayconJobs.js
+node -c scripts\deploy-raycon-cloud-run.mjs
+git diff --check
+npm.cmd test
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+```
+
+Results:
+
+- DDR focused pytest: `167 passed`.
+- DDR focused Ruff: passed.
+- DDR focused mypy: success in 2 source files.
+- RayCon focused Vitest: `5 passed`, `34 passed`, `104 skipped`.
+- RayCon syntax checks passed for `api\src\index.js`,
+  `api\src\rayconJobs.js`, and `scripts\deploy-raycon-cloud-run.mjs`.
+- RayCon root `npm.cmd test`: frontend/root `13 passed`, `198 passed`; API
+  `20 passed`, `275 passed`.
+- RayCon and DDR `git diff --check`: passed with expected Windows LF/CRLF
+  warnings only.
+- Production `/version`: `git_commit=7cba48d`.
+
+Exact remaining rollout/proof sequence after approval:
+
+```powershell
+# RayCon repo
+git status --short
+git add CLAUDE.md api/package.json api/src/deployManifest.test.js api/src/index.js api/src/jobsRoute.test.js api/src/openApiSpec.js api/src/openApiSpec.test.js api/src/rayTools.js api/src/rayTools.test.js api/src/rayconJobs.js api/src/rayconJobs.test.js docs/api-reference.md docs/decisions.md docs/patterns.md package.json scripts/deploy-raycon-cloud-run.mjs src/engine/estimateToolSchema.js src/engine/plannerSystemPrompt.js
+git commit -m "Route DDR Alpha Capacity into RayCon job estimates"
+$RAYCON_SHA = git rev-parse HEAD
+npm.cmd run deploy:cloud-run:execute
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+
+# DDR repo, after production /version reports $RAYCON_SHA
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --redispatch-after-minutes 0 --skip-dd-republish --suppress-notifications --require-raycon-git-commit $RAYCON_SHA
+```
+
+Expected proof evidence:
+
+- RayCon `/version.git_commit` equals the committed RayCon SHA.
+- Miami Beach RayCon follow-up dispatch attaches Alpha Capacity with signature
+  `114-199`.
+- M1 receives/updates `raycon_scenario.json`.
+- The generated scenario carries Alpha Capacity provenance and uses Fast Path
+  `114` plus Max Capacity `199` for student-scaled pricing.
+
+## 2026-06-09 - RayCon Requires Alpha Identity Before Trusting Capacity Counts
+
+- Hardened the RayCon capacity-input trust boundary so a complete-looking
+  `capacity_analysis` object is not enough to override RayCon capacity math.
+  RayCon now treats external capacity as authoritative only when the payload
+  identifies Alpha Capacity Analysis through `source_system`,
+  `capacity_source`, `source_label`, or `skill_name`.
+- Added RayCon regression coverage for a generic `capacity_analysis` payload
+  with `114/199` counts. It is ignored as authoritative: published scenario
+  capacity stays on RayCon's internal audit values, no Alpha provenance is
+  emitted, and `estimate_costs` is not called with
+  `capacitySource=alpha_capacity_analysis`.
+- Added route/idempotency coverage so generic capacity-shaped payloads do not
+  create `capacity:alpha:*` keys. Positive Alpha payloads still include
+  `capacity:alpha:<strict>-<max>`, partial Alpha artifacts still use
+  `capacity:alpha_incomplete:<artifact>`, and comma-formatted Alpha counts are
+  normalized.
+- Updated RayCon OpenAPI/API reference wording to tell callers that the
+  payload must be Alpha-identified before RayCon uses it as the authoritative
+  Fast Path / Max Capacity source for student-scaled pricing.
+- Confirmed DDR-generated Alpha Capacity artifacts include both
+  `source_system=alpha_capacity_analysis` and
+  `source_label=Alpha Capacity Analysis`, so the stricter RayCon guard remains
+  compatible with the DDR Block Plan path.
+- Re-ran the Miami Beach DDR dry-run preview. It still attaches preview Alpha
+  Capacity with `capacity_analysis_signature=114-199` and skips only because
+  `--dry-run` was supplied.
+- Production RayCon is still not updated: `/version` reports
+  `git_commit=7cba48d`. Live non-dry-run proof remains gated on committing and
+  deploying RayCon, then rerunning Miami Beach with
+  `--require-raycon-git-commit <new-sha>`.
+
+Verification:
+
+```powershell
+node -c api\src\index.js
+node -c api\src\rayconJobs.js
+node -c api\src\openApiSpec.js
+npx.cmd vitest run src\rayconJobs.test.js src\jobsRoute.test.js src\openApiSpec.test.js -t "Alpha Capacity|capacity|idempotency|OpenAPI|generic capacity"
+npx.cmd vitest run
+npm.cmd test
+git diff --check -- api\src\index.js api\src\rayconJobs.js api\src\rayconJobs.test.js api\src\jobsRoute.test.js api\src\openApiSpec.js api\src\openApiSpec.test.js docs\api-reference.md
+npm.cmd run deploy:cloud-run -- --out-dir ..\raycon-deploy-preview-trust-boundary-current
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --preview-capacity-analysis --skip-dd-republish --suppress-notifications --redispatch-after-minutes 0
+```
+
+Results:
+
+- RayCon syntax checks passed for `api\src\index.js`,
+  `api\src\rayconJobs.js`, and `api\src\openApiSpec.js`.
+- Focused RayCon capacity/source/idempotency/OpenAPI Vitest:
+  `3 passed`, `18 passed`, `100 skipped`.
+- Full RayCon API Vitest: `20 passed`, `275 passed`.
+- Root RayCon `npm.cmd test`: frontend/root `13 passed`, `198 passed`; API
+  `20 passed`, `275 passed`.
+- RayCon diff check passed with expected Windows LF/CRLF warnings only.
+- RayCon deploy helper dry run printed Cloud Build/Cloud Run commands only and
+  did not execute `gcloud`; it still warns that the tree is dirty and should
+  not be executed until committed.
+- Production `/version`: `git_commit=7cba48d`.
+- Miami Beach dry-run preview:
+  `capacity_analysis_status=preview_success`,
+  `capacity_analysis_attached=true`,
+  `capacity_analysis_signature=114-199`,
+  `capacity_analysis_preview=true`, and `dispatch_skipped=dry_run`.
+
+## 2026-06-09 - DDR Capacity Mapping Prefers Alpha Artifact Counts
+
+- Hardened `src/due_diligence_reporter/raycon_client.py` so
+  `raycon_scenario_to_report_fields` treats the Alpha Capacity Analysis
+  artifact as the actual source of capacity counts, not just a provenance gate.
+- When a RayCon payload carries Alpha Capacity Analysis with parseable
+  Strict/Fast Path and Max counts, DDR now maps those artifact counts into
+  `exec.fastest_open_capacity` and `exec.max_capacity_capacity` even if the
+  mirrored scenario `capacity_students` values are stale or mismatched.
+- Scenario-level `capacity_trace.source_system=alpha_capacity_analysis` still
+  allows capacity mapping when no inline Alpha artifact counts are present.
+- Completed RayCon scenarios without Alpha provenance continue to map
+  capex/open-date/cost buckets while leaving DDR capacity tokens blank.
+- Added regression coverage in `tests/test_raycon_client.py` for stale scenario
+  mirrors: Alpha artifact `114/199` wins over scenario `126/211`.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_raycon_client.py -q --basetemp C:\tmp\ddr-raycon-client-alpha-artifact-precedence-2
+uv run ruff check src\due_diligence_reporter\raycon_client.py tests\test_raycon_client.py
+uv run mypy src\due_diligence_reporter\raycon_client.py
+git diff --check -- src\due_diligence_reporter\raycon_client.py tests\test_raycon_client.py
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py -q --color=no --basetemp C:\tmp\ddr-raycon-alpha-artifact-precedence-a
+uv run pytest tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --color=no --basetemp C:\tmp\ddr-raycon-alpha-artifact-precedence-b
+uv run ruff check .
+uv run mypy src/
+```
+
+Results:
+
+- Focused RayCon client pytest: `72 passed`.
+- Split affected DDR suites: `245 passed` and `253 passed`.
+- Focused Ruff and full Ruff: passed.
+- Focused mypy and full `mypy src/`: passed.
+- Diff check passed with expected Windows LF/CRLF warnings only.
+
+## 2026-06-09 - RayCon npm Test Command Fixed for Windows
+
+- Patched RayCon `api/package.json` so `npm --prefix api test` uses
+  `vitest run` directly instead of the POSIX-only `NODE_ENV=test vitest run`.
+  Vitest sets test-mode behavior for the suite, and this makes the root
+  `npm.cmd test` command work on Windows.
+- Re-ran the root RayCon `npm.cmd test`; it now runs both frontend/root Vitest
+  and API Vitest successfully.
+- Re-ran the scoped Miami Beach DDR dry-run preview after the DDR report
+  mapping provenance gate. It still produces the expected Alpha Capacity
+  signature `114-199` and skips only because `--dry-run` was supplied.
+- Re-ran the RayCon Cloud Run deploy helper in dry-run mode. It still prints
+  commands only and refuses execute-mode while the RayCon tree is dirty. No
+  `gcloud` commands were executed.
+- Production RayCon still reports `/version git_commit=7cba48d`; the live
+  proof remains gated on committing/deploying RayCon and requiring the new
+  commit in DDR.
+
+Verification:
+
+```powershell
+npm.cmd test
+node -c api\src\index.js
+git diff --check -- api\package.json package.json api\src\rayconJobs.js api\src\rayconJobs.test.js
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --preview-capacity-analysis --skip-dd-republish --suppress-notifications --redispatch-after-minutes 0
+npm.cmd run deploy:cloud-run -- --out-dir ..\raycon-deploy-preview-test-script-current
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+```
+
+Results:
+
+- RayCon root `npm.cmd test`: frontend/root `13 passed`, `198 passed`; API
+  `20 passed`, `273 passed`.
+- RayCon syntax check for `api\src\index.js`: passed.
+- Miami Beach DDR dry-run preview:
+  `capacity_analysis_status=preview_success`,
+  `capacity_analysis_attached=true`,
+  `capacity_analysis_signature=114-199`,
+  `capacity_analysis_preview=true`, and `dispatch_skipped=dry_run`.
+- RayCon deploy helper dry run printed commands only; no `gcloud` execution.
+- Production `/version`: `git_commit=7cba48d`.
+
+## 2026-06-09 - Deploy Readiness Refreshed After Provenance Gate
+
+- Re-ran RayCon frontend and API tests with Windows-compatible commands after
+  the DDR report-capacity provenance gate and RayCon authoritative-capacity
+  review fix.
+- `npm.cmd test` at the RayCon root is still not a reliable Windows command:
+  before root dependencies were installed it failed because `vitest` was not
+  found, and the API package script uses POSIX `NODE_ENV=test`. The equivalent
+  direct Windows commands passed.
+- Ran the RayCon Cloud Run deploy helper in dry-run mode only. It generated
+  the Cloud Build config and Cloud Run env file and printed the exact `gcloud`
+  commands, but did not execute `gcloud`.
+- Production RayCon still reports `/version git_commit=7cba48d`; live proof
+  remains gated on committing/deploying the local RayCon changes and then
+  running Miami Beach through DDR with `--require-raycon-git-commit <new-sha>`.
+- `npm.cmd install` was used to hydrate root test dependencies. It reported
+  3 audit findings (`1 moderate`, `2 high`) and caused transient Windows
+  optional-package lockfile metadata churn; `package-lock.json` was restored to
+  its prior clean state.
+
+Verification:
+
+```powershell
+npm.cmd install
+npx.cmd vitest run
+npx.cmd vitest run  # from RayCon\api
+npm.cmd run deploy:cloud-run -- --out-dir ..\raycon-deploy-preview-provenance-current
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+git diff --check -- package.json api\src\rayconJobs.js api\src\rayconJobs.test.js
+```
+
+Results:
+
+- RayCon frontend/root Vitest: `13 passed`, `198 passed`.
+- RayCon API Vitest: `20 passed`, `273 passed`.
+- Deploy helper dry run printed commands only; no `gcloud` commands executed.
+- Production `/version`: `git_commit=7cba48d`.
+- RayCon diff check passed with expected Windows LF/CRLF warnings only.
+
+## 2026-06-09 - DDR Report Mapping Now Requires Alpha Capacity Provenance
+
+- Tightened `src/due_diligence_reporter/raycon_client.py` so
+  `raycon_scenario_to_report_fields` only fills
+  `exec.fastest_open_capacity` and `exec.max_capacity_capacity` when the
+  RayCon payload or per-scenario `capacity_trace` carries Alpha Capacity
+  Analysis provenance.
+- Completed RayCon scenarios without Alpha Capacity provenance still map cost
+  and schedule fields, but the DDR capacity tokens stay blank. This prevents
+  legacy/manual RayCon internal capacity math from satisfying the automated
+  DDR Alpha-sourced capacity requirement.
+- Added regression coverage in `tests/test_raycon_client.py`:
+  non-Alpha completed payloads preserve capex/open-date fields while blanking
+  capacity, and Alpha-provenance payloads still publish the Miami Beach
+  `114/199` counts.
+- A single combined broad pytest command hit a Windows terminal
+  `OSError: [Errno 22] Invalid argument` during timeout handling, so the
+  affected suite was split into two smaller commands and passed cleanly.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_raycon_client.py -q --basetemp C:\tmp\ddr-raycon-client-alpha-provenance
+uv run ruff check src\due_diligence_reporter\raycon_client.py tests\test_raycon_client.py
+uv run mypy src\due_diligence_reporter\raycon_client.py
+uv run pytest tests\test_raycon_client.py tests\test_report_schema.py tests\test_completeness.py tests\test_prompt_contract.py tests\test_docs_env_contract.py -q --basetemp C:\tmp\ddr-raycon-capacity-provenance-suite
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py -q --color=no --basetemp C:\tmp\ddr-raycon-alpha-capacity-provenance-a
+uv run pytest tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --color=no --basetemp C:\tmp\ddr-raycon-alpha-capacity-provenance-b
+uv run ruff check .
+uv run mypy src/
+git diff --check -- src\due_diligence_reporter\raycon_client.py tests\test_raycon_client.py HANDOFF.md
+```
+
+Results:
+
+- Focused RayCon client pytest: `71 passed`.
+- Focused RayCon client/report contract pytest: `204 passed`.
+- Split broad affected suite: `244 passed` and `253 passed`.
+- Focused Ruff and full Ruff: passed.
+- Focused mypy and full `mypy src/`: passed.
+- Diff check passed with expected Windows LF/CRLF warnings only.
+
+## 2026-06-09 - RayCon Keeps Alpha-Backed Capacity Defensible on Review Disagreement
+
+- Patched RayCon `api/src/rayconJobs.js` so `applyRayReviewToScenario` receives
+  the `authoritativeCapacity` flag. When complete Alpha Capacity Analysis is
+  attached, Ray review disagreement is now preserved as a caveat in the
+  rationale and validation warnings, but the Alpha-backed `capacity_trace`
+  remains `defensible=true`.
+- Non-Alpha jobs still fail closed when Ray rejects a scenario capacity as
+  indefensible. The same focused test run covered both the Alpha-backed
+  non-blocking path and the ordinary fail-closed path.
+- Updated the Miami Beach Alpha Capacity test in `api/src/rayconJobs.test.js`
+  to assert Fast Path `114` and Max Capacity `199` remain authoritative,
+  priced, Alpha-sourced, and defensible even when RayCon's internal audit
+  counts differ.
+- Full RayCon API validation remains green. Production RayCon is still not
+  updated until these RayCon changes are committed and deployed.
+
+Verification:
+
+```powershell
+node -c api\src\rayconJobs.js
+npx.cmd vitest run src\rayconJobs.test.js -t "Alpha Capacity|fails validation when Ray rejects"
+npx.cmd vitest run src\rayconJobs.test.js src\jobsRoute.test.js src\rayTools.test.js src\openApiSpec.test.js src\deployManifest.test.js -t "Alpha Capacity|capacity|source-selection|deploy|OpenAPI|capacity guesses"
+npx.cmd vitest run
+git diff --check -- api\src\rayconJobs.js api\src\rayconJobs.test.js
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+```
+
+Results:
+
+- RayCon syntax check passed.
+- Focused Alpha Capacity plus non-Alpha Ray rejection test: `4 passed`,
+  `49 skipped`.
+- Broader RayCon capacity/source-selection suite: `5 passed`, `32 passed`,
+  `104 skipped`.
+- Full RayCon API suite: `20 passed`, `273 passed`.
+- RayCon diff check passed with expected Windows LF/CRLF warnings only.
+- Production `/version`: `git_commit=7cba48d`.
+
+## 2026-06-09 - Test Site Refresh Reconfirmed Miami Beach
+
+- Refreshed the RayCon Block Plan candidate inventory. The only first-time
+  missing-scenario sites are still Plano and Tampa, but neither Block Plan has
+  parseable strict/max student pairs and the Alpha Capacity model returns
+  `insufficient_evidence` for both.
+- Re-ran the all-Block-Plan text evidence probe. Miami Beach remains the only
+  current proof candidate with explicit capacity pairs:
+  `40/70`, `24/42`, and `50/87`, totaling Strict/Fast Path `114` and Max
+  Capacity `199`.
+- Re-ran the scoped Miami Beach dry-run preview with no production mutations.
+  It reached the failed-scenario recovery path, attached preview Alpha Capacity,
+  and skipped only because `--dry-run` was supplied:
+  `capacity_analysis_status=preview_success`,
+  `capacity_analysis_attached=true`,
+  `capacity_analysis_signature=114-199`,
+  `capacity_analysis_preview=true`, and `dispatch_skipped=dry_run`.
+- Production RayCon still reports `/version git_commit=7cba48d`, so the
+  non-dry-run proof remains gated on committing/deploying RayCon and running
+  the DDR proof with `--require-raycon-git-commit <new-sha>`.
+
+Recommended test plan:
+
+- Success proof: `Alpha Miami Beach 300 71st 3rd`
+  (`site_id=k972ay4w964539mq0naqyde5ws85fr3r`) after RayCon deploy.
+- Negative guard proof: Plano or Tampa if we want to show DDR blocks automated
+  RayCon dispatch when Alpha Capacity cannot produce both counts.
+
+Verification:
+
+```powershell
+uv run python ..\find_raycon_test_sites.py
+uv run python ..\probe_all_block_plan_capacity_text.py
+uv run python ..\probe_alpha_capacity_model_candidates.py
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --preview-capacity-analysis --skip-dd-republish --suppress-notifications --redispatch-after-minutes 0
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+```
+
+Results:
+
+- Inventory refresh: Plano and Tampa are first-time missing-scenario candidates,
+  but both lack complete capacity evidence.
+- Capacity text/model probes: Plano and Tampa `insufficient_evidence`; Miami
+  Beach `114-199`.
+- Miami Beach dry-run preview: `capacity_analysis_signature=114-199` and
+  `dispatch_skipped=dry_run`.
+- Production `/version`: `git_commit=7cba48d`.
+
+## 2026-06-09 - Alpha Capacity Ownership Contract Audit
+
+- Re-ran a stale-contract scan after tightening the automated no-capacity
+  dispatch gate. No docs or source comments still say DDR should continue
+  automated RayCon dispatch when Alpha Capacity cannot produce both counts.
+- Clarified `scripts/raycon_followup.py` so `_capacity_analysis_for_dispatch`
+  is described as non-throwing rather than fail-soft dispatch permission. The
+  caller owns the dispatch decision, and the automated DDR Block Plan path
+  requires complete Strict/Fast Path and Max Capacity counts.
+- Tightened `docs/reference/RayCon-DDR-Rebuild-Package.md` scenario-field
+  language: automated DDR Block Plan capacity is Alpha Capacity or a sourced
+  gap; legacy/manual RayCon fallback capacity may appear only as caveated
+  RayCon calculator output and should not satisfy the Alpha-sourced capacity
+  requirement.
+- Production RayCon still reports `/version git_commit=7cba48d`. Local DDR and
+  RayCon remain ready for a guarded post-deploy proof, but the goal is not
+  live-proven until RayCon is committed/deployed and Miami Beach is run with
+  `--require-raycon-git-commit <new-sha>`.
+
+Verification:
+
+```powershell
+rg -n "still dispatch|dispatches? RayCon without|without external capacity|RayCon can continue|fallback basis|should not prevent RayCon|no-capacity" docs src scripts tests .github
+uv run pytest tests\test_docs_env_contract.py tests\test_raycon_followup.py::TestSafetyNetDispatch -q --basetemp C:\tmp\ddr-raycon-capacity-contract-doc-comment
+uv run ruff check scripts\raycon_followup.py docs\reference\RayCon-DDR-Rebuild-Package.md tests\test_docs_env_contract.py
+uv run mypy scripts\raycon_followup.py
+git diff --check -- scripts\raycon_followup.py docs\reference\RayCon-DDR-Rebuild-Package.md tests\test_docs_env_contract.py
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+```
+
+Results:
+
+- Stale-contract scan now returns only intentional no-capacity blocking
+  language plus the expected inbox warning string.
+- Focused docs plus `TestSafetyNetDispatch` pytest: `25 passed`.
+- Focused Ruff: passed.
+- Focused mypy for `scripts\raycon_followup.py`: passed.
+- Diff check passed with expected Windows LF/CRLF warnings only.
+- Production `/version`: `git_commit=7cba48d`.
+
+## 2026-06-09 - Automated Block Plan Dispatch Now Requires Alpha Capacity
+
+- Tightened the DDR side of the RayCon/Alpha Capacity contract. Automatic
+  Block Plan dispatch now requires a complete Alpha Capacity payload with both
+  Strict/Fast Path and Max Capacity counts before calling RayCon.
+- `src/due_diligence_reporter/inbox_scanner.py` now returns a
+  `raycon_scenario_request` row with
+  `dispatch_skipped=capacity_analysis_not_available` and status
+  `blocked_capacity_analysis_not_available` when the inbox Block Plan path
+  cannot find or generate complete Alpha Capacity. It does not POST a
+  no-capacity RayCon job in that branch.
+- `scripts/raycon_followup.py` now applies the same requirement to the normal
+  missing-scenario safety-net dispatch path. Failed-scenario, terminal-status,
+  and completed-no-capacity recovery branches already required complete Alpha
+  Capacity; the first-time safety-net branch now matches that policy.
+- Updated tests and docs so the durable contract says DDR skips no-capacity
+  automated dispatch instead of letting RayCon own published capacity from its
+  internal fallback calculator.
+- Miami Beach remains the proof site. A fresh dry-run preview after this
+  change still reaches the failed-scenario recovery path with
+  `capacity_analysis_signature=114-199` and skips only because `--dry-run` was
+  supplied.
+- Production RayCon still reports `/version git_commit=7cba48d`; the
+  non-dry-run proof remains gated on committing/deploying RayCon and using the
+  guarded `--require-raycon-git-commit` proof flag.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_inbox_scanner.py::TestBlockPlanDownstream tests\test_raycon_followup.py -q --basetemp C:\tmp\ddr-raycon-capacity-required-focused-4
+uv run ruff check scripts\raycon_followup.py src\due_diligence_reporter\inbox_scanner.py tests\test_raycon_followup.py tests\test_inbox_scanner.py tests\test_docs_env_contract.py
+uv run mypy scripts\raycon_followup.py
+uv run mypy src\due_diligence_reporter\inbox_scanner.py
+git diff --check -- scripts\raycon_followup.py src\due_diligence_reporter\inbox_scanner.py tests\test_raycon_followup.py tests\test_inbox_scanner.py tests\test_docs_env_contract.py docs\reference\RayCon-DDR-Rebuild-Package.md docs\process\HOW-IT-WORKS.md
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-required-gate
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --preview-capacity-analysis --skip-dd-republish --suppress-notifications --redispatch-after-minutes 0
+npx.cmd vitest run src\rayconJobs.test.js src\jobsRoute.test.js src\rayTools.test.js src\openApiSpec.test.js src\deployManifest.test.js -t "Alpha Capacity|capacity|source-selection|deploy|OpenAPI|capacity guesses"
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+```
+
+Results:
+
+- Focused DDR inbox/follow-up suite: `89 passed`.
+- Focused DDR Ruff: passed.
+- DDR mypy passed when checking `scripts\raycon_followup.py` and
+  `src\due_diligence_reporter\inbox_scanner.py` separately. The combined
+  script+src invocation still hits the known duplicate-module import pattern.
+- DDR diff check passed with expected Windows LF/CRLF warnings only.
+- Broad affected DDR Alpha Capacity/RayCon suite: `496 passed`.
+- Miami Beach dry-run preview:
+  `capacity_analysis_status=preview_success`,
+  `capacity_analysis_attached=true`,
+  `capacity_analysis_signature=114-199`,
+  `capacity_analysis_preview=true`, and `dispatch_skipped=dry_run`.
+- RayCon focused capacity/source-selection suite: `5 passed`, `32 passed`,
+  `104 skipped`.
+- Production `/version`: `git_commit=7cba48d`.
+
+## 2026-06-09 - Proof Site Refresh Confirms Miami Beach
+
+- Re-read the current RayCon proof inventory after context compaction. The only
+  first-time missing-scenario Block Plan candidates are still:
+  - `Alpha Plano 5509 Pleasant Valley Dr`
+    (`site_id=k978wq2je97vw8aftnz0j7rv0d85emyj`)
+  - `Alpha Tampa 2409 S MacDill Ave`
+    (`site_id=k971m94ck04aqyhnr8jcs17zyn83dq4h`)
+- Re-ran the Block Plan text evidence scan. Plano extracted 712 characters and
+  Tampa extracted 211 characters; neither had parseable strict/max student
+  pairs. The Alpha Capacity model probe returned `insufficient_evidence` for
+  both, so they remain poor tests for the capacity-backed RayCon path.
+- Miami Beach remains the best proof site because its Block Plan has explicit
+  student-count pairs `40/70`, `24/42`, and `50/87`, totaling Strict/Fast Path
+  `114` and Max Capacity `199`.
+- Re-ran the scoped Miami Beach dry-run preview from the DDR validation
+  checkout. It reached the failed-scenario recovery path, attached previewed
+  Alpha Capacity, and skipped dispatch only because `--dry-run` was supplied:
+  `capacity_analysis_status=preview_success`,
+  `capacity_analysis_attached=true`,
+  `capacity_analysis_signature=114-199`,
+  `capacity_analysis_preview=true`, and `dispatch_skipped=dry_run`.
+- Production RayCon still reports `/version git_commit=7cba48d`, so the
+  non-dry-run proof should not run until RayCon is committed/deployed and the
+  guarded DDR proof can require the new deployed commit.
+
+Use this site for the first post-deploy production proof:
+
+```text
+site: Alpha Miami Beach 300 71st 3rd
+site_id: k972ay4w964539mq0naqyde5ws85fr3r
+drive_folder_id: 1qjyrtHSFkPOQjTHPo8VSORCGh9h7KqOt
+m1_folder_id: 1DuceE9iu0y45G6wncl4cRZyTkgP7IiYL
+block_plan_id: 10dPoeXlUcuYwvEGflf0r9zo4RQMCfErM
+expected_alpha_capacity_signature: 114-199
+```
+
+Verification:
+
+```powershell
+git -C C:\Users\foote\Documents\Codex\2026-06-09\relative-to-the-ddr-process-what\work\due-diligence-reporter status --short
+git -C C:\Users\foote\Documents\Codex\2026-06-09\relative-to-the-ddr-process-what\work\RayCon status --short
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing
+uv run python ..\find_raycon_test_sites.py
+uv run python ..\probe_all_block_plan_capacity_text.py
+uv run python ..\probe_alpha_capacity_model_candidates.py
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --preview-capacity-analysis --skip-dd-republish --suppress-notifications --redispatch-after-minutes 0
+```
+
+Results:
+
+- DDR and RayCon remain dirty with the expected local Alpha Capacity/RayCon
+  integration changes.
+- Production RayCon `/version`: `git_commit=7cba48d`.
+- Inventory scan: Plano and Tampa are still the only first-time
+  missing-scenario Block Plan candidates, but both lack complete Alpha Capacity
+  evidence.
+- Miami Beach dry-run preview: `capacity_analysis_signature=114-199` and
+  `dispatch_skipped=dry_run`.
+
+## 2026-06-09 - DDR Guarded Proof Contract Documented and Reverified
+
+- Added the guarded post-deploy proof path to
+  `docs/reference/RayCon-DDR-Rebuild-Package.md`. The durable rebuild package
+  now says `raycon-followup.yml` accepts `require_raycon_git_commit`, passes it
+  through as `--require-raycon-git-commit`, and checks RayCon `/version` before
+  Drive, Rhodes, Alpha Capacity artifact, or RayCon job mutations.
+- Added a docs contract assertion in `tests/test_docs_env_contract.py` so the
+  rebuild package cannot drop the workflow-dispatch guard language without a
+  test failure.
+- Re-ran the broad DDR Alpha Capacity/RayCon affected suite from the current
+  worktree after the workflow guard and doc-contract updates. This suite covers
+  Alpha Capacity generation, inbox dispatch, RayCon client payload mapping,
+  RayCon follow-up retry/preview/guard behavior, report-pipeline exposure,
+  report schema mapping, prompt/completeness contracts, classifier keywords,
+  docs/env contracts, and workflow contracts.
+- Production proof remains gated on RayCon commit/deploy and `/version`
+  matching the new RayCon commit.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-post-workflow-guard
+uv run pytest tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-proof-doc-contract
+uv run ruff check tests\test_docs_env_contract.py tests\test_workflow_contracts.py
+git diff --check -- docs\reference\RayCon-DDR-Rebuild-Package.md tests\test_docs_env_contract.py HANDOFF.md
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-proof-doc-current
+```
+
+Results:
+
+- Broad DDR Alpha Capacity/RayCon suite before the docs patch: `493 passed`.
+- Focused docs/workflow contract tests: `16 passed`.
+- Focused Ruff over docs/workflow contract tests: passed.
+- Diff check passed with expected Windows LF/CRLF warnings only.
+- Broad DDR Alpha Capacity/RayCon suite after the docs patch: `494 passed`.
+
+## 2026-06-09 - RayCon Capacity Deploy Readiness Rechecked
+
+- Re-read the RayCon capacity-ingestion path from the current dirty worktree.
+  The local `/v1/jobs` contract still accepts `capacity_analysis`,
+  `alpha_capacity_analysis`, `capacity_analysis_file_id`, and
+  `capacity_analysis_url`; complete Alpha Capacity payloads get a separate
+  `capacity:alpha:<strict>-<max>` idempotency segment so a fixed capacity-backed
+  submit does not reuse an old no-capacity job.
+- Rechecked the trust boundary in `api/src/rayTools.js`: `estimate_costs` only
+  honors caller-supplied `mvpCapacity` / `idealCapacity` when
+  `capacitySource` or `capacity_source` is exactly `alpha_capacity_analysis`.
+  Otherwise it falls back to RayCon's deterministic capacity math. This prevents
+  Ray/model guesses from silently becoming the student-scaled pricing basis.
+- Rechecked `api/src/rayconJobs.js`: complete Alpha Capacity overrides published
+  Fastest Path and Max Capacity counts, RayCon internal capacity is retained as
+  audit evidence, and Ray review disagreement/failure stays non-blocking when
+  Alpha Capacity is authoritative.
+- Re-ran the deploy helper dry run. It still prints the Cloud Build and Cloud
+  Run commands only, refuses execute-mode while the RayCon tree is dirty, and
+  writes generated deploy files with the current base `GIT_COMMIT` because the
+  capacity changes are not committed yet.
+- Production RayCon `/version` still reports the old deployed commit
+  `7cba48d`. The live Miami Beach proof remains gated on committing/deploying
+  RayCon and then using DDR's guarded `require_raycon_git_commit` workflow input
+  or local `--require-raycon-git-commit` flag.
+
+Verification:
+
+```powershell
+node -c api\src\index.js
+node -c api\src\rayconJobs.js
+node -c api\src\rayTools.js
+node -c scripts\deploy-raycon-cloud-run.mjs
+npx.cmd vitest run src\rayconJobs.test.js src\jobsRoute.test.js src\rayTools.test.js src\openApiSpec.test.js src\deployManifest.test.js -t "Alpha Capacity|capacity|source-selection|deploy|OpenAPI|capacity guesses"
+git diff --check
+npx.cmd vitest run
+npm.cmd run deploy:cloud-run -- --out-dir ..\raycon-deploy-preview-current
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+```
+
+Results:
+
+- Syntax checks passed for `api/src/index.js`, `api/src/rayconJobs.js`,
+  `api/src/rayTools.js`, and `scripts/deploy-raycon-cloud-run.mjs`.
+- Focused RayCon capacity/deploy/OpenAPI suite: `5 passed`, `32 passed`,
+  `104 skipped`.
+- Full RayCon API Vitest: `20 passed`, `273 passed`.
+- RayCon `git diff --check` passed with expected Windows LF/CRLF warnings only.
+- Deploy helper dry run generated the Cloud Build/env files and printed the
+  `gcloud` commands; no `gcloud` commands were executed.
+- Production `/version`: `git_commit=7cba48d`.
+
+## 2026-06-09 - RayCon Follow-up Workflow Can Enforce Deploy Commit Guard
+
+- Added an optional `workflow_dispatch` input to
+  `.github/workflows/raycon-followup.yml`:
+  `require_raycon_git_commit`. It is intended for the controlled post-deploy
+  proof run after RayCon is committed and deployed.
+- The workflow passes the input through
+  `INPUT_REQUIRE_RAYCON_GIT_COMMIT` and appends
+  `--require-raycon-git-commit "$INPUT_REQUIRE_RAYCON_GIT_COMMIT"` only when
+  the env var is non-empty. The shell block does not directly interpolate the
+  raw `${{ inputs.require_raycon_git_commit }}` expression.
+- This exposes the existing `scripts/raycon_followup.py` `/version` preflight
+  from the normal GitHub Actions surface. A guarded Miami Beach proof should
+  now fail before Google Drive/Rhodes/RayCon mutations if production RayCon is
+  still on the old commit.
+- Production proof is still gated on committing/deploying RayCon and seeing
+  `/version` report the deployed commit. Do not run the non-dry-run Miami Beach
+  proof without passing the expected new RayCon commit.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-workflow-version-guard
+uv run ruff check tests\test_workflow_contracts.py
+git diff --check -- .github\workflows\raycon-followup.yml tests\test_workflow_contracts.py
+uv run pytest tests\test_raycon_followup.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-workflow-version-guard-full
+```
+
+Results:
+
+- Workflow contract tests: `13 passed`.
+- Ruff on `tests/test_workflow_contracts.py`: passed.
+- Diff check passed with expected Windows LF/CRLF warnings only.
+- Adjacent RayCon follow-up plus workflow contract suite: `94 passed`.
+
+## 2026-06-09 - RayCon OpenAPI Alpha Capacity Contract Tightened
+
+- Audited the DDR-to-RayCon payload contract after adding the guarded live
+  proof. Runtime code already accepts Alpha Capacity aliases such as `strict`,
+  `fastest_open`, `fast_path`, `max`, and `max_capacity`, plus student-count
+  fields such as `capacity_students`, `student_count`, and `students`.
+- RayCon's OpenAPI descriptor still documented `capacity_analysis` as a generic
+  object, which was weaker than the runtime contract and easier for a future
+  caller to misread.
+- Tightened `api/src/openApiSpec.js` in RayCon so `capacity_analysis` and
+  `alpha_capacity_analysis` document the complete Alpha Capacity payload shape:
+  one Strict/Fast Path scenario, one Max Capacity scenario, accepted alias keys,
+  accepted student-count fields, optional scenario containers, and the fact
+  that complete counts override RayCon capacity math for published capacity and
+  student-scaled pricing.
+- Added `api/src/openApiSpec.test.js` coverage that pins the Alpha Capacity
+  schema aliases and accepted student-count fields.
+- Production RayCon is still not updated. `/version` continues to report
+  `git_commit=7cba48d`, so the local contract is stronger but the live proof
+  remains gated on deploy.
+
+Verification:
+
+```powershell
+node -c api\src\openApiSpec.js
+npx.cmd vitest run src/openApiSpec.test.js src/index.test.js
+npx.cmd vitest run src/jobsRoute.test.js src/rayconJobs.test.js src/deployManifest.test.js -t "Alpha Capacity"
+npx.cmd vitest run
+git -C .\work\RayCon diff --check -- api\src\openApiSpec.js api\src\openApiSpec.test.js
+git -C .\work\due-diligence-reporter diff --check -- HANDOFF.md
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+```
+
+Results:
+
+- OpenAPI syntax check passed.
+- OpenAPI/index focused tests: `2 passed`, `33 passed`.
+- Focused Alpha Capacity RayCon route/job/deploy slice: `2 passed`,
+  `6 passed`, `112 skipped`.
+- Full RayCon API Vitest: `20 passed`, `273 passed`.
+- Diff checks passed with LF/CRLF warnings only.
+- Production `/version`: `git_commit=7cba48d`.
+
+## 2026-06-09 - RayCon Version Guard Added for Live Proof
+
+- Audited the DDR/RayCon API hostname split before the post-deploy proof. Both
+  known RayCon hostnames currently resolve to the same deployed service and
+  return `/version` with `git_commit=7cba48d`.
+- Added an opt-in RayCon deploy-proof guard to `scripts/raycon_followup.py`:
+  `--require-raycon-git-commit <sha>`. When supplied, the script derives
+  RayCon `/version` from the configured `RAYCON_JOBS_URL` origin and exits
+  non-zero unless the reported `git_commit` matches the expected full or short
+  SHA.
+- The guard runs immediately after settings load and before Google Drive,
+  Rhodes, Alpha Capacity artifact upload, or RayCon dispatch. This prevents the
+  Miami Beach production proof from accidentally posting a capacity-backed job
+  to the old deployed RayCon revision.
+- Updated the script usage notes with the guarded proof mode. After RayCon is
+  committed and deployed, the production proof command should include the new
+  commit:
+
+```powershell
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --redispatch-after-minutes 0 --skip-dd-republish --suppress-notifications --require-raycon-git-commit <new-raycon-commit>
+```
+
+Verification:
+
+```powershell
+uv run pytest tests\test_raycon_followup.py::test_raycon_version_url_from_jobs_url_uses_configured_origin tests\test_raycon_followup.py::test_git_commit_matches_full_or_short_sha tests\test_raycon_followup.py::test_verify_raycon_git_commit_accepts_matching_version tests\test_raycon_followup.py::test_verify_raycon_git_commit_rejects_mismatch tests\test_raycon_followup.py::test_main_require_raycon_git_commit_stops_before_google_client -q --basetemp C:\tmp\ddr-raycon-version-guard
+uv run ruff check scripts\raycon_followup.py tests\test_raycon_followup.py
+uv run mypy scripts\raycon_followup.py
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --suppress-notifications --require-raycon-git-commit abcdef1
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_workflow_contracts.py tests\test_docs_env_contract.py -q --basetemp C:\tmp\ddr-alpha-capacity-version-guard
+npx.cmd vitest run src/jobsRoute.test.js src/rayconJobs.test.js src/deployManifest.test.js -t "Alpha Capacity|capacity|dirty working trees|runtime git commit|source-selection"
+```
+
+Results:
+
+- Focused RayCon version-guard pytest: `5 passed`.
+- Focused Ruff and mypy: passed.
+- Deliberate live mismatch check exited before Drive/RayCon work with
+  `RayCon /version git_commit mismatch: expected abcdef1, got 7cba48d`.
+- Affected DDR Alpha Capacity/RayCon suite: `256 passed`.
+- Focused RayCon capacity/deploy suite: `3 passed`, `17 passed`, `101 skipped`.
+
+## 2026-06-09 - Alpha Capacity Workflow Secret Preflight Tightened
+
+- Audited DDR workflow runtime wiring for the Alpha Capacity/RayCon Block Plan
+  path. The workflows were already writing `OPENAI_API_KEY` and
+  `OPENAI_CAPACITY_MODEL` into `.env`, but `inbox-scan`,
+  `raycon-followup`, and `vendor-doc-republish-sweep` did not fail early when
+  `OPENAI_API_KEY` was missing.
+- Tightened those workflow preflights so missing OpenAI credentials fail before
+  the job reaches Block Plan processing. This protects the operating goal from
+  silent no-capacity RayCon dispatches caused by an unset secret.
+- Added a workflow contract test covering all Alpha-capacity-aware workflow
+  entrypoints: `inbox-scan`, `raycon-followup`,
+  `vendor-doc-republish-sweep`, `daily-dd-check`, and
+  `publish-to-mcp-hive`. The test asserts they carry the OpenAI key, carry the
+  optional `OPENAI_CAPACITY_MODEL` override, and include an
+  `OPENAI_API_KEY missing` preflight.
+- This does not remove fail-soft behavior inside the Python path. If a specific
+  Block Plan lacks enough evidence, DDR still records the capacity status and
+  may dispatch RayCon without Alpha Capacity. The workflow change only makes
+  missing platform credentials explicit instead of blending them with
+  document-evidence failures.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-workflow-alpha-capacity-secret
+uv run ruff check tests\test_workflow_contracts.py
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_workflow_contracts.py tests\test_docs_env_contract.py -q --basetemp C:\tmp\ddr-alpha-capacity-workflow-fastfail
+uv run ruff check .github\workflows tests\test_workflow_contracts.py scripts\raycon_followup.py src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\raycon_client.py
+```
+
+Results:
+
+- Workflow contract tests: `12 passed`.
+- Focused workflow Ruff: all checks passed.
+- Affected Alpha Capacity/RayCon DDR suite: `251 passed`.
+- Focused Ruff over workflow/test/touched capacity path files: all checks
+  passed.
+
+## 2026-06-09 - RayCon Deploy Command Surface Pinned
+
+- Refreshed current production state before touching the deploy path.
+  Production RayCon `/version` still reports `git_commit=7cba48d`, so the live
+  Miami Beach proof remains gated on committing and deploying the RayCon
+  capacity-ingestion changes.
+- Audited the RayCon Cloud Run deploy helper and found one readiness gap: the
+  helper was present and tested, but not exposed through the repo's normal
+  command surface. Added root package scripts:
+  - `npm run deploy:cloud-run` for the dry-run deploy plan.
+  - `npm run deploy:cloud-run:execute` for the guarded production deploy.
+- The execute command still uses the deploy helper's dirty-tree hard stop. It
+  will refuse to deploy while the local RayCon tree has modified or untracked
+  files, which is intentional: `/version`, the image tag, and deployed source
+  must all match a committed revision before the DDR proof is meaningful.
+- Updated RayCon `CLAUDE.md` command docs and pinned the package scripts in
+  `api/src/deployManifest.test.js`.
+- Re-ran the dry-run through the new npm script. It printed the Cloud Build and
+  Cloud Run commands only; no `gcloud` commands were executed. Because the tree
+  is intentionally dirty, the planned image/env commit remains the current
+  base commit `7cba48d2ed315bf3028983edfa4cbb2cd3a3322f`.
+
+Verification:
+
+```powershell
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+npx.cmd vitest run src/deployManifest.test.js
+node -c scripts\deploy-raycon-cloud-run.mjs
+npm.cmd run deploy:cloud-run -- --out-dir ..\raycon-deploy-preview-current
+npx.cmd vitest run
+git -C .\work\RayCon diff --check
+git -C .\work\due-diligence-reporter diff --check -- HANDOFF.md
+```
+
+Results:
+
+- Production `/version`: `git_commit=7cba48d`.
+- Focused deploy-manifest suite: `1 passed`, `6 passed`.
+- Deploy helper syntax check passed.
+- New npm dry-run script printed `gcloud builds submit` and `gcloud run deploy`
+  commands only; dry-run did not execute them.
+- Full RayCon API Vitest: `20 passed`, `272 passed`.
+- Diff checks passed with LF/CRLF warnings only.
+
+## 2026-06-09 - RayCon Proof Site Selection Refreshed
+
+- Re-ran the live RayCon test-site inventory after the repo validation work.
+  The only active Block Plan sites with missing RayCon scenarios remain:
+  - `Alpha Plano 5509 Pleasant Valley Dr`
+    (`site_id=k978wq2je97vw8aftnz0j7rv0d85emyj`)
+  - `Alpha Tampa 2409 S MacDill Ave`
+    (`site_id=k971m94ck04aqyhnr8jcs17zyn83dq4h`)
+- Re-ran text extraction across current Block Plans. Plano extracted only 712
+  characters and Tampa only 211 characters; neither had parseable student-count
+  pairs or capacity snippets.
+- Re-ran no-upload Alpha Capacity probes for Plano and Tampa. Both returned
+  `insufficient_evidence`, so they are still poor proof sites for the
+  capacity-backed RayCon path even though their RayCon scenario is missing.
+- Re-ran the Miami Beach dry-run preview. It still attaches Alpha Capacity with
+  signature `114-199` from the Block Plan pairs `40/70`, `24/42`, and `50/87`.
+  It is therefore the best current proof site, despite being a failed-scenario
+  recovery test rather than a first-time missing-scenario test.
+- Use Miami Beach for the first post-deploy production proof:
+  `Alpha Miami Beach 300 71st 3rd`,
+  `site_id=k972ay4w964539mq0naqyde5ws85fr3r`, Block Plan file
+  `10dPoeXlUcuYwvEGflf0r9zo4RQMCfErM`, expected Fast Path/Strict capacity
+  `114`, expected Max Capacity `199`.
+- Do not run the non-dry-run proof until RayCon is committed/deployed and
+  `/version` reports the new commit. The current dry-run evidence proves DDR can
+  attach Alpha Capacity, but production RayCon is still expected to ignore the
+  new capacity fields until deployed.
+
+Verification:
+
+```powershell
+uv run python ..\find_raycon_test_sites.py
+uv run python ..\probe_all_block_plan_capacity_text.py
+uv run python ..\probe_alpha_capacity_model_candidates.py
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --preview-capacity-analysis --skip-dd-republish --suppress-notifications --redispatch-after-minutes 0
+```
+
+Results:
+
+- Inventory scan: Plano and Tampa are the only missing-scenario Block Plan
+  candidates; both have no Alpha Capacity signature.
+- Block Plan text scan: Plano/Tampa have no student pairs; Miami Beach has
+  `40/70`, `24/42`, and `50/87`, totaling `114/199`.
+- Alpha Capacity model candidate probe: Plano and Tampa both returned
+  `insufficient_evidence`.
+- Miami Beach dry-run preview: `capacity_analysis_status=preview_success`,
+  `capacity_analysis_attached=true`, `capacity_analysis_signature=114-199`,
+  `capacity_analysis_preview=true`, and `dispatch_skipped=dry_run`.
+
+## 2026-06-09 - Repo-Level Gates Cleaned Before RayCon Deploy Proof
+
+- Ran repo-level DDR validation after the Alpha Capacity/RayCon changes. The
+  first full run exposed stale compatibility failures outside the capacity path:
+  old tests still called `assign_p1(..., gc)` and `build_site_counts(records,
+  cfg)`, sender-filter tests patched `build_site_summary` while current code
+  called `_build_site_summary`, and Ruff found import/date cleanup in older
+  files.
+- Added narrow backwards-compatible surfaces:
+  - `assignment.assign_p1(..., gc=None)` accepts the legacy unused positional
+    Google client argument.
+  - `assignment.build_site_counts(records, cfg=None)` accepts legacy config and
+    routes through `extract_p1_from_record`.
+  - `inbox_scanner.build_site_summary` is restored as a public alias, and
+    inbox processing uses a small resolver so tests/callers patching either
+    `build_site_summary` or `_build_site_summary` continue to work.
+  - Cleaned Ruff-only issues in `scripts/reprocess_mislabeled.py`,
+    `tests/test_cds_verification.py`, and `tests/test_sender_filter.py`.
+- This was deliberately scoped as validation cleanup, not a new assignment or
+  inbox behavior change. The RayCon/Alpha Capacity path remains the same.
+- RayCon full API validation was rerun and passed. The deploy helper dry-run was
+  also rerun; it still refuses to execute while the RayCon tree is dirty and
+  still plans image/env commit `7cba48d2ed315bf3028983edfa4cbb2cd3a3322f`.
+
+Verification:
+
+```powershell
+bd ready
+uv run pytest tests\test_assignment.py::TestAssignP1 tests\test_assignment.py::TestBuildSiteCounts tests\test_sender_filter.py::TestProcessEmailInternalSenderSkip::test_vendor_sender_proceeds_normally tests\test_sender_filter.py::TestScanInboxInternalCounter::test_mixed_internal_and_vendor_emails -q --basetemp C:\tmp\ddr-raycon-compat-failures-2
+uv run ruff check scripts\reprocess_mislabeled.py tests\test_cds_verification.py tests\test_sender_filter.py src\due_diligence_reporter\assignment.py src\due_diligence_reporter\inbox_scanner.py
+uv run mypy src\due_diligence_reporter\assignment.py src\due_diligence_reporter\inbox_scanner.py
+uv run pytest -q --basetemp C:\tmp\ddr-raycon-full-current-2
+uv run ruff check .
+uv run mypy src/
+npx.cmd vitest run
+node scripts\deploy-raycon-cloud-run.mjs --out-dir ..\raycon-deploy-preview-current
+git -C .\work\due-diligence-reporter diff --check
+git -C .\work\RayCon diff --check
+```
+
+Results:
+
+- `bd ready`: no open issues.
+- Focused compatibility regression slice: `13 passed`.
+- Focused Ruff and mypy slices: passed.
+- Full DDR pytest: `1165 passed`.
+- Full DDR Ruff: all checks passed.
+- Full DDR mypy over `src/`: no issues in 45 source files.
+- Full RayCon API Vitest: `20 passed`, `271 passed`.
+- RayCon deploy helper dry-run printed `gcloud` commands only; no deploy
+  commands executed.
+- DDR and RayCon `git diff --check` passed with LF/CRLF warnings only.
+
+## 2026-06-09 - Capacity Source Boundary Tightened in DDR Prompt/Docs
+
+- Audited the current DDR prompt/process contracts after selecting Miami Beach
+  as the proof site. Runtime code and tests already route Block Plan capacity
+  through Alpha Capacity Analysis, but `prompt_v4.md` still allowed
+  `Block Plan, RayCon Scenario, team note` as broad capacity sources.
+- Tightened `docs/prompts/prompt_v4.md` so published capacity must come from
+  Alpha Capacity Analysis, a RayCon Scenario that explicitly carries Alpha
+  Capacity Analysis provenance, or a sourced gap. It now says not to use team
+  notes, RayCon narrative prose, or RayCon internal capacity fallbacks as the
+  published capacity source when Alpha Capacity Analysis is available.
+- Tightened `docs/process/HOW-IT-WORKS.md` so sourced team notes may override
+  cost or schedule only, not published capacity. This keeps the written DDR
+  process aligned with Greg's requirement that capacity numbers come from the
+  `alpha-capacity-analysis` skill while RayCon consumes those counts for
+  pricing.
+- Production RayCon was rechecked at `2026-06-09T22:51:44.088Z`; `/version`
+  still reports `git_commit=7cba48d`, so the Miami Beach non-dry-run proof
+  remains gated until RayCon is committed and deployed.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_prompt_contract.py tests\test_docs_env_contract.py -q --basetemp C:\tmp\ddr-raycon-capacity-doc-contract
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_workflow_contracts.py tests\test_prompt_contract.py tests\test_docs_env_contract.py -q --basetemp C:\tmp\ddr-raycon-capacity-contract-current
+npx.cmd vitest run src/rayTools.test.js src/rayconJobs.test.js -t "capacity guesses|Alpha Capacity source|Miami Beach Alpha Capacity|does not fail Alpha-capacity-backed"
+npx.cmd vitest run src/jobsRoute.test.js src/deployManifest.test.js -t "Alpha Capacity|capacity|dirty working trees|runtime git commit|source-selection"
+node -c api\src\index.js
+node -c api\src\rayconJobs.js
+node -c api\src\rayTools.js
+git -C .\work\due-diligence-reporter diff --check
+git -C .\work\RayCon diff --check
+```
+
+Results:
+
+- DDR prompt/docs contract tests: `5 passed`.
+- DDR affected Alpha Capacity/RayCon suite plus prompt/docs tests:
+  `253 passed`.
+- RayCon trust-boundary focused slice: `4 passed`.
+- RayCon route/deploy focused slice: `9 passed`.
+- RayCon syntax checks passed for `api\src\index.js`,
+  `api\src\rayconJobs.js`, and `api\src\rayTools.js`.
+- DDR and RayCon `git diff --check` passed with LF/CRLF warnings only.
+
+## 2026-06-09 - Miami Beach Proof Site Reconfirmed and DDR Report Mapping Pinned
+
+- Re-ran live site discovery for the RayCon/DDR capacity proof. The only clean
+  active Block Plan sites with missing RayCon scenarios are still Plano
+  (`site_id=k978wq2je97vw8aftnz0j7rv0d85emyj`) and Tampa
+  (`site_id=k971m94ck04aqyhnr8jcs17zyn83dq4h`), but both current Alpha Capacity
+  probes returned `insufficient_evidence` and the extracted Block Plan text has
+  no explicit `X / Y students` evidence.
+- Use `Alpha Miami Beach 300 71st 3rd`
+  (`site_id=k972ay4w964539mq0naqyde5ws85fr3r`) as the first live proof site.
+  Its Block Plan file is `10dPoeXlUcuYwvEGflf0r9zo4RQMCfErM`; extracted
+  evidence still contains `40 / 70 STUDENTS`, `24 / 42 STUDENTS`, and
+  `50 / 87 STUDENTS`, summing to Fast Path/Strict `114` and Max `199`.
+- Scoped dry-run preview against Miami Beach again proved the intended
+  pre-dispatch state: `capacity_analysis_status=preview_success`,
+  `capacity_analysis_attached=true`, `capacity_analysis_signature=114-199`,
+  `capacity_analysis_preview=true`, and `dispatch_skipped=dry_run`.
+- Added a DDR report-mapping regression for a Miami-Beach-shaped completed
+  RayCon envelope with Alpha Capacity provenance. It asserts the generated
+  report fields render `exec.fastest_open_capacity=114` and
+  `exec.max_capacity_capacity=199` and keep the RayCon run status completed.
+- Production proof is still gated: do not run the Miami Beach non-dry-run until
+  RayCon is committed/deployed and `/version` reports the new commit. The last
+  checked production API was still on commit `7cba48d`.
+
+Verification:
+
+```powershell
+uv run python ..\find_raycon_test_sites.py
+uv run python ..\probe_alpha_capacity_model_candidates.py
+uv run python ..\probe_all_block_plan_capacity_text.py
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --preview-capacity-analysis --skip-dd-republish --suppress-notifications --redispatch-after-minutes 0
+uv run pytest tests\test_raycon_client.py::TestRayConPayloadEnvelope tests\test_raycon_client.py::TestRayConScenarioToReportFields -q --basetemp C:\tmp\ddr-raycon-report-map-alpha
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-capacity-report-map
+git -C .\work\due-diligence-reporter diff --check
+```
+
+Results:
+
+- Plano and Tampa probes: `insufficient_evidence`.
+- Miami Beach capacity text scan: Fast Path/Strict `114`, Max `199`.
+- Miami Beach dry-run preview: one failed-scenario alert row, no dispatch/upload,
+  Alpha Capacity signature `114-199`.
+- Focused DDR report-mapping pytest: `19 passed`.
+- Broader affected DDR suite: `248 passed`.
+- DDR `git diff --check` passed with LF/CRLF warnings only.
+
+## 2026-06-09 - RayCon Deploy Gate Dry-Run Verified
+
+- Audited the untracked RayCon deploy helper
+  `scripts/deploy-raycon-cloud-run.mjs`. The helper builds a Cloud Build config
+  and Cloud Run env file from `deploy-manifest.yaml`, tags the image with
+  `git rev-parse HEAD`, and refuses `--execute` when `git status --porcelain`
+  is non-empty.
+- Added a deploy-manifest regression proving untracked files also hard-stop
+  execution, not only modified tracked files. This matters because the deploy
+  helper itself is currently untracked and must be committed before it can be a
+  trustworthy production deploy path.
+- Ran a dry-run deploy plan with:
+
+```powershell
+node scripts\deploy-raycon-cloud-run.mjs --out-dir ..\raycon-deploy-preview-current
+```
+
+- The dry run wrote generated config files under
+  `work\raycon-deploy-preview-current`, printed the `gcloud builds submit` and
+  `gcloud run deploy` commands, and executed no `gcloud` commands.
+- The dry-run image/env still used
+  `GIT_COMMIT=7cba48d2ed315bf3028983edfa4cbb2cd3a3322f`, proving the current
+  local fixes are not deployable/provable until RayCon is committed.
+- Next production proof remains:
+  1. commit the intended RayCon changes, including `scripts/deploy-raycon-cloud-run.mjs`;
+  2. run the deploy helper with `--execute` after approval;
+  3. verify `/version` returns the new commit;
+  4. run the Miami Beach non-dry-run DDR follow-up proof.
+
+Verification:
+
+```powershell
+npx.cmd vitest run src/deployManifest.test.js -t "dirty working trees|runtime git commit|source-selection"
+node -c scripts\deploy-raycon-cloud-run.mjs
+node scripts\deploy-raycon-cloud-run.mjs --out-dir ..\raycon-deploy-preview-current
+npx.cmd vitest run
+git -C .\work\RayCon diff --check
+git -C .\work\due-diligence-reporter diff --check
+```
+
+Results:
+
+- Focused deploy-manifest slice: `3 passed`.
+- Deploy helper syntax check passed.
+- Dry-run deploy printed commands only; no `gcloud` execution.
+- Full RayCon API Vitest: `271 passed`.
+- Diff checks passed for both repos, with LF/CRLF warnings only.
+
+## 2026-06-09 - Incomplete Alpha Capacity Retry Dedupe Guard Pinned
+
+- Audited the current DDR/RayCon Block Plan path end to end against the active
+  goal:
+  - DDR inbox and RayCon follow-up prefer complete Alpha Capacity Analysis
+    artifacts already in M1.
+  - If none exists, DDR runs hosted `alpha-capacity-analysis` from extracted
+    Block Plan text plus PDF bytes and only attaches generated output when both
+    Strict/Fast Path and Max Capacity counts are present.
+  - RayCon normalizes complete Alpha Capacity payloads, applies those counts to
+    published Fastest Path and Maximum Capacity scenarios, and passes
+    `capacitySource: "alpha_capacity_analysis"` into `estimate_costs` so
+    student-scaled pricing follows Alpha capacity while internal RayCon capacity
+    remains audit evidence.
+- Added a RayCon route regression proving incomplete Alpha Capacity artifacts do
+  not suppress later recovery:
+  - no-capacity Block Plan job key remains unchanged;
+  - incomplete Alpha artifact gets `capacity:alpha_incomplete:<artifact>`;
+  - later complete Alpha payload for the same Block Plan/artifact gets
+    `capacity:alpha:<strict>-<max>` and enqueues a fresh job.
+- This protects the 95%+ operating target from a common failure mode: a partial
+  or early capacity artifact can no longer poison durable job dedupe and block a
+  later complete capacity-backed run.
+
+Verification:
+
+```powershell
+npx.cmd vitest run src/jobsRoute.test.js -t "Alpha Capacity|capacity"
+npx.cmd vitest run
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-capacity-current-2
+git -C .\work\RayCon diff --check
+git -C .\work\due-diligence-reporter diff --check
+```
+
+Results:
+
+- Focused RayCon route/idempotency slice: `4 passed`.
+- Full RayCon API Vitest: `271 passed`.
+- DDR affected Alpha Capacity/RayCon suite: `247 passed`.
+- Diff checks passed for both repos, with LF/CRLF warnings only.
+
+## 2026-06-09 - RayCon Planner Prompt Aligned With Alpha Capacity Trust Boundary
+
+- Patched RayCon `src/engine/plannerSystemPrompt.js` so the model-facing
+  `estimate_costs` instructions no longer tell Ray to pass arbitrary
+  `mvpCapacity` / `idealCapacity` values.
+- The planner prompt now states the source boundary explicitly: Ray may pass
+  grade/classroom/NLA scenario inputs for deterministic capacity, but only the
+  system-owned DDR job runner may send Alpha Capacity counts with
+  `capacitySource="alpha_capacity_analysis"`.
+- Removed the legacy workflow example that called
+  `estimate_costs(... scope="ideal", mvpCapacity=38, idealCapacity=52)`. The
+  example now calls `scope="ideal"` without manual capacity counts.
+- A follow-up search shows remaining `mvpCapacity` / `idealCapacity` references
+  are backend/tool-schema handling or tests, not prompt instructions for Ray to
+  invent student counts.
+- Production RayCon is still not updated. `/version` last checked at
+  `2026-06-09T22:34:52.866Z` still reported `git_commit=7cba48d`; do not run
+  the Miami Beach non-dry-run proof until the local RayCon changes are
+  committed/deployed and `/version` confirms the new commit.
+
+Verification:
+
+```powershell
+node -c src\engine\plannerSystemPrompt.js
+node -c src\engine\estimateToolSchema.js
+git -C .\work\RayCon diff --check
+npx.cmd vitest run src/rayTools.test.js src/rayconJobs.test.js -t "capacity guesses|Alpha Capacity source|Miami Beach Alpha Capacity|does not fail Alpha-capacity-backed"
+npx.cmd vitest run
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-capacity-current
+```
+
+Results:
+
+- RayCon prompt/schema syntax checks passed.
+- RayCon `git diff --check` passed, with LF/CRLF warnings only.
+- Focused RayCon trust-boundary slice: `4 passed`.
+- Full RayCon API Vitest: `270 passed`.
+- DDR affected Alpha Capacity/RayCon suite: `247 passed`.
+
+## 2026-06-09 - RayCon Estimator Trust Boundary Fixed
+
+- Full RayCon API Vitest exposed an important regression risk: the legacy
+  `rayTools` guardrail still expected `estimate_costs` to ignore arbitrary
+  model-supplied `mvpCapacity` / `idealCapacity` guesses for the same canonical
+  site, but the Alpha Capacity integration had made those input fields affect
+  Maximum Capacity pricing unconditionally.
+- Fixed RayCon so supplied student-count inputs are trusted only when paired
+  with `capacitySource: "alpha_capacity_analysis"` (or snake-case equivalent).
+  Ordinary Ray/model capacity guesses are ignored again; the unified internal
+  capacity calculator remains the fallback/audit path.
+- Updated `runRayconJob` to pass `capacitySource: "alpha_capacity_analysis"`
+  only after it normalizes a complete Alpha Capacity payload. This preserves the
+  goal: DDR/Alpha supplies authoritative Fast Path and Max counts for pricing,
+  while RayCon does not let untrusted model guesses own capacity.
+- Updated the model-facing `estimate_costs` tool schema text so it no longer
+  tells Ray to pass arbitrary capacity counts for ideal/Maximum Capacity.
+- Production RayCon `/version` was rechecked after this local fix:
+  `git_commit=7cba48d`, timestamp `2026-06-09T22:24:24.462Z`. The production
+  gate remains open until the local RayCon changes are committed and deployed.
+
+Verification:
+
+```powershell
+npx.cmd vitest run src/rayTools.test.js src/rayconJobs.test.js -t "capacity guesses|Alpha Capacity source|Miami Beach Alpha Capacity|does not fail Alpha-capacity-backed"
+npx.cmd vitest run
+node -c api\src\rayTools.js
+node -c api\src\rayconJobs.js
+node -c src\engine\estimateToolSchema.js
+git -C .\work\RayCon diff --check
+Invoke-WebRequest -Uri https://raycon-api-dkxp2hji2q-uc.a.run.app/version -UseBasicParsing | Select-Object -ExpandProperty Content
+```
+
+Results:
+
+- Focused RayCon trust-boundary slice: `4 passed`.
+- Full RayCon API Vitest: `270 passed`.
+- Syntax checks passed for `api\src\rayTools.js`,
+  `api\src\rayconJobs.js`, and `src\engine\estimateToolSchema.js`.
+- `git diff --check` passed for RayCon, with LF/CRLF warnings only.
+- Root/frontend `npm test` is still not a useful verifier in this checkout
+  because frontend dependencies are not installed (`vitest`, `react`,
+  `firebase`, `@supabase/supabase-js`, `jsdom` missing). The API suite is the
+  relevant verifier for this backend capacity path.
+
+## 2026-06-09 - Partial Alpha Capacity Artifacts Guarded
+
+- Tightened the DDR attachment gate for generated/previewed Alpha Capacity
+  artifacts in both RayCon follow-up and inbox Block Plan downstream dispatch.
+  DDR now requires `alpha_capacity_counts_signature(...)` to return a complete
+  `strict-max` signature before it attaches a generated payload to RayCon.
+- If the capacity run returns `status=success` but only one scenario count, DDR
+  still dispatches RayCon with the Block Plan, but marks the capacity result
+  `generation_incomplete` or `preview_incomplete` and does not send
+  `capacity_analysis_file_id` / `capacity_analysis`. This prevents a partial
+  Alpha output from becoming an authoritative capacity source.
+- Existing complete artifacts already came through `read_alpha_capacity_analysis_from_m1`,
+  which skips partial payloads. The new guard covers generated artifacts and
+  dry-run previews as a second line of defense.
+- Added focused regressions for the follow-up safety-net path and the inbox
+  Block Plan path to prove partial generated artifacts are not attached.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_raycon_followup.py::TestSafetyNetDispatch::test_dispatch_generates_capacity_artifact_when_missing tests\test_raycon_followup.py::TestSafetyNetDispatch::test_dispatch_does_not_attach_generated_partial_capacity_artifact tests\test_raycon_followup.py::TestSafetyNetDispatch::test_dispatch_continues_when_capacity_generation_fails tests\test_inbox_scanner.py::TestBlockPlanDownstream::test_generates_alpha_capacity_analysis_from_pdf_when_text_is_empty_before_raycon tests\test_inbox_scanner.py::TestBlockPlanDownstream::test_does_not_attach_generated_partial_alpha_capacity_analysis tests\test_inbox_scanner.py::TestBlockPlanDownstream::test_pings_raycon_with_alpha_capacity_analysis_when_available tests\test_raycon_client.py::TestPostRayConJob::test_capacity_analysis_payload_sent_when_available tests\test_raycon_client.py::test_alpha_capacity_counts_signature_accepts_aliases_and_student_strings -q --basetemp C:\tmp\ddr-raycon-capacity-guard
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-capacity-suite-guard
+uv run ruff check scripts\raycon_followup.py src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\inbox_scanner.py tests\test_raycon_followup.py tests\test_inbox_scanner.py tests\test_alpha_capacity_analysis.py
+uv run mypy scripts\raycon_followup.py
+uv run mypy src\due_diligence_reporter\alpha_capacity_analysis.py
+uv run mypy src\due_diligence_reporter\inbox_scanner.py
+git -C .\work\due-diligence-reporter diff --check
+git -C .\work\RayCon diff --check
+```
+
+Results:
+
+- Focused DDR guard pytest: `8 passed`.
+- Broader affected DDR pytest: `247 passed`.
+- Ruff: all checks passed.
+- Mypy: passed file-by-file for `scripts\raycon_followup.py`,
+  `src\due_diligence_reporter\alpha_capacity_analysis.py`, and
+  `src\due_diligence_reporter\inbox_scanner.py`. The combined multi-file mypy
+  invocation still hits the repo's known duplicate-module mapping issue.
+- Diff checks passed for DDR and RayCon, with LF/CRLF warnings only.
+
+## 2026-06-09 - Miami Beach Selected for RayCon Capacity Proof
+
+- Refreshed live RayCon test-site inventory. The only active sites currently
+  showing a Block Plan with no `raycon_scenario.json` remain:
+  `Alpha Plano 5509 Pleasant Valley Dr`
+  (`site_id=k978wq2je97vw8aftnz0j7rv0d85emyj`) and
+  `Alpha Tampa 2409 S MacDill Ave`
+  (`site_id=k971m94ck04aqyhnr8jcs17zyn83dq4h`).
+- Do not use Plano or Tampa as first proof sites. A current no-upload Alpha
+  Capacity probe returned `insufficient_evidence` for both, with no Strict/Fast
+  Path or Max Capacity counts. Their extracted PDF text also contains no
+  `X / Y students` pairs.
+- Use `Alpha Miami Beach 300 71st 3rd`
+  (`site_id=k972ay4w964539mq0naqyde5ws85fr3r`) as the proof site. Its Block
+  Plan (`10dPoeXlUcuYwvEGflf0r9zo4RQMCfErM`) still exposes `40/70`, `24/42`,
+  and `50/87` student pairs, which sum to Alpha Capacity `114-199`.
+- Current Miami Beach dry-run preview proved the intended recovery path without
+  writing Drive artifacts or posting to RayCon:
+  `capacity_analysis_status=preview_success`,
+  `capacity_analysis_attached=true`,
+  `capacity_analysis_signature=114-199`,
+  `capacity_analysis_preview=true`, and `dispatch_skipped=dry_run`.
+- The existing Miami Beach `raycon_scenario.json` is still the failed RayCon
+  scenario from run `rc_20260609202847_ef340148f3`, modified
+  `2026-06-09T20:34:44.269Z`, rejected because RayCon owned a mismatched
+  126-student Fastest Open count. That makes Miami Beach the direct proof of the
+  fix: DDR attaches Alpha Capacity `114/199`, and RayCon prices from those
+  Alpha-sourced counts.
+- RayCon's latest Alpha-capacity-backed deterministic-pricing regression slice
+  passed, including the case where Ray review throws `No JSON object found in
+  model response`. The broader affected RayCon test slice also passed.
+- Remaining production gate: RayCon capacity-ingestion code is still local and
+  dirty, not committed/deployed. Do not run the Miami Beach non-dry-run proof
+  until RayCon is committed, deployed, and `/version` confirms the new commit.
+
+Verification:
+
+```powershell
+uv run python ..\find_raycon_test_sites.py
+uv run python ..\probe_block_plan_capacity_text.py
+uv run python ..\probe_alpha_capacity_model_candidates.py
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --preview-capacity-analysis --skip-dd-republish --suppress-notifications --redispatch-after-minutes 0
+npx.cmd vitest run src/rayconJobs.test.js -t "Alpha-capacity-backed deterministic pricing|uses Miami Beach Alpha Capacity|ignores partial Alpha|normalizes comma-formatted Alpha Capacity|does not fail Alpha-capacity-backed deterministic pricing when Ray review fails|fails validation when Ray review returns empty rationale"
+npx.cmd vitest run src/rayconJobs.test.js src/jobsRoute.test.js src/deployManifest.test.js
+node -c api\src\rayconJobs.js
+node -c scripts\deploy-raycon-cloud-run.mjs
+git -C .\work\RayCon diff --check
+git -C .\work\due-diligence-reporter diff --check
+```
+
+Results:
+
+- Live inventory refreshed at `2026-06-09T22:16:17Z`.
+- Plano/Tampa Alpha Capacity probes: `insufficient_evidence`.
+- Miami Beach dry-run preview: one failed-scenario alert row, no dispatch/upload,
+  Alpha Capacity signature `114-199`.
+- Focused RayCon regression slice: `5 passed`.
+- Broader RayCon affected slice: `116 passed`.
+- `node -c` checks passed.
+- `git diff --check` passed for DDR and RayCon, with LF/CRLF warnings only.
+
+## 2026-06-09 - RayCon Capacity Preview Dry-Run Added
+
+- Added `scripts/raycon_followup.py --preview-capacity-analysis` for scoped
+  validation runs. The flag only has an effect with `--dry-run`: it downloads
+  the Block Plan, runs Alpha Capacity Analysis without uploading an artifact,
+  and carries `capacity_analysis_status`, `capacity_analysis_attached`,
+  `capacity_analysis_signature`, and `capacity_analysis_preview` into the
+  per-site log row.
+- Default `--dry-run` remains cheap and does not call Alpha Capacity, upload to
+  Drive, or post to RayCon. Preview mode also does not upload or post; it only
+  proves whether a real run would have complete Alpha Capacity counts available.
+- Fixed preview summary propagation for both missing-scenario and failed-scenario
+  retry paths. This matters for the Miami Beach proof because that site already
+  has a failed `raycon_scenario.json`, so the retry path is
+  `_handle_failed_scenario`, not the missing-scenario safety net.
+- Hardened the Alpha Capacity prompt to explicitly treat attached Block Plan PDF
+  pages as evidence, not only extracted PDF text, while preserving the
+  no-invention rule. Plano and Tampa still returned `insufficient_evidence` in
+  live no-upload probes after this prompt fix, so they remain poor first proof
+  sites.
+- Updated the insufficient-evidence message to say "Block Plan evidence" rather
+  than "Block Plan text" because DDR may send attached PDF evidence.
+- Scoped Miami Beach preview command now proves the pre-deploy handoff:
+  `capacity_analysis_status=preview_success`,
+  `capacity_analysis_attached=true`,
+  `capacity_analysis_signature=114-199`,
+  `capacity_analysis_preview=true`, while `dispatch_skipped=dry_run`.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_raycon_followup.py::TestFailedScenarioAlerts::test_failed_status_dry_run_previews_capacity_retry tests\test_raycon_followup.py::TestSafetyNetDispatch::test_dispatch_dry_run_can_preview_capacity_without_upload_or_post tests\test_raycon_followup.py::TestSafetyNetDispatch::test_dispatch_dry_run_does_not_call_post tests\test_alpha_capacity_analysis.py -q --basetemp C:\tmp\ddr-raycon-capacity-preview-4
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-capacity-preview-suite
+uv run ruff check scripts\raycon_followup.py src\due_diligence_reporter\alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_alpha_capacity_analysis.py
+uv run mypy scripts\raycon_followup.py
+uv run mypy src\due_diligence_reporter\alpha_capacity_analysis.py
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --preview-capacity-analysis --skip-dd-republish --suppress-notifications --redispatch-after-minutes 0
+```
+
+Results:
+
+- Focused preview regression pytest: `16 passed`.
+- Broader affected DDR pytest: `245 passed`.
+- Ruff: all checks passed.
+- Mypy: passed separately for `scripts\raycon_followup.py` and
+  `src\due_diligence_reporter\alpha_capacity_analysis.py`; the combined
+  script/src invocation still hits the repo's known duplicate-module pattern.
+- Miami Beach preview dry-run returned one failed-scenario alert row with
+  capacity preview `114-199` and no dispatch/upload because dry-run was set.
+
+## 2026-06-09 - RayCon Capacity Test Site Selection
+
+- Recommended proof site remains `Alpha Miami Beach 300 71st 3rd`
+  (`site_id=k972ay4w964539mq0naqyde5ws85fr3r`,
+  Drive folder `1qjyrtHSFkPOQjTHPo8VSORCGh9h7KqOt`, M1 folder
+  `1DuceE9iu0y45G6wncl4cRZyTkgP7IiYL`).
+- Its Block Plan is
+  `2026.05.19 - Alpha Miami Beach 300 71st 3rd Block Plan.pdf`
+  (`10dPoeXlUcuYwvEGflf0r9zo4RQMCfErM`). PDF text extraction still exposes
+  explicit capacity pairs `40/70`, `24/42`, and `50/87`, so the deterministic
+  Alpha Capacity expectation is Fast Path/Strict `114` and Max `199`.
+- Scoped RayCon follow-up dry-run against Miami Beach shows the current
+  `raycon_scenario.json` is a failed RayCon output:
+  run `rc_20260609202847_ef340148f3`, modified
+  `2026-06-09T20:34:44.269Z`, rejected Fast Path count `126` because RayCon
+  relied on mismatched room-schedule/capacity evidence. This makes Miami Beach
+  a direct proof of the desired fix: DDR should attach Alpha Capacity `114/199`
+  and RayCon should price from those counts rather than owning capacity.
+- Live inventory found two clean active sites with Block Plans and no
+  `raycon_scenario.json`: `Alpha Plano 5509 Pleasant Valley Dr`
+  (`k978wq2je97vw8aftnz0j7rv0d85emyj`, Block Plan
+  `1pp9uGPsBJnJ5Y-5gwBo2nZJYbfGa_zyC`) and
+  `Alpha Tampa 2409 S MacDill Ave` (`k971m94ck04aqyhnr8jcs17zyn83dq4h`,
+  Block Plan `1cRz03h7c3186Iq8iguqwzmbhhDr_uO9W`). Do not use either as the
+  first proof site: no-upload Alpha Capacity model probes returned
+  `insufficient_evidence` for both, even with the Block Plan PDF attached.
+
+Verification:
+
+```powershell
+uv run python ..\find_raycon_test_sites.py
+uv run python ..\probe_block_plan_capacity_text.py
+uv run python ..\probe_alpha_capacity_model_candidates.py
+uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --skip-dd-republish --suppress-notifications --redispatch-after-minutes 0
+```
+
+Results:
+
+- Live inventory read 60 active Rhodes records and listed Block Plan/RayCon
+  scenario state.
+- Plano/Tampa Alpha Capacity probes returned `insufficient_evidence`; neither
+  produced Strict/Fast Path or Max counts.
+- Miami Beach scoped dry-run returned one failed RayCon scenario alert and no
+  writes because `--dry-run` and `--suppress-notifications` were set.
+
+## 2026-06-09 - RayCon Alpha Capacity Proof Site and Env Fallback Hardened
+
+- Active proof site remains `Alpha Miami Beach 300 71st 3rd`
+  (`site_id=k972ay4w964539mq0naqyde5ws85fr3r`), because its Block Plan has
+  explicit student-count pairs `40/70`, `24/42`, and `50/87`, which sum to
+  Fast Path/Strict `114` and Max Capacity `199`.
+- This is the right full-flow validation site after RayCon deployment: DDR can
+  generate the Alpha Capacity JSON artifact from the Block Plan, attach it to
+  the RayCon job, and RayCon should publish Fast Path and Max Capacity pricing
+  using the Alpha-sourced counts rather than its internal fallback/audit count.
+- Hardened the runtime model selection so blank GitHub `OPENAI_CAPACITY_MODEL`
+  variables do not write an empty model into production `.env`. The inbox scan,
+  RayCon follow-up, daily DD check, vendor republish sweep, and MCP publish
+  workflows now default the Actions env expression to `gpt-4o`; the Alpha
+  Capacity runner also falls back to `gpt-4o` when `model` or
+  `openai_capacity_model` is blank.
+- Added a regression test that forces a blank capacity model and verifies the
+  OpenAI request still uses `gpt-4o`.
+- Remaining production gate is unchanged: do not use the Miami Beach non-dry-run
+  proof as final evidence until the RayCon capacity-ingestion changes are
+  deployed. Current production `/version` was last checked as pre-change commit
+  `7cba48d`; rechecked on 2026-06-09 at `2026-06-09T21:43:02.579Z` from the
+  endpoint response.
+- Additional RayCon recovery hardening was added after this note: Block Plan
+  async idempotency now includes `capacity:alpha:<strict>-<max>` when a complete
+  Alpha Capacity payload is attached. That prevents a later Miami Beach
+  `114/199` capacity-backed submit from reusing an earlier no-capacity job state
+  for the same Block Plan under the same source-selection contract, while
+  repeated capacity-backed submits still dedupe.
+- Additional DDR recovery hardening was added after the RayCon idempotency fix:
+  `scripts/raycon_followup.py` now makes its own dispatch dedupe capacity-aware.
+  A recent no-capacity dispatch can be superseded as soon as DDR can attach a
+  complete Alpha Capacity artifact; recent capacity-backed dispatches still
+  dedupe when the strict/max signature is unchanged. Dispatch state now records
+  `capacity_analysis_signature` (`strict-max`, for example `114-199`) so a
+  corrected capacity artifact can trigger a new RayCon job even if the Drive
+  artifact file ID is unchanged.
+- DDR's Alpha Capacity signature/readback helper now recognizes the same
+  top-level containers RayCon accepts for capacity scenarios, including
+  `result`. This keeps existing-artifact reuse and dispatch-state signatures in
+  lockstep with RayCon's `capacity:alpha:<strict>-<max>` idempotency segment
+  when an artifact wraps `fast_path` / `maximum_capacity` under `result`.
+- DDR's RayCon follow-up terminal-status path is also capacity-aware now. If a
+  prior known no-capacity job has become terminal `failed` / `validation_failed`
+  before `raycon_scenario.json` appears, and DDR can now attach complete Alpha
+  Capacity counts, it dispatches a new capacity-backed job instead of stopping
+  at a terminal-status alert. Terminal capacity-backed jobs still alert normally.
+- DDR's completed-status path is capacity-aware now as well. If the RayCon
+  status endpoint says a prior known no-capacity job is `completed` but
+  `raycon_scenario.json` is still not visible in M1, and DDR can now attach
+  complete Alpha Capacity counts, it dispatches a fresh capacity-backed job
+  instead of stopping at a missing-scenario alert. Completed capacity-backed
+  jobs still alert normally when the scenario file is missing.
+- RayCon deploy dry-run was rechecked with the deploy planner. It generated
+  the expected Cloud Build and Cloud Run commands without executing `gcloud`,
+  but it also proved the current RayCon checkout must be committed before
+  deploy: the image tag and `GIT_COMMIT` env fallback are derived from `HEAD`,
+  which is still `7cba48d2ed315bf3028983edfa4cbb2cd3a3322f` while the
+  capacity-ingestion changes are uncommitted.
+- The RayCon deploy helper now hard-stops all `--execute` attempts on a dirty
+  working tree. The previous `--allow-dirty` escape hatch was removed so the
+  deploy path cannot publish uncommitted capacity-ingestion code while tagging
+  the image and `/version` as the old `HEAD`.
+- RayCon now strips thousands separators before parsing Alpha Capacity counts
+  from strings, matching DDR's Python-side normalization. This prevents
+  formatted values such as `1,114 students` from being interpreted as `1` in
+  either the async job idempotency key or the published scenario payload. DDR's
+  dispatch-state capacity signature test now locks the same comma-formatted
+  string behavior.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_workflow_contracts.py tests\test_docs_env_contract.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_inbox_scanner.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_completeness.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-focused
+uv run pytest tests\test_raycon_followup.py::TestSafetyNetDispatch tests\test_raycon_client.py::test_alpha_capacity_counts_signature_accepts_aliases_and_student_strings -q --basetemp C:\tmp\ddr-raycon-capacity-signature-focused
+uv run pytest tests\test_raycon_client.py::test_alpha_capacity_counts_signature_accepts_aliases_and_student_strings tests\test_raycon_client.py::TestReadAlphaCapacityAnalysisFromM1 -q --basetemp C:\tmp\ddr-raycon-capacity-result-container
+uv run pytest tests\test_raycon_followup.py::TestSafetyNetDispatch -q --basetemp C:\tmp\ddr-raycon-terminal-capacity-recovery-2
+uv run pytest tests\test_raycon_followup.py::TestSafetyNetDispatch -q --basetemp C:\tmp\ddr-raycon-completed-capacity-recovery
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-capacity-signature-suite
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-terminal-capacity-suite-2
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-completed-capacity-suite
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-current-full
+uv run pytest tests\test_raycon_client.py::test_alpha_capacity_counts_signature_accepts_aliases_and_student_strings -q --basetemp C:\tmp\ddr-raycon-capacity-comma-signature
+uv run pytest tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_alpha_capacity_analysis.py -q --basetemp C:\tmp\ddr-raycon-capacity-normalization
+uv run ruff check src\due_diligence_reporter\alpha_capacity_analysis.py tests\test_alpha_capacity_analysis.py tests\test_workflow_contracts.py
+uv run ruff check scripts\raycon_followup.py src\due_diligence_reporter\raycon_client.py tests\test_raycon_followup.py tests\test_raycon_client.py
+uv run mypy scripts\raycon_followup.py
+uv run mypy src\due_diligence_reporter\raycon_client.py
+npx.cmd vitest run src/rayconJobs.test.js src/jobsRoute.test.js src/deployManifest.test.js
+node -c api\src\index.js
+node -c api\src\rayconJobs.js
+node -c scripts\deploy-raycon-cloud-run.mjs
+node scripts\deploy-raycon-cloud-run.mjs --out-dir C:\Users\foote\Documents\Codex\2026-06-09\relative-to-the-ddr-process-what\work\raycon-deploy-preview
+node scripts\deploy-raycon-cloud-run.mjs --execute --out-dir C:\Users\foote\Documents\Codex\2026-06-09\relative-to-the-ddr-process-what\work\raycon-deploy-preview-execute-check
+git diff --check
+```
+
+Results:
+
+- DDR focused pytest: `424 passed`.
+- DDR capacity-aware dispatch focused pytest: `18 passed`.
+- DDR capacity signature/readback focused pytest: `8 passed`.
+- DDR terminal no-capacity recovery focused pytest: `18 passed`.
+- DDR completed-status/no-capacity recovery focused pytest: `19 passed`.
+- DDR affected Alpha Capacity/RayCon follow-up/client/inbox/workflow pytest:
+  `243 passed`.
+- DDR broader affected Alpha Capacity/RayCon/report-schema/prompt/completeness
+  pytest: `481 passed`.
+- DDR capacity signature comma-format pytest: `1 passed`.
+- DDR focused Alpha Capacity/RayCon client/follow-up pytest after normalization:
+  `155 passed`.
+- DDR ruff: all checks passed.
+- DDR mypy: passed for `scripts\raycon_followup.py` and
+  `src\due_diligence_reporter\raycon_client.py` when checked separately to
+  avoid the repo's known script/src duplicate-module import pattern.
+- RayCon focused Vitest: `115 passed` after the dirty-deploy hard-stop and
+  comma-formatted Alpha Capacity string tests.
+- RayCon syntax checks passed for `api\src\index.js`, `api\src\rayconJobs.js`,
+  and `scripts\deploy-raycon-cloud-run.mjs`.
+- RayCon deploy planner dry-run succeeded and printed the expected `gcloud`
+  build/deploy commands only. It warned that the tree is dirty and showed the
+  deployment tag would still be `7cba48d2ed315bf3028983edfa4cbb2cd3a3322f`
+  until the RayCon changes are committed.
+- RayCon deploy planner `--execute` on the dirty tree failed before `gcloud`
+  with: `Refusing to deploy a dirty RayCon working tree. Commit first so
+  /version, the image tag, and deployed code all match.`
+- DDR and RayCon `git diff --check`: no whitespace errors; expected Windows
+  LF-to-CRLF warnings only.
+
 ## 2026-06-09 - Portfolio Gaps Document-Missing Alerts Removed
 
 - Beads issue `ddr-9ga` tracks this slice.
@@ -3963,3 +5578,271 @@ Results:
 - Live smoke returned score `58`, zone `ORANGE`, and
   `ease_conversion_scorecard_theme_id=site-due-diligence-opening` for
   `warehouse with hvac`.
+
+## 2026-06-09 - RayCon Uses Alpha Capacity Analysis for Published Capacity
+
+RayCon/DDR Block Plan handoff was hardened so capacity ownership is explicit:
+Alpha Capacity Analysis is the authoritative source for published Fast Path
+and Max Capacity student counts when a capacity artifact is present; RayCon
+owns construction estimates, schedule, pricing categories, and calculator audit
+evidence.
+
+What changed in DDR:
+
+- `post_raycon_job` accepts optional `capacity_analysis_file_id` and
+  `capacity_analysis` payloads and preserves deterministic body ordering.
+- `_run_block_plan_downstream` now resolves the site's M1 folder, searches for
+  the latest Alpha Capacity Analysis or legacy Capacity Brainlift artifact, and
+  attaches it to the RayCon job when it can read a JSON payload or clearly
+  labeled Strict/Max totals from a saved skill report. If no artifact exists,
+  DDR now runs the hosted `alpha-capacity-analysis` skill contract through
+  `alpha_capacity_analysis.py` using extracted Block Plan text plus the Block
+  Plan PDF bytes when available, saves a machine-readable JSON artifact in M1,
+  and passes that payload to RayCon.
+- `scripts/raycon_followup.py` now uses the same Alpha Capacity contract for
+  safety-net dispatches when Block Plans arrive outside inbox intake. It reuses
+  an existing M1 Alpha Capacity artifact when present, otherwise downloads the
+  Block Plan PDF, generates the JSON artifact, and attaches it to
+  `post_raycon_job`. Capacity generation remains fail-soft: a missing/failed
+  artifact is recorded in the row and dispatch state, but RayCon still receives
+  the Block Plan job.
+- `scripts/raycon_followup.py` also has `--suppress-notifications` for
+  controlled single-site validation runs. It still processes the site, writes
+  dispatch state, uploads Alpha Capacity artifacts, and calls RayCon when the
+  normal branch does so, but skips Rhodes/Google Chat alert delivery if that
+  test run produces alerts/errors.
+- `scripts/raycon_followup.py --env-file <path>` loads an explicit runtime
+  config before settings are built and anchors relative Google credential/token
+  paths to that env file's directory. This lets a validation checkout run
+  against the existing canonical local config without copying `.env` or token
+  files into the validation workspace.
+- `read_alpha_capacity_analysis_from_m1` was added beside the existing RayCon
+  M1 JSON reader. It reads JSON files directly, exports Google Docs as text
+  when needed, skips malformed candidates without blocking dispatch, and never
+  calculates capacity itself.
+- `apply_alpha_capacity_analysis_skill` is now exposed to the report-pipeline
+  agent and MCP server. The prompt requires calling it after reading a Block
+  Plan, before relying on RayCon scenario values. The tool downloads the Block
+  Plan PDF by Drive file ID when Drive context is available and only reports
+  success when both Strict/Fast Path and Max Capacity student counts are
+  present.
+- `OPENAI_CAPACITY_MODEL` / `openai_capacity_model` controls the model used for
+  Alpha Capacity Analysis generation; missing `OPENAI_API_KEY` causes a
+  fail-soft result instead of blocking RayCon dispatch.
+- `.env.example`, MCP Hive publish packaging, inbox scan, RayCon follow-up,
+  daily DD check, and vendor republish workflows now surface optional
+  `OPENAI_CAPACITY_MODEL` so operators can tune the capacity model without code
+  changes. The code still defaults to `gpt-4o` when the variable is unset.
+- Image-only Block Plan PDFs no longer automatically skip capacity generation:
+  inbox passes the attachment bytes directly, and the MCP/report tool downloads
+  the PDF when `drive_folder_url` and `block_plan_file_id` are provided.
+- Filename classification recognizes `Alpha Capacity Analysis - ...` as the
+  existing `capacity_brainlift_report` bucket for M1 compatibility.
+- DDR maps RayCon `capacity_students` into
+  `exec.fastest_open_capacity` and `exec.max_capacity_capacity`, while
+  completeness still treats those tokens as Alpha Capacity Analysis sourced
+  rather than RayCon-blocking.
+- `docs/reference/RayCon-DDR-Rebuild-Package.md` documents the optional
+  capacity payload and the fail-soft dispatch behavior.
+
+What changed in RayCon:
+
+- `/v1/jobs` accepts `capacity_analysis`, `alpha_capacity_analysis`,
+  `capacity_analysis_file_id`, and `capacity_analysis_url`.
+- RayCon normalizes strict/Fast Path and max-capacity scenarios from the Alpha
+  artifact and uses those counts for published scenario capacity and
+  student-scaled pricing.
+- RayCon's internal capacity calculator remains audit/fallback evidence.
+  Disagreement with Alpha Capacity Analysis is emitted as a warning/caveat, not
+  as a failed scenario.
+- Provenance is emitted in `analysis.site_context.capacity_analysis`,
+  `provenance.capacity_analysis`, and scenario `capacity_trace`.
+
+Verification:
+
+```powershell
+uv run ruff check src\due_diligence_reporter\raycon_client.py src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\classifier.py tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_classifier_keywords.py
+uv run mypy src\due_diligence_reporter\raycon_client.py src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\classifier.py
+uv run pytest tests\test_raycon_client.py tests\test_inbox_scanner.py tests\test_classifier_keywords.py tests\test_completeness.py tests\test_report_schema.py -q
+uv run ruff check src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\config.py src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py
+uv run mypy src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\config.py src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-tests
+uv run ruff check scripts\raycon_followup.py tests\test_raycon_followup.py tests\test_workflow_contracts.py
+uv run mypy scripts\raycon_followup.py
+uv run pytest tests\test_raycon_followup.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-followup-capacity
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-full
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-live-test-ready
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-envfile-ready
+uv run ruff check src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\config.py src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\raycon_client.py src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py scripts\raycon_followup.py tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py
+uv run mypy src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\config.py src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\raycon_client.py src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py
+npx.cmd vitest run src/rayconJobs.test.js src/jobsRoute.test.js
+node -c api\src\rayconJobs.js
+node -c api\src\index.js
+node -c api\src\openApiSpec.js
+node -c api\src\rayTools.js
+git diff --check
+```
+
+Results:
+
+- DDR ruff: all checks passed.
+- DDR mypy: success for the original RayCon handoff files, the 6 Alpha
+  Capacity/RayCon source files, and `scripts/raycon_followup.py` when checked
+  separately to avoid the script/src duplicate-module import pattern.
+- DDR focused pytest: 314 passed for the original handoff suite; 386 passed for
+  the expanded Alpha Capacity generation, inbox, RayCon client, report
+  pipeline, schema, prompt, completeness, and classifier suite; 74 passed for
+  RayCon follow-up/workflow contracts; 462 passed for the combined Alpha
+  Capacity, inbox, RayCon client, follow-up, report pipeline, schema, prompt,
+  completeness, classifier, docs-env, and workflow contract suite; 463 passed
+  after adding the controlled live-test notification suppression flag; 466
+  passed after adding the explicit env-file/credential-path support, with
+  explicit `C:\tmp` pytest base temp.
+- RayCon focused Vitest: 106 passed.
+- RayCon syntax checks passed for touched JS files.
+- DDR and RayCon `git diff --check` passed with expected Windows CRLF warnings
+  only.
+
+Remaining rollout dependency:
+
+- DDR now attempts to create the Alpha Capacity Analysis artifact when a Block
+  Plan returns and no existing artifact is present. Production rollout still
+  needs `OPENAI_API_KEY` plus the desired `OPENAI_CAPACITY_MODEL` configured in
+  the DDR runtime, and one live Block Plan run should verify that M1 receives
+  the JSON artifact and RayCon consumes it for Fast Path and Max Capacity
+  pricing. If the model cannot produce both counts, or neither Block Plan text
+  nor PDF bytes are available to the skill runner, DDR intentionally dispatches
+  RayCon without external capacity and RayCon falls back to its calculator/audit
+  path with caveats.
+- Suggested live test site: `Alpha Miami Beach 300 71st 3rd`
+  (`site_id=k972ay4w964539mq0naqyde5ws85fr3r`). Current read-only inventory
+  showed M1 folder `1DuceE9iu0y45G6wncl4cRZyTkgP7IiYL`, Block Plan
+  `2026.05.19 - Alpha Miami Beach 300 71st 3rd Block Plan.pdf`
+  (`10dPoeXlUcuYwvEGflf0r9zo4RQMCfErM`), no Alpha Capacity artifact, no
+  `raycon_scenario.json`, and 2,674 extracted Block Plan text characters with
+  room SF / explicit student-count evidence. A modified-checkout dry run using
+  the canonical runtime env succeeded read-only and scoped to exactly this
+  site:
+  `uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --dry-run --skip-dd-republish --suppress-notifications`.
+  Run the scoped live validation from the validation checkout with:
+  `uv run python scripts\raycon_followup.py --env-file C:\Users\foote\.claude\Work\repos\due-diligence-reporter\.env --site-id k972ay4w964539mq0naqyde5ws85fr3r --skip-dd-republish --suppress-notifications`.
+  Expected evidence after the run: M1 contains the generated Alpha Capacity JSON
+  artifact, RayCon dispatch state records `capacity_analysis_attached=true`, and
+  RayCon writes a `raycon_scenario.json` whose provenance points to Alpha
+  Capacity Analysis for Fast Path and Max Capacity student counts.
+
+Latest validation update:
+
+- First controlled Miami Beach live run dispatched RayCon but did not attach
+  capacity because the model returned `insufficient_evidence`. RayCon later
+  wrote a failed `raycon_scenario.json` with run
+  `rc_20260609202847_ef340148f3`; the failure reason cited a mismatched
+  126-student capacity, which confirmed the old no-capacity RayCon path is the
+  behavior this change is meant to eliminate.
+- The Alpha Capacity generator now falls back to explicit Block Plan schedule
+  counts when the hosted skill/model extracts the plan but refuses to publish
+  counts due missing support facts. The Miami Beach no-upload live probe now
+  returns success with Strict/Fast Path `114` and Max Capacity `199` from
+  student-count pairs `40/70`, `24/42`, and `50/87`.
+- The parser was hardened for PDF text where `STUDENTS` is glued to the next
+  level label (for example `STUDENTSL3...`) and for repeated whole-schedule
+  extraction, without de-duping legitimate duplicate rows.
+- A read-only candidate scan also found `Alpha Tampa 2409 S MacDill Ave` and
+  `Alpha Plano 5509 Pleasant Valley Dr`, but no-upload probes returned
+  `insufficient_evidence` for both, so they are not good full-flow tests for
+  the capacity-backed RayCon path.
+- `scripts/raycon_followup.py` no longer lets stale `queued`/`running` RayCon
+  job status block forever. In-progress status is respected inside the
+  redispatch window; outside that window, DDR re-dispatches so a fixed capacity
+  payload can recover a stuck or failed old run.
+- `read_alpha_capacity_analysis_from_m1` now skips existing M1 Alpha Capacity
+  or legacy Capacity Brainlift artifacts unless they contain both
+  Strict/Fast Path and Max Capacity counts. This prevents a partial old artifact
+  from being treated as authoritative and forces DDR to generate a fresh hosted
+  Alpha Capacity artifact instead.
+- A Miami Beach suppressed dry run with `--redispatch-after-minutes 0` now
+  reaches the failed-scenario retry path and returns `dispatch_skipped=dry_run`
+  instead of staying on the stale running-job branch.
+- The deployed RayCon `/version` currently reports commit `7cba48d`, which is
+  the local base commit before these uncommitted capacity-ingestion changes.
+  Full live proof requires publishing the RayCon changes first; otherwise the
+  deployed API strips/ignores the new capacity fields. After RayCon is deployed,
+  rerun Miami Beach from the DDR validation checkout with
+  `--redispatch-after-minutes 0 --skip-dd-republish --suppress-notifications`.
+- Rechecked `/version` after context compaction on 2026-06-09; production still
+  reports `git_commit=7cba48d`. The Miami Beach test site remains ready, but the
+  next non-dry-run proof should wait until RayCon is deployed with the
+  capacity-ingestion changes so the job can consume the Alpha Capacity payload.
+- Added a RayCon dry-run deploy planner at
+  `scripts/deploy-raycon-cloud-run.mjs` in the RayCon checkout. It reads
+  `deploy-manifest.yaml`, generates a Cloud Build config that passes
+  `GIT_HASH=<commit>` into the Docker build, generates a Cloud Run env file
+  with `GIT_COMMIT=<commit>`, prints the exact `gcloud` build/deploy commands,
+  and refuses `--execute` on a dirty tree unless explicitly overridden. This
+  keeps the eventual deploy from repeating the known manual-source-deploy
+  `/version=unknown` failure mode.
+- Dry-run verification produced commands only and warned that the current
+  RayCon tree is dirty. The generated scratch deploy files were removed.
+- RayCon API docs now show the current source-selection contract
+  `source_contract:2026-06-09-alpha-capacity-input-v1`, and
+  `deployManifest.test.js` asserts the API reference contains the exported
+  active contract while rejecting the old
+  `2026-05-20-scout-rerun-evidence-v1` contract. This keeps docs, idempotency
+  examples, and the retry/recovery behavior aligned for the live Miami Beach
+  proof.
+- Inbox Block Plan dispatch result rows now include the same capacity
+  observability fields as the RayCon follow-up safety net:
+  `capacity_analysis_status`, `capacity_analysis_attached`,
+  `capacity_analysis_file_id`, `capacity_analysis_url`, and
+  `capacity_analysis_error`. This makes the first intake path auditable when a
+  Block Plan dispatches without a complete Alpha Capacity payload, instead of
+  relying only on logs.
+- RayCon now treats Alpha Capacity Analysis as authoritative only when the
+  supplied payload contains both Fast Path/Strict and Max Capacity counts. A
+  partial Alpha artifact is ignored instead of creating a mixed-authority
+  scenario. RayCon also passes the Alpha Fast Path count into the Fastest Path
+  `estimate_costs` call, while the Maximum Capacity call continues to receive
+  both Alpha Fast Path and Max counts for student-scaled delta pricing.
+- The RayCon authoritative-capacity test now uses the Miami Beach proof numbers
+  from the selected Block Plan: Fast Path `114` and Max Capacity `199`.
+  Together with DDR's schedule fallback test for `40/70`, `24/42`, and
+  `50/87`, local coverage now mirrors the intended live proof site before
+  deployment.
+
+Latest verification:
+
+```powershell
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-final
+uv run ruff check scripts\raycon_followup.py src\due_diligence_reporter\alpha_capacity_analysis.py src\due_diligence_reporter\classifier.py src\due_diligence_reporter\completeness.py src\due_diligence_reporter\config.py src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\raycon_client.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\report_schema.py src\due_diligence_reporter\server.py tests\test_alpha_capacity_analysis.py tests\test_classifier_keywords.py tests\test_completeness.py tests\test_docs_env_contract.py tests\test_inbox_scanner.py tests\test_prompt_contract.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_workflow_contracts.py
+uv run mypy src\due_diligence_reporter\alpha_capacity_analysis.py
+uv run mypy scripts\raycon_followup.py
+npx.cmd vitest run src/rayconJobs.test.js src/jobsRoute.test.js
+npx.cmd vitest run src/rayconJobs.test.js src/jobsRoute.test.js src/deployManifest.test.js
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_raycon_followup.py tests\test_raycon_client.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-local-audit
+uv run pytest tests\test_inbox_scanner.py::TestBlockPlanDownstream tests\test_alpha_capacity_analysis.py tests\test_raycon_client.py -q --basetemp C:\tmp\ddr-inbox-alpha-capacity-observability
+uv run pytest tests\test_alpha_capacity_analysis.py tests\test_inbox_scanner.py tests\test_raycon_client.py tests\test_raycon_followup.py tests\test_report_pipeline.py tests\test_report_schema.py tests\test_prompt_contract.py tests\test_completeness.py tests\test_classifier_keywords.py tests\test_docs_env_contract.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-raycon-alpha-capacity-observability-full
+uv run ruff check src\due_diligence_reporter\alpha_capacity_analysis.py tests\test_alpha_capacity_analysis.py
+uv run ruff check src\due_diligence_reporter\inbox_scanner.py tests\test_inbox_scanner.py src\due_diligence_reporter\alpha_capacity_analysis.py tests\test_alpha_capacity_analysis.py
+uv run mypy src\due_diligence_reporter\alpha_capacity_analysis.py
+uv run mypy src\due_diligence_reporter\inbox_scanner.py src\due_diligence_reporter\alpha_capacity_analysis.py
+node -c api\src\index.js
+node -c api\src\rayconJobs.js
+node -c scripts\deploy-raycon-cloud-run.mjs
+git diff --check
+```
+
+Results: DDR pytest `474 passed` after the strict existing-artifact guard; DDR
+ruff passed; DDR mypy passed for the latest touched Alpha Capacity module,
+RayCon client, and RayCon follow-up script; RayCon
+Vitest `106 passed` before the deploy planner and `109 passed` including
+`deployManifest.test.js`; after the source-contract docs guard, RayCon
+Vitest `110 passed` for `rayconJobs`, `jobsRoute`, and `deployManifest`.
+After the partial-payload authority guard and Fastest Path cost-call capacity
+input, the same RayCon focused suite reported `111 passed`; it still reports
+`111 passed` after changing the authority test to the Miami Beach `114/199`
+capacity payload.
+DDR focused Alpha Capacity/RayCon client/follow-up pytest `148 passed`; DDR
+inbox/Alpha Capacity/RayCon client pytest `86 passed`; broad affected DDR suite
+`474 passed` after adding inbox capacity observability. DDR Alpha Capacity and
+inbox ruff/mypy passed. RayCon syntax checks passed; DDR and RayCon
+`git diff --check` passed with expected Windows LF-to-CRLF warnings only.

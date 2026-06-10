@@ -80,7 +80,7 @@ def classify_by_keywords(filename: str) -> tuple[str, float]:
         or ("phase i" in name and "phase ii" in name and "quality" in name)
     ):
         return "alpha_phasing_plan_report", 0.95
-    if "capacity brainlift" in name:
+    if "capacity brainlift" in name or "alpha capacity analysis" in name:
         return "capacity_brainlift_report", 0.95
     # The async hand-off result file. Filename is fixed by the
     # DDR/RayCon contract (raycon_scenario.json) so an exact match wins.

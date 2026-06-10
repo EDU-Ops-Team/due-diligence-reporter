@@ -87,7 +87,11 @@ Delta analysis compares each scenario against Fastest Open:
 | Row | Max Capacity delta | Max Value delta |
 |-----|-------------------|----------------|
 
-Rules: cost = single midpoint number (not a range), timeline = MM/YY format only, and sourced team notes override API numbers.
+Rules: capacity comes from Alpha Capacity Analysis or a RayCon scenario that
+explicitly carries Alpha Capacity Analysis provenance; RayCon owns construction
+cost and schedule. Cost = single midpoint number (not a range), timeline =
+MM/YY format only, and sourced team notes may override cost or schedule numbers
+only, not published capacity.
 
 ### Detailed Cost Breakdown
 
@@ -395,7 +399,7 @@ team can run the review process in `docs/process/sir-learning-loop.md`.
 
 ### Step 5 â€” Run Skill Tools
 
-Four skill tools analyze the source data and produce structured outputs. E-Occupancy, School Approval, and Opening Plan publish Google Docs; Alpha Phasing publishes an Excel workbook. These enrichment tools should run after source reads and before `create_dd_report`.
+Five skill tools analyze the source data and produce structured outputs. E-Occupancy, School Approval, and Opening Plan publish Google Docs; Alpha Capacity Analysis publishes a machine-readable JSON artifact; Alpha Phasing publishes an Excel workbook. These enrichment tools should run after source reads and before `create_dd_report`.
 
 **E-Occupancy Skill** â€” `apply_e_occupancy_skill(building_type_description, stories, ..., ibc_occupancy_group, fire_area_sqft, has_below_grade_space, already_sprinklered, construction_type, max_travel_distance_ft, existing_exit_count, projected_occupant_load, site_name, drive_folder_url)`
 1. Loads the hosted `ease-of-conversion` skill and rating-band reference from Ops-Skills (`OPS_SKILLS_REPO_PATH`, the sibling Ops-Skills checkout, or the installed Ops Skills plugin cache)
@@ -417,6 +421,14 @@ Four skill tools analyze the source data and produce structured outputs. E-Occup
 2. Reuses an existing M1 Opening Plan when present, so republish runs do not create duplicates.
 3. Publishes a Google Doc in the site's M1 folder and registers it on Rhodes as `other` / `acquireProperty` when the pipeline has a `site_id`.
 4. Returns `sources.opening_plan_link` for inclusion in the DDR Referenced Reports table.
+
+**Alpha Capacity Analysis** - `apply_alpha_capacity_analysis_skill(site_name, site_address, block_plan_content, drive_folder_url, block_plan_file_id, total_building_sf)`
+1. Loads hosted `alpha-capacity-analysis` skill instructions and Microschool / 250+ rulesets from Ops-Skills.
+2. Uses the full extracted Block Plan text plus the Block Plan PDF itself when Drive file context is available, so image-only PDFs do not silently skip the capacity source of truth.
+3. Requires both capacity counts to mark the result successful; otherwise it returns `insufficient_evidence` with concrete open items.
+4. Publishes `Alpha Capacity Analysis - <site> - <block_plan_file_id>.json` in M1 when Drive context is available.
+5. RayCon consumes this JSON artifact for published capacity and student-scaled pricing; RayCon remains responsible for construction cost, schedule, and calculator audit evidence.
+6. If neither an existing artifact nor a newly generated artifact has both counts, DDR records `dispatch_skipped=capacity_analysis_not_available` and does not dispatch a no-capacity RayCon job from the automated Block Plan path.
 
 **Alpha Phasing Plan** - `apply_alpha_phasing_plan_skill(site_name, site_address, drive_folder_url, source_of_truth, quality_bar_target, opening_target_date, must_complete_before_opening, deferred_scopes, ...)`
 1. Loads the hosted `alpha-phasing-plan` skill from Ops-Skills.
@@ -596,7 +608,8 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 
 | Variable | Purpose |
 |----------|---------|
-| `OPENAI_API_KEY` | GPT-4o-mini for inbox classification (Tier 2/3) and fuzzy site name matching |
+| `OPENAI_API_KEY` | OpenAI access for inbox classification, fuzzy site matching, and Alpha Capacity Analysis from Block Plans |
+| `OPENAI_CAPACITY_MODEL` | Optional model override for Alpha Capacity Analysis generation; defaults to `gpt-4o` |
 | `ANTHROPIC_API_KEY` | Claude API for automated report generation agent |
 | `RHODES_API_KEY` | Rhodes / LocationOS MCP token for site roster, Drive-folder context, P1 DRI lookup, and document registration |
 | `RHODES_MCP_URL` | Optional Rhodes / LocationOS MCP endpoint override |
@@ -648,8 +661,8 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 
 ## GitHub Secrets
 
-**Publish workflow:** `MCP_HIVE_API_KEY`, `MCP_HIVE_ID`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DD_TEMPLATE_V3_GOOGLE_DOC_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_REFRESH_TOKEN`, `RHODES_API_KEY`, optional `RHODES_MCP_URL`, and optional RayCon secrets.
+**Publish workflow:** `MCP_HIVE_API_KEY`, `MCP_HIVE_ID`, `OPENAI_API_KEY`, optional `OPENAI_CAPACITY_MODEL`, `ANTHROPIC_API_KEY`, `DD_TEMPLATE_V3_GOOGLE_DOC_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_REFRESH_TOKEN`, `RHODES_API_KEY`, optional `RHODES_MCP_URL`, and optional RayCon secrets.
 
-**Cron + inbox workflows:** OAuth secrets, shared Drive folder IDs, `ANTHROPIC_API_KEY`, `RHODES_API_KEY`, optional `RHODES_MCP_URL`, notification/email secrets, and optional RayCon secrets. `PRICING_API_KEY` is not a current DDR workflow requirement.
+**Cron + inbox workflows:** OAuth secrets, shared Drive folder IDs, `OPENAI_API_KEY`, optional `OPENAI_CAPACITY_MODEL`, `ANTHROPIC_API_KEY`, `RHODES_API_KEY`, optional `RHODES_MCP_URL`, notification/email secrets, and optional RayCon secrets. `PRICING_API_KEY` is not a current DDR workflow requirement.
 
 

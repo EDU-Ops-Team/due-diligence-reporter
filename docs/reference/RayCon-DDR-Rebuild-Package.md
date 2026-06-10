@@ -35,6 +35,14 @@ The current RayCon flow is:
 5. DDR's `raycon-followup.yml` workflow runs every 5 minutes and also supports a RayCon callback.
 6. DDR reads `raycon_scenario.json`, publishes a RayCon Scenario Assessment doc, and republishes the DD Report in place when an existing DDR is present.
 
+For controlled post-deploy proof runs, `raycon-followup.yml` has an optional
+`workflow_dispatch` input named `require_raycon_git_commit`. The workflow passes
+that value to `scripts/raycon_followup.py` as `--require-raycon-git-commit`.
+When set, DDR checks RayCon `/version` before Drive, Rhodes, Alpha Capacity
+artifact, or RayCon job mutations; a mismatch exits before dispatch. Use this
+guard for the first live Miami Beach proof after deploying RayCon capacity
+ingestion changes.
+
 ## Primary API: `POST /v1/jobs`
 
 `POST /v1/jobs` is the primary DDR-facing endpoint.
@@ -58,6 +66,17 @@ RayCon receives this when DDR has a specific Block Plan file to price.
   "block_plan_file_id": "block-plan-drive-file-id",
   "block_plan_url": "https://drive.google.com/file/d/block-plan-drive-file-id/view",
   "total_building_sf": 8400,
+  "capacity_analysis_file_id": "alpha-capacity-analysis-json-file-id",
+  "capacity_analysis": {
+    "source_label": "Alpha Capacity Analysis",
+    "ruleset": "Microschool v2",
+    "strict": {
+      "capacity_students": 36
+    },
+    "max": {
+      "capacity_students": 54
+    }
+  },
   "callback_marker": "raycon_scenario.json",
   "requested_at": "2026-06-01T19:00:00Z"
 }
@@ -76,9 +95,13 @@ Required fields:
 - `callback_marker`
 - `requested_at`
 
-Optional field:
+Optional fields:
 
 - `total_building_sf`: if present, must be a positive number. Do not require it, because DDR omits the field when it has no reliable SF value.
+- `capacity_analysis_file_id`: Drive file id for the machine-readable Alpha Capacity Analysis artifact.
+- `capacity_analysis`: inline Alpha Capacity Analysis artifact. When present, `strict` / `fastest_open` is authoritative for `analysis.fastest_open.capacity_students`, and `max` / `max_capacity` is authoritative for `analysis.max_capacity.capacity_students`. RayCon may run its own capacity calculator as an audit/fallback, but it must not override the published Alpha capacity count.
+
+DDR Block Plan dispatch resolves the site's M1 folder, looks for the latest Alpha Capacity Analysis or legacy Capacity Brainlift artifact, and attaches it when DDR can read a valid JSON payload or clearly labeled Strict/Max totals from the saved skill report. If no reliable artifact is present, DDR runs `ops-skills:alpha-capacity-analysis` against the extracted Block Plan text plus the Block Plan PDF evidence when file bytes are available, saves a machine-readable JSON artifact in M1 when both Strict/Fast Path and Max Capacity counts are produced, and sends that JSON to RayCon. If the skill cannot produce both counts, DDR skips the RayCon job with `dispatch_skipped=capacity_analysis_not_available` instead of sending a no-capacity request. RayCon's internal capacity calculator remains audit/fallback evidence inside RayCon, but DDR's automated Block Plan path must not ask RayCon to own published capacity.
 
 ### Folder Ping Payload
 
@@ -301,13 +324,13 @@ Preferred Drive behavior:
 }
 ```
 
-Current DDR consumes `analysis.fastest_open` and `analysis.max_capacity` for cost and timeline. RayCon should still emit `max_value` so DDR can adopt the third scenario without another RayCon schema change.
+Current DDR consumes `analysis.fastest_open` and `analysis.max_capacity` for capacity, cost, and timeline. Capacity should be sourced from Alpha Capacity Analysis when the artifact is present; RayCon owns construction cost, schedule, and category rationale. RayCon should still emit `max_value` so DDR can adopt the third scenario without another RayCon schema change.
 
 ## Scenario Field Rules
 
 Each scenario should use the same core fields:
 
-- `capacity_students`: integer
+- `capacity_students`: integer. For automated DDR Block Plan runs, source is Alpha Capacity Analysis or a sourced gap label; DDR should not publish RayCon internal capacity fallback as the capacity source of truth. Legacy/manual RayCon jobs without `capacity_analysis` may still expose RayCon calculator capacity, but those counts must be caveated in `capacity_trace` and should not satisfy DDR's Alpha-sourced capacity requirement.
 - `grand_total`: number, whole dollars preferred
 - `timeline_weeks`: positive integer
 - `soft_costs`: number

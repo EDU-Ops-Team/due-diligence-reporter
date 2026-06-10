@@ -7,6 +7,7 @@ Google client, Drive folder scanning, and ``save_skill_report``.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -17,13 +18,17 @@ from scripts.raycon_followup import (
     _find_block_plan,
     _find_published_doc,
     _fresh_dedup_alerts,
+    _git_commit_matches,
     _is_failed_scenario_alert,
+    _load_runtime_env_file,
     _load_site_summaries,
     _mark_notified_alerts,
     _notify_raycon_followup_rows,
     _process_site,
+    _raycon_version_url_from_jobs_url,
     _republish_dd_report_if_present,
     _site_id_matches,
+    _verify_raycon_git_commit,
 )
 
 # ---------------------------------------------------------------------------
@@ -467,16 +472,18 @@ class TestFailedScenarioAlerts:
         mock_save.assert_not_called()
 
     @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
     @patch("scripts.raycon_followup.save_skill_report")
     @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
     @patch("scripts.raycon_followup._find_block_plan")
     @patch("scripts.raycon_followup._resolve_m1_folder")
-    def test_failed_status_dispatches_recovery_when_state_is_available(
+    def test_failed_status_dispatches_recovery_when_capacity_is_available(
         self,
         mock_resolve,
         mock_find_bp,
         mock_read_scenario,
         mock_save,
+        mock_read_capacity,
         mock_post,
     ):
         mock_resolve.return_value = ("m1_folder_id", "M1")
@@ -493,6 +500,12 @@ class TestFailedScenarioAlerts:
             },
             "_drive_modified_time": "2026-05-05T21:18:26Z",
         }
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
         mock_post.return_value = {
             "status": "queued",
             "job_id": "job-retry",
@@ -521,10 +534,131 @@ class TestFailedScenarioAlerts:
         assert row["raycon_run_id"] == "rc_old"
         assert "failed_scenario:rc_old" in row["alert_dedup_key"]
         assert dispatch_state["bp_file_1"]["job_id"] == "job-retry"
+        assert dispatch_state["bp_file_1"]["capacity_analysis_attached"] is True
+        assert dispatch_state["bp_file_1"]["capacity_analysis_signature"] == "114-199"
+        assert row["capacity_analysis_attached"] is True
+        assert row["capacity_analysis_signature"] == "114-199"
         mock_post.assert_called_once()
+        kwargs = mock_post.call_args.kwargs
+        assert kwargs["capacity_analysis_file_id"] == "cap_file_1"
+        assert kwargs["capacity_analysis"] == capacity_payload
         mock_save.assert_not_called()
 
     @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.extract_text_from_pdf_bytes")
+    @patch("scripts.raycon_followup.generate_alpha_capacity_analysis_artifact")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_failed_status_does_not_retry_without_complete_alpha_capacity(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_read_capacity,
+        mock_generate_capacity,
+        mock_extract_text,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "failed",
+            "raycon_run_id": "rc_old",
+            "validation": {
+                "passed": False,
+                "errors": ["Ray rejected fastest_open capacity"],
+            },
+            "_drive_modified_time": "2026-05-05T21:18:26Z",
+        }
+        mock_read_capacity.return_value = (None, None)
+        mock_extract_text.return_value = "Block Plan text without complete capacity counts"
+        mock_generate_capacity.return_value = {
+            "status": "insufficient_evidence",
+            "message": "Alpha Capacity Analysis could not produce both counts.",
+        }
+        gc = MagicMock()
+        gc.download_file_bytes.return_value = b"%PDF block plan bytes"
+
+        row = _process_site(
+            gc,
+            _site(title="Alpha Miami Beach 300 71st 3rd"),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state={},
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert "raycon run failed" in row["alert"]
+        assert row["dispatch_skipped"] == "capacity_analysis_not_available"
+        assert row["capacity_analysis_attached"] is False
+        assert row["capacity_analysis_status"] == "insufficient_evidence"
+        assert "could not produce both counts" in row["capacity_analysis_error"]
+        mock_post.assert_not_called()
+
+    @patch("scripts.raycon_followup.extract_text_from_pdf_bytes")
+    @patch("scripts.raycon_followup.run_alpha_capacity_analysis")
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_failed_status_dry_run_previews_capacity_retry(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_read_capacity,
+        mock_post,
+        mock_run_capacity,
+        mock_extract_text,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = {
+            "schema_version": "1.0",
+            "status": "failed",
+            "raycon_run_id": "rc_old",
+            "validation": {
+                "passed": False,
+                "errors": ["Ray rejected fastest_open capacity"],
+            },
+            "_drive_modified_time": "2026-05-05T21:18:26Z",
+        }
+        mock_read_capacity.return_value = (None, None)
+        mock_extract_text.return_value = "Block Plan schedule text"
+        mock_run_capacity.return_value = {
+            "status": "success",
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        gc = MagicMock()
+        gc.download_file_bytes.return_value = b"%PDF block plan bytes"
+
+        row = _process_site(
+            gc,
+            _site(title="Alpha Miami Beach 300 71st 3rd"),
+            dry_run=True,
+            alert_after=timedelta(minutes=60),
+            dispatch_state={},
+            redispatch_after=timedelta(minutes=30),
+            preview_capacity_analysis=True,
+        )
+
+        assert "raycon run failed" in row["alert"]
+        assert row["dispatch_skipped"] == "dry_run"
+        assert row["capacity_analysis_status"] == "preview_success"
+        assert row["capacity_analysis_attached"] is True
+        assert row["capacity_analysis_signature"] == "114-199"
+        assert row["capacity_analysis_preview"] is True
+        mock_post.assert_not_called()
+        gc.upload_file_to_folder.assert_not_called()
+
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
     @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
     @patch("scripts.raycon_followup._find_block_plan")
     @patch("scripts.raycon_followup._resolve_m1_folder")
@@ -533,6 +667,7 @@ class TestFailedScenarioAlerts:
         mock_resolve,
         mock_find_bp,
         mock_read_scenario,
+        mock_read_capacity,
         mock_post,
     ):
         mock_resolve.return_value = ("m1_folder_id", "M1")
@@ -567,6 +702,7 @@ class TestFailedScenarioAlerts:
         mock_post.assert_not_called()
 
     @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
     @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
     @patch("scripts.raycon_followup._find_block_plan")
     @patch("scripts.raycon_followup._resolve_m1_folder")
@@ -575,6 +711,7 @@ class TestFailedScenarioAlerts:
         mock_resolve,
         mock_find_bp,
         mock_read_scenario,
+        mock_read_capacity,
         mock_post,
     ):
         mock_resolve.return_value = ("m1_folder_id", "M1")
@@ -586,6 +723,14 @@ class TestFailedScenarioAlerts:
             "validation": {"passed": False, "errors": ["no_address_match"]},
             "_drive_modified_time": "2026-05-05T21:18:26Z",
         }
+        mock_read_capacity.return_value = (
+            "cap_file_1",
+            {
+                "source_label": "Alpha Capacity Analysis",
+                "strict": {"capacity_students": 114},
+                "max": {"capacity_students": 199},
+            },
+        )
         recent = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
         dispatch_state = {
             "bp_file_1": {
@@ -593,6 +738,9 @@ class TestFailedScenarioAlerts:
                 "count": 1,
                 "site": "Alpha Keller",
                 "raycon_run_id": "rc_retry",
+                "capacity_analysis_attached": True,
+                "capacity_analysis_file_id": "cap_file_1",
+                "capacity_analysis_signature": "114-199",
             }
         }
 
@@ -714,6 +862,7 @@ class TestSafetyNetDispatch:
     Plan is present but raycon_scenario.json has not yet appeared."""
 
     @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
     @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
     @patch("scripts.raycon_followup._find_block_plan")
     @patch("scripts.raycon_followup._resolve_m1_folder")
@@ -722,11 +871,27 @@ class TestSafetyNetDispatch:
         mock_resolve,
         mock_find_bp,
         mock_read_scenario,
+        mock_read_capacity,
         mock_post,
     ):
         mock_resolve.return_value = ("m1_folder_id", "M1")
         mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
         mock_read_scenario.return_value = None
+        mock_read_capacity.return_value = (
+            "cap_file_1",
+            {
+                "source_label": "Alpha Capacity Analysis",
+                "strict": {"capacity_students": 114},
+                "max": {"capacity_students": 199},
+            },
+        )
+        mock_read_capacity.return_value = (None, None)
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 36},
+            "max": {"capacity_students": 54},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
         mock_post.return_value = {
             "status": "queued",
             "job_id": "job-abc",
@@ -754,12 +919,17 @@ class TestSafetyNetDispatch:
         assert row.get("status") == "queued"
         assert row.get("status_url_present") is True
         assert row.get("block_plan_file_id") == "bp_file_1"
+        assert row.get("capacity_analysis_attached") is True
+        assert row.get("capacity_analysis_status") == "attached_existing"
+        assert row.get("capacity_analysis_file_id") == "cap_file_1"
         # State updated for future runs.
         assert "bp_file_1" in dispatch_state
         assert dispatch_state["bp_file_1"]["count"] == 1
         assert dispatch_state["bp_file_1"]["job_id"] == "job-abc"
         assert dispatch_state["bp_file_1"]["raycon_run_id"] is None
         assert dispatch_state["bp_file_1"]["status_url"].endswith("token=opaque")
+        assert dispatch_state["bp_file_1"]["capacity_analysis_attached"] is True
+        assert dispatch_state["bp_file_1"]["capacity_analysis_file_id"] == "cap_file_1"
 
         # post_raycon_job called with the right kwargs.
         mock_post.assert_called_once()
@@ -770,6 +940,178 @@ class TestSafetyNetDispatch:
         assert kwargs["m1_folder_id"] == "m1_folder_id"
         assert kwargs["block_plan_file_id"] == "bp_file_1"
         assert kwargs["total_building_sf"] == 8500
+        assert kwargs["capacity_analysis_file_id"] == "cap_file_1"
+        assert kwargs["capacity_analysis"] == capacity_payload
+
+    @patch("scripts.raycon_followup.extract_text_from_pdf_bytes")
+    @patch("scripts.raycon_followup.generate_alpha_capacity_analysis_artifact")
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_dispatch_generates_capacity_artifact_when_missing(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_read_capacity,
+        mock_post,
+        mock_generate_capacity,
+        mock_extract_text,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = None
+        mock_read_capacity.return_value = (None, None)
+        mock_extract_text.return_value = "Room 101 420 SF\nRoom 102 430 SF"
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 32},
+            "max": {"capacity_students": 48},
+        }
+        mock_generate_capacity.return_value = {
+            "status": "success",
+            "capacity_analysis_file_id": "cap_generated_1",
+            "capacity_analysis_url": "https://drive.google.com/file/d/cap_generated_1/view",
+            "capacity_analysis": capacity_payload,
+        }
+        mock_post.return_value = {
+            "status": "accepted",
+            "job_id": "job-generated",
+            "raycon_run_id": "run-generated",
+        }
+
+        dispatch_state: dict = {}
+        gc = MagicMock()
+        gc.download_file_bytes.return_value = b"%PDF block plan bytes"
+
+        row = _process_site(
+            gc,
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row.get("dispatched") is True
+        assert row.get("capacity_analysis_attached") is True
+        assert row.get("capacity_analysis_status") == "generated"
+        assert row.get("capacity_analysis_file_id") == "cap_generated_1"
+        gc.download_file_bytes.assert_called_once_with("bp_file_1")
+        mock_extract_text.assert_called_once_with(b"%PDF block plan bytes")
+        generate_kwargs = mock_generate_capacity.call_args.kwargs
+        assert generate_kwargs["block_plan_content"] == "Room 101 420 SF\nRoom 102 430 SF"
+        assert generate_kwargs["block_plan_file_bytes"] == b"%PDF block plan bytes"
+        assert generate_kwargs["block_plan_file_name"] == "Block Plan current.pdf"
+        assert generate_kwargs["total_building_sf"] == 8500
+
+        kwargs = mock_post.call_args.kwargs
+        assert kwargs["capacity_analysis_file_id"] == "cap_generated_1"
+        assert kwargs["capacity_analysis"] == capacity_payload
+        assert dispatch_state["bp_file_1"]["capacity_analysis_status"] == "generated"
+
+    @patch("scripts.raycon_followup.extract_text_from_pdf_bytes")
+    @patch("scripts.raycon_followup.generate_alpha_capacity_analysis_artifact")
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_dispatch_skips_generated_partial_capacity_artifact(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_read_capacity,
+        mock_post,
+        mock_generate_capacity,
+        mock_extract_text,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = None
+        mock_read_capacity.return_value = (None, None)
+        mock_extract_text.return_value = "Room 101 420 SF"
+        mock_generate_capacity.return_value = {
+            "status": "success",
+            "capacity_analysis_file_id": "cap_partial_1",
+            "capacity_analysis_url": "https://drive.google.com/file/d/cap_partial_1/view",
+            "capacity_analysis": {
+                "source_label": "Alpha Capacity Analysis",
+                "strict": {"capacity_students": 32},
+            },
+        }
+        dispatch_state: dict = {}
+        gc = MagicMock()
+        gc.download_file_bytes.return_value = b"%PDF block plan bytes"
+
+        row = _process_site(
+            gc,
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row.get("dispatched") is not True
+        assert row.get("dispatch_skipped") == "capacity_analysis_not_available"
+        assert row.get("capacity_analysis_attached") is False
+        assert row.get("capacity_analysis_status") == "generation_incomplete"
+        assert "Strict/Fast Path and Max Capacity" in row.get(
+            "capacity_analysis_error", ""
+        )
+        mock_post.assert_not_called()
+        assert "bp_file_1" not in dispatch_state
+
+    @patch("scripts.raycon_followup.extract_text_from_pdf_bytes")
+    @patch("scripts.raycon_followup.generate_alpha_capacity_analysis_artifact")
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_dispatch_skips_when_capacity_generation_fails(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_read_capacity,
+        mock_post,
+        mock_generate_capacity,
+        mock_extract_text,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = None
+        mock_read_capacity.return_value = (None, None)
+        mock_extract_text.return_value = ""
+        mock_generate_capacity.return_value = {
+            "status": "insufficient_evidence",
+            "message": "Alpha Capacity Analysis could not produce both counts.",
+        }
+        dispatch_state: dict = {}
+        gc = MagicMock()
+        gc.download_file_bytes.return_value = b"%PDF image-only"
+
+        row = _process_site(
+            gc,
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row.get("dispatched") is not True
+        assert row.get("dispatch_skipped") == "capacity_analysis_not_available"
+        assert row.get("capacity_analysis_attached") is False
+        assert row.get("capacity_analysis_status") == "insufficient_evidence"
+        assert "could not produce both counts" in row.get("capacity_analysis_error", "")
+        mock_post.assert_not_called()
+        assert "bp_file_1" not in dispatch_state
 
     @patch("scripts.raycon_followup.post_raycon_job")
     @patch("scripts.raycon_followup.get_raycon_job_status")
@@ -810,6 +1152,69 @@ class TestSafetyNetDispatch:
         mock_post.assert_not_called()
 
     @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.get_raycon_job_status")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_stale_running_status_re_dispatches_after_window(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_status,
+        mock_read_capacity,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=90)
+        mock_read_scenario.return_value = None
+        mock_status.return_value = {"status": "running", "job_id": "job-old"}
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
+        mock_post.return_value = {
+            "status": "queued",
+            "job_id": "job-new",
+            "raycon_run_id": None,
+            "idempotency_key": "block_plan|site-123|bp_file_1|source_contract:new",
+            "retry_after_seconds": 30,
+            "status_url": "https://raycon.test/v1/jobs/status/job-new?token=opaque",
+            "cached": False,
+        }
+        old = (datetime.now(UTC) - timedelta(minutes=90)).isoformat()
+        dispatch_state = {
+            "bp_file_1": {
+                "last_dispatch": old,
+                "count": 1,
+                "site": "Alpha Keller",
+                "status_url": "https://raycon.test/v1/jobs/status/job-old?token=opaque",
+                "job_id": "job-old",
+            }
+        }
+
+        row = _process_site(
+            MagicMock(),
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row["dispatched"] is True
+        assert row["job_id"] == "job-new"
+        assert row["capacity_analysis_attached"] is True
+        assert dispatch_state["bp_file_1"]["count"] == 2
+        assert dispatch_state["bp_file_1"]["job_id"] == "job-new"
+        assert dispatch_state["bp_file_1"]["capacity_analysis_file_id"] == "cap_file_1"
+        mock_status.assert_called_once()
+        mock_post.assert_called_once()
+
+    @patch("scripts.raycon_followup.post_raycon_job")
     @patch("scripts.raycon_followup.get_raycon_job_status")
     @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
     @patch("scripts.raycon_followup._find_block_plan")
@@ -848,6 +1253,148 @@ class TestSafetyNetDispatch:
         assert row["alert"] == "raycon job terminal status: validation_failed"
         assert dispatch_state["bp_file_1"]["status"] == "validation_failed"
         mock_post.assert_not_called()
+
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.get_raycon_job_status")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_terminal_no_capacity_status_re_fires_when_capacity_becomes_available(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_status,
+        mock_read_capacity,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = None
+        mock_status.return_value = {
+            "status": "validation_failed",
+            "job_id": "job-old",
+            "validation": {"passed": False},
+        }
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
+        mock_post.return_value = {
+            "status": "queued",
+            "job_id": "job-capacity-terminal-recovery",
+            "raycon_run_id": None,
+            "idempotency_key": (
+                "block_plan|site-123|bp_file_1|source_contract:new|"
+                "capacity:alpha:114-199"
+            ),
+            "status_url": "https://raycon.test/v1/jobs/status/job-capacity-terminal-recovery?token=opaque",
+            "cached": False,
+        }
+        old = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+        dispatch_state = {
+            "bp_file_1": {
+                "last_dispatch": old,
+                "count": 1,
+                "site": "Alpha Keller",
+                "status_url": "https://raycon.test/v1/jobs/status/job-old?token=opaque",
+                "job_id": "job-old",
+                "capacity_analysis_attached": False,
+            }
+        }
+
+        row = _process_site(
+            MagicMock(),
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row["dispatched"] is True
+        assert row["dispatch_reason"] == "terminal_no_capacity_recovery"
+        assert row["previous_status"] == "validation_failed"
+        assert row["job_id"] == "job-capacity-terminal-recovery"
+        assert row["capacity_analysis_signature"] == "114-199"
+        assert dispatch_state["bp_file_1"]["count"] == 2
+        assert dispatch_state["bp_file_1"]["capacity_analysis_attached"] is True
+        mock_status.assert_called_once()
+        mock_post.assert_called_once()
+
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.get_raycon_job_status")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_completed_no_capacity_status_re_fires_when_scenario_missing(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_status,
+        mock_read_capacity,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = None
+        mock_status.return_value = {
+            "status": "completed",
+            "job_id": "job-old",
+            "drive_file": {"id": "old-json"},
+        }
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
+        mock_post.return_value = {
+            "status": "queued",
+            "job_id": "job-capacity-completed-recovery",
+            "raycon_run_id": None,
+            "idempotency_key": (
+                "block_plan|site-123|bp_file_1|source_contract:new|"
+                "capacity:alpha:114-199"
+            ),
+            "status_url": "https://raycon.test/v1/jobs/status/job-capacity-completed-recovery?token=opaque",
+            "cached": False,
+        }
+        old = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+        dispatch_state = {
+            "bp_file_1": {
+                "last_dispatch": old,
+                "count": 1,
+                "site": "Alpha Keller",
+                "status_url": "https://raycon.test/v1/jobs/status/job-old?token=opaque",
+                "job_id": "job-old",
+                "capacity_analysis_attached": False,
+            }
+        }
+
+        row = _process_site(
+            MagicMock(),
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row["dispatched"] is True
+        assert row["dispatch_reason"] == "completed_no_capacity_recovery"
+        assert row["previous_status"] == "completed"
+        assert row["job_id"] == "job-capacity-completed-recovery"
+        assert row["capacity_analysis_signature"] == "114-199"
+        assert dispatch_state["bp_file_1"]["count"] == 2
+        assert dispatch_state["bp_file_1"]["capacity_analysis_attached"] is True
+        mock_status.assert_called_once()
+        mock_post.assert_called_once()
 
     @patch("scripts.raycon_followup.post_raycon_job")
     @patch("scripts.raycon_followup._find_published_doc")
@@ -923,6 +1470,7 @@ class TestSafetyNetDispatch:
         mock_post.assert_not_called()
 
     @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
     @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
     @patch("scripts.raycon_followup._find_block_plan")
     @patch("scripts.raycon_followup._resolve_m1_folder")
@@ -931,12 +1479,19 @@ class TestSafetyNetDispatch:
         mock_resolve,
         mock_find_bp,
         mock_read_scenario,
+        mock_read_capacity,
         mock_post,
     ):
         """Within redispatch window → no second post_raycon_job call."""
         mock_resolve.return_value = ("m1_folder_id", "M1")
         mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
         mock_read_scenario.return_value = None
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
 
         recent = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
         dispatch_state = {
@@ -945,6 +1500,9 @@ class TestSafetyNetDispatch:
                 "count": 1,
                 "site": "Alpha Keller",
                 "raycon_run_id": "run-prior",
+                "capacity_analysis_attached": True,
+                "capacity_analysis_file_id": "cap_file_1",
+                "capacity_analysis_signature": "114-199",
             }
         }
 
@@ -968,6 +1526,202 @@ class TestSafetyNetDispatch:
         assert dispatch_state["bp_file_1"]["last_dispatch"] == recent
 
     @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_recent_no_capacity_dispatch_re_fires_when_capacity_becomes_available(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_read_capacity,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = None
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
+        mock_post.return_value = {
+            "status": "queued",
+            "job_id": "job-capacity-backed",
+            "raycon_run_id": None,
+            "idempotency_key": (
+                "block_plan|site-123|bp_file_1|source_contract:new|"
+                "capacity:alpha:114-199"
+            ),
+            "status_url": "https://raycon.test/v1/jobs/status/job-capacity-backed?token=opaque",
+            "cached": False,
+        }
+
+        recent = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+        dispatch_state = {
+            "bp_file_1": {
+                "last_dispatch": recent,
+                "count": 1,
+                "site": "Alpha Keller",
+                "raycon_run_id": "run-prior",
+                "capacity_analysis_attached": False,
+            }
+        }
+
+        row = _process_site(
+            MagicMock(),
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row.get("dispatched") is True
+        assert row["job_id"] == "job-capacity-backed"
+        assert row["capacity_analysis_attached"] is True
+        assert row["capacity_analysis_file_id"] == "cap_file_1"
+        assert dispatch_state["bp_file_1"]["count"] == 2
+        assert dispatch_state["bp_file_1"]["capacity_analysis_attached"] is True
+        assert dispatch_state["bp_file_1"]["capacity_analysis_file_id"] == "cap_file_1"
+        mock_post.assert_called_once()
+
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.get_raycon_job_status")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_recent_running_no_capacity_job_re_fires_when_capacity_becomes_available(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_status,
+        mock_read_capacity,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = None
+        mock_status.return_value = {"status": "running", "job_id": "job-old"}
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
+        mock_post.return_value = {
+            "status": "queued",
+            "job_id": "job-new",
+            "raycon_run_id": None,
+            "idempotency_key": (
+                "block_plan|site-123|bp_file_1|source_contract:new|"
+                "capacity:alpha:114-199"
+            ),
+            "status_url": "https://raycon.test/v1/jobs/status/job-new?token=opaque",
+            "cached": False,
+        }
+        recent = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+        dispatch_state = {
+            "bp_file_1": {
+                "last_dispatch": recent,
+                "count": 1,
+                "site": "Alpha Keller",
+                "status_url": "https://raycon.test/v1/jobs/status/job-old?token=opaque",
+                "job_id": "job-old",
+                "capacity_analysis_attached": False,
+            }
+        }
+
+        row = _process_site(
+            MagicMock(),
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row["dispatched"] is True
+        assert row["job_id"] == "job-new"
+        assert row["capacity_analysis_attached"] is True
+        assert dispatch_state["bp_file_1"]["count"] == 2
+        assert dispatch_state["bp_file_1"]["job_id"] == "job-new"
+        mock_status.assert_called_once()
+        mock_post.assert_called_once()
+
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_recent_capacity_dispatch_re_fires_when_capacity_signature_changes(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_read_capacity,
+        mock_post,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = None
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
+        mock_post.return_value = {
+            "status": "queued",
+            "job_id": "job-new-signature",
+            "raycon_run_id": None,
+            "idempotency_key": (
+                "block_plan|site-123|bp_file_1|source_contract:new|"
+                "capacity:alpha:114-199"
+            ),
+            "status_url": "https://raycon.test/v1/jobs/status/job-new-signature?token=opaque",
+            "cached": False,
+        }
+        recent = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+        dispatch_state = {
+            "bp_file_1": {
+                "last_dispatch": recent,
+                "count": 1,
+                "site": "Alpha Keller",
+                "raycon_run_id": "run-prior",
+                "capacity_analysis_attached": True,
+                "capacity_analysis_file_id": "cap_file_1",
+                "capacity_analysis_signature": "100-150",
+            }
+        }
+
+        row = _process_site(
+            MagicMock(),
+            _site(),
+            dry_run=False,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            redispatch_after=timedelta(minutes=30),
+        )
+
+        assert row.get("dispatched") is True
+        assert row["capacity_analysis_signature"] == "114-199"
+        assert dispatch_state["bp_file_1"]["count"] == 2
+        assert dispatch_state["bp_file_1"]["capacity_analysis_signature"] == "114-199"
+        mock_post.assert_called_once()
+
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
     @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
     @patch("scripts.raycon_followup._find_block_plan")
     @patch("scripts.raycon_followup._resolve_m1_folder")
@@ -976,12 +1730,19 @@ class TestSafetyNetDispatch:
         mock_resolve,
         mock_find_bp,
         mock_read_scenario,
+        mock_read_capacity,
         mock_post,
     ):
         """Outside the redispatch window → fire again, increment count."""
         mock_resolve.return_value = ("m1_folder_id", "M1")
         mock_find_bp.return_value = _block_plan(modified_minutes_ago=45)
         mock_read_scenario.return_value = None
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
         mock_post.return_value = {
             "raycon_run_id": "run-second",
             "status": "accepted",
@@ -1015,6 +1776,7 @@ class TestSafetyNetDispatch:
         assert dispatch_state["bp_file_1"]["last_dispatch"] != old
 
     @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
     @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
     @patch("scripts.raycon_followup._find_block_plan")
     @patch("scripts.raycon_followup._resolve_m1_folder")
@@ -1023,12 +1785,19 @@ class TestSafetyNetDispatch:
         mock_resolve,
         mock_find_bp,
         mock_read_scenario,
+        mock_read_capacity,
         mock_post,
     ):
         """post_raycon_job raising → error row, no state mutation."""
         mock_resolve.return_value = ("m1_folder_id", "M1")
         mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
         mock_read_scenario.return_value = None
+        capacity_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 114},
+            "max": {"capacity_students": 199},
+        }
+        mock_read_capacity.return_value = ("cap_file_1", capacity_payload)
         mock_post.side_effect = RuntimeError("RayCon 503")
 
         dispatch_state: dict = {}
@@ -1073,7 +1842,57 @@ class TestSafetyNetDispatch:
         )
 
         mock_post.assert_not_called()
+        assert row.get("dispatch_skipped") == "capacity_analysis_not_available"
+        assert dispatch_state == {}
+
+    @patch("scripts.raycon_followup.extract_text_from_pdf_bytes")
+    @patch("scripts.raycon_followup.run_alpha_capacity_analysis")
+    @patch("scripts.raycon_followup.post_raycon_job")
+    @patch("scripts.raycon_followup.read_alpha_capacity_analysis_from_m1")
+    @patch("scripts.raycon_followup.read_raycon_scenario_from_m1")
+    @patch("scripts.raycon_followup._find_block_plan")
+    @patch("scripts.raycon_followup._resolve_m1_folder")
+    def test_dispatch_dry_run_can_preview_capacity_without_upload_or_post(
+        self,
+        mock_resolve,
+        mock_find_bp,
+        mock_read_scenario,
+        mock_read_capacity,
+        mock_post,
+        mock_run_capacity,
+        mock_extract_text,
+    ):
+        mock_resolve.return_value = ("m1_folder_id", "M1")
+        mock_find_bp.return_value = _block_plan(modified_minutes_ago=5)
+        mock_read_scenario.return_value = None
+        mock_read_capacity.return_value = (None, None)
+        mock_extract_text.return_value = "Room schedule text"
+        mock_run_capacity.return_value = {
+            "status": "success",
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 36},
+            "max": {"capacity_students": 54},
+        }
+
+        dispatch_state: dict = {}
+        gc = MagicMock()
+        gc.download_file_bytes.return_value = b"%PDF block plan bytes"
+        row = _process_site(
+            gc,
+            _site(),
+            dry_run=True,
+            alert_after=timedelta(minutes=60),
+            dispatch_state=dispatch_state,
+            preview_capacity_analysis=True,
+        )
+
+        mock_post.assert_not_called()
+        gc.upload_file_to_folder.assert_not_called()
         assert row.get("dispatch_skipped") == "dry_run"
+        assert row.get("capacity_analysis_status") == "preview_success"
+        assert row.get("capacity_analysis_attached") is True
+        assert row.get("capacity_analysis_signature") == "36-54"
+        assert row.get("capacity_analysis_preview") is True
         assert dispatch_state == {}
 
     def test_dispatch_helper_missing_required_field_returns_error(self):
@@ -1081,6 +1900,7 @@ class TestSafetyNetDispatch:
         site = _site()
         site["id"] = ""  # Missing required field.
         result = _dispatch_raycon_job(
+            MagicMock(),
             site,
             _block_plan(),
             "m1_folder_id",
@@ -1095,6 +1915,7 @@ class TestSafetyNetDispatch:
         bp = _block_plan()
         bp["id"] = ""
         result = _dispatch_raycon_job(
+            MagicMock(),
             _site(),
             bp,
             "m1_folder_id",
@@ -1897,7 +2718,7 @@ class TestCallbackReceiverScoping:
     on an unknown id — not to re-test what `_process_site` already does.
     """
 
-    def _patch_integration_points(self, summaries):
+    def _patch_integration_points(self, summaries, *, process_site_result=None):
         """Return patches that stand in for site inventory + Google.
 
         Callers use this with ``contextlib.ExitStack`` to keep test bodies
@@ -1906,9 +2727,11 @@ class TestCallbackReceiverScoping:
         from unittest.mock import patch as _patch
 
         fake_gc = MagicMock()
+        process_site_result = process_site_result or {"site": "stub", "skipped": "test"}
 
         return {
             "get_settings": _patch("scripts.raycon_followup.get_settings"),
+            "load_dotenv": _patch("scripts.raycon_followup.load_dotenv"),
             "google_client": _patch(
                 "scripts.raycon_followup.GoogleClient.from_oauth_config",
                 return_value=fake_gc,
@@ -1919,8 +2742,13 @@ class TestCallbackReceiverScoping:
             ),
             "process_site": _patch(
                 "scripts.raycon_followup._process_site",
-                return_value={"site": "stub", "skipped": "test"},
+                return_value=process_site_result,
             ),
+            "notify": _patch("scripts.raycon_followup._notify_raycon_followup_rows"),
+            "load_alert": _patch(
+                "scripts.raycon_followup._load_alert_state", return_value={}
+            ),
+            "save_alert": _patch("scripts.raycon_followup._save_alert_state"),
             "save_dispatch": _patch("scripts.raycon_followup._save_dispatch_state"),
             "save_republish": _patch("scripts.raycon_followup._save_republish_state"),
             "load_dispatch": _patch(
@@ -1931,12 +2759,15 @@ class TestCallbackReceiverScoping:
             ),
         }
 
-    def _run_main(self, argv, summaries):
+    def _run_main(self, argv, summaries, *, process_site_result=None):
         from contextlib import ExitStack
 
         from scripts.raycon_followup import main
 
-        patches = self._patch_integration_points(summaries)
+        patches = self._patch_integration_points(
+            summaries,
+            process_site_result=process_site_result,
+        )
         with ExitStack() as stack:
             mocks = {name: stack.enter_context(p) for name, p in patches.items()}
             rc = main(argv)
@@ -2014,6 +2845,163 @@ class TestCallbackReceiverScoping:
         joined = "\n".join(r.getMessage() for r in caplog.records)
         assert "raycon-run-deadbeef" in joined
         assert "succeeded" in joined
+
+    def test_suppress_notifications_skips_alert_delivery(self, caplog):
+        """Controlled live validation can process a scoped site without
+        sending owner/Chat alerts if the row enters the alert path.
+        """
+        import logging
+
+        summaries = [
+            {"id": "site-A", "title": "Alpha", "drive_folder_url": "https://x/A"},
+        ]
+        with caplog.at_level(logging.INFO, logger="raycon_followup"):
+            rc, mocks = self._run_main(
+                ["--site-id", "site-A", "--suppress-notifications"],
+                summaries,
+                process_site_result={
+                    "site": "Alpha",
+                    "alert": "no raycon_scenario.json after 1:00:00",
+                },
+            )
+
+        assert rc == 0
+        mocks["process_site"].assert_called_once()
+        mocks["notify"].assert_not_called()
+        mocks["load_alert"].assert_not_called()
+        mocks["save_alert"].assert_not_called()
+        assert "notifications suppressed" in "\n".join(
+            record.getMessage() for record in caplog.records
+        )
+
+    def test_env_file_is_loaded_before_settings(self):
+        summaries = [
+            {"id": "site-A", "title": "Alpha", "drive_folder_url": "https://x/A"},
+        ]
+
+        rc, mocks = self._run_main(
+            ["--env-file", r"C:\runtime\ddr.env", "--site-id", "site-A"],
+            summaries,
+        )
+
+        assert rc == 0
+        mocks["load_dotenv"].assert_called_once()
+        mocks["get_settings"].assert_called_once()
+
+
+def test_load_runtime_env_file_anchors_relative_google_paths(
+    tmp_path,
+    monkeypatch,
+):
+    env_path = tmp_path / ".env"
+    env_path.write_text("GOOGLE_DRIVE_ROOT_FOLDER_ID=root-folder\n", encoding="utf-8")
+    monkeypatch.delenv("GOOGLE_CLIENT_CONFIG", raising=False)
+    monkeypatch.delenv("GOOGLE_TOKEN_FILE", raising=False)
+
+    _load_runtime_env_file(str(env_path))
+
+    assert os.environ["GOOGLE_CLIENT_CONFIG"] == str(
+        tmp_path / "credentials" / "client_secrets.json"
+    )
+    assert os.environ["GOOGLE_TOKEN_FILE"] == str(tmp_path / ".gcp-saved-tokens.json")
+
+
+def test_load_runtime_env_file_anchors_configured_relative_paths(
+    tmp_path,
+    monkeypatch,
+):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "GOOGLE_CLIENT_CONFIG=private/client.json",
+                "GOOGLE_TOKEN_FILE=private/tokens.json",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("GOOGLE_CLIENT_CONFIG", raising=False)
+    monkeypatch.delenv("GOOGLE_TOKEN_FILE", raising=False)
+
+    _load_runtime_env_file(str(env_path))
+
+    assert os.environ["GOOGLE_CLIENT_CONFIG"] == str(tmp_path / "private" / "client.json")
+    assert os.environ["GOOGLE_TOKEN_FILE"] == str(tmp_path / "private" / "tokens.json")
+
+
+def test_raycon_version_url_from_jobs_url_uses_configured_origin() -> None:
+    assert (
+        _raycon_version_url_from_jobs_url(
+            "https://raycon-api.example.run.app/v1/jobs?x=1"
+        )
+        == "https://raycon-api.example.run.app/version"
+    )
+
+
+def test_git_commit_matches_full_or_short_sha() -> None:
+    full = "abcdef1234567890abcdef1234567890abcdef12"
+
+    assert _git_commit_matches(full, full)
+    assert _git_commit_matches(full[:7], full)
+    assert _git_commit_matches(full, full[:7])
+    assert not _git_commit_matches("1234567", full)
+    assert not _git_commit_matches("", full)
+
+
+@patch("scripts.raycon_followup.requests.get")
+def test_verify_raycon_git_commit_accepts_matching_version(mock_get) -> None:
+    response = MagicMock()
+    response.json.return_value = {"git_commit": "abcdef1234567890"}
+    mock_get.return_value = response
+
+    ok, message = _verify_raycon_git_commit(
+        jobs_url="https://raycon-api.example.run.app/v1/jobs",
+        expected_commit="abcdef1",
+    )
+
+    assert ok is True
+    assert message == "abcdef1234567890"
+    mock_get.assert_called_once_with(
+        "https://raycon-api.example.run.app/version",
+        timeout=15,
+    )
+
+
+@patch("scripts.raycon_followup.requests.get")
+def test_verify_raycon_git_commit_rejects_mismatch(mock_get) -> None:
+    response = MagicMock()
+    response.json.return_value = {"git_commit": "oldcommit"}
+    mock_get.return_value = response
+
+    ok, message = _verify_raycon_git_commit(
+        jobs_url="https://raycon-api.example.run.app/v1/jobs",
+        expected_commit="abcdef1",
+    )
+
+    assert ok is False
+    assert "expected abcdef1, got oldcommit" in message
+
+
+def test_main_require_raycon_git_commit_stops_before_google_client() -> None:
+    from scripts.raycon_followup import main
+
+    settings = SimpleNamespace(raycon_jobs_url="https://raycon.test/v1/jobs")
+    with (
+        patch("scripts.raycon_followup.get_settings", return_value=settings),
+        patch(
+            "scripts.raycon_followup._verify_raycon_git_commit",
+            return_value=(False, "RayCon /version git_commit mismatch"),
+        ) as mock_verify,
+        patch("scripts.raycon_followup.GoogleClient.from_oauth_config") as mock_google,
+    ):
+        rc = main(["--require-raycon-git-commit", "abcdef1"])
+
+    assert rc == 1
+    mock_verify.assert_called_once_with(
+        jobs_url="https://raycon.test/v1/jobs",
+        expected_commit="abcdef1",
+    )
+    mock_google.assert_not_called()
 
 
 class TestCallbackIdempotencyWiring:

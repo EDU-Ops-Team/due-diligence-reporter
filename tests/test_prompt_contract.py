@@ -67,6 +67,10 @@ def test_prompt_v4_keeps_first_round_contract() -> None:
         "After `create_dd_report` returns a document, stop.",
         "apply_opening_plan_skill",
         "Opening Plan is a normal DDR enrichment step",
+        "apply_alpha_capacity_analysis_skill",
+        "comes from Alpha Capacity Analysis",
+        "RayCon Scenario with Alpha Capacity Analysis provenance",
+        "Do not use team notes, RayCon",
         "still call the tool and let it return",
         "Always call",
     ]

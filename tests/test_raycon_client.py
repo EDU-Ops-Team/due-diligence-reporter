@@ -17,12 +17,14 @@ from due_diligence_reporter.raycon_client import (
     _compute_hmac_signature,
     _normalize_drive_folder_url,
     _unwrap_html_anchor,
+    alpha_capacity_counts_signature,
     get_raycon_job_status,
     post_raycon_folder_ping,
     post_raycon_job,
     raycon_payload_failed,
     raycon_payload_status,
     raycon_scenario_to_report_fields,
+    read_alpha_capacity_analysis_from_m1,
     read_raycon_scenario_from_m1,
 )
 
@@ -89,6 +91,41 @@ class TestUnwrapHtmlAnchor:
         assert _unwrap_html_anchor(url) == url
 
 
+def test_alpha_capacity_counts_signature_accepts_aliases_and_student_strings() -> None:
+    assert (
+        alpha_capacity_counts_signature(
+            {
+                "scenarios": {
+                    "fastest_open": {"students": "114 students"},
+                    "max_capacity": {"student_count": "199 students"},
+                }
+            }
+        )
+        == "114-199"
+    )
+    assert (
+        alpha_capacity_counts_signature(
+            {
+                "result": {
+                    "fast_path": {"capacity": "114 students"},
+                    "maximum_capacity": {"total_students": "199 students"},
+                }
+            }
+        )
+        == "114-199"
+    )
+    assert (
+        alpha_capacity_counts_signature(
+            {
+                "strict": {"capacity_students": "1,114 students"},
+                "max": {"capacity_students": "1,199 students"},
+            }
+        )
+        == "1114-1199"
+    )
+    assert alpha_capacity_counts_signature({"strict": {"capacity_students": 114}}) == ""
+
+
 # ---------------------------------------------------------------------------
 # post_raycon_job
 # ---------------------------------------------------------------------------
@@ -131,7 +168,8 @@ def _accepted_job_response(status_code: int = 202, **overrides: object):
 class TestPostRayConJob:
     """The POST contract is the only place DDR can break RayCon, so guard it.
 
-    Spec: raycon_ddr_integration_spec.md §1 — 11 required body fields.
+    Spec: raycon_ddr_integration_spec.md §1 — required body fields plus
+    optional capacity-analysis hints.
     HMAC-SHA256 of the raw body is sent in X-RayCon-Signature *when*
     RAYCON_WEBHOOK_SECRET is configured. RayCon's /v1/jobs is currently
     public (no signature verification) per RayCon team 2026-04-30, so
@@ -304,6 +342,33 @@ class TestPostRayConJob:
         keys = list(body.keys())
         assert keys.index("total_building_sf") == keys.index("block_plan_url") + 1
         assert keys.index("callback_marker") == keys.index("total_building_sf") + 1
+
+    def test_capacity_analysis_payload_sent_when_available(self) -> None:
+        capacity_analysis = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 36},
+            "max": {"capacity_students": 54},
+        }
+        with patch(
+            "due_diligence_reporter.raycon_client.get_settings",
+            return_value=self._fake_settings(),
+        ), patch(
+            "due_diligence_reporter.raycon_client.requests.post",
+            return_value=_accepted_job_response(),
+        ) as mock_post:
+            post_raycon_job(
+                total_building_sf=8400,
+                capacity_analysis_file_id="capacity-json-123",
+                capacity_analysis=capacity_analysis,
+                **_REQUIRED_KW,
+            )
+        body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        assert body["capacity_analysis_file_id"] == "capacity-json-123"
+        assert body["capacity_analysis"] == capacity_analysis
+        keys = list(body.keys())
+        assert keys.index("capacity_analysis_file_id") == keys.index("total_building_sf") + 1
+        assert keys.index("capacity_analysis") == keys.index("capacity_analysis_file_id") + 1
+        assert keys.index("callback_marker") == keys.index("capacity_analysis") + 1
 
     def test_drive_folder_url_html_anchor_normalized(self) -> None:
         # Live regression (2026-05-05): NYC 156 William and Dallas 4152 Cole
@@ -520,6 +585,201 @@ class TestGetRayConJobStatus:
         ):
             with pytest.raises(RayConSchemaError, match="JSON object"):
                 get_raycon_job_status("https://raycon.test/status?token=opaque")
+
+
+# ---------------------------------------------------------------------------
+# Alpha Capacity Analysis artifact discovery
+# ---------------------------------------------------------------------------
+
+
+class TestReadAlphaCapacityAnalysisFromM1:
+    def test_reads_latest_json_capacity_analysis_artifact(self) -> None:
+        payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "ruleset": "Microschool v2",
+            "strict": {"capacity_students": 36},
+            "max": {"capacity_students": 54},
+        }
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = [
+            {
+                "id": "older-cap",
+                "name": "alpha_capacity_analysis.json",
+                "mimeType": "application/json",
+                "modifiedTime": "2026-06-01T10:00:00Z",
+            },
+            {
+                "id": "newer-cap",
+                "name": "Alpha Capacity Analysis - Alpha Keller.json",
+                "mimeType": "application/json",
+                "modifiedTime": "2026-06-02T10:00:00Z",
+            },
+        ]
+        gc.download_file_bytes.return_value = json.dumps(payload).encode("utf-8")
+
+        file_id, capacity_analysis = read_alpha_capacity_analysis_from_m1(
+            gc,
+            "m1-folder-id",
+        )
+
+        assert file_id == "newer-cap"
+        assert capacity_analysis == payload
+        gc.download_file_bytes.assert_called_once_with("newer-cap")
+        gc.export_google_doc_as_text.assert_not_called()
+
+    def test_extracts_clear_strict_and_max_totals_from_google_doc(self) -> None:
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = [
+            {
+                "id": "capacity-doc",
+                "name": "Alpha Capacity Analysis - Alpha Keller",
+                "mimeType": "application/vnd.google-apps.document",
+                "modifiedTime": "2026-06-02T10:00:00Z",
+            },
+        ]
+        gc.export_google_doc_as_text.return_value = """
+# Alpha Capacity Analysis
+
+## Capacity Scenarios
+| Scenario | LL | L1 | MS | Total |
+| Strict | 12 | 24 | 0 | 36 |
+| Max | 18 | 24 | 12 | 54 |
+"""
+
+        file_id, capacity_analysis = read_alpha_capacity_analysis_from_m1(
+            gc,
+            "m1-folder-id",
+        )
+
+        assert file_id == "capacity-doc"
+        assert capacity_analysis == {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 36},
+            "max": {"capacity_students": 54},
+        }
+        gc.export_google_doc_as_text.assert_called_once_with("capacity-doc")
+        gc.download_file_bytes.assert_not_called()
+
+    def test_skips_partial_latest_json_and_uses_older_complete_artifact(self) -> None:
+        partial_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 36},
+        }
+        complete_payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 36},
+            "max": {"capacity_students": 54},
+        }
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = [
+            {
+                "id": "older-complete-cap",
+                "name": "Alpha Capacity Analysis - Alpha Keller old.json",
+                "mimeType": "application/json",
+                "modifiedTime": "2026-06-01T10:00:00Z",
+            },
+            {
+                "id": "newer-partial-cap",
+                "name": "Alpha Capacity Analysis - Alpha Keller partial.json",
+                "mimeType": "application/json",
+                "modifiedTime": "2026-06-02T10:00:00Z",
+            },
+        ]
+        gc.download_file_bytes.side_effect = [
+            json.dumps(partial_payload).encode("utf-8"),
+            json.dumps(complete_payload).encode("utf-8"),
+        ]
+
+        file_id, capacity_analysis = read_alpha_capacity_analysis_from_m1(
+            gc,
+            "m1-folder-id",
+        )
+
+        assert file_id == "older-complete-cap"
+        assert capacity_analysis == complete_payload
+        assert gc.download_file_bytes.call_args_list[0].args == ("newer-partial-cap",)
+        assert gc.download_file_bytes.call_args_list[1].args == ("older-complete-cap",)
+
+    def test_skips_google_doc_when_only_one_capacity_count_is_present(self) -> None:
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = [
+            {
+                "id": "capacity-doc",
+                "name": "Alpha Capacity Analysis - Alpha Keller",
+                "mimeType": "application/vnd.google-apps.document",
+                "modifiedTime": "2026-06-02T10:00:00Z",
+            },
+        ]
+        gc.export_google_doc_as_text.return_value = """
+# Alpha Capacity Analysis
+
+## Capacity Scenarios
+| Scenario | LL | L1 | Total |
+| Strict | 12 | 24 | 36 |
+"""
+
+        file_id, capacity_analysis = read_alpha_capacity_analysis_from_m1(
+            gc,
+            "m1-folder-id",
+        )
+
+        assert file_id is None
+        assert capacity_analysis is None
+        gc.export_google_doc_as_text.assert_called_once_with("capacity-doc")
+
+    def test_accepts_string_student_counts_when_both_scenarios_are_present(self) -> None:
+        payload = {
+            "source_label": "Alpha Capacity Analysis",
+            "fastest_open": {"capacity_students": "114 students"},
+            "max_capacity": {"capacity_students": "199 students"},
+        }
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = [
+            {
+                "id": "capacity-json",
+                "name": "Alpha Capacity Analysis - Alpha Keller.json",
+                "mimeType": "application/json",
+                "modifiedTime": "2026-06-02T10:00:00Z",
+            },
+        ]
+        gc.download_file_bytes.return_value = json.dumps(payload).encode("utf-8")
+
+        file_id, capacity_analysis = read_alpha_capacity_analysis_from_m1(
+            gc,
+            "m1-folder-id",
+        )
+
+        assert file_id == "capacity-json"
+        assert capacity_analysis == payload
+
+    def test_skips_invalid_candidate_and_returns_no_payload(self) -> None:
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = [
+            {
+                "id": "bad-capacity-doc",
+                "name": "Alpha Capacity Analysis - Alpha Keller.txt",
+                "mimeType": "text/plain",
+                "modifiedTime": "2026-06-02T10:00:00Z",
+            },
+        ]
+        gc.download_file_bytes.return_value = b"Alpha Capacity Analysis without totals"
+
+        file_id, capacity_analysis = read_alpha_capacity_analysis_from_m1(
+            gc,
+            "m1-folder-id",
+        )
+
+        assert file_id is None
+        assert capacity_analysis is None
+
+    def test_empty_folder_id_short_circuits_drive_reads(self) -> None:
+        gc = MagicMock()
+
+        file_id, capacity_analysis = read_alpha_capacity_analysis_from_m1(gc, "")
+
+        assert file_id is None
+        assert capacity_analysis is None
+        gc.list_files_in_folder.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -852,6 +1112,7 @@ class TestRayConScenarioToReportFields:
         payload = {
             "schema_version": "1.0",
             "fastest_open": {
+                "capacity_students": 36,
                 "grand_total": 500000,
                 "timeline_weeks": 12,
                 "soft_costs": 50000,
@@ -869,6 +1130,7 @@ class TestRayConScenarioToReportFields:
                 ],
             },
             "max_capacity": {
+                "capacity_students": 54,
                 "grand_total": 900000,
                 "timeline_weeks": 26,
                 "soft_costs": 80000,
@@ -882,7 +1144,9 @@ class TestRayConScenarioToReportFields:
         fields = raycon_scenario_to_report_fields(payload)
 
         assert fields["exec.fastest_open_capex"] == "$500,000"
+        assert fields["exec.fastest_open_capacity"] == ""
         assert fields["exec.max_capacity_capex"] == "$900,000"
+        assert fields["exec.max_capacity_capacity"] == ""
         # Open dates rendered (non-empty)
         assert fields["exec.fastest_open_open_date"]
         assert fields["exec.max_capacity_open_date"]
@@ -997,6 +1261,7 @@ class TestRayConPayloadEnvelope:
             "raycon_run_id": "rc_2026_05_05_abc",
             "analysis": {
                 "fastest_open": {
+                    "capacity_students": 36,
                     "grand_total": 412000,
                     "timeline_weeks": 14,
                     "soft_costs": 32000,
@@ -1009,6 +1274,7 @@ class TestRayConPayloadEnvelope:
                     ],
                 },
                 "max_capacity": {
+                    "capacity_students": 54,
                     "grand_total": 587000,
                     "timeline_weeks": 22,
                     "categories": [],
@@ -1020,6 +1286,8 @@ class TestRayConPayloadEnvelope:
             },
         }
         fields = raycon_scenario_to_report_fields(payload)
+        assert fields["exec.fastest_open_capacity"] == ""
+        assert fields["exec.max_capacity_capacity"] == ""
         assert fields["exec.fastest_open_capex"] == "$412,000"
         assert fields["exec.max_capacity_capex"] == "$587,000"
         assert fields["exec.fastest_open_open_date"]  # 14 weeks out, non-empty
@@ -1032,6 +1300,150 @@ class TestRayConPayloadEnvelope:
         assert fields["exec.raycon_run_id"] == "rc_2026_05_05_abc"
         assert fields["exec.raycon_block_plan_used"] == "bp-file-456"
         assert fields["exec.raycon_failure_reason"] == ""
+
+    def test_alpha_capacity_backed_envelope_maps_miami_beach_capacities(self) -> None:
+        payload = {
+            "schema_version": "1.0",
+            "status": "completed",
+            "raycon_run_id": "rc_miami_alpha_capacity_114_199",
+            "analysis": {
+                "site_context": {
+                    "capacity_analysis": {
+                        "source_system": "alpha_capacity_analysis",
+                        "signature": "114-199",
+                    }
+                },
+                "capacity_trace": {
+                    "source": "alpha_capacity_analysis",
+                    "fastest_open_capacity_students": 114,
+                    "max_capacity_capacity_students": 199,
+                },
+                "fastest_open": {
+                    "capacity_students": 114,
+                    "grand_total": 812000,
+                    "timeline_weeks": 16,
+                    "soft_costs": 65000,
+                    "gc_fee": 45000,
+                    "contingency": 30000,
+                    "categories": [
+                        {"category": "Demolition", "subtotal": 42000},
+                        {"category": "MEP / Fire / Life Safety", "subtotal": 185000},
+                    ],
+                },
+                "max_capacity": {
+                    "capacity_students": 199,
+                    "grand_total": 1280000,
+                    "timeline_weeks": 28,
+                    "soft_costs": 96000,
+                    "gc_fee": 72000,
+                    "contingency": 54000,
+                    "categories": [
+                        {"category": "Framing / Doors", "subtotal": 160000},
+                        {"category": "Plumbing / Bathrooms", "subtotal": 120000},
+                    ],
+                },
+            },
+            "provenance": {
+                "selected_block_plan": {"id": "10dPoeXlUcuYwvEGflf0r9zo4RQMCfErM"},
+                "capacity_analysis": {
+                    "source_system": "alpha_capacity_analysis",
+                    "signature": "114-199",
+                },
+            },
+            "validation": {
+                "passed": True,
+                "errors": [],
+                "warnings": [
+                    "RayCon internal capacity differed from Alpha Capacity Analysis; Alpha counts used."
+                ],
+            },
+        }
+
+        assert raycon_payload_failed(payload) is False
+        fields = raycon_scenario_to_report_fields(payload)
+
+        assert fields["exec.fastest_open_capacity"] == "114"
+        assert fields["exec.max_capacity_capacity"] == "199"
+        assert fields["exec.fastest_open_capex"] == "$812,000"
+        assert fields["exec.max_capacity_capex"] == "$1,280,000"
+        assert fields["exec.fastest_open_open_date"]
+        assert fields["exec.max_capacity_open_date"]
+        assert fields["exec.cost_demolition_fastest_open"] == "$42,000"
+        assert fields["exec.cost_mep_fire_life_safety_fastest_open"] == "$185,000"
+        assert fields["exec.cost_grand_total_fastest_open"] == "$812,000"
+        assert fields["exec.cost_framing_doors_max_capacity"] == "$160,000"
+        assert fields["exec.cost_plumbing_bathrooms_max_capacity"] == "$120,000"
+        assert fields["exec.cost_grand_total_max_capacity"] == "$1,280,000"
+        assert fields["exec.raycon_status"] == "completed"
+        assert fields["exec.raycon_failure_reason"] == ""
+        assert fields["exec.raycon_block_plan_used"] == "10dPoeXlUcuYwvEGflf0r9zo4RQMCfErM"
+
+    def test_scenario_level_alpha_capacity_trace_allows_capacity_mapping(self) -> None:
+        payload = {
+            "schema_version": "1.0",
+            "status": "completed",
+            "analysis": {
+                "fastest_open": {
+                    "capacity_students": 114,
+                    "grand_total": 812000,
+                    "timeline_weeks": 16,
+                    "capacity_trace": {
+                        "source_system": "alpha_capacity_analysis",
+                        "source_artifact_id": "cap-json-123",
+                    },
+                },
+                "max_capacity": {
+                    "capacity_students": 199,
+                    "grand_total": 1280000,
+                    "timeline_weeks": 28,
+                    "capacity_trace": {
+                        "source_system": "alpha_capacity_analysis",
+                        "source_artifact_id": "cap-json-123",
+                    },
+                },
+            },
+            "validation": {"passed": True, "errors": [], "warnings": []},
+        }
+
+        fields = raycon_scenario_to_report_fields(payload)
+
+        assert fields["exec.fastest_open_capacity"] == "114"
+        assert fields["exec.max_capacity_capacity"] == "199"
+        assert fields["exec.fastest_open_capex"] == "$812,000"
+        assert fields["exec.max_capacity_capex"] == "$1,280,000"
+
+    def test_alpha_capacity_payload_counts_override_stale_scenario_mirrors(self) -> None:
+        payload = {
+            "schema_version": "1.0",
+            "status": "completed",
+            "analysis": {
+                "site_context": {
+                    "capacity_analysis": {
+                        "source_system": "alpha_capacity_analysis",
+                        "fastest_open": {"capacity_students": 114},
+                        "max_capacity": {"capacity_students": 199},
+                    },
+                },
+                "fastest_open": {
+                    "capacity_students": 126,
+                    "grand_total": 812000,
+                    "timeline_weeks": 16,
+                },
+                "max_capacity": {
+                    "capacity_students": 211,
+                    "grand_total": 1280000,
+                    "timeline_weeks": 28,
+                },
+            },
+            "validation": {"passed": True, "errors": [], "warnings": []},
+        }
+
+        fields = raycon_scenario_to_report_fields(payload)
+
+        assert fields["exec.fastest_open_capacity"] == "114"
+        assert fields["exec.max_capacity_capacity"] == "199"
+        assert fields["exec.fastest_open_capex"] == "$812,000"
+        assert fields["exec.max_capacity_capex"] == "$1,280,000"
 
     def test_envelope_prefers_analysis_over_top_level_when_both_present(self) -> None:
         """If RayCon ever (mistakenly) sends both, we trust the envelope so
@@ -1063,6 +1475,8 @@ class TestRayConPayloadEnvelope:
             },
         }
         fields = raycon_scenario_to_report_fields(payload)
+        assert fields["exec.fastest_open_capacity"] == ""
+        assert fields["exec.max_capacity_capacity"] == ""
         assert fields["exec.fastest_open_capex"] == ""
         assert fields["exec.max_capacity_capex"] == ""
         assert fields["exec.fastest_open_open_date"] == ""

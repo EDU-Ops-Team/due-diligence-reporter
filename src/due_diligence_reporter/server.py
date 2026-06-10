@@ -18,6 +18,10 @@ import requests
 from mcp.server import FastMCP
 from tenacity import retry
 
+from .alpha_capacity_analysis import (
+    generate_alpha_capacity_analysis_artifact,
+    run_alpha_capacity_analysis,
+)
 from .alpha_phasing_plan import (
     AlphaPhasingPlanError,
     alpha_phasing_open_items,
@@ -1800,6 +1804,97 @@ async def apply_school_approval_skill(
             result["publish_status"] = "failed"
 
     return result
+
+
+@mcp.tool()
+async def apply_alpha_capacity_analysis_skill(
+    site_name: str,
+    site_address: str,
+    block_plan_content: str,
+    drive_folder_url: str = "",
+    block_plan_file_id: str = "",
+    total_building_sf: int = 0,
+) -> dict[str, Any]:
+    """Run hosted Alpha Capacity Analysis from Block Plan text.
+
+    Loads ``ops-skills:alpha-capacity-analysis`` and its rulesets, then asks
+    the configured capacity model for JSON-only Strict/Fast Path and Max
+    Capacity student counts. If ``drive_folder_url`` is provided and the
+    result is successful, DDR saves a machine-readable JSON artifact in M1 so
+    RayCon can consume the exact same capacity source for pricing.
+    """
+
+    logger.info("Tool called: apply_alpha_capacity_analysis_skill - site=%s", site_name)
+    has_block_plan_evidence = bool(block_plan_content.strip()) or bool(
+        drive_folder_url.strip() and block_plan_file_id.strip()
+    )
+    if not site_name.strip() or not has_block_plan_evidence:
+        return {
+            "status": "error",
+            "error": "Missing parameters",
+            "message": (
+                "site_name and either block_plan_content or Drive context with "
+                "block_plan_file_id are required."
+            ),
+        }
+
+    total_sf = total_building_sf if total_building_sf > 0 else None
+
+    def _work() -> dict[str, Any]:
+        if not drive_folder_url.strip():
+            return run_alpha_capacity_analysis(
+                site_name=site_name,
+                site_address=site_address,
+                block_plan_content=block_plan_content,
+                total_building_sf=total_sf,
+                block_plan_file_id=block_plan_file_id,
+            )
+
+        folder_id = extract_folder_id_from_url(drive_folder_url)
+        if not folder_id:
+            return {
+                "status": "error",
+                "error": "Invalid Drive folder URL",
+                "message": f"Could not extract folder ID from: {drive_folder_url}",
+            }
+
+        try:
+            gc = _make_google_client()
+            target_folder = _get_or_create_m1_folder(gc, folder_id)
+            target_folder_id = str(target_folder.get("id", "") or "")
+        except Exception as exc:
+            logger.error("Failed to resolve M1 subfolder for '%s': %s", site_name, exc)
+            return {
+                "status": "error",
+                "error": "Failed to resolve M1 folder",
+                "message": str(exc),
+            }
+
+        block_plan_file_bytes = None
+        block_plan_file_name = "Block Plan.pdf"
+        if block_plan_file_id.strip():
+            try:
+                block_plan_file_bytes = gc.download_file_bytes(block_plan_file_id)
+            except Exception as exc:
+                logger.warning(
+                    "Could not download Block Plan PDF %s for Alpha Capacity Analysis: %s",
+                    block_plan_file_id,
+                    exc,
+                )
+
+        return generate_alpha_capacity_analysis_artifact(
+            gc,
+            m1_folder_id=target_folder_id,
+            site_name=site_name,
+            site_address=site_address,
+            block_plan_content=block_plan_content,
+            total_building_sf=total_sf,
+            block_plan_file_id=block_plan_file_id,
+            block_plan_file_bytes=block_plan_file_bytes,
+            block_plan_file_name=block_plan_file_name,
+        )
+
+    return await asyncio.to_thread(_work)
 
 
 def _get_or_create_m1_folder(

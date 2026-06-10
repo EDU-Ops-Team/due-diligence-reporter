@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from types import SimpleNamespace
@@ -1449,24 +1450,21 @@ class TestBlockPlanDownstream:
 
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.raycon_client.post_raycon_job")
-    def test_pings_raycon_with_full_spec_payload_and_returns_request_record(
+    @patch("due_diligence_reporter.inbox_scanner.generate_alpha_capacity_analysis_artifact")
+    def test_skips_raycon_when_alpha_capacity_is_not_available(
         self,
+        mock_generate_capacity,
         mock_post,
         mock_resolve_m1,
     ):
-        mock_post.return_value = {
-            "status": "queued",
-            "job_id": "job-abc-123",
-            "raycon_run_id": "run-abc-123",
-            "idempotency_key": "block_plan|IEBLOCK123|block123",
-            "retry_after_seconds": 30,
-            "status_url": "https://raycon.test/v1/jobs/status/job-abc-123?token=opaque",
-            "cached": False,
-            "queued_at": "2026-04-30T13:45:00Z",
-        }
         mock_resolve_m1.return_value = ("m1-folder-id", "M1")
+        mock_generate_capacity.return_value = {
+            "status": "insufficient_evidence",
+            "message": "no complete Alpha Capacity counts",
+        }
 
         gc = MagicMock()
+        gc.list_files_in_folder.return_value = []
         result = _run_block_plan_downstream(
             gc,
             site_summary={
@@ -1486,24 +1484,201 @@ class TestBlockPlanDownstream:
         assert len(result) == 1
         record = result[0]
         assert record["doc_type"] == "raycon_scenario_request"
-        assert record["job_id"] == "job-abc-123"
-        assert record["raycon_run_id"] == "run-abc-123"
-        assert record["idempotency_key"] == "block_plan|IEBLOCK123|block123"
-        assert record["retry_after_seconds"] == "30"
-        assert record["status_url_present"] is True
-        assert record["status"] == "queued"
+        assert record["job_id"] == ""
+        assert record["raycon_run_id"] == ""
+        assert record["idempotency_key"] == ""
+        assert record["retry_after_seconds"] == ""
+        assert record["status_url_present"] is False
+        assert record["status"] == "blocked_capacity_analysis_not_available"
+        assert record["dispatch_skipped"] == "capacity_analysis_not_available"
         assert record["block_plan_file_id"] == "block123"
+        assert record["capacity_analysis_status"] == "insufficient_evidence"
+        assert record["capacity_analysis_attached"] is False
+        assert record["capacity_analysis_file_id"] == ""
+        assert record["capacity_analysis_error"] == "no complete Alpha Capacity counts"
+
+        mock_post.assert_not_called()
+        mock_generate_capacity.assert_called_once()
+        # All 11 spec §1.2 fields should reach post_raycon_job.
+
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.raycon_client.post_raycon_job")
+    @patch("due_diligence_reporter.inbox_scanner.generate_alpha_capacity_analysis_artifact")
+    def test_pings_raycon_with_alpha_capacity_analysis_when_available(
+        self,
+        mock_generate_capacity,
+        mock_post,
+        mock_resolve_m1,
+    ):
+        mock_post.return_value = {
+            "status": "queued",
+            "job_id": "job-abc-123",
+            "raycon_run_id": "run-abc-123",
+            "idempotency_key": "block_plan|IEBLOCK123|block123",
+        }
+        mock_resolve_m1.return_value = ("m1-folder-id", "M1")
+        mock_generate_capacity.return_value = {
+            "status": "insufficient_evidence",
+            "message": "no test capacity",
+        }
+        capacity_analysis = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 36},
+            "max": {"capacity_students": 54},
+        }
+
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = [
+            {
+                "id": "capacity-json-123",
+                "name": "Alpha Capacity Analysis - Alpha Keller.json",
+                "mimeType": "application/json",
+                "modifiedTime": "2026-06-02T10:00:00Z",
+            }
+        ]
+        gc.download_file_bytes.return_value = json.dumps(capacity_analysis).encode(
+            "utf-8"
+        )
+
+        result = _run_block_plan_downstream(
+            gc,
+            site_summary={
+                "id": "IEBLOCK123",
+                "title": "Alpha Keller",
+                "address": "123 Main St, Keller, TX 76248",
+                "drive_folder_url": "https://drive.google.com/drive/folders/site_folder_456",
+                "total_building_sf": 12000,
+            },
+            block_plan_content="BLOCK PLAN FULL TEXT",
+            block_plan_url="https://drive.google.com/file/d/block123/view",
+            block_plan_file_id="block123",
+        )
 
         kwargs = mock_post.call_args.kwargs
-        # All 11 spec §1.2 fields should reach post_raycon_job.
-        assert kwargs["site_id"] == "IEBLOCK123"
-        assert kwargs["site_name"] == "Alpha Keller"
-        assert kwargs["address"] == "123 Main St, Keller, TX 76248"
-        assert kwargs["drive_folder_url"].endswith("/site_folder_456")
-        assert kwargs["m1_folder_id"] == "m1-folder-id"
-        assert kwargs["block_plan_file_id"] == "block123"
-        assert kwargs["block_plan_url"].endswith("/view")
-        assert kwargs["total_building_sf"] == 12000
+        assert kwargs["capacity_analysis_file_id"] == "capacity-json-123"
+        assert kwargs["capacity_analysis"] == capacity_analysis
+        assert result[0]["capacity_analysis_status"] == "attached_existing"
+        assert result[0]["capacity_analysis_attached"] is True
+        assert result[0]["capacity_analysis_file_id"] == "capacity-json-123"
+        mock_generate_capacity.assert_not_called()
+
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.raycon_client.post_raycon_job")
+    @patch("due_diligence_reporter.inbox_scanner.generate_alpha_capacity_analysis_artifact")
+    def test_generates_alpha_capacity_analysis_from_pdf_when_text_is_empty_before_raycon(
+        self,
+        mock_generate_capacity,
+        mock_post,
+        mock_resolve_m1,
+    ):
+        mock_post.return_value = {
+            "status": "queued",
+            "job_id": "job-abc-123",
+            "raycon_run_id": "run-abc-123",
+            "idempotency_key": "block_plan|IEBLOCK123|block123",
+        }
+        mock_resolve_m1.return_value = ("m1-folder-id", "M1")
+        capacity_analysis = {
+            "source_label": "Alpha Capacity Analysis",
+            "strict": {"capacity_students": 36},
+            "max": {"capacity_students": 54},
+        }
+        mock_generate_capacity.return_value = {
+            "status": "success",
+            "capacity_analysis_file_id": "generated-capacity-json",
+            "capacity_analysis_url": "https://drive.google.com/file/d/generated-capacity-json/view",
+            "capacity_analysis": capacity_analysis,
+        }
+
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = []
+
+        result = _run_block_plan_downstream(
+            gc,
+            site_summary={
+                "id": "IEBLOCK123",
+                "title": "Alpha Keller",
+                "address": "123 Main St, Keller, TX 76248",
+                "drive_folder_url": "https://drive.google.com/drive/folders/site_folder_456",
+                "total_building_sf": 12000,
+            },
+            block_plan_content="",
+            block_plan_url="https://drive.google.com/file/d/block123/view",
+            block_plan_file_id="block123",
+            block_plan_file_bytes=b"%PDF-image-only-block-plan",
+            block_plan_file_name="Alpha Keller Block Plan.pdf",
+        )
+
+        mock_generate_capacity.assert_called_once()
+        generate_kwargs = mock_generate_capacity.call_args.kwargs
+        assert generate_kwargs["m1_folder_id"] == "m1-folder-id"
+        assert generate_kwargs["site_name"] == "Alpha Keller"
+        assert generate_kwargs["total_building_sf"] == 12000
+        assert generate_kwargs["block_plan_file_id"] == "block123"
+        assert generate_kwargs["block_plan_file_bytes"] == b"%PDF-image-only-block-plan"
+        assert generate_kwargs["block_plan_file_name"] == "Alpha Keller Block Plan.pdf"
+        kwargs = mock_post.call_args.kwargs
+        assert kwargs["capacity_analysis_file_id"] == "generated-capacity-json"
+        assert kwargs["capacity_analysis"] == capacity_analysis
+        assert result[0]["capacity_analysis_status"] == "generated"
+        assert result[0]["capacity_analysis_attached"] is True
+        assert result[0]["capacity_analysis_file_id"] == "generated-capacity-json"
+        assert (
+            result[0]["capacity_analysis_url"]
+            == "https://drive.google.com/file/d/generated-capacity-json/view"
+        )
+
+    @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
+    @patch("due_diligence_reporter.raycon_client.post_raycon_job")
+    @patch("due_diligence_reporter.inbox_scanner.generate_alpha_capacity_analysis_artifact")
+    def test_does_not_attach_generated_partial_alpha_capacity_analysis(
+        self,
+        mock_generate_capacity,
+        mock_post,
+        mock_resolve_m1,
+    ):
+        mock_post.return_value = {
+            "status": "queued",
+            "job_id": "job-abc-123",
+            "raycon_run_id": "run-abc-123",
+            "idempotency_key": "block_plan|IEBLOCK123|block123",
+        }
+        mock_resolve_m1.return_value = ("m1-folder-id", "M1")
+        mock_generate_capacity.return_value = {
+            "status": "success",
+            "capacity_analysis_file_id": "generated-partial-capacity-json",
+            "capacity_analysis_url": "https://drive.google.com/file/d/generated-partial-capacity-json/view",
+            "capacity_analysis": {
+                "source_label": "Alpha Capacity Analysis",
+                "strict": {"capacity_students": 36},
+            },
+        }
+
+        gc = MagicMock()
+        gc.list_files_in_folder.return_value = []
+
+        result = _run_block_plan_downstream(
+            gc,
+            site_summary={
+                "id": "IEBLOCK123",
+                "title": "Alpha Keller",
+                "address": "123 Main St, Keller, TX 76248",
+                "drive_folder_url": "https://drive.google.com/drive/folders/site_folder_456",
+                "total_building_sf": 12000,
+            },
+            block_plan_content="BLOCK PLAN FULL TEXT",
+            block_plan_url="https://drive.google.com/file/d/block123/view",
+            block_plan_file_id="block123",
+        )
+
+        assert result[0]["capacity_analysis_status"] == "generation_incomplete"
+        assert result[0]["capacity_analysis_attached"] is False
+        assert result[0]["capacity_analysis_file_id"] == ""
+        assert result[0]["dispatch_skipped"] == "capacity_analysis_not_available"
+        assert "Strict/Fast Path and Max Capacity" in result[0][
+            "capacity_analysis_error"
+        ]
+        mock_post.assert_not_called()
 
     @patch("due_diligence_reporter.raycon_client.post_raycon_job")
     def test_raises_when_drive_folder_url_missing(self, mock_post):

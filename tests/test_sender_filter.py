@@ -18,7 +18,6 @@ from due_diligence_reporter.inbox_scanner import (
     scan_inbox,
 )
 
-
 # ── _parse_sender_email ─────────────────────────────────────────────────────
 
 

@@ -33,6 +33,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -106,9 +107,335 @@ RAYCON_BREAKDOWN_ROWS: tuple[tuple[str, str], ...] = (
     ("grand_total", "Grand Total"),
 )
 
+ALPHA_CAPACITY_ANALYSIS_NAME_PATTERNS: tuple[str, ...] = (
+    "alpha capacity analysis",
+    "alpha_capacity_analysis",
+    "capacity analysis",
+    "capacity_analysis",
+    "capacity brainlift",
+    "capacity_brainlift",
+)
+GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
+
 
 class RayConSchemaError(ValueError):
     """Raised when RayCon's response payload doesn't match the agreed schema."""
+
+
+def _is_alpha_capacity_analysis_candidate(file_info: dict[str, Any]) -> bool:
+    name = str(file_info.get("name", "")).strip().lower()
+    if not name:
+        return False
+    normalized = re.sub(r"[\s_\-]+", " ", name)
+    return any(
+        pattern.replace("_", " ") in normalized
+        for pattern in ALPHA_CAPACITY_ANALYSIS_NAME_PATTERNS
+    )
+
+
+def _sort_drive_candidates(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        files,
+        key=lambda item: str(item.get("modifiedTime") or ""),
+        reverse=True,
+    )
+
+
+def _parse_json_object_from_text(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
+
+    for match in re.finditer(
+        r"```(?:json)?\s*(.*?)```",
+        stripped,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        try:
+            parsed = json.loads(match.group(1).strip())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", stripped):
+        try:
+            parsed, _end = decoder.raw_decode(stripped[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _line_capacity_value(line: str) -> int | None:
+    numbers = [
+        int(match.group(1).replace(",", ""))
+        for match in re.finditer(r"\b(\d{1,4}(?:,\d{3})?)\b", line)
+    ]
+    if not numbers:
+        return None
+    # For markdown capacity tables, the last numeric cell is usually Total.
+    value = numbers[-1]
+    if value <= 0 or value > 5000:
+        return None
+    return value
+
+
+def _line_has_strict_capacity_label(line: str) -> bool:
+    lowered = line.lower()
+    return bool(
+        re.search(r"\bstrict\b", lowered)
+        or re.search(r"\bfastest\s+(?:open|path)\b", lowered)
+    )
+
+
+def _line_has_max_capacity_label(line: str) -> bool:
+    lowered = line.lower()
+    if re.search(r"\bmax(?:imum)?\s+capacity\b", lowered):
+        return True
+    return bool(re.match(r"^\s*\|?\s*max\s*\|", lowered))
+
+
+def _parse_capacity_analysis_from_text(text: str) -> dict[str, Any] | None:
+    if not text.strip():
+        return None
+    lowered = text.lower()
+    if not (
+        "alpha capacity analysis" in lowered
+        or "capacity brainlift" in lowered
+        or "capacity scenarios" in lowered
+    ):
+        return None
+
+    strict_value: int | None = None
+    max_value: int | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if strict_value is None and _line_has_strict_capacity_label(line):
+            strict_value = _line_capacity_value(line)
+        if max_value is None and _line_has_max_capacity_label(line):
+            max_value = _line_capacity_value(line)
+        if strict_value is not None and max_value is not None:
+            break
+
+    payload: dict[str, Any] = {"source_label": "Alpha Capacity Analysis"}
+    if strict_value is not None:
+        payload["strict"] = {"capacity_students": strict_value}
+    if max_value is not None:
+        payload["max"] = {"capacity_students": max_value}
+    return payload if "strict" in payload or "max" in payload else None
+
+
+def _capacity_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    text = str(value).replace(",", "").strip()
+    try:
+        parsed = int(float(text))
+    except (TypeError, ValueError):
+        match = re.search(r"\d+", text)
+        if match is None:
+            return None
+        parsed = int(match.group(0))
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _capacity_value_from_scenario(value: Any) -> int | None:
+    if isinstance(value, (int, float, str)):
+        return _capacity_int(value)
+    if not isinstance(value, dict):
+        return None
+    for key in (
+        "capacity_students",
+        "capacityStudents",
+        "student_count",
+        "studentCount",
+        "students",
+        "total_students",
+        "totalStudents",
+        "total",
+        "capacity",
+    ):
+        parsed = _capacity_int(value.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _first_capacity_scenario(
+    payload: dict[str, Any],
+    *keys: str,
+) -> int | None:
+    for key in keys:
+        parsed = _capacity_value_from_scenario(payload.get(key))
+        if parsed is not None:
+            return parsed
+    for container_key in (
+        "scenarios",
+        "capacity_scenarios",
+        "capacityScenarios",
+        "analysis",
+        "result",
+    ):
+        container = payload.get(container_key)
+        if not isinstance(container, dict):
+            continue
+        for key in keys:
+            parsed = _capacity_value_from_scenario(container.get(key))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _has_required_alpha_capacity_counts(payload: dict[str, Any]) -> bool:
+    strict = _first_capacity_scenario(
+        payload,
+        "strict",
+        "fastest_open",
+        "fastestOpen",
+        "fast_path",
+        "fastPath",
+        "as_is",
+        "asIs",
+    )
+    max_capacity = _first_capacity_scenario(
+        payload,
+        "max",
+        "max_capacity",
+        "maxCapacity",
+        "maximum",
+        "maximum_capacity",
+        "maximumCapacity",
+    )
+    return strict is not None and max_capacity is not None
+
+
+def alpha_capacity_counts_signature(payload: dict[str, Any] | None) -> str:
+    """Return ``strict-max`` signature for complete Alpha Capacity payloads."""
+
+    if not isinstance(payload, dict):
+        return ""
+    strict = _first_capacity_scenario(
+        payload,
+        "strict",
+        "fastest_open",
+        "fastestOpen",
+        "fast_path",
+        "fastPath",
+        "as_is",
+        "asIs",
+    )
+    max_capacity = _first_capacity_scenario(
+        payload,
+        "max",
+        "max_capacity",
+        "maxCapacity",
+        "maximum",
+        "maximum_capacity",
+        "maximumCapacity",
+    )
+    if strict is None or max_capacity is None:
+        return ""
+    return f"{strict}-{max_capacity}"
+
+
+def _read_alpha_capacity_analysis_file(
+    gc: GoogleClient,
+    file_info: dict[str, Any],
+) -> dict[str, Any] | None:
+    file_id = str(file_info.get("id", "")).strip()
+    if not file_id:
+        return None
+
+    name = str(file_info.get("name", "")).strip()
+    mime_type = str(file_info.get("mimeType", "")).strip()
+    if mime_type == GOOGLE_DOC_MIME_TYPE:
+        text = gc.export_google_doc_as_text(file_id)
+    else:
+        raw = gc.download_file_bytes(file_id)
+        text = raw.decode("utf-8", errors="replace")
+
+    payload = _parse_json_object_from_text(text)
+    if payload is None:
+        payload = _parse_capacity_analysis_from_text(text)
+    if payload is None:
+        logger.warning(
+            "Skipping Alpha Capacity Analysis candidate %s (%s): no parseable "
+            "capacity payload found",
+            name or "(unnamed)",
+            file_id,
+        )
+        return None
+
+    payload.setdefault("source_label", "Alpha Capacity Analysis")
+    return payload
+
+
+def read_alpha_capacity_analysis_from_m1(
+    gc: GoogleClient,
+    m1_folder_id: str,
+    *,
+    m1_files: list[dict[str, Any]] | None = None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Return a complete Alpha Capacity Analysis payload found in M1.
+
+    DDR does not calculate capacity here. It only passes through the hosted
+    capacity skill's machine-readable artifact, or a conservative parse of a
+    clearly labeled saved skill report, so RayCon can use those numbers as the
+    authoritative student-count source while pricing construction scope. A
+    candidate must contain both Strict/Fast Path and Max Capacity counts; partial
+    artifacts are skipped so callers can generate a fresh hosted-skill artifact.
+    """
+    if not m1_folder_id:
+        return None, None
+
+    files = m1_files if m1_files is not None else gc.list_files_in_folder(
+        m1_folder_id
+    )
+    candidates = _sort_drive_candidates(
+        [
+            file_info
+            for file_info in files
+            if _is_alpha_capacity_analysis_candidate(file_info)
+        ]
+    )
+    for file_info in candidates:
+        file_id = str(file_info.get("id", "")).strip()
+        if not file_id:
+            continue
+        try:
+            payload = _read_alpha_capacity_analysis_file(gc, file_info)
+        except Exception as exc:
+            logger.warning(
+                "Skipping Alpha Capacity Analysis candidate %s (%s): %s",
+                file_info.get("name") or "(unnamed)",
+                file_id,
+                exc,
+            )
+            continue
+        if payload is not None and _has_required_alpha_capacity_counts(payload):
+            return file_id, payload
+        if payload is not None:
+            logger.warning(
+                "Skipping Alpha Capacity Analysis candidate %s (%s): missing "
+                "Strict/Fast Path or Max Capacity count",
+                file_info.get("name") or "(unnamed)",
+                file_id,
+            )
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +577,8 @@ def post_raycon_job(
     block_plan_file_id: str,
     block_plan_url: str,
     total_building_sf: int | None = None,
+    capacity_analysis_file_id: str | None = None,
+    capacity_analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Notify RayCon that a Block Plan is ready in a site's M1 folder.
 
@@ -324,25 +653,15 @@ def post_raycon_job(
         "m1_folder_id": m1_folder_id,
         "block_plan_file_id": block_plan_file_id,
         "block_plan_url": block_plan_url,
-        "callback_marker": RAYCON_CALLBACK_MARKER,
-        "requested_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     if sf_int is not None:
-        # Insert before callback_marker to preserve the canonical field
-        # ordering documented in the spec for any future debuggers.
-        body = {
-            "schema_version": body["schema_version"],
-            "site_id": body["site_id"],
-            "site_name": body["site_name"],
-            "address": body["address"],
-            "drive_folder_url": body["drive_folder_url"],
-            "m1_folder_id": body["m1_folder_id"],
-            "block_plan_file_id": body["block_plan_file_id"],
-            "block_plan_url": body["block_plan_url"],
-            "total_building_sf": sf_int,
-            "callback_marker": body["callback_marker"],
-            "requested_at": body["requested_at"],
-        }
+        body["total_building_sf"] = sf_int
+    if capacity_analysis_file_id:
+        body["capacity_analysis_file_id"] = capacity_analysis_file_id
+    if capacity_analysis:
+        body["capacity_analysis"] = capacity_analysis
+    body["callback_marker"] = RAYCON_CALLBACK_MARKER
+    body["requested_at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # Serialize once and POST those exact bytes. Using `requests`' `json=`
     # would re-serialize and break the signature when HMAC verification is
@@ -621,6 +940,137 @@ def _format_optional_currency(value: Any) -> str:
     return _format_currency(amount)
 
 
+def _format_optional_students(value: Any) -> str:
+    """Format a RayCon student count as an integer string."""
+    students = _coerce_number(value)
+    if students is None:
+        return ""
+    return str(round(students))
+
+
+def _is_alpha_capacity_source(value: Any) -> bool:
+    normalized = str(value or "").strip().lower()
+    return normalized in {"alpha_capacity_analysis", "alpha capacity analysis"}
+
+
+def _mapping_has_alpha_capacity_source(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return (
+        _is_alpha_capacity_source(value.get("source_system"))
+        or _is_alpha_capacity_source(value.get("source"))
+        or _is_alpha_capacity_source(value.get("capacity_source"))
+        or _is_alpha_capacity_source(value.get("source_label"))
+    )
+
+
+def _alpha_capacity_payload_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_analysis = payload.get("analysis")
+    analysis: dict[str, Any] = raw_analysis if isinstance(raw_analysis, dict) else {}
+    raw_site_context = analysis.get("site_context")
+    site_context: dict[str, Any] = (
+        raw_site_context if isinstance(raw_site_context, dict) else {}
+    )
+    candidates: list[dict[str, Any]] = []
+    for candidate in (
+        payload.get("capacity_analysis"),
+        analysis.get("capacity_analysis"),
+        site_context.get("capacity_analysis"),
+    ):
+        if isinstance(candidate, dict) and _mapping_has_alpha_capacity_source(candidate):
+            candidates.append(candidate)
+    return candidates
+
+
+def _alpha_capacity_trace_count(
+    payload: dict[str, Any],
+    scenario_key: str,
+) -> int | None:
+    raw_analysis = payload.get("analysis")
+    analysis: dict[str, Any] = raw_analysis if isinstance(raw_analysis, dict) else {}
+    trace = analysis.get("capacity_trace")
+    if not _mapping_has_alpha_capacity_source(trace):
+        return None
+    field_names = (
+        (
+            "fastest_open_capacity_students",
+            "fastestOpenCapacityStudents",
+            "strict_capacity_students",
+            "strictCapacityStudents",
+        )
+        if scenario_key == "fastest_open"
+        else (
+            "max_capacity_capacity_students",
+            "maxCapacityCapacityStudents",
+            "maximum_capacity_students",
+            "maximumCapacityStudents",
+        )
+    )
+    if not isinstance(trace, dict):
+        return None
+    for field_name in field_names:
+        parsed = _capacity_int(trace.get(field_name))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _alpha_capacity_count_from_payload(
+    payload: dict[str, Any],
+    scenario_key: str,
+) -> int | None:
+    scenario_keys = (
+        (
+            "strict",
+            "fastest_open",
+            "fastestOpen",
+            "fast_path",
+            "fastPath",
+            "as_is",
+            "asIs",
+        )
+        if scenario_key == "fastest_open"
+        else (
+            "max",
+            "max_capacity",
+            "maxCapacity",
+            "maximum",
+            "maximum_capacity",
+            "maximumCapacity",
+        )
+    )
+    for candidate in _alpha_capacity_payload_candidates(payload):
+        parsed = _first_capacity_scenario(candidate, *scenario_keys)
+        if parsed is not None:
+            return parsed
+    return _alpha_capacity_trace_count(payload, scenario_key)
+
+
+def _scenario_has_alpha_capacity_source(scenario: dict[str, Any]) -> bool:
+    trace = (
+        scenario.get("capacity_trace")
+        if isinstance(scenario.get("capacity_trace"), dict)
+        else {}
+    )
+    return (
+        _mapping_has_alpha_capacity_source(scenario)
+        or _mapping_has_alpha_capacity_source(trace)
+    )
+
+
+def _format_alpha_sourced_capacity(
+    payload: dict[str, Any],
+    scenario: dict[str, Any],
+    scenario_key: str,
+) -> str:
+    alpha_count = _alpha_capacity_count_from_payload(payload, scenario_key)
+    if alpha_count is not None:
+        return str(alpha_count)
+    if not _scenario_has_alpha_capacity_source(scenario):
+        return ""
+    return _format_optional_students(scenario.get("capacity_students"))
+
+
 def _weeks_to_open_date(weeks: Any, now: datetime | None = None) -> str:
     """Convert RayCon's ``timeline_weeks`` into an MM/DD/YY target open date."""
     try:
@@ -805,6 +1255,12 @@ def raycon_scenario_to_report_fields(payload: dict[str, Any]) -> dict[str, str]:
     looks like a successful zero-dollar scenario. ``exec.raycon_status`` and
     ``exec.raycon_failure_reason`` carry the explanation.
 
+    Capacity fields are stricter than cost/schedule fields: DDR only publishes
+    RayCon scenario capacity when the payload or scenario carries Alpha
+    Capacity Analysis provenance. RayCon-owned capacity math can remain in the
+    JSON as audit/fallback evidence, but it does not satisfy DDR's
+    Alpha-sourced capacity requirement.
+
     Always-emitted traceability fields (regardless of status):
       * ``exec.raycon_status``
       * ``exec.raycon_failure_reason``
@@ -833,11 +1289,13 @@ def raycon_scenario_to_report_fields(payload: dict[str, Any]) -> dict[str, str]:
     # would be indistinguishable from a successful zero-cost scenario and
     # the Google Doc builder would mis-render it.
     if failed:
+        fields["exec.fastest_open_capacity"] = ""
         fields["exec.fastest_open_capex"] = ""
         fields["exec.fastest_open_open_date"] = ""
         fields.update(
             {f"exec.cost_{k}_fastest_open": "" for k, _ in RAYCON_BREAKDOWN_ROWS}
         )
+        fields["exec.max_capacity_capacity"] = ""
         fields["exec.max_capacity_capex"] = ""
         fields["exec.max_capacity_open_date"] = ""
         fields.update(
@@ -845,6 +1303,11 @@ def raycon_scenario_to_report_fields(payload: dict[str, Any]) -> dict[str, str]:
         )
         return fields
 
+    fields["exec.fastest_open_capacity"] = _format_alpha_sourced_capacity(
+        payload,
+        fastest,
+        "fastest_open",
+    )
     fields["exec.fastest_open_capex"] = _format_optional_currency(
         fastest.get("grand_total")
     )
@@ -853,6 +1316,11 @@ def raycon_scenario_to_report_fields(payload: dict[str, Any]) -> dict[str, str]:
     )
     fields.update(_scenario_breakdown(fastest, "fastest_open"))
 
+    fields["exec.max_capacity_capacity"] = _format_alpha_sourced_capacity(
+        payload,
+        max_cap,
+        "max_capacity",
+    )
     fields["exec.max_capacity_capex"] = _format_optional_currency(
         max_cap.get("grand_total")
     )

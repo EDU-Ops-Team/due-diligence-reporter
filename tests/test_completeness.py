@@ -61,8 +61,8 @@ class TestRayconTokenPaths:
         assert "exec.max_capacity_open_date" in paths
 
     def test_excludes_capacity_tokens(self) -> None:
-        # Capacity is sourced from the Capacity Brainlift (the agent),
-        # not RayCon — see report_schema.TOKEN_SOURCES.
+        # Capacity is sourced from Alpha Capacity Analysis, not RayCon —
+        # see report_schema.TOKEN_SOURCES.
         paths = set(raycon_token_paths())
         assert "exec.fastest_open_capacity" not in paths
         assert "exec.max_capacity_capacity" not in paths

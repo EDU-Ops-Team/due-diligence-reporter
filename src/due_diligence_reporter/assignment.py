@@ -181,11 +181,38 @@ def _extract_p1_email(record: dict[str, Any]) -> str | None:
     return None
 
 
-def build_site_counts(all_site_records: list[dict[str, Any]]) -> dict[str, int]:
+def extract_p1_from_record(
+    record: dict[str, Any],
+    *,
+    cfg: Any | None = None,
+) -> dict[str, str] | None:
+    """Return P1 identity from a site record.
+
+    ``cfg`` is accepted for compatibility with older callers/tests that passed
+    runtime config into this helper.
+    """
+    _ = cfg
+    email = _extract_p1_email(record)
+    if not email:
+        return None
+    name = ""
+    for key in ("p1_assignee_name", "p1_name", "owner_name", "site_owner_name"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            name = value.strip()
+            break
+    return {"name": name, "email": email}
+
+
+def build_site_counts(
+    all_site_records: list[dict[str, Any]],
+    cfg: Any | None = None,
+) -> dict[str, int]:
     """Count active sites per P1 email from already-fetched site summaries."""
     counts: dict[str, int] = {}
     for record in all_site_records:
-        key = _extract_p1_email(record)
+        p1 = extract_p1_from_record(record, cfg=cfg)
+        key = str((p1 or {}).get("email") or "").strip().lower()
         if key:
             counts[key] = counts.get(key, 0) + 1
     return counts
@@ -486,6 +513,7 @@ def assign_p1(
     state: str,
     settings: Settings,
     all_site_records: list[dict[str, Any]],
+    gc: Any | None = None,
 ) -> dict[str, Any]:
     """Run the P1 assignment engine and return the assignment decision.
 
@@ -519,6 +547,7 @@ def assign_p1(
             "reasoning": "P1_TEAM_CONFIG not set or empty — no eligible contacts",
         }
 
+    _ = gc
     counts = build_site_counts(all_site_records)
 
     # ── Rule 1: Flight scoring ────────────────────────────────────────────

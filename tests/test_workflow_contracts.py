@@ -190,3 +190,43 @@ def test_raycon_followup_can_enable_firestore_runtime_state_without_required_sec
     assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON" in text
     assert "No Firestore service account configured" in text
     assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing" not in text
+
+
+def test_raycon_followup_passes_alpha_capacity_model_override() -> None:
+    text = _workflow_text("raycon-followup.yml")
+
+    assert "OPENAI_CAPACITY_MODEL: ${{ vars.OPENAI_CAPACITY_MODEL || 'gpt-4o' }}" in text
+    assert 'echo "OPENAI_CAPACITY_MODEL=${OPENAI_CAPACITY_MODEL}" >> .env' in text
+
+
+def test_raycon_followup_workflow_dispatch_can_require_raycon_git_commit() -> None:
+    text = _workflow_text("raycon-followup.yml")
+    shell = "\n".join(_run_blocks(text))
+
+    assert "require_raycon_git_commit:" in text
+    assert "Expected RayCon /version git_commit before processing jobs" in text
+    assert (
+        "INPUT_REQUIRE_RAYCON_GIT_COMMIT: ${{ inputs.require_raycon_git_commit }}"
+        in text
+    )
+    assert "${{ inputs.require_raycon_git_commit }}" not in shell
+    assert (
+        'if [ -n "${INPUT_REQUIRE_RAYCON_GIT_COMMIT:-}" ]; then\n'
+        '            ARGS+=(--require-raycon-git-commit "$INPUT_REQUIRE_RAYCON_GIT_COMMIT")\n'
+        "          fi"
+    ) in shell
+
+
+def test_alpha_capacity_workflows_fail_fast_without_openai_key() -> None:
+    for workflow in (
+        "inbox-scan.yml",
+        "raycon-followup.yml",
+        "vendor-doc-republish-sweep.yml",
+        "daily-dd-check.yml",
+        "publish-to-mcp-hive.yml",
+    ):
+        text = _workflow_text(workflow)
+
+        assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in text
+        assert "OPENAI_CAPACITY_MODEL: ${{ vars.OPENAI_CAPACITY_MODEL || 'gpt-4o' }}" in text
+        assert "OPENAI_API_KEY missing" in text
