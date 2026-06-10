@@ -46,7 +46,6 @@ jobs:
           [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ]            || { echo "[ERROR] OAUTH_CLIENT_ID missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ]        || { echo "[ERROR] OAUTH_CLIENT_SECRET missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ]        || { echo "[ERROR] OAUTH_REFRESH_TOKEN missing"; exit 1; }
-          [ -n "${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}" ]    || { echo "[ERROR] GOOGLE_CHAT_WEBHOOK_URL missing"; exit 1; }
           [ -n "${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}" ] || { echo "[ERROR] DD_REPORT_EMAIL_RECIPIENTS missing"; exit 1; }
           [ -n "${{ secrets.EMAIL_SENDER }}" ]               || { echo "[ERROR] EMAIL_SENDER missing"; exit 1; }
           [ -n "${{ secrets.EMAIL_APP_PASSWORD }}" ]         || { echo "[ERROR] EMAIL_APP_PASSWORD missing"; exit 1; }
@@ -59,7 +58,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DD_TEMPLATE_V3_GOOGLE_DOC_ID: ${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}
           GOOGLE_DRIVE_ROOT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}
-          GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+          DDR_GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.DDR_GOOGLE_CHAT_WEBHOOK_URL }}
           DD_REPORT_EMAIL_RECIPIENTS: ${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
@@ -80,7 +79,7 @@ jobs:
           echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> .env
           echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID=${DD_TEMPLATE_V3_GOOGLE_DOC_ID}" >> .env
           echo "GOOGLE_DRIVE_ROOT_FOLDER_ID=${GOOGLE_DRIVE_ROOT_FOLDER_ID}" >> .env
-          echo "GOOGLE_CHAT_WEBHOOK_URL=${GOOGLE_CHAT_WEBHOOK_URL}" >> .env
+          echo "DDR_GOOGLE_CHAT_WEBHOOK_URL=${DDR_GOOGLE_CHAT_WEBHOOK_URL}" >> .env
           echo "DD_REPORT_EMAIL_RECIPIENTS=${DD_REPORT_EMAIL_RECIPIENTS}" >> .env
           echo "EMAIL_SENDER=${EMAIL_SENDER}" >> .env
           echo "EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}" >> .env

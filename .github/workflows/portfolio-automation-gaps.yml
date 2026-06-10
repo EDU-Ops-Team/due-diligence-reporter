@@ -72,6 +72,8 @@ jobs:
           INPUT_INCLUDE_CLEAN: ${{ inputs.include_clean }}
         run: |
           set -euo pipefail
+          started_at="$(python -c 'from datetime import UTC, datetime; print(datetime.now(UTC).isoformat())')"
+          echo "PORTFOLIO_GAPS_STARTED_AT=${started_at}" >> "$GITHUB_ENV"
           max_sites="${INPUT_MAX_SITES:-100}"
           include_clean="${INPUT_INCLUDE_CLEAN:-false}"
           args=(--max-sites "$max_sites")
@@ -124,19 +126,44 @@ jobs:
 
       - name: Post Google Chat summary when gaps exist
         env:
-          GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+          DDR_GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.DDR_GOOGLE_CHAT_WEBHOOK_URL }}
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           uv run python scripts/post_portfolio_gap_summary.py \
             --snapshot portfolio-automation-gaps.json \
-            --webhook-url "${GOOGLE_CHAT_WEBHOOK_URL:-}" \
+            --webhook-url "${DDR_GOOGLE_CHAT_WEBHOOK_URL:-}" \
             --run-url "${GITHUB_RUN_URL}" \
-            --max-sites 5
+            --max-sites 5 \
+            --result-output portfolio-automation-gaps-notification.json
+
+      - name: Build dashboard telemetry artifact
+        if: ${{ always() }}
+        env:
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p reports/telemetry
+          finished_at="$(python -c 'from datetime import UTC, datetime; print(datetime.now(UTC).isoformat())')"
+          python scripts/build_portfolio_gap_telemetry.py \
+            --snapshot portfolio-automation-gaps.json \
+            --notification-result portfolio-automation-gaps-notification.json \
+            --output reports/telemetry/portfolio-automation-gaps-telemetry.json \
+            --run-id "portfolio-gaps-${{ github.run_id }}" \
+            --trigger "${{ github.event_name }}" \
+            --started-at "${PORTFOLIO_GAPS_STARTED_AT:-$finished_at}" \
+            --finished-at "$finished_at" \
+            --workflow-run-url "${GITHUB_RUN_URL}" \
+            --source-status "${JOB_STATUS}"
 
       - name: Upload snapshot artifact
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: portfolio-automation-gaps
+          if-no-files-found: warn
           path: |
             portfolio-automation-gaps.txt
             portfolio-automation-gaps.json
+            portfolio-automation-gaps-notification.json
+            reports/telemetry/portfolio-automation-gaps-telemetry.json
