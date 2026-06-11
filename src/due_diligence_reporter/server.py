@@ -1003,6 +1003,97 @@ async def lookup_rhodes_site_owner(
     )
 
 
+def _drive_folder_url_from_rhodes_context(context: dict[str, Any]) -> str:
+    direct = str(context.get("drive_folder_url") or "").strip()
+    if direct:
+        return direct
+    report_fields = context.get("report_data_fields")
+    if isinstance(report_fields, dict):
+        for key in ("meta.drive_folder_url", "site.drive_folder_url"):
+            value = report_fields.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _resolve_drive_context_from_rhodes(
+    *,
+    site_name: str,
+    site_address: str,
+) -> dict[str, Any]:
+    """Resolve missing Drive-folder context from Rhodes for public MCP tools."""
+    clean_name = site_name.strip()
+    if not clean_name:
+        return {
+            "status": "error",
+            "message": "site_name is required when drive_folder_url is not supplied.",
+        }
+    context = _lookup_rhodes_site_owner(
+        site_name=clean_name,
+        site_address=site_address.strip(),
+    )
+    drive_url = _drive_folder_url_from_rhodes_context(context)
+    return {
+        "status": str(context.get("status") or ""),
+        "message": str(
+            context.get("message")
+            or context.get("drive_folder_message")
+            or ""
+        ),
+        "drive_folder_url": drive_url,
+        "site_id": str(context.get("site_id") or "").strip(),
+        "site_name": str(context.get("site_name") or clean_name).strip(),
+        "site_address": str(context.get("site_address") or site_address).strip(),
+        "p1_assignee_name": str(context.get("p1_assignee_name") or "").strip(),
+        "p1_assignee_email": str(context.get("p1_assignee_email") or "").strip(),
+    }
+
+
+async def _resolve_public_drive_context(
+    *,
+    drive_folder_url: str,
+    site_name: str,
+    site_address: str,
+) -> tuple[str, str, str, dict[str, Any] | None]:
+    clean_drive = drive_folder_url.strip()
+    clean_name = site_name.strip()
+    clean_address = site_address.strip()
+    if clean_drive or not clean_name:
+        return clean_drive, clean_name, clean_address, None
+
+    context = await asyncio.to_thread(
+        _resolve_drive_context_from_rhodes,
+        site_name=clean_name,
+        site_address=clean_address,
+    )
+    resolved_drive = str(context.get("drive_folder_url") or "").strip()
+    if not resolved_drive:
+        return "", clean_name, clean_address, context
+    return (
+        resolved_drive,
+        str(context.get("site_name") or clean_name).strip(),
+        str(context.get("site_address") or clean_address).strip(),
+        context,
+    )
+
+
+def _missing_drive_folder_message(site_name: str, context: dict[str, Any] | None) -> str:
+    if context is None:
+        return "drive_folder_url must be a non-empty string"
+    status = str(context.get("status") or "error").strip()
+    detail = str(context.get("message") or "").strip()
+    site_label = site_name.strip() or "the supplied site"
+    base = (
+        f"No Drive folder URL was supplied, and Rhodes did not return a linked "
+        f"Drive folder for {site_label}."
+    )
+    if status:
+        base += f" Rhodes lookup status: {status}."
+    if detail:
+        base += f" {detail}"
+    return base
+
+
 @mcp.tool()
 async def portfolio_automation_gap_snapshot(
     max_sites: int = 100,
@@ -1086,7 +1177,7 @@ async def assign_p1_accountable(
 
 @mcp.tool()
 async def list_drive_documents(
-    drive_folder_url: str, site_name: str = "", site_address: str = ""
+    drive_folder_url: str = "", site_name: str = "", site_address: str = ""
 ) -> dict[str, Any]:
     """List matched shared source reports plus site-folder artifacts.
 
@@ -1097,7 +1188,8 @@ async def list_drive_documents(
     report traces.
 
     Args:
-        drive_folder_url: Google Drive folder URL.
+        drive_folder_url: Google Drive folder URL. If omitted, a site_name is
+            required and the tool resolves the linked site folder from Rhodes.
         site_name: Optional site name used to match docs in shared Drive folders
             (SIR, ISP, Building Inspection).
         site_address: Optional address used to strengthen shared-folder matching.
@@ -1112,11 +1204,21 @@ async def list_drive_documents(
         site_name,
     )
 
+    rhodes_context: dict[str, Any] | None = None
+    drive_folder_url, site_name, site_address, rhodes_context = (
+        await _resolve_public_drive_context(
+            drive_folder_url=drive_folder_url,
+            site_name=site_name,
+            site_address=site_address,
+        )
+    )
+
     if not drive_folder_url or not drive_folder_url.strip():
         return {
             "status": "error",
             "error": "Missing parameter",
-            "message": "drive_folder_url must be a non-empty string",
+            "message": _missing_drive_folder_message(site_name, rhodes_context),
+            "rhodes_lookup": rhodes_context,
         }
 
     folder_id = extract_folder_id_from_url(drive_folder_url)
@@ -1187,6 +1289,8 @@ async def list_drive_documents(
                 "status": "success",
                 "folder_id": folder_id,
                 "drive_folder_url": drive_folder_url,
+                "resolved_site_name": site_name.strip(),
+                "resolved_site_address": site_address.strip(),
                 "site_folder_files": site_files,
                 "shared_folder_files": shared_folder_files,
                 "total_file_count": total_files,
@@ -1196,6 +1300,8 @@ async def list_drive_documents(
                     f"({total_files} total)"
                 ),
             }
+            if rhodes_context is not None:
+                response["rhodes_lookup"] = rhodes_context
             return response
 
         except Exception as e:
@@ -3314,18 +3420,28 @@ async def create_dd_report(
 
 @mcp.tool()
 async def check_site_readiness(
-    drive_folder_url: str,
+    drive_folder_url: str = "",
     site_name: str = "",
     site_address: str = "",
 ) -> dict[str, Any]:
     """Check whether a Drive-backed site folder is ready for DD generation."""
     logger.info("Tool called: check_site_readiness - site=%s", site_name or drive_folder_url)
 
+    rhodes_context: dict[str, Any] | None = None
+    drive_folder_url, site_name, site_address, rhodes_context = (
+        await _resolve_public_drive_context(
+            drive_folder_url=drive_folder_url,
+            site_name=site_name,
+            site_address=site_address,
+        )
+    )
+
     if not drive_folder_url or not drive_folder_url.strip():
         return {
             "status": "error",
             "error": "Missing parameter",
-            "message": "drive_folder_url must be a non-empty string",
+            "message": _missing_drive_folder_message(site_name, rhodes_context),
+            "rhodes_lookup": rhodes_context,
         }
 
     def _work() -> dict[str, Any]:
@@ -3388,6 +3504,8 @@ async def check_site_readiness(
                 "missing_docs": missing_docs,
                 "ready_for_report": ready_for_report,
                 "drive_folder_url": drive_folder_url,
+                "resolved_site_name": site_title,
+                "resolved_site_address": address or "",
                 "report_metadata": {"completeness": projected_completeness},
                 "message": "\n".join([
                     f"Site '{site_title}' document readiness:",
@@ -3406,6 +3524,7 @@ async def check_site_readiness(
                         f"auto-republish on: {', '.join(projected_completeness['auto_republish_on']) or '-'})."
                     ),
                 ]),
+                **({"rhodes_lookup": rhodes_context} if rhodes_context is not None else {}),
             }
         except Exception as e:
             logger.error("check_site_readiness failed: %s", e)
@@ -3625,11 +3744,21 @@ async def diagnose_site_readiness(
             "error": "Missing parameter",
             "message": "site_name must be a non-empty string",
         }
+    rhodes_context: dict[str, Any] | None = None
+    drive_folder_url, site_name, site_address, rhodes_context = (
+        await _resolve_public_drive_context(
+            drive_folder_url=drive_folder_url,
+            site_name=site_name,
+            site_address=site_address,
+        )
+    )
+
     if not drive_folder_url or not drive_folder_url.strip():
         return {
             "status": "error",
             "error": "Missing parameter",
-            "message": "drive_folder_url must be provided for site readiness diagnostics",
+            "message": _missing_drive_folder_message(site_name, rhodes_context),
+            "rhodes_lookup": rhodes_context,
         }
 
     def _work() -> dict[str, Any]:
@@ -3798,6 +3927,9 @@ async def diagnose_site_readiness(
                     for reason in projection.get("pending_reasons", {})
                 },
                 "drive_folder_url": None if m1_folder_missing else drive_folder_url,
+                "resolved_site_name": site_title,
+                "resolved_site_address": address or "",
+                "rhodes_lookup": rhodes_context,
             }
         except Exception as e:
             logger.error("diagnose_site_readiness failed: %s", e)

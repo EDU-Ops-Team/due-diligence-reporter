@@ -92,15 +92,15 @@ DD_REPORT_EVENT_FREQUENCY_CAP_BUSINESS_DAYS = 2
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "list_drive_documents",
-        "description": "List matched shared DD source reports plus site-folder artifacts found in the site folder or its M1 subfolder. Results may include Block Plan PDFs and derived reports such as Capacity Brainlift, RayCon Scenario, Opening Plan, Alpha Phasing Plan, and DD reports. Each file includes a doc_type field. Pass the full request site_name and site_address so shared-folder matching cannot use city-only evidence.",
+        "description": "List matched shared DD source reports plus site-folder artifacts found in the site folder or its M1 subfolder. Results may include Block Plan PDFs and derived reports such as Capacity Brainlift, RayCon Scenario, Opening Plan, Alpha Phasing Plan, and DD reports. Each file includes a doc_type field. If drive_folder_url is not already known, pass site_name and site_address so the tool can resolve the linked site folder from Rhodes instead of asking the user for a folder.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "drive_folder_url": {"type": "string", "description": "Google Drive folder URL"},
+                "drive_folder_url": {"type": "string", "description": "Google Drive folder URL, when supplied by the request or returned by Rhodes"},
                 "site_name": {"type": "string", "description": "Site name used to match docs in shared folders"},
                 "site_address": {"type": "string", "description": "Optional full property address used to strengthen shared-folder matching"},
             },
-            "required": ["drive_folder_url"],
+            "required": [],
         },
     },
     {

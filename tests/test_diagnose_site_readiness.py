@@ -382,14 +382,89 @@ def test_raycon_scenario_failed_is_not_full_report_ready(tmp_path, monkeypatch):
     }
 
 
-def test_missing_drive_url_returns_graceful_error(tmp_path, monkeypatch):
+def test_missing_drive_url_resolves_rhodes_site_folder(tmp_path, monkeypatch):
     _vendor_gate_on(monkeypatch)
     _no_dispatch_state(tmp_path, monkeypatch)
 
-    result = asyncio.run(server.diagnose_site_readiness("Nonexistent Site"))
+    patchers = _patch_common(readiness=_readiness())
+    _enter_all(patchers)
+    try:
+        with patch(
+            "due_diligence_reporter.server._lookup_rhodes_site_owner",
+            return_value={
+                "status": "found",
+                "site_id": "SITE1",
+                "site_name": "Alpha Houston 777 W 23rd St",
+                "site_address": "777 W 23rd St, Houston, TX",
+                "drive_folder_url": "https://drive.google.com/drive/folders/drive-root-houston",
+                "p1_assignee_name": "Brandon Gee",
+                "p1_assignee_email": "brandon.gee@trilogy.com",
+            },
+        ) as lookup_rhodes:
+            result = asyncio.run(server.diagnose_site_readiness("Houston"))
+    finally:
+        _stop_all(patchers)
+
+    assert result["status"] == "success"
+    assert result["site"] == "Alpha Houston 777 W 23rd St"
+    assert result["drive_folder_url"].endswith("/drive-root-houston")
+    assert result["resolved_site_address"] == "777 W 23rd St, Houston, TX"
+    assert result["rhodes_lookup"]["site_id"] == "SITE1"
+    lookup_rhodes.assert_called_once_with(site_name="Houston", site_address="")
+
+
+def test_check_site_readiness_missing_drive_url_resolves_rhodes_site_folder(
+    tmp_path, monkeypatch
+):
+    _vendor_gate_on(monkeypatch)
+    _no_dispatch_state(tmp_path, monkeypatch)
+
+    patchers = _patch_common(readiness=_readiness())
+    _enter_all(patchers)
+    try:
+        with patch(
+            "due_diligence_reporter.server._lookup_rhodes_site_owner",
+            return_value={
+                "status": "found",
+                "site_id": "SITE1",
+                "site_name": "Alpha Houston 777 W 23rd St",
+                "site_address": "777 W 23rd St, Houston, TX",
+                "drive_folder_url": "https://drive.google.com/drive/folders/drive-root-houston",
+                "p1_assignee_name": "Brandon Gee",
+                "p1_assignee_email": "brandon.gee@trilogy.com",
+            },
+        ) as lookup_rhodes:
+            result = asyncio.run(server.check_site_readiness(site_name="Houston"))
+    finally:
+        _stop_all(patchers)
+
+    assert result["status"] == "success"
+    assert result["drive_folder_url"].endswith("/drive-root-houston")
+    assert result["resolved_site_name"] == "Alpha Houston 777 W 23rd St"
+    assert result["resolved_site_address"] == "777 W 23rd St, Houston, TX"
+    assert result["rhodes_lookup"]["site_id"] == "SITE1"
+    lookup_rhodes.assert_called_once_with(site_name="Houston", site_address="")
+
+
+def test_missing_drive_url_unknown_rhodes_site_returns_graceful_error(
+    tmp_path, monkeypatch
+):
+    _vendor_gate_on(monkeypatch)
+    _no_dispatch_state(tmp_path, monkeypatch)
+
+    with patch(
+        "due_diligence_reporter.server._lookup_rhodes_site_owner",
+        return_value={
+            "status": "not_found",
+            "message": "No Rhodes site matched the supplied site context.",
+            "report_data_fields": {},
+        },
+    ):
+        result = asyncio.run(server.diagnose_site_readiness("Nonexistent Site"))
 
     assert result["status"] == "error"
-    assert "drive_folder_url" in result["message"]
+    assert "Rhodes lookup status: not_found" in result["message"]
+    assert result["rhodes_lookup"]["status"] == "not_found"
 
 
 def test_empty_site_name_returns_graceful_error():

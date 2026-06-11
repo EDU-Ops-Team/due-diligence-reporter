@@ -417,6 +417,47 @@ class TestListDriveDocumentsFiltering:
         assert site_files["E-Occupancy Assessment - Alpha Keller"]["doc_type"] == "e_occupancy_report"
         assert result["shared_folder_files"][0]["reference_origin"] == "shared_source"
 
+    def test_missing_drive_url_resolves_rhodes_site_folder(self) -> None:
+        from due_diligence_reporter.server import list_drive_documents
+
+        gc = MagicMock()
+        gc.list_files_recursive.return_value = [
+            {"id": "site-sir", "name": "Alpha Houston SIR.pdf"},
+        ]
+
+        with patch(
+            "due_diligence_reporter.server._lookup_rhodes_site_owner",
+            return_value={
+                "status": "found",
+                "site_id": "SITE1",
+                "site_name": "Alpha Houston 777 W 23rd St",
+                "site_address": "777 W 23rd St, Houston, TX",
+                "drive_folder_url": "https://drive.google.com/drive/folders/drive-root-houston",
+                "p1_assignee_name": "Brandon Gee",
+                "p1_assignee_email": "brandon.gee@trilogy.com",
+            },
+        ) as lookup_rhodes, patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ), patch(
+            "due_diligence_reporter.server._find_site_docs_in_shared_folders",
+            return_value={
+                "sir": {"id": "shared-sir", "name": "Alpha Houston SIR.pdf", "doc_type": "sir"},
+                "isp": None,
+                "building_inspection": None,
+            },
+        ) as find_shared:
+            result = asyncio.run(list_drive_documents("", "Houston"))
+
+        assert result["status"] == "success"
+        assert result["drive_folder_url"].endswith("/drive-root-houston")
+        assert result["resolved_site_name"] == "Alpha Houston 777 W 23rd St"
+        assert result["resolved_site_address"] == "777 W 23rd St, Houston, TX"
+        lookup_rhodes.assert_called_once_with(site_name="Houston", site_address="")
+        gc.list_files_recursive.assert_called_once_with("drive-root-houston", max_depth=2)
+        assert find_shared.call_args.kwargs["site_title"] == "Alpha Houston 777 W 23rd St"
+        assert find_shared.call_args.kwargs["site_address"] == "777 W 23rd St, Houston, TX"
+
     def test_missing_site_name_lists_drive_folder_without_shared_search(self) -> None:
         from due_diligence_reporter.server import list_drive_documents
 
