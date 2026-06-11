@@ -417,6 +417,16 @@ def _site_summary_is_drive_ready(summary: dict[str, Any]) -> bool:
     )
 
 
+def _should_try_active_location_lookup(*, name: str, address: str) -> bool:
+    """Return True for broad name-only lookups like "Houston"."""
+    clean_name = name.strip()
+    if not clean_name or address.strip():
+        return False
+    if any(char.isdigit() for char in clean_name):
+        return False
+    return len(clean_name.split()) <= 3
+
+
 def _record_from_site_payload(
     site: dict[str, Any],
     *,
@@ -565,6 +575,21 @@ class RhodesClient:
     def resolve_site(self, *, name: str = "", address: str = "") -> dict[str, Any] | None:
         lookup = name.strip() or address.strip()
         if lookup:
+            if _should_try_active_location_lookup(name=name, address=address):
+                try:
+                    matches = self.list_sites(status="active", location=name.strip())
+                except RhodesError:
+                    matches = []
+                if len(matches) == 1 and _site_id(matches[0]):
+                    return matches[0]
+                exact_active_matches = [
+                    match
+                    for match in matches
+                    if _site_name(match).casefold() == name.strip().casefold()
+                ]
+                if len(exact_active_matches) == 1 and _site_id(exact_active_matches[0]):
+                    return exact_active_matches[0]
+
             try:
                 site = _coerce_site(self.call_tool("resolveSite", {"name": lookup}))
             except RhodesError as exc:
@@ -585,12 +610,15 @@ class RhodesClient:
         *,
         status: str | None = "active",
         stage: str | None = None,
+        location: str | None = None,
     ) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {}
         if status:
             payload["status"] = status
         if stage:
             payload["stage"] = stage
+        if location:
+            payload["location"] = location
         return _coerce_site_list(self.call_tool("listSites", payload))
 
     def list_documents(
@@ -803,7 +831,7 @@ def lookup_rhodes_site_owner(
         else:
             site = rhodes.resolve_site(name=site_name, address=site_address) or {}
             resolved_id = _site_id(site)
-            if resolved_id and "p1Dri" not in site:
+            if resolved_id and not _site_summary_is_drive_ready(site):
                 site = rhodes.get_site(site_id=resolved_id)
     except RhodesError as exc:
         return {

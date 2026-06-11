@@ -17,12 +17,14 @@ class FakeRhodesClient:
     def __init__(
         self,
         site: dict[str, Any] | None = None,
+        resolved_site: dict[str, Any] | None = None,
         sites: list[dict[str, Any]] | None = None,
         drive_root: tuple[str, str] | Exception | None = None,
         note_response: dict[str, Any] | None = None,
         note_responses: list[dict[str, Any] | None] | None = None,
     ) -> None:
         self.site = site or {}
+        self.resolved_site = resolved_site
         self.sites = sites or []
         self.drive_root = drive_root
         self.note_response = note_response
@@ -35,14 +37,24 @@ class FakeRhodesClient:
 
     def resolve_site(self, *, name: str = "", address: str = "") -> dict[str, Any] | None:
         self.calls.append(("resolve_site", {"name": name, "address": address}))
+        if self.resolved_site is not None:
+            return self.resolved_site
         return {"siteId": "SITE1", "name": name, "slug": "alpha-test"}
 
     def get_site(self, *, site_id: str | None = None, slug: str | None = None) -> dict[str, Any]:
         self.calls.append(("get_site", {"site_id": site_id or "", "slug": slug or ""}))
         return self.site
 
-    def list_sites(self, *, status: str | None = "active") -> list[dict[str, Any]]:
-        self.calls.append(("list_sites", {"status": status}))
+    def list_sites(
+        self,
+        *,
+        status: str | None = "active",
+        location: str | None = None,
+    ) -> list[dict[str, Any]]:
+        call_args = {"status": status}
+        if location is not None:
+            call_args["location"] = location
+        self.calls.append(("list_sites", call_args))
         return self.sites
 
     def resolve_drive_root(self, *, site_id: str) -> tuple[str, str]:
@@ -216,6 +228,21 @@ class RecordingRhodesClient(RhodesClient):
         return {"_id": "NOTE1"}
 
 
+class SequencedToolRhodesClient(RhodesClient):
+    def __init__(self, responses: list[Any]) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.responses = list(responses)
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        self.calls.append((name, arguments))
+        if not self.responses:
+            raise AssertionError(f"No response queued for {name}")
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
 def test_get_missing_documents_calls_rhodes_tool() -> None:
     client = RecordingRhodesClient()
 
@@ -275,6 +302,95 @@ def test_lookup_rhodes_site_owner_returns_p1_report_fields() -> None:
                 "address": "5400 Beethoven St, Los Angeles, CA 90066",
             },
         ),
+        ("get_site", {"site_id": "SITE1", "slug": ""}),
+    ]
+
+
+def test_resolve_site_prefers_single_active_location_match_for_broad_name() -> None:
+    client = SequencedToolRhodesClient(
+        [
+            {
+                "sites": [
+                    {
+                        "_id": "ACTIVE-HOUSTON",
+                        "name": "Alpha Houston 777 W 23rd St",
+                        "status": "active",
+                    }
+                ]
+            }
+        ]
+    )
+
+    result = client.resolve_site(name="Houston")
+
+    assert result is not None
+    assert result["_id"] == "ACTIVE-HOUSTON"
+    assert client.calls == [
+        ("listSites", {"status": "active", "location": "Houston"}),
+    ]
+
+
+def test_resolve_site_falls_back_when_broad_name_has_multiple_active_matches() -> None:
+    client = SequencedToolRhodesClient(
+        [
+            {
+                "sites": [
+                    {"_id": "ACTIVE-A", "name": "Alpha Austin 121 W 6th St"},
+                    {"_id": "ACTIVE-B", "name": "Alpha Austin 2611 Hillview Rd"},
+                ]
+            },
+            {
+                "_id": "RESOLVED",
+                "name": "Alpha Austin 121 W 6th St",
+            },
+        ]
+    )
+
+    result = client.resolve_site(name="Austin")
+
+    assert result is not None
+    assert result["_id"] == "RESOLVED"
+    assert client.calls == [
+        ("listSites", {"status": "active", "location": "Austin"}),
+        ("resolveSite", {"name": "Austin"}),
+    ]
+
+
+def test_lookup_rhodes_site_owner_hydrates_sparse_active_summary() -> None:
+    client = FakeRhodesClient(
+        {
+            "_id": "SITE1",
+            "name": "Alpha Houston 777 W 23rd St",
+            "slug": "777-west-23rd-st-houston-tx",
+            "address": "777 W 23rd St, Houston, TX",
+            "p1Dri": {
+                "name": "Brandon Gee",
+                "email": "brandon.gee@trilogy.com",
+                "userId": "USER1",
+            },
+            "driveFolderId": "drive-root-houston",
+        },
+        resolved_site={
+            "_id": "SITE1",
+            "name": "Alpha Houston 777 W 23rd St",
+            "p1Dri": {
+                "name": "Brandon Gee",
+                "email": "brandon.gee@trilogy.com",
+                "userId": "USER1",
+            },
+        },
+    )
+
+    result = lookup_rhodes_site_owner(site_name="Houston", client=client)  # type: ignore[arg-type]
+
+    assert result["status"] == "found"
+    assert result["site_name"] == "Alpha Houston 777 W 23rd St"
+    assert result["site_address"] == "777 W 23rd St, Houston, TX"
+    assert result["drive_folder_url"] == "https://drive.google.com/drive/folders/drive-root-houston"
+    assert result["report_data_fields"]["meta.prepared_by"] == "Brandon Gee"
+    assert result["report_data_fields"]["site.address"] == "777 W 23rd St, Houston, TX"
+    assert client.calls == [
+        ("resolve_site", {"name": "Houston", "address": ""}),
         ("get_site", {"site_id": "SITE1", "slug": ""}),
     ]
 
