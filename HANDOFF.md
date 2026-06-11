@@ -1,5 +1,51 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-11 - Google Chat Rhodes Folder Fallback Hardened
+
+- Beads issue `ddr-0n3` tracks the incident where Google Chat / BrainTrust kept
+  returning a card that said Rhodes was unavailable and asked Brandon for the
+  Houston Drive folder URL.
+- Live LocationOS reads confirmed Rhodes itself was available for Houston:
+  `listSites(location="Houston", status="active")` returned the active
+  `Alpha Houston 777 W 23rd St` site, and `getSite` returned its linked Drive
+  folder ID.
+- First fix commit `3c572d1` made broad name-only Rhodes lookups prefer the
+  single active `listSites(location=..., status="active")` match and hydrate
+  sparse rows before returning owner / Drive-folder context.
+- The repeated Chat failure showed another public-tool path still existed:
+  `list_drive_documents`, `check_site_readiness`, and
+  `diagnose_site_readiness` rejected missing `drive_folder_url` before trying
+  Rhodes. Commit `a0f6864` added a shared public MCP boundary resolver so
+  broad site-name calls like `Houston` resolve the linked Rhodes Drive folder
+  before touching Drive or readiness checks.
+- `report_pipeline.TOOL_DEFINITIONS` no longer marks `list_drive_documents`
+  `drive_folder_url` as required; the description now instructs callers to pass
+  `site_name` / `site_address` so the tool can resolve the folder from Rhodes
+  instead of asking the user for a folder.
+- Pushed `a0f6864` to GitHub `main`. Publish run `27362106589` checked out
+  `a0f68644e1a40fdee15659e2900e72526b5c277d`, verified required secrets,
+  published to MCP Hive, and returned `healthStatus=HEALTHY`,
+  `toolsCount=14`, `updatedAt=2026-06-11T16:33:34.931Z`.
+- Note: the Google Chat card title still says `Due Diligence Reporter Two`,
+  while the published MCP Hive is named `Alpha DD Report Generator`. If Chat
+  still returns the same fallback after this publish, the remaining issue is
+  likely Chat/BrainTrust app wiring to a different runtime or stale hive rather
+  than Rhodes or this DDR package.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_diagnose_site_readiness.py tests\test_dd_output_fixes.py::TestListDriveDocumentsFiltering tests\test_rhodes.py -q --basetemp C:\tmp\ddr-chat-rhodes-public-tools
+uv run ruff check src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py tests\test_diagnose_site_readiness.py tests\test_dd_output_fixes.py
+uv run mypy src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py
+git diff --check -- src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py tests\test_diagnose_site_readiness.py tests\test_dd_output_fixes.py
+gh run view 27362106589 --json status,conclusion,createdAt,updatedAt,url,headSha,name
+```
+
+Results: focused pytest passed (`48 passed`); Ruff passed; mypy passed; diff
+check reported only expected Windows LF-to-CRLF warnings; MCP Hive publish
+completed successfully.
+
 ## 2026-06-10 - Dashboard Review Execution Consumer Added
 
 - Beads issue `ddr-e4t` tracks this slice.
