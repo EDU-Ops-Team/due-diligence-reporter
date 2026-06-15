@@ -9,30 +9,45 @@
 | **Prepared By** | {{meta.prepared_by}} |
 | **Drive Folder** | {{meta.drive_folder_url}} |
 
+# **Due Diligence**
+
+|  |  |  |  |
+| :---- | :---- | :---- | :---- |
+| **FASTEST OPEN** |  |  |  |
+| **Capacity** | {{exec.fastest_open_capacity}} | **CAPEX** | {{exec.fastest_open_capex}} |
+| **Target Open** | {{exec.fastest_open_open_date}} |  |  |
+| **MAXIMUM CAPACITY** |  |  |  |
+| **Capacity** | {{exec.max_capacity_capacity}} | **CAPEX** | {{exec.max_capacity_capex}} |
+| **Target Open** | {{exec.max_capacity_open_date}} |  |  |
+| **SCORES** |  |  |  |
+| **Regulatory Score** | {{exec.regulatory_score}} | **Regulatory Comment** | {{exec.regulatory_comment}} |
+| **Building Score** | {{exec.building_score}} | **Building Comment** | {{exec.building_comment}} |
+| **Play Area Score** | {{exec.play_area_score}} | **Play Area Comment** | {{exec.play_area_comment}} |
+| **School Ops Score** | {{exec.school_ops_score}} | **School Ops Comment** | {{exec.school_ops_comment}} |
+
 # **Executive Summary**
 
-| Can this school be open in time for the current school year (8/12 or 9/8)? |
-| :---- |
-| **{{exec.c_answer}}, if/because:** |
-| **Zoning:** {{exec.c_zoning}} |
-| **Education Regulatory Approval:** {{exec.c_edreg}} |
-| **Occupancy path:** {{exec.c_occupancy}} |
-| **Permit Timeline:** {{exec.c_permit_timeline}} |
-| **Construction Timeline:** {{exec.c_construction_timeline}} |
+## **Fastest Open**
 
-| Direct Answer |
-| :---- |
-| **2a. Viable Buildout:** {{exec.direct_viable_buildout}} |
-| **2b. Great Alpha School Site:** {{exec.alpha_fit}} |
+**Can this school open in time for the current school year (8/12 or 9/8)?** {{exec.c_answer}}, if/because:
 
-| Build Scenarios: Capacity, Capex, Open Date |
-| :---- |
+- **Zoning:** {{exec.c_zoning}}
+- **Education Regulatory Approval:** {{exec.c_edreg}}
+- **Occupancy path:** {{exec.c_occupancy}}
+- **Permit Timeline:** {{exec.c_permit_timeline}}
+- **Construction Timeline:** {{exec.c_construction_timeline}}
 
-|  | **Fastest Open** | **Max Capacity** |
-| :---- | :---- | :---- |
-| **Capacity** | {{exec.fastest_open_capacity}} | {{exec.max_capacity_capacity}} |
-| **Open Date** | {{exec.fastest_open_open_date}} | {{exec.max_capacity_open_date}} |
-| **CAPEX** | {{exec.fastest_open_capex}} | {{exec.max_capacity_capex}} |
+**Scenario Summary:** {{exec.fastest_open_summary}}
+
+## **Max Capacity**
+
+**Scenario Summary:** {{exec.max_capacity_summary}}
+
+## **Direct Answer**
+
+**Viable Buildout:** {{exec.direct_viable_buildout}}
+
+**Great Alpha School Site:** {{exec.alpha_fit}}
 
 | Alpha Phasing Plan |
 | :---- |
@@ -45,20 +60,57 @@
 | Detailed Cost Breakdown |
 | :---- |
 
-|  | **Fastest Open** | **Max Capacity** |
-| :---- | :---- | :---- |
-| **Demolition** | {{exec.cost_demolition_fastest_open}} | {{exec.cost_demolition_max_capacity}} |
-| **Framing / Doors** | {{exec.cost_framing_doors_fastest_open}} | {{exec.cost_framing_doors_max_capacity}} |
-| **MEP / Fire / Life Safety** | {{exec.cost_mep_fire_life_safety_fastest_open}} | {{exec.cost_mep_fire_life_safety_max_capacity}} |
-| **Plumbing / Bathrooms** | {{exec.cost_plumbing_bathrooms_fastest_open}} | {{exec.cost_plumbing_bathrooms_max_capacity}} |
-| **Finish Work** | {{exec.cost_finish_work_fastest_open}} | {{exec.cost_finish_work_max_capacity}} |
-| **Furniture** | {{exec.cost_furniture_fastest_open}} | {{exec.cost_furniture_max_capacity}} |
-| **Tech / Security / Signage** | {{exec.cost_tech_security_signage_fastest_open}} | {{exec.cost_tech_security_signage_max_capacity}} |
-| **Other Hard Costs** | {{exec.cost_other_hard_costs_fastest_open}} | {{exec.cost_other_hard_costs_max_capacity}} |
-| **Soft Costs** | {{exec.cost_soft_costs_fastest_open}} | {{exec.cost_soft_costs_max_capacity}} |
-| **GC Fee** | {{exec.cost_gc_fee_fastest_open}} | {{exec.cost_gc_fee_max_capacity}} |
-| **Contingency** | {{exec.cost_contingency_fastest_open}} | {{exec.cost_contingency_max_capacity}} |
-| **Grand Total** | {{exec.cost_grand_total_fastest_open}} | {{exec.cost_grand_total_max_capacity}} |
+### **Fastest Open Cost Breakdown**
+
+| Line Item | Amount |
+| :---- | :---- |
+| **Demolition** | {{exec.cost_demolition_fastest_open}} |
+| **Framing / Doors** | {{exec.cost_framing_doors_fastest_open}} |
+| **MEP / Fire / Life Safety** | {{exec.cost_mep_fire_life_safety_fastest_open}} |
+| **Plumbing / Bathrooms** | {{exec.cost_plumbing_bathrooms_fastest_open}} |
+| **Finish Work** | {{exec.cost_finish_work_fastest_open}} |
+| **Furniture** | {{exec.cost_furniture_fastest_open}} |
+| **Tech / Security / Signage** | {{exec.cost_tech_security_signage_fastest_open}} |
+| **Other Hard Costs** | {{exec.cost_other_hard_costs_fastest_open}} |
+| **Soft Costs** | {{exec.cost_soft_costs_fastest_open}} |
+| **GC Fee** | {{exec.cost_gc_fee_fastest_open}} |
+| **Contingency** | {{exec.cost_contingency_fastest_open}} |
+| **Grand Total** | {{exec.cost_grand_total_fastest_open}} |
+
+### **Max Capacity Cost Breakdown**
+
+| Line Item | Amount |
+| :---- | :---- |
+| **Demolition** | {{exec.cost_demolition_max_capacity}} |
+| **Framing / Doors** | {{exec.cost_framing_doors_max_capacity}} |
+| **MEP / Fire / Life Safety** | {{exec.cost_mep_fire_life_safety_max_capacity}} |
+| **Plumbing / Bathrooms** | {{exec.cost_plumbing_bathrooms_max_capacity}} |
+| **Finish Work** | {{exec.cost_finish_work_max_capacity}} |
+| **Furniture** | {{exec.cost_furniture_max_capacity}} |
+| **Tech / Security / Signage** | {{exec.cost_tech_security_signage_max_capacity}} |
+| **Other Hard Costs** | {{exec.cost_other_hard_costs_max_capacity}} |
+| **Soft Costs** | {{exec.cost_soft_costs_max_capacity}} |
+| **GC Fee** | {{exec.cost_gc_fee_max_capacity}} |
+| **Contingency** | {{exec.cost_contingency_max_capacity}} |
+| **Grand Total** | {{exec.cost_grand_total_max_capacity}} |
+
+## **Score Explanations**
+
+**Regulatory:** {{exec.regulatory_score}}
+
+- {{exec.regulatory_comment}}
+
+**Building:** {{exec.building_score}}
+
+- {{exec.building_comment}}
+
+**Play Area:** {{exec.play_area_score}}
+
+- {{exec.play_area_comment}}
+
+**School Ops:** {{exec.school_ops_score}}
+
+- {{exec.school_ops_comment}}
 
 # **Supporting Notes**
 

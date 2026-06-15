@@ -635,7 +635,7 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 | `docs/prompts/prompt_v4.md` | Agent system prompt -- V4 first-round workflow, exec summary format, report data schema |
 | `src/due_diligence_reporter/server.py` | MCP server - Drive, Rhodes, skill publisher, DDR rendering, and notification tools |
 | `src/due_diligence_reporter/report_pipeline.py` | Shared pipeline â€” readiness check, Claude agent loop, notifications |
-| `src/due_diligence_reporter/report_schema.py` | Template token list (28), alias map (26), `normalize_report_data()`, `compute_deltas()` |
+| `src/due_diligence_reporter/report_schema.py` | Template token schema, alias map, and `normalize_report_data()` |
 | `src/due_diligence_reporter/classifier.py` | Three-tier document classification (regex â†’ LLM filename â†’ LLM content) |
 | `src/due_diligence_reporter/inbox_scanner.py` | Gmail inbox scan, three-tier filename classification, Drive upload |
 | `src/due_diligence_reporter/open_questions.py` | Structured open-question and source-event state for partial DDR closure |

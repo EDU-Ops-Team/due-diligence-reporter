@@ -198,6 +198,11 @@ ALPHA_PHASING_TOKENS: tuple[str, ...] = (
     "exec.alpha_phasing_quality_bar_status",
 )
 
+SCENARIO_SUMMARY_TOKENS: tuple[str, ...] = (
+    "exec.fastest_open_summary",
+    "exec.max_capacity_summary",
+)
+
 COST_TOKEN_BASES: tuple[str, ...] = (
     "cost_demolition",
     "cost_framing_doors",
@@ -211,6 +216,13 @@ COST_TOKEN_BASES: tuple[str, ...] = (
     "cost_gc_fee",
     "cost_contingency",
     "cost_grand_total",
+)
+
+SCORE_TOKEN_BASES: tuple[str, ...] = (
+    "regulatory",
+    "building",
+    "play_area",
+    "school_ops",
 )
 
 
@@ -238,11 +250,17 @@ def _build_template_tokens() -> list[str]:
         for metric, _source in SUMMARY_TOKEN_BASES:
             tokens.append(f"exec.{scenario}_{metric}")
 
+    tokens.extend(SCENARIO_SUMMARY_TOKENS)
+
     tokens.extend(ALPHA_PHASING_TOKENS)
 
     for base in COST_TOKEN_BASES:
         for scenario in SCENARIOS:
             tokens.append(f"exec.{base}_{scenario}")
+
+    for base in SCORE_TOKEN_BASES:
+        tokens.append(f"exec.{base}_score")
+        tokens.append(f"exec.{base}_comment")
 
     tokens.extend([
         "exec.acquisition_conditions",
@@ -293,12 +311,19 @@ for scenario in SCENARIOS:
 for token in ALPHA_PHASING_TOKENS:
     TOKEN_SOURCES[token] = "Alpha Phasing Plan"
 
+for token in SCENARIO_SUMMARY_TOKENS:
+    TOKEN_SOURCES[token] = "Agent"
+
 for base in COST_TOKEN_BASES:
     for scenario in SCENARIOS:
         source = "Agent"
         if scenario in {"fastest_open", "max_capacity"}:
             source = "RayCon"
         TOKEN_SOURCES[f"exec.{base}_{scenario}"] = source
+
+for base in SCORE_TOKEN_BASES:
+    TOKEN_SOURCES[f"exec.{base}_score"] = "Rhodes/Aerie"
+    TOKEN_SOURCES[f"exec.{base}_comment"] = "Rhodes/Aerie"
 
 
 LINK_TOKENS: frozenset[str] = frozenset({
@@ -345,7 +370,47 @@ AGENT_KEY_ALIASES: dict[str, str] = {
     "exec_summary.direct_viable_buildout": "exec.direct_viable_buildout",
     "exec_summary.alpha_fit": "exec.alpha_fit",
     "exec_summary.tradeoffs_and_deficiencies": "exec.tradeoffs_and_deficiencies",
+    "exec_summary.fastest_open": "exec.fastest_open_summary",
+    "exec_summary.fastest_open_summary": "exec.fastest_open_summary",
+    "exec_summary.max_capacity": "exec.max_capacity_summary",
+    "exec_summary.max_capacity_summary": "exec.max_capacity_summary",
     "exec.c_permitting": "exec.c_edreg",
+    "due_diligence.fastest_open_capacity": "exec.fastest_open_capacity",
+    "due_diligence.fastest_open_capex": "exec.fastest_open_capex",
+    "due_diligence.fastest_open_target_open": "exec.fastest_open_open_date",
+    "due_diligence.fastest_open_open_date": "exec.fastest_open_open_date",
+    "due_diligence.max_capacity_capacity": "exec.max_capacity_capacity",
+    "due_diligence.max_capacity_capex": "exec.max_capacity_capex",
+    "due_diligence.max_capacity_target_open": "exec.max_capacity_open_date",
+    "due_diligence.max_capacity_open_date": "exec.max_capacity_open_date",
+    "due_diligence.regulatory_score": "exec.regulatory_score",
+    "due_diligence.regulatory_comment": "exec.regulatory_comment",
+    "due_diligence.building_score": "exec.building_score",
+    "due_diligence.building_comment": "exec.building_comment",
+    "due_diligence.play_area_score": "exec.play_area_score",
+    "due_diligence.play_area_comment": "exec.play_area_comment",
+    "due_diligence.school_ops_score": "exec.school_ops_score",
+    "due_diligence.school_ops_comment": "exec.school_ops_comment",
+    "dueDiligence.fastestOpen.capacity": "exec.fastest_open_capacity",
+    "dueDiligence.fastestOpen.capex": "exec.fastest_open_capex",
+    "dueDiligence.fastestOpen.targetOpen": "exec.fastest_open_open_date",
+    "dueDiligence.maxCapacity.capacity": "exec.max_capacity_capacity",
+    "dueDiligence.maxCapacity.capex": "exec.max_capacity_capex",
+    "dueDiligence.maxCapacity.targetOpen": "exec.max_capacity_open_date",
+    "dueDiligence.fastestOpenCapacity": "exec.fastest_open_capacity",
+    "dueDiligence.fastestOpenCapex": "exec.fastest_open_capex",
+    "dueDiligence.fastestOpenTargetOpen": "exec.fastest_open_open_date",
+    "dueDiligence.maxCapacityCapacity": "exec.max_capacity_capacity",
+    "dueDiligence.maxCapacityCapex": "exec.max_capacity_capex",
+    "dueDiligence.maxCapacityTargetOpen": "exec.max_capacity_open_date",
+    "dueDiligence.regulatoryScore": "exec.regulatory_score",
+    "dueDiligence.regulatoryComment": "exec.regulatory_comment",
+    "dueDiligence.buildingScore": "exec.building_score",
+    "dueDiligence.buildingComment": "exec.building_comment",
+    "dueDiligence.playAreaScore": "exec.play_area_score",
+    "dueDiligence.playAreaComment": "exec.play_area_comment",
+    "dueDiligence.schoolOpsScore": "exec.school_ops_score",
+    "dueDiligence.schoolOpsComment": "exec.school_ops_comment",
     "appendix.sir_link": "sources.sir_link",
     "appendix.inspection_link": "sources.inspection_link",
     "appendix.building_inspection_link": "sources.inspection_link",

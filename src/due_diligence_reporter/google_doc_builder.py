@@ -88,6 +88,54 @@ _COST_BREAKDOWN_ROWS: list[tuple[str, str]] = [
     ("grand_total", "Grand Total"),
 ]
 
+_DUE_DILIGENCE_DATA_ROWS: list[tuple[str, str, str, str]] = [
+    ("FASTEST OPEN", "", "", ""),
+    ("Capacity", "exec.fastest_open_capacity", "CAPEX", "exec.fastest_open_capex"),
+    ("Target Open", "exec.fastest_open_open_date", "", ""),
+    ("MAXIMUM CAPACITY", "", "", ""),
+    ("Capacity", "exec.max_capacity_capacity", "CAPEX", "exec.max_capacity_capex"),
+    ("Target Open", "exec.max_capacity_open_date", "", ""),
+    ("SCORES", "", "", ""),
+    (
+        "Regulatory Score",
+        "exec.regulatory_score",
+        "Regulatory Comment",
+        "exec.regulatory_comment",
+    ),
+    ("Building Score", "exec.building_score", "Building Comment", "exec.building_comment"),
+    (
+        "Play Area Score",
+        "exec.play_area_score",
+        "Play Area Comment",
+        "exec.play_area_comment",
+    ),
+    (
+        "School Ops Score",
+        "exec.school_ops_score",
+        "School Ops Comment",
+        "exec.school_ops_comment",
+    ),
+]
+
+_SCORE_EXPLANATION_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("Regulatory", "exec.regulatory_score", "exec.regulatory_comment"),
+    ("Building", "exec.building_score", "exec.building_comment"),
+    ("Play Area", "exec.play_area_score", "exec.play_area_comment"),
+    ("School Ops", "exec.school_ops_score", "exec.school_ops_comment"),
+)
+
+_SCORE_TOKEN_SET: frozenset[str] = frozenset(
+    score_token for _label, score_token, _comment_token in _SCORE_EXPLANATION_ROWS
+)
+_SCORE_VALUE_LABELS: dict[str, str] = {
+    "1": "1 - Green",
+    "2": "2 - Yellow",
+    "3": "3 - Red",
+    "green": "1 - Green",
+    "yellow": "2 - Yellow",
+    "red": "3 - Red",
+}
+
 # ---------------------------------------------------------------------------
 # Source document rows: (label, token_key)
 # ---------------------------------------------------------------------------
@@ -161,11 +209,21 @@ _SUMMARY_TOKEN_LABELS: dict[str, str] = {
     "exec.c_construction_timeline": "Construction Timelines",
     "exec.direct_viable_buildout": "Direct Viable Buildout",
     "exec.alpha_fit": "Alpha Fit",
+    "exec.fastest_open_summary": "Fastest Open Summary",
+    "exec.max_capacity_summary": "Max Capacity Summary",
     "exec.alpha_phasing_phase_i_scope": "Phase I Opening Scope",
     "exec.alpha_phasing_phase_ii_scope": "Phase II Deferred Scope",
     "exec.alpha_phasing_phase_ii_allowance": "Phase II Allowance",
     "exec.alpha_phasing_recommended_timing": "Recommended Phase II Timing",
     "exec.alpha_phasing_quality_bar_status": "Quality Bar Status",
+    "exec.regulatory_score": "Regulatory Score",
+    "exec.regulatory_comment": "Regulatory Comment",
+    "exec.building_score": "Building Score",
+    "exec.building_comment": "Building Comment",
+    "exec.play_area_score": "Play Area Score",
+    "exec.play_area_comment": "Play Area Comment",
+    "exec.school_ops_score": "School Ops Score",
+    "exec.school_ops_comment": "School Ops Comment",
     "exec.acquisition_conditions": "Acquisition Conditions",
     "exec.tradeoffs_and_deficiencies": "Tradeoffs and Deficiencies",
 }
@@ -175,6 +233,17 @@ _TEMPLATE_TOKEN_LABELS: dict[str, str] = {
     **_SUMMARY_TOKEN_LABELS,
     **{token: label for label, token in _SOURCE_DOC_ROWS},
 }
+
+_NARRATIVE_FIELD_TOKENS: tuple[str, ...] = (
+    "exec.acquisition_conditions",
+    "exec.tradeoffs_and_deficiencies",
+    "exec.fastest_open_summary",
+    "exec.max_capacity_summary",
+    "exec.regulatory_comment",
+    "exec.building_comment",
+    "exec.play_area_comment",
+    "exec.school_ops_comment",
+)
 
 
 def _template_token_display_label(token: str) -> str:
@@ -629,7 +698,7 @@ def _normalize_replacements_for_rendering(
 
     has_citations_block = bool(normalized.get(CITATIONS_BLOCK_KEY, "").strip())
 
-    for token in ("exec.acquisition_conditions", "exec.tradeoffs_and_deficiencies"):
+    for token in _NARRATIVE_FIELD_TOKENS:
         value = normalized.get(token, "")
         if not value.strip():
             continue
@@ -731,6 +800,89 @@ def _insert_labeled_summary_field(
         line_start, line_end = builder.insert_paragraph(support_line)
         builder.style_text(line_start, line_end - 1, font_size=10, font_family="Arial")
     builder.apply_bullets(bullet_start, builder.index)
+
+
+def _insert_answer_with_support_fields(
+    builder: _DocBuilder,
+    label: str,
+    answer: str,
+    support_fields: list[tuple[str, str]],
+) -> None:
+    """Insert a direct answer followed by labeled support bullets."""
+    label_start, label_end = builder.insert_text(f"{label}: ")
+    builder.style_text(label_start, label_end, bold=True, font_size=10, font_family="Arial")
+    answer_start, answer_end = builder.insert_text(f"{answer}\n")
+    builder.style_text(answer_start, answer_end - 1, font_size=10, font_family="Arial")
+
+    bullet_start = builder.index
+    bullet_count = 0
+    for support_label, support_value in support_fields:
+        lines = _summary_display_lines(support_value)
+        if not lines:
+            continue
+        first = f"{support_label}: {lines[0]}"
+        first_start, first_end = builder.insert_paragraph(first)
+        builder.style_text(first_start, first_end - 1, font_size=10, font_family="Arial")
+        bullet_count += 1
+        for extra_line in lines[1:]:
+            extra_start, extra_end = builder.insert_paragraph(extra_line)
+            builder.style_text(extra_start, extra_end - 1, font_size=10, font_family="Arial")
+            bullet_count += 1
+    if bullet_count:
+        builder.apply_bullets(bullet_start, builder.index)
+
+
+def _score_explanation_value(
+    replacements: dict[str, str],
+    score_token: str,
+    comment_token: str,
+) -> str:
+    """Build a score explanation value in answer-plus-support-line form."""
+    score = _format_score_value(
+        _resolve_value(replacements, score_token, "[Not found -- score not stated]")
+    )
+    comment = _resolve_value(replacements, comment_token, "").strip()
+    if comment:
+        return f"{score}\n{comment}"
+    return score
+
+
+def _format_score_value(value: str) -> str:
+    """Canonicalize Aerie due-diligence score values for report display."""
+    stripped = value.strip()
+    if not stripped:
+        return stripped
+
+    parts = re.findall(r"[a-z0-9.]+", stripped.lower())
+    if not parts:
+        return stripped
+
+    first = parts[0]
+    if first.endswith(".0"):
+        first = first[:-2]
+    return _SCORE_VALUE_LABELS.get(first, stripped)
+
+
+def _resolve_due_diligence_value(replacements: dict[str, str], token: str) -> str:
+    value = _resolve_value(replacements, token, "[Not found]")
+    if token in _SCORE_TOKEN_SET:
+        return _format_score_value(value)
+    return value
+
+
+def _due_diligence_table_data(
+    replacements: dict[str, str],
+) -> list[tuple[str, str, str, str]]:
+    rows: list[tuple[str, str, str, str]] = []
+    for left_label, left_token, right_label, right_token in _DUE_DILIGENCE_DATA_ROWS:
+        left_value = _resolve_due_diligence_value(replacements, left_token) if left_token else ""
+        right_value = _resolve_due_diligence_value(replacements, right_token) if right_token else ""
+        rows.append((left_label, left_value, right_label, right_value))
+    return rows
+
+
+def _is_due_diligence_section_row(row: tuple[str, str, str, str]) -> bool:
+    return bool(row[0]) and not any(row[1:])
 
 
 # ---------------------------------------------------------------------------
@@ -1214,6 +1366,108 @@ def build_dd_report_doc(
         if text_style_requests:
             _batch_update(docs_service, doc_id, text_style_requests)
 
+    # Due Diligence data table: mirrors the Aerie layout, omitting Completed
+    # Date and DD Report fields so the report starts with the active decision
+    # data operators are scanning for.
+    doc = docs_service.documents().get(documentId=doc_id).execute()
+    body_content = doc.get("body", {}).get("content", [])
+    end_idx = _doc_end_index(body_content)
+
+    b_dd = _DocBuilder(start_index=end_idx)
+    div_start, div_end = b_dd.insert_text("\n")
+    b_dd.style_paragraph(
+        div_start,
+        div_end,
+        border_bottom={
+            "color": {"color": {"rgbColor": _LIGHT_BLUE_BORDER}},
+            "width": {"magnitude": 1, "unit": _PT},
+            "padding": {"magnitude": 6, "unit": _PT},
+            "dashStyle": "SOLID",
+        },
+    )
+    b_dd.insert_heading("Due Diligence", level=1)
+    b_dd.insert_table(len(_DUE_DILIGENCE_DATA_ROWS), 4)
+    _batch_update(docs_service, doc_id, b_dd.requests)
+
+    doc = docs_service.documents().get(documentId=doc_id).execute()
+    body_content = doc.get("body", {}).get("content", [])
+    due_diligence_table = _find_table(body_content, 1)
+    if due_diligence_table is None:
+        logger.error("Could not find due diligence data table")
+        return hyperlink_trace
+
+    due_diligence_rows = _due_diligence_table_data(replacements)
+    due_table_requests: list[dict[str, Any]] = []
+    for row_idx in range(len(due_diligence_rows) - 1, -1, -1):
+        row = due_diligence_rows[row_idx]
+        for col_idx in range(3, -1, -1):
+            text = row[col_idx]
+            if not text:
+                continue
+            cell_idx = _cell_index(due_diligence_table, row_idx, col_idx)
+            due_table_requests.append({
+                "insertText": {
+                    "location": {"index": cell_idx},
+                    "text": text,
+                }
+            })
+
+    if due_table_requests:
+        _batch_update(docs_service, doc_id, due_table_requests)
+
+    doc = docs_service.documents().get(documentId=doc_id).execute()
+    body_content = doc.get("body", {}).get("content", [])
+    due_diligence_table = _find_table(body_content, 1)
+    if due_diligence_table:
+        style_requests: list[dict[str, Any]] = []
+        for row_idx, row in enumerate(due_diligence_rows):
+            is_section = _is_due_diligence_section_row(row)
+            for col_idx in range(4):
+                bg_color = _LIGHT_BLUE_BG if is_section else _WHITE
+                if not is_section and col_idx in {0, 2}:
+                    bg_color = _LIGHT_GRAY
+                style_requests.extend(
+                    _build_cell_style_requests(
+                        due_diligence_table,
+                        row_idx,
+                        col_idx,
+                        bg_color=bg_color,
+                    )
+                )
+                cs, ce = _table_cell_range(due_diligence_table, row_idx, col_idx)
+                text_style: dict[str, Any] = {
+                    "bold": is_section or col_idx in {0, 2},
+                    "fontSize": {"magnitude": 9, "unit": _PT},
+                    "weightedFontFamily": {"fontFamily": "Arial"},
+                }
+                fields = "bold,fontSize,weightedFontFamily"
+                if is_section:
+                    text_style["foregroundColor"] = {"color": {"rgbColor": _DARK_BLUE}}
+                    fields += ",foregroundColor"
+                style_requests.append({
+                    "updateTextStyle": {
+                        "range": {"startIndex": cs, "endIndex": ce},
+                        "textStyle": text_style,
+                        "fields": fields,
+                    }
+                })
+
+        table_start = due_diligence_table.get("startIndex", 1)
+        for col_idx, width in enumerate((105, 130, 105, 130)):
+            style_requests.append({
+                "updateTableColumnProperties": {
+                    "tableStartLocation": {"index": table_start},
+                    "columnIndices": [col_idx],
+                    "tableColumnProperties": {
+                        "widthType": "FIXED_WIDTH",
+                        "width": {"magnitude": width, "unit": _PT},
+                    },
+                    "fields": "widthType,width",
+                }
+            })
+
+        _batch_update(docs_service, doc_id, style_requests)
+
     # ── Phase 3: Executive Summary section ───────────────────────────────
     # Read document to find end index for appending after header table
     doc = docs_service.documents().get(documentId=doc_id).execute()
@@ -1253,10 +1507,6 @@ def build_dd_report_doc(
         "[Not found -- construction timeline not stated]",
     )
 
-    can_we_q = "Can this school be open in time for the current school year (8/12 or 9/8)?\n"
-    q_start, q_end = b3.insert_text(can_we_q)
-    b3.style_text(q_start, q_end - 1, bold=True, font_size=11, font_family="Arial")
-
     # Conjunction varies by answer polarity: "Yes, if:" reads as forward-looking
     # (here are the conditions that get us there); "No, because:" reads as
     # backward-looking (here's what's blocking us). Match against canonical
@@ -1265,15 +1515,31 @@ def build_dd_report_doc(
     answer_lower = c_answer.strip().lower()
     affirmative = {"yes", "go", "yes see notes", "yes, see notes", "conditional"}
     conjunction = "if" if answer_lower in affirmative else "because"
-    answer_text = f"{c_answer}, {conjunction}:\n"
-    a_start, a_end = b3.insert_text(answer_text)
-    b3.style_text(a_start, a_end - 1, bold=True, font_size=12, font_family="Arial")
+    b3.insert_heading("Fastest Open", level=2)
+    _insert_answer_with_support_fields(
+        b3,
+        "Can this school open in time for the current school year (8/12 or 9/8)?",
+        f"{c_answer}, {conjunction}",
+        [
+            ("Zoning", c_zoning),
+            ("Education Regulatory Approval", c_edreg),
+            ("Occupancy path", c_occupancy),
+            ("Permit Timeline", c_permit_timeline),
+            ("Construction Timeline", c_construction_timeline),
+        ],
+    )
+    fastest_open_summary = _resolve_value(replacements, "exec.fastest_open_summary", "")
+    if fastest_open_summary.strip():
+        _insert_labeled_summary_field(b3, "Scenario Summary", fastest_open_summary)
 
-    _insert_labeled_summary_field(b3, "Zoning", c_zoning)
-    _insert_labeled_summary_field(b3, "Education Regulatory Approval", c_edreg)
-    _insert_labeled_summary_field(b3, "Occupancy path", c_occupancy)
-    _insert_labeled_summary_field(b3, "Permit Timeline", c_permit_timeline)
-    _insert_labeled_summary_field(b3, "Construction Timeline", c_construction_timeline)
+    b3.insert_text("\n")
+    b3.insert_heading("Max Capacity", level=2)
+    max_capacity_summary = _resolve_value(
+        replacements,
+        "exec.max_capacity_summary",
+        "[Not found -- Max Capacity summary not stated]",
+    )
+    _insert_labeled_summary_field(b3, "Scenario Summary", max_capacity_summary)
 
     # Direct Answer heading
     b3.insert_text("\n")
@@ -1290,119 +1556,12 @@ def build_dd_report_doc(
         "[Not found -- Alpha fit not stated]",
     )
 
-    viable_label_start, viable_label_end = b3.insert_text("2a. Viable Buildout: ")
-    b3.style_text(viable_label_start, viable_label_end, bold=True, font_size=10, font_family="Arial")
-    viable_value_start, viable_value_end = b3.insert_text(viable_buildout + "\n")
-    b3.style_text(viable_value_start, viable_value_end - 1, font_size=10, font_family="Arial")
-
-    alpha_label_start, alpha_label_end = b3.insert_text("2b. Great Alpha School Site: ")
-    b3.style_text(alpha_label_start, alpha_label_end, bold=True, font_size=10, font_family="Arial")
-    alpha_value_start, alpha_value_end = b3.insert_text(alpha_fit + "\n")
-    b3.style_text(alpha_value_start, alpha_value_end - 1, font_size=10, font_family="Arial")
-
-    # Buildout Analysis heading
-    b3.insert_text("\n")
-    b3.insert_heading("Buildout Analysis", level=2)
-
-    # Build Scenarios summary table
-    b3.insert_table(4, 3)
+    _insert_labeled_summary_field(b3, "Viable Buildout", viable_buildout)
+    _insert_labeled_summary_field(b3, "Great Alpha School Site", alpha_fit)
 
     _batch_update(docs_service, doc_id, b3.requests)
 
     # ── Phase 4: Populate Build Scenarios table ──────────────────────────
-    doc = docs_service.documents().get(documentId=doc_id).execute()
-    body_content = doc.get("body", {}).get("content", [])
-
-    # Find the scenarios table (second table in the document)
-    scenarios_table = _find_table(body_content, 1)
-    if scenarios_table is None:
-        logger.error("Could not find build scenarios table")
-        return hyperlink_trace
-
-    scenario_data = [
-        ("", "Fastest Open", "Max Capacity"),
-        ("Student Capacity",
-         _resolve_value(replacements, "exec.fastest_open_capacity", "[Not found]"),
-         _resolve_value(replacements, "exec.max_capacity_capacity", "[Not found]")),
-        ("Target Open Date",
-         _resolve_value(replacements, "exec.fastest_open_open_date", "[Not found]"),
-         _resolve_value(replacements, "exec.max_capacity_open_date", "[Not found]")),
-        ("Estimated CAPEX",
-         _resolve_value(replacements, "exec.fastest_open_capex", "[Not found]"),
-         _resolve_value(replacements, "exec.max_capacity_capex", "[Not found]")),
-    ]
-
-    phase4_requests: list[dict[str, Any]] = []
-    # Populate in reverse order
-    for row_idx in range(3, -1, -1):
-        for col_idx in range(2, -1, -1):
-            text = scenario_data[row_idx][col_idx]
-            if text:
-                cell_idx = _cell_index(scenarios_table, row_idx, col_idx)
-                phase4_requests.append({
-                    "insertText": {
-                        "location": {"index": cell_idx},
-                        "text": text,
-                    }
-                })
-
-    if phase4_requests:
-        _batch_update(docs_service, doc_id, phase4_requests)
-
-    # Style the scenarios table
-    doc = docs_service.documents().get(documentId=doc_id).execute()
-    body_content = doc.get("body", {}).get("content", [])
-    scenarios_table = _find_table(body_content, 1)
-
-    if scenarios_table:
-        style_requests: list[dict[str, Any]] = []
-        # Header row: dark blue bg, white bold text
-        for col_idx in range(3):
-            style_requests.extend(
-                _build_cell_style_requests(scenarios_table, 0, col_idx, bg_color=_DARK_BLUE)
-            )
-            cs, ce = _table_cell_range(scenarios_table, 0, col_idx)
-            style_requests.append({
-                "updateTextStyle": {
-                    "range": {"startIndex": cs, "endIndex": ce},
-                    "textStyle": {
-                        "bold": True,
-                        "fontSize": {"magnitude": 10, "unit": _PT},
-                        "weightedFontFamily": {"fontFamily": "Arial"},
-                        "foregroundColor": {"color": {"rgbColor": _WHITE}},
-                    },
-                    "fields": "bold,fontSize,weightedFontFamily,foregroundColor",
-                }
-            })
-        # Data rows: bold labels in col 0
-        for row_idx in range(1, 4):
-            cs, ce = _table_cell_range(scenarios_table, row_idx, 0)
-            style_requests.append({
-                "updateTextStyle": {
-                    "range": {"startIndex": cs, "endIndex": ce},
-                    "textStyle": {
-                        "bold": True,
-                        "fontSize": {"magnitude": 10, "unit": _PT},
-                        "weightedFontFamily": {"fontFamily": "Arial"},
-                    },
-                    "fields": "bold,fontSize,weightedFontFamily",
-                }
-            })
-            for col_idx in range(1, 3):
-                vs, ve = _table_cell_range(scenarios_table, row_idx, col_idx)
-                style_requests.append({
-                    "updateTextStyle": {
-                        "range": {"startIndex": vs, "endIndex": ve},
-                        "textStyle": {
-                            "fontSize": {"magnitude": 10, "unit": _PT},
-                            "weightedFontFamily": {"fontFamily": "Arial"},
-                        },
-                        "fields": "fontSize,weightedFontFamily",
-                    }
-                })
-        if style_requests:
-            _batch_update(docs_service, doc_id, style_requests)
-
     # ── Phase 5: Cost Breakdown section ──────────────────────────────────
     if _has_alpha_phasing_summary(replacements):
         doc = docs_service.documents().get(documentId=doc_id).execute()
@@ -1460,61 +1619,64 @@ def build_dd_report_doc(
     b5.insert_heading("Detailed Cost Breakdown", level=2)
 
     num_cost_rows = len(_COST_BREAKDOWN_ROWS) + 1  # +1 for header
-    b5.insert_table(num_cost_rows, 3)
+    cost_sections = (
+        ("Fastest Open Cost Breakdown", "fastest_open"),
+        ("Max Capacity Cost Breakdown", "max_capacity"),
+    )
+    for section_idx, (section_heading, _section_key) in enumerate(cost_sections):
+        if section_idx:
+            b5.insert_text("\n")
+        b5.insert_heading(section_heading, level=3)
+        b5.insert_table(num_cost_rows, 2)
 
     _batch_update(docs_service, doc_id, b5.requests)
 
-    # Populate cost table
+    # Populate cost tables
     doc = docs_service.documents().get(documentId=doc_id).execute()
     body_content = doc.get("body", {}).get("content", [])
-    cost_table = _find_table(body_content, 2)
-
-    if cost_table is None:
-        logger.error("Could not find cost breakdown table")
-        return hyperlink_trace
-
-    cost_header = ("Line Item", "Fastest Open", "Max Capacity")
-    cost_rows_data: list[tuple[str, str, str]] = []
-    for row_key, display_label in _COST_BREAKDOWN_ROWS:
-        fo_val = _resolve_value(
-            replacements,
-            f"exec.cost_{row_key}_fastest_open",
-            "[Not found]",
-        )
-        mc_val = _resolve_value(
-            replacements,
-            f"exec.cost_{row_key}_max_capacity",
-            "[Not found]",
-        )
-        cost_rows_data.append((display_label, fo_val, mc_val))
-
     phase5_requests: list[dict[str, Any]] = []
-    # Populate in reverse order
-    all_cost_data = [cost_header] + cost_rows_data
-    for row_idx in range(len(all_cost_data) - 1, -1, -1):
-        for col_idx in range(2, -1, -1):
-            text = all_cost_data[row_idx][col_idx]
-            if text:
-                cell_idx = _cell_index(cost_table, row_idx, col_idx)
-                phase5_requests.append({
-                    "insertText": {
-                        "location": {"index": cell_idx},
-                        "text": text,
-                    }
-                })
+    for section_idx, (_section_heading, scenario_key) in enumerate(cost_sections):
+        cost_table = _find_table(body_content, 2 + section_idx)
+        if cost_table is None:
+            logger.error("Could not find %s cost breakdown table", scenario_key)
+            return hyperlink_trace
+
+        cost_rows_data: list[tuple[str, str]] = [("Line Item", "Amount")]
+        for row_key, display_label in _COST_BREAKDOWN_ROWS:
+            val = _resolve_value(
+                replacements,
+                f"exec.cost_{row_key}_{scenario_key}",
+                "[Not found]",
+            )
+            cost_rows_data.append((display_label, val))
+
+        # Populate in reverse order
+        for row_idx in range(len(cost_rows_data) - 1, -1, -1):
+            for col_idx in range(1, -1, -1):
+                text = cost_rows_data[row_idx][col_idx]
+                if text:
+                    cell_idx = _cell_index(cost_table, row_idx, col_idx)
+                    phase5_requests.append({
+                        "insertText": {
+                            "location": {"index": cell_idx},
+                            "text": text,
+                        }
+                    })
 
     if phase5_requests:
         _batch_update(docs_service, doc_id, phase5_requests)
 
-    # Style cost table
+    # Style cost tables
     doc = docs_service.documents().get(documentId=doc_id).execute()
     body_content = doc.get("body", {}).get("content", [])
-    cost_table = _find_table(body_content, 2)
+    style_requests = []
+    for section_idx, (_section_heading, _scenario_key) in enumerate(cost_sections):
+        cost_table = _find_table(body_content, 2 + section_idx)
+        if not cost_table:
+            continue
 
-    if cost_table:
-        style_requests = []
         # Header row
-        for col_idx in range(3):
+        for col_idx in range(2):
             style_requests.extend(
                 _build_cell_style_requests(cost_table, 0, col_idx, bg_color=_DARK_BLUE)
             )
@@ -1540,7 +1702,7 @@ def build_dd_report_doc(
 
             # Alternating row shading (even data rows = odd table rows)
             if data_row_idx % 2 == 1:
-                for col_idx in range(3):
+                for col_idx in range(2):
                     style_requests.extend(
                         _build_cell_style_requests(
                             cost_table, table_row_idx, col_idx, bg_color=_LIGHT_GRAY,
@@ -1562,7 +1724,7 @@ def build_dd_report_doc(
             })
 
             # Value columns
-            for col_idx in range(1, 3):
+            for col_idx in range(1, 2):
                 vs, ve = _table_cell_range(cost_table, table_row_idx, col_idx)
                 style_requests.append({
                     "updateTextStyle": {
@@ -1576,8 +1738,23 @@ def build_dd_report_doc(
                     }
                 })
 
-        if style_requests:
-            _batch_update(docs_service, doc_id, style_requests)
+    if style_requests:
+        _batch_update(docs_service, doc_id, style_requests)
+
+    doc = docs_service.documents().get(documentId=doc_id).execute()
+    body_content = doc.get("body", {}).get("content", [])
+    end_idx = _doc_end_index(body_content)
+
+    b_scores = _DocBuilder(start_index=end_idx)
+    b_scores.insert_text("\n")
+    b_scores.insert_heading("Score Explanations", level=2)
+    for label, score_token, comment_token in _SCORE_EXPLANATION_ROWS:
+        _insert_labeled_summary_field(
+            b_scores,
+            label,
+            _score_explanation_value(replacements, score_token, comment_token),
+        )
+    _batch_update(docs_service, doc_id, b_scores.requests)
 
     # ── Phase 6: Notes and Source Documents ───────────────────────────────
     doc = docs_service.documents().get(documentId=doc_id).execute()
@@ -1616,7 +1793,7 @@ def build_dd_report_doc(
     doc = docs_service.documents().get(documentId=doc_id).execute()
     body_content = doc.get("body", {}).get("content", [])
 
-    source_table = _find_table(body_content, 3)
+    source_table = _find_table(body_content, 4)
     if source_table is None:
         logger.error("Could not find source documents table")
         return hyperlink_trace
@@ -1636,9 +1813,9 @@ def build_dd_report_doc(
     # is at a *lower* index than the previous, otherwise earlier inserts
     # shift later cached indices and cell content gets mixed.
     for row_idx in range(len(source_table_data) - 1, -1, -1):
-        row = source_table_data[row_idx]
+        source_row = source_table_data[row_idx]
         for col_idx in range(2, -1, -1):
-            cell_text = row[col_idx]
+            cell_text = source_row[col_idx]
             if not cell_text:
                 continue
             cell_idx = _cell_index(source_table, row_idx, col_idx)
@@ -1649,8 +1826,8 @@ def build_dd_report_doc(
                 }
             })
             # Hyperlink only on the value column (col 2) when URL is present
-            if col_idx == 2 and len(row) > 3 and row[3] is not None:
-                url = row[3]
+            if col_idx == 2 and len(source_row) > 3 and source_row[3] is not None:
+                url = source_row[3]
                 phase7_requests.append({
                     "updateTextStyle": {
                         "range": {
@@ -1675,7 +1852,7 @@ def build_dd_report_doc(
     # Style source documents table
     doc = docs_service.documents().get(documentId=doc_id).execute()
     body_content = doc.get("body", {}).get("content", [])
-    source_table = _find_table(body_content, 3)
+    source_table = _find_table(body_content, 4)
 
     if source_table:
         style_requests = []

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from due_diligence_reporter.google_doc_builder import (
     _COST_BREAKDOWN_ROWS,
+    _DUE_DILIGENCE_DATA_ROWS,
     _HEADER_ROWS,
     _LINK_GAP_LABELS,
     _SOURCE_DOC_ROWS,
@@ -17,6 +18,7 @@ from due_diligence_reporter.google_doc_builder import (
     _doc_end_index,
     _DocBuilder,
     _find_table,
+    _format_score_value,
     _normalize_bulleted_field,
     _normalize_replacements_for_rendering,
     _resolve_link_value,
@@ -207,6 +209,24 @@ class TestResolveValue:
         assert _resolve_value({}, "key") == ""
 
 
+class TestFormatScoreValue:
+    def test_numeric_scores_render_with_color_labels(self) -> None:
+        assert _format_score_value("1") == "1 - Green"
+        assert _format_score_value("2") == "2 - Yellow"
+        assert _format_score_value("3") == "3 - Red"
+
+    def test_color_scores_render_with_numeric_labels(self) -> None:
+        assert _format_score_value("GREEN") == "1 - Green"
+        assert _format_score_value("Yellow") == "2 - Yellow"
+        assert _format_score_value("red") == "3 - Red"
+
+    def test_existing_canonical_or_gap_values_are_preserved(self) -> None:
+        assert _format_score_value("2 - Yellow") == "2 - Yellow"
+        assert _format_score_value("[Not found -- score not stated]") == (
+            "[Not found -- score not stated]"
+        )
+
+
 class TestResolveLinkValue:
     def test_url_returns_display_and_url(self) -> None:
         repl = {"sources.sir_link": "https://drive.google.com/file/abc"}
@@ -309,6 +329,10 @@ class TestTokenCoverage:
         for scenario in ("fastest_open", "max_capacity"):
             for metric in ("capacity", "open_date", "capex"):
                 cls._BUILDER_TOKENS.add(f"exec.{scenario}_{metric}")
+        cls._BUILDER_TOKENS.update([
+            "exec.fastest_open_summary",
+            "exec.max_capacity_summary",
+        ])
 
         cls._BUILDER_TOKENS.update([
             "exec.alpha_phasing_phase_i_scope",
@@ -322,6 +346,17 @@ class TestTokenCoverage:
         for row_key, _ in _COST_BREAKDOWN_ROWS:
             for scenario in ("fastest_open", "max_capacity"):
                 cls._BUILDER_TOKENS.add(f"exec.cost_{row_key}_{scenario}")
+
+        cls._BUILDER_TOKENS.update([
+            "exec.regulatory_score",
+            "exec.regulatory_comment",
+            "exec.building_score",
+            "exec.building_comment",
+            "exec.play_area_score",
+            "exec.play_area_comment",
+            "exec.school_ops_score",
+            "exec.school_ops_comment",
+        ])
 
         # Narrative tokens
         cls._BUILDER_TOKENS.update([
@@ -354,6 +389,10 @@ class TestTokenCoverage:
         for scenario in ("fastest_open", "max_capacity"):
             for metric in ("capacity", "capex", "open_date"):
                 current_tokens.add(f"exec.{scenario}_{metric}")
+        current_tokens.update([
+            "exec.fastest_open_summary",
+            "exec.max_capacity_summary",
+        ])
 
         current_tokens.update([
             "exec.alpha_phasing_phase_i_scope",
@@ -374,6 +413,17 @@ class TestTokenCoverage:
             for scenario in ("fastest_open", "max_capacity"):
                 current_tokens.add(f"exec.{key}_{scenario}")
 
+        current_tokens.update([
+            "exec.regulatory_score",
+            "exec.regulatory_comment",
+            "exec.building_score",
+            "exec.building_comment",
+            "exec.play_area_score",
+            "exec.play_area_comment",
+            "exec.school_ops_score",
+            "exec.school_ops_comment",
+        ])
+
         # exec narrative
         current_tokens.update(["exec.acquisition_conditions", "exec.tradeoffs_and_deficiencies"])
 
@@ -385,9 +435,9 @@ class TestTokenCoverage:
             "sources.opening_plan_link", "sources.alpha_phasing_plan_link",
         ])
 
-        # 8 meta + 8 exec summary/direct + 6 scenario summary + 5 phasing
-        # + 24 cost + 2 narrative + 8 sources = 61
-        assert len(current_tokens) == 61, f"Expected 61 tokens, got {len(current_tokens)}"
+        # 8 meta + 8 exec summary/direct + 8 scenario summary/detail + 5 phasing
+        # + 24 cost + 8 score/comment + 2 narrative + 8 sources = 71
+        assert len(current_tokens) == 71, f"Expected 71 tokens, got {len(current_tokens)}"
 
         # All template tokens should be covered by the builder
         missing = current_tokens - self._BUILDER_TOKENS
@@ -407,7 +457,7 @@ class TestTokenCoverage:
 
 def _make_mock_docs_service(
     *,
-    num_tables: int = 4,
+    num_tables: int = 5,
 ) -> MagicMock:
     """Create a mock docs_service that returns plausible doc structures.
 
@@ -429,9 +479,9 @@ def _make_mock_docs_service(
             if t == 0:
                 rows, cols = len(_HEADER_ROWS), 2
             elif t == 1:
-                rows, cols = 4, 3
-            elif t == 2:
-                rows, cols = len(_COST_BREAKDOWN_ROWS) + 1, 3
+                rows, cols = len(_DUE_DILIGENCE_DATA_ROWS), 4
+            elif t in (2, 3):
+                rows, cols = len(_COST_BREAKDOWN_ROWS) + 1, 2
             else:
                 rows, cols = len(_SOURCE_DOC_ROWS) + 1, 3
 
@@ -495,11 +545,27 @@ class TestBuildDdReportDoc:
             "exec.max_capacity_capacity": "125 students",
             "exec.max_capacity_capex": "$812,000",
             "exec.max_capacity_open_date": "11/26",
+            "exec.fastest_open_summary": (
+                "Fastest Open is viable for a small opening."
+                "\nUses the lightest classroom and life-safety scope."
+            ),
+            "exec.max_capacity_summary": (
+                "Max Capacity requires a longer buildout."
+                "\nAdds the deferred classroom scope after opening."
+            ),
             "exec.alpha_phasing_phase_i_scope": "Open with four classrooms and code-required life safety.",
             "exec.alpha_phasing_phase_ii_scope": "Lobby refresh; outdoor shade.",
             "exec.alpha_phasing_phase_ii_allowance": "$120k",
             "exec.alpha_phasing_recommended_timing": "Winter break after opening.",
             "exec.alpha_phasing_quality_bar_status": "Q1 target with 2 confirmed Phase II gaps.",
+            "exec.regulatory_score": "YELLOW",
+            "exec.regulatory_comment": "Private school registration is available after entity setup.",
+            "exec.building_score": "YELLOW",
+            "exec.building_comment": "MEP and life-safety scope needs confirmation.",
+            "exec.play_area_score": "RED",
+            "exec.play_area_comment": "No on-site play area has been documented.",
+            "exec.school_ops_score": "YELLOW",
+            "exec.school_ops_comment": "Opening can work with tight staffing and vendor sequencing.",
             "exec.acquisition_conditions": "- Landlord must provide 6-month TI window\n- ADA ramp required",
             "exec.tradeoffs_and_deficiencies": "- No dedicated outdoor playspace\n- Fire alarm > 15 years old",
             "sources.sir_link": "https://drive.google.com/file/d/sir123",
@@ -674,10 +740,20 @@ class TestBuildDdReportDocRequestStructure:
             ),
             "exec.direct_viable_buildout": "Fastest Open",
             "exec.alpha_fit": "Yes",
+            "exec.fastest_open_summary": "Open the smallest viable school first.\nKeep Phase I tight.",
+            "exec.max_capacity_summary": "Max Capacity is possible later.\nIt needs Phase II scope.",
             "exec.alpha_phasing_phase_i_scope": "Open with minimum code and classroom scope.",
             "exec.alpha_phasing_phase_ii_scope": "Finish quality-bar gaps after opening.",
             "exec.alpha_phasing_phase_ii_allowance": "$90k",
             "exec.alpha_phasing_recommended_timing": "Winter break.",
+            "exec.regulatory_score": "YELLOW",
+            "exec.regulatory_comment": "PSA path is available after setup.",
+            "exec.building_score": "YELLOW",
+            "exec.building_comment": "Building scope is manageable but not turnkey.",
+            "exec.play_area_score": "RED",
+            "exec.play_area_comment": "No play-area path has been validated.",
+            "exec.school_ops_score": "YELLOW",
+            "exec.school_ops_comment": "Ops can work with tight launch controls.",
             VERIFICATION_OPEN_ITEMS_KEY: (
                 "- Pull ZIMAS case records and LADBS CO history\n"
                 "- Confirm correct lease address with landlord"
@@ -696,11 +772,16 @@ class TestBuildDdReportDocRequestStructure:
         inserted_text = _inserted_text(docs_svc)
 
         assert (
-            inserted_text.index("Executive Summary\n")
+            inserted_text.index("Due Diligence\n")
+            < inserted_text.index("Executive Summary\n")
+            < inserted_text.index("Fastest Open\n")
+            < inserted_text.index("Max Capacity\n")
             < inserted_text.index("Direct Answer\n")
-            < inserted_text.index("Buildout Analysis\n")
             < inserted_text.index("Alpha Phasing Plan\n")
             < inserted_text.index("Detailed Cost Breakdown\n")
+            < inserted_text.index("Fastest Open Cost Breakdown\n")
+            < inserted_text.index("Max Capacity Cost Breakdown\n")
+            < inserted_text.index("Score Explanations\n")
             < inserted_text.index("Supporting Notes\n")
             < inserted_text.index("Open Items to Verify\n")
             < inserted_text.index("Referenced Reports\n")
@@ -789,7 +870,7 @@ class TestBuildDdReportDocRequestStructure:
 
         assert "PARTIAL REPORT" not in inserted_text
 
-    def test_direct_answer_renders_before_buildout_analysis(self) -> None:
+    def test_direct_answer_renders_after_scenario_answers(self) -> None:
         docs_svc = _make_mock_docs_service()
         drive_svc = MagicMock()
         repl = {
@@ -808,11 +889,19 @@ class TestBuildDdReportDocRequestStructure:
             if "insertText" in request
         )
 
-        assert inserted_text.index("Direct Answer\n") < inserted_text.index("Buildout Analysis\n")
-        assert "2a. Viable Buildout: " in inserted_text
-        assert "2b. Great Alpha School Site: " in inserted_text
+        assert (
+            inserted_text.index("Fastest Open\n")
+            < inserted_text.index("Max Capacity\n")
+            < inserted_text.index("Direct Answer\n")
+            < inserted_text.index("Detailed Cost Breakdown\n")
+            < inserted_text.index("Fastest Open Cost Breakdown\n")
+            < inserted_text.index("Max Capacity Cost Breakdown\n")
+        )
+        assert "Viable Buildout: " in inserted_text
+        assert "Great Alpha School Site: " in inserted_text
+        assert "2a. Viable Buildout: " not in inserted_text
 
-    def test_exec_summary_labels_are_bold_and_support_lines_are_bulleted(self) -> None:
+    def test_exec_summary_support_lines_are_bulleted(self) -> None:
         docs_svc = _make_mock_docs_service()
         drive_svc = MagicMock()
         repl = {
@@ -830,7 +919,8 @@ class TestBuildDdReportDocRequestStructure:
         zoning_insert = next(
             request["insertText"]
             for request in requests
-            if request.get("insertText", {}).get("text") == "Zoning: "
+            if request.get("insertText", {}).get("text")
+            == "Zoning: Use Permit Required (public)\n"
         )
         zoning_start = zoning_insert["location"]["index"]
         support_insert = next(
@@ -842,17 +932,16 @@ class TestBuildDdReportDocRequestStructure:
         support_start = support_insert["location"]["index"]
 
         assert any(
-            request.get("updateTextStyle", {}).get("range") == {
-                "startIndex": zoning_start,
-                "endIndex": zoning_start + len("Zoning: "),
-            }
-            and request["updateTextStyle"]["textStyle"].get("bold") is True
+            "createParagraphBullets" in request
+            and request["createParagraphBullets"]["range"]["startIndex"]
+            <= support_start
+            < request["createParagraphBullets"]["range"]["endIndex"]
             for request in requests
         )
         assert any(
             "createParagraphBullets" in request
             and request["createParagraphBullets"]["range"]["startIndex"]
-            <= support_start
+            <= zoning_start
             < request["createParagraphBullets"]["range"]["endIndex"]
             for request in requests
         )

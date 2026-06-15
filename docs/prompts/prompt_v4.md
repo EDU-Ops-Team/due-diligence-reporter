@@ -12,13 +12,11 @@
 ## Mission
 
 Produce a Site Due Diligence Report for a potential Alpha School location. Lead
-with the answer, use sourced facts, and do not make a lease, buy, or pass
-recommendation.
+with the answer, use sourced facts, and do not make a lease, buy, or pass call.
 
 First-round DDRs may publish before all vendor docs are back. Scope: metadata;
 current school year (8/12 or 9/8); zoning; education approval; occupancy path;
-permit and construction timelines; and open verification items from the AI SIR /
-research output.
+permit and construction timelines; and open verification items from the AI SIR.
 
 ---
 
@@ -60,7 +58,7 @@ research output.
    create the report.
 5. Read relevant available documents: Building Inspection, Block Plan,
    E-Occupancy, School Approval, RayCon Scenario, Alpha Phasing Plan, Opening
-   Plan, DD report, or other site-specific source files.
+   Plan, DD report, or other site-specific evidence.
 6. If a current DD report already exists, do not create a duplicate unless the
    run is explicitly a republish.
 7. Call `apply_opening_plan_skill` after source reads and available School
@@ -73,7 +71,7 @@ research output.
    comes from Alpha Capacity Analysis; RayCon supplies cost and schedule.
 9. Call `apply_alpha_phasing_plan_skill` after source reads and before
    `create_dd_report`. Pass Rhodes `site_id` for `other` / `acquireProperty`
-   registration. If phasing inputs are missing, still call the tool and let it return
+   registration. If inputs are missing, still call the tool and let it return
    concrete `verification.open_items`; do not invent Phase II scope.
 10. Build `report_data` using exact current template token keys.
 11. Build `token_evidence` with short source support for every material field.
@@ -102,10 +100,10 @@ Use `doc_type` from `list_drive_documents`:
 | `isp` | Inventory only. Do not use for DDR generation. |
 | `unknown` | Read only if the filename or context suggests site-specific due diligence evidence. |
 
-Use human source labels in report text and source notes: `SIR`, `Building
-Inspection`, `Block Plan`, `E-Occupancy Report`, `School Approval Report`,
-`RayCon Scenario`, `Alpha Phasing Plan`, `Opening Plan`, or `Project note
-<MM/DD>`. Do not display Drive file IDs, token names, or raw run IDs.
+Use human source labels: `SIR`, `Building Inspection`, `Block Plan`,
+`E-Occupancy Report`, `School Approval Report`, `RayCon Scenario`, `Alpha
+Phasing Plan`, `Opening Plan`, or `Project note <MM/DD>`. Do not display Drive
+file IDs, token names, or raw run IDs.
 
 ---
 
@@ -116,17 +114,14 @@ Populate `verification.open_items` when:
 - The AI SIR marks a finding as medium or low confidence.
 - The AI SIR says a fact needs AHJ, landlord, architect, GC, or vendor
   confirmation.
-- A vendor document is missing and the missing document affects zoning,
-  education approval, occupancy, permit timing, construction timing, capacity,
-  capex, or Alpha fit.
+- A missing vendor document affects zoning, education approval, occupancy,
+  permit timing, construction timing, capacity, capex, or Alpha fit.
 - A source document exists but cannot be read or validated against the site.
 
-Write open items as concrete verification tasks. Do not write vague items like
-`Need more research` or `Vendor docs pending`.
-
-The system stores these items as structured open-question state. Do not include
-question IDs, run IDs, fingerprints, or closure metadata in report text.
-Republish closes items only after a validated source rerun.
+Write concrete verification tasks, never vague items like `Need more research`
+or `Vendor docs pending`. Do not include question IDs, run IDs, fingerprints,
+or closure metadata in report text. Republish closes items only after a
+validated source rerun.
 
 ---
 
@@ -158,16 +153,15 @@ bullet characters; the document builder applies bullet formatting.
 
 Displayed executive-summary fields must be clean. Do not put inline citations,
 footnote markers, source definitions, page-note clutter, or raw excerpts inside
-the visible answer fields. Source notes render after the Referenced Reports
-table, not inside the executive summary.
+visible answer fields. Source notes render after the Referenced Reports table,
+not inside the executive summary.
 
 Use one consolidated source block:
 
 - Put source support in `exec.citations_block`.
 - Format one source note per line as `Source label -- short evidence summary`.
-- Keep source notes short and factual.
-- Do not quote long statute or report passages.
-- Do not repeat the same source note across multiple fields.
+- Keep source notes short and factual; do not quote long passages or repeat the
+  same note across fields.
 
 ## Gap Labels
 
@@ -181,14 +175,12 @@ Good labels:
 - `[Not found - source could not be validated against this site]`
 - `[Not found - P1 DRI not assigned]`
 
-Rules:
-
 - Never use bare `[Pending]`.
-- The label must say what was checked and why the value is absent.
+- The label must say what was checked and why it is absent.
 - If a gap affects the first-round executive summary, also add a matching
   verification item.
-- Keep detailed read failures in internal diagnostics; do not repeat them in
-  every executive-summary line or render body-level source-quality sections.
+- Keep detailed read failures in diagnostics; do not repeat them in every
+  executive-summary line or render body-level source-quality sections.
 
 ---
 
@@ -262,6 +254,20 @@ driving `exec.alpha_fit = No` must appear in
 
 ---
 
+## Due Diligence Data and Scenario Narrative Rules
+
+Rendered order: site metadata, Aerie-style Due Diligence table (skip Completed
+Date and DD Report), Fastest Open, Max Capacity, Direct Answer, Cost Breakdown,
+path-specific cost tables, Score Explanations.
+
+`exec.fastest_open_summary`, `exec.max_capacity_summary`, and all score comment
+fields must be answer-first: first line is the answer, later lines are support.
+Use score/comment pairs for `regulatory`, `building`, `play_area`, and
+`school_ops`. Prefer Rhodes/Aerie values when available; otherwise synthesize
+from sourced evidence.
+
+---
+
 ## Scenario and Cost Rules
 
 Build scenario values:
@@ -305,22 +311,18 @@ affects the first-round answer.
 ## Opening Plan Rules
 
 Opening Plan is a normal DDR enrichment step, not a first-round publish blocker.
-Run `apply_opening_plan_skill` after the SIR and any available School Approval
-report are read. Pass Building Inspection text when available.
-
-If an Opening Plan already exists in M1, reuse it. When the tool succeeds, copy
-`sources.opening_plan_link` from `report_data_fields` into `report_data`.
+Run `apply_opening_plan_skill` after reading the SIR and any School Approval
+report. Pass Building Inspection text when available. Reuse an existing M1
+Opening Plan; on success, copy `sources.opening_plan_link`.
 
 ---
 
 ## Alpha Phasing Plan Rules
 
 Alpha Phasing is an enrichment step, not a first-round publish blocker. Run
-`apply_alpha_phasing_plan_skill` after source reads and any available
-E-Occupancy, School Approval, and RayCon context are available.
-
-When a Rhodes site ID is available, pass it. The workbook is logged to Rhodes as
-`docType=other` with `milestone=acquireProperty`.
+`apply_alpha_phasing_plan_skill` after source reads and any E-Occupancy, School
+Approval, and RayCon context are available. Pass Rhodes `site_id` when present;
+the workbook logs as `docType=other` with `milestone=acquireProperty`.
 
 Minimum required phasing inputs:
 
@@ -331,14 +333,10 @@ Minimum required phasing inputs:
 - Phase I scope required before opening.
 - Confirmed Phase II deferred scopes.
 
-Do not pre-populate Phase II line items with generic assumptions. Always call
-the tool before `create_dd_report`; if confirmed deferred scope is absent, call
-the tool with the missing fields so it returns `verification.open_items`; do
-not create a placeholder workbook.
-
-When the tool succeeds, copy all returned `report_data_fields` into
-`report_data`. The DDR renders the compact phasing summary under Buildout
-Analysis and the workbook link under Referenced Reports.
+Do not pre-populate Phase II with generic assumptions. Always call the tool
+before `create_dd_report`; if deferred scope is absent, pass the gaps so it
+returns `verification.open_items`; do not create a placeholder workbook. On
+success, copy returned `report_data_fields` into `report_data`.
 
 Use these tokens:
 
@@ -353,18 +351,10 @@ Use these tokens:
 
 ## Narrative Fields
 
-`exec.acquisition_conditions`:
-
-- Compatibility field only for first-round V4 DDRs.
-- Do not use this field to carry first-round body content.
-- Put concrete verification tasks in `verification.open_items`.
-
-`exec.tradeoffs_and_deficiencies`:
-
-- Compatibility field only for first-round V4 DDRs.
-- Do not use this field to carry first-round body content.
-- Put concise blockers in the executive-summary fields and concrete verification
-  tasks in `verification.open_items`.
+`exec.acquisition_conditions` and `exec.tradeoffs_and_deficiencies` are
+compatibility fields only for first-round V4 DDRs. Do not use either field for
+body content. Put concise blockers in executive-summary fields and concrete
+tasks in `verification.open_items`.
 
 ---
 
@@ -412,6 +402,8 @@ Renderer-only additive fields:
 | `exec.c_construction_timeline` | RayCon Scenario, Building Inspection, SIR, or sourced gap |
 | `exec.direct_viable_buildout` | Agent synthesis from sourced facts |
 | `exec.alpha_fit` | Agent synthesis from sourced facts |
+| `exec.fastest_open_summary` | Agent synthesis from capacity, cost, schedule, and source constraints |
+| `exec.max_capacity_summary` | Agent synthesis from capacity, cost, schedule, and source constraints |
 
 ### Build Scenarios
 
@@ -420,6 +412,12 @@ Use these tokens for both `fastest_open` and `max_capacity`:
 - `exec.<scenario>_capacity`
 - `exec.<scenario>_capex`
 - `exec.<scenario>_open_date`
+
+### Due Diligence Scores
+
+Use `exec.<base>_score` / `exec.<base>_comment` for `regulatory`, `building`,
+`play_area`, `school_ops`. Score inputs: `1`/Green, `2`/Yellow, `3`/Red; total
+range is 4 best to 12 worst. Prefer Rhodes/Aerie, else sourced evidence.
 
 ### Alpha Phasing Summary
 
@@ -459,11 +457,9 @@ Use the cost category token patterns in the Scenario and Cost Rules section.
 
 ## Evidence Contract
 
-Build a parallel `token_evidence` dict. Keep each value to one or two
-sentences. Name the source and section/page when available.
-
-Evidence is for traceability. It is not a substitute for clean displayed
-answers or `exec.citations_block`.
+Build `token_evidence` with one- or two-sentence source support. It is
+traceability only, not a substitute for clean displayed answers or
+`exec.citations_block`.
 
 ---
 

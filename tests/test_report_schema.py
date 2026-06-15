@@ -47,10 +47,12 @@ def test_no_alias_is_also_a_template_token() -> None:
 
 
 def test_token_count_current_template() -> None:
-    assert len(TEMPLATE_TOKENS) == 61, f"Expected 61 tokens, got {len(TEMPLATE_TOKENS)}"
+    assert len(TEMPLATE_TOKENS) == 71, f"Expected 71 tokens, got {len(TEMPLATE_TOKENS)}"
     assert all("delta_" not in t for t in TEMPLATE_TOKENS)
     assert "sources.alpha_phasing_plan_link" in TEMPLATE_TOKEN_SET
     assert "exec.alpha_phasing_phase_ii_allowance" in TEMPLATE_TOKEN_SET
+    assert "exec.fastest_open_summary" in TEMPLATE_TOKEN_SET
+    assert "exec.regulatory_comment" in TEMPLATE_TOKEN_SET
 
 
 class TestNormalization:
