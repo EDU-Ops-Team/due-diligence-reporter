@@ -330,6 +330,41 @@ def test_resolve_site_prefers_single_active_location_match_for_broad_name() -> N
     ]
 
 
+def test_resolve_site_prefers_unique_central_city_active_match() -> None:
+    client = SequencedToolRhodesClient(
+        [
+            {
+                "sites": [
+                    {
+                        "_id": "ACTIVE-WOODLANDS",
+                        "name": "Alpha The Woodlands 2000 Woodlands Pkwy",
+                        "marketId": "the-woodlands",
+                        "metroId": "houston",
+                        "region": "harris-tx",
+                        "slug": "2000-woodlands-pkwy-the-woodlands-tx",
+                    },
+                    {
+                        "_id": "ACTIVE-HOUSTON",
+                        "name": "Alpha Houston 777 W 23rd St",
+                        "marketId": "central-houston",
+                        "metroId": "houston",
+                        "region": "houston",
+                        "slug": "777-west-23rd-st-houston-tx",
+                    },
+                ]
+            }
+        ]
+    )
+
+    result = client.resolve_site(name="Houston")
+
+    assert result is not None
+    assert result["_id"] == "ACTIVE-HOUSTON"
+    assert client.calls == [
+        ("listSites", {"status": "active", "location": "Houston"}),
+    ]
+
+
 def test_resolve_site_falls_back_when_broad_name_has_multiple_active_matches() -> None:
     client = SequencedToolRhodesClient(
         [
@@ -353,6 +388,57 @@ def test_resolve_site_falls_back_when_broad_name_has_multiple_active_matches() -
     assert client.calls == [
         ("listSites", {"status": "active", "location": "Austin"}),
         ("resolveSite", {"name": "Austin"}),
+    ]
+
+
+def test_lookup_rhodes_site_owner_uses_central_city_match_before_fallback() -> None:
+    client = SequencedToolRhodesClient(
+        [
+            {
+                "sites": [
+                    {
+                        "_id": "WOODLANDS",
+                        "name": "Alpha The Woodlands 2000 Woodlands Pkwy",
+                        "marketId": "the-woodlands",
+                        "metroId": "houston",
+                        "region": "harris-tx",
+                        "slug": "2000-woodlands-pkwy-the-woodlands-tx",
+                    },
+                    {
+                        "_id": "HOUSTON",
+                        "name": "Alpha Houston 777 W 23rd St",
+                        "marketId": "central-houston",
+                        "metroId": "houston",
+                        "region": "houston",
+                        "slug": "777-west-23rd-st-houston-tx",
+                    },
+                ]
+            },
+            {
+                "_id": "HOUSTON",
+                "name": "Alpha Houston 777 W 23rd St",
+                "slug": "777-west-23rd-st-houston-tx",
+                "address": "777 W 23rd St, Houston, TX",
+                "p1Dri": {
+                    "name": "Brandon Gee",
+                    "email": "brandon.gee@trilogy.com",
+                    "userId": "USER1",
+                },
+                "driveFolderId": "drive-root-houston",
+            },
+        ]
+    )
+
+    result = lookup_rhodes_site_owner(site_name="Houston", client=client)
+
+    assert result["status"] == "found"
+    assert result["site_name"] == "Alpha Houston 777 W 23rd St"
+    assert result["site_address"] == "777 W 23rd St, Houston, TX"
+    assert result["drive_folder_url"].endswith("/drive-root-houston")
+    assert result["report_data_fields"]["meta.prepared_by"] == "Brandon Gee"
+    assert client.calls == [
+        ("listSites", {"status": "active", "location": "Houston"}),
+        ("getSite", {"siteId": "HOUSTON"}),
     ]
 
 

@@ -427,6 +427,90 @@ def _should_try_active_location_lookup(*, name: str, address: str) -> bool:
     return len(clean_name.split()) <= 3
 
 
+def _normalize_location_text(value: str) -> str:
+    parts: list[str] = []
+    previous_was_space = False
+    for char in value.casefold():
+        if char.isalnum():
+            parts.append(char)
+            previous_was_space = False
+            continue
+        if not previous_was_space:
+            parts.append(" ")
+            previous_was_space = True
+    return " ".join("".join(parts).split())
+
+
+def _location_field(site: dict[str, Any], key: str) -> str:
+    value = site.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _contains_location_phrase(value: str, lookup: str) -> bool:
+    return f" {lookup} " in f" {value} "
+
+
+def _active_location_match_score(site: dict[str, Any], lookup: str) -> int:
+    normalized_lookup = _normalize_location_text(lookup)
+    if not normalized_lookup:
+        return 0
+
+    score = 0
+    site_name = _normalize_location_text(_site_name(site))
+    if site_name == normalized_lookup or site_name == f"alpha {normalized_lookup}":
+        score += 120
+    elif site_name.startswith(f"alpha {normalized_lookup} "):
+        score += 90
+    elif _contains_location_phrase(site_name, normalized_lookup):
+        score += 60
+
+    for key in ("market", "marketId", "region"):
+        field = _normalize_location_text(_location_field(site, key))
+        if field == normalized_lookup:
+            score += 70
+        elif _contains_location_phrase(field, normalized_lookup):
+            score += 35
+
+    address = _normalize_location_text(_site_address(site))
+    if _contains_location_phrase(address, normalized_lookup):
+        score += 40
+
+    metro = _normalize_location_text(_location_field(site, "metroId"))
+    if metro == normalized_lookup:
+        score += 15
+
+    slug = _normalize_location_text(_location_field(site, "slug"))
+    if _contains_location_phrase(slug, normalized_lookup):
+        score += 10
+
+    return score
+
+
+def _pick_unique_active_location_match(
+    *,
+    name: str,
+    matches: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    scored_matches = [
+        (_active_location_match_score(match, name), match)
+        for match in matches
+        if _site_id(match)
+    ]
+    scored_matches = [
+        (score, match)
+        for score, match in scored_matches
+        if score > 0
+    ]
+    if not scored_matches:
+        return None
+
+    scored_matches.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_match = scored_matches[0]
+    if len(scored_matches) == 1 or best_score > scored_matches[1][0]:
+        return best_match
+    return None
+
+
 def _record_from_site_payload(
     site: dict[str, Any],
     *,
@@ -589,6 +673,12 @@ class RhodesClient:
                 ]
                 if len(exact_active_matches) == 1 and _site_id(exact_active_matches[0]):
                     return exact_active_matches[0]
+                unique_location_match = _pick_unique_active_location_match(
+                    name=name,
+                    matches=matches,
+                )
+                if unique_location_match is not None:
+                    return unique_location_match
 
             try:
                 site = _coerce_site(self.call_tool("resolveSite", {"name": lookup}))
