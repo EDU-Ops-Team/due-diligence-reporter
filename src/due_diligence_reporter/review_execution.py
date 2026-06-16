@@ -17,6 +17,7 @@ EXECUTABLE_REVIEW_DECISIONS = {
     "marknotapplicable",
 }
 DDR_OWNER_KEYS = {"ddr", "duediligencereporter", "due-diligence-reporter"}
+MISSING_DRIVE_FOLDER_ALERT = "missing_drive_folder_url"
 MAX_ACTION_TEXT_LENGTH = 360
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _URL_RE = re.compile(r"https?://[^\s)\]}>,]+", re.IGNORECASE)
@@ -138,6 +139,14 @@ def _action_for_request(
             workflow_owner=workflow_owner,
         )
 
+    if alert_type == MISSING_DRIVE_FOLDER_ALERT:
+        return _missing_drive_folder_action(
+            request,
+            as_of=as_of,
+            dry_run=dry_run,
+            workflow_owner=workflow_owner,
+        )
+
     if dry_run:
         return _build_execution_action(
             request,
@@ -188,6 +197,52 @@ def _action_for_request(
     )
 
 
+def _missing_drive_folder_action(
+    request: dict[str, Any],
+    *,
+    as_of: str,
+    dry_run: bool,
+    workflow_owner: str,
+) -> dict[str, Any]:
+    if dry_run:
+        return _build_execution_action(
+            request,
+            as_of=as_of,
+            status="needs_review",
+            action_taken=(
+                "DDR dry-run confirmed this approved request is blocked by missing "
+                "site Drive folder context; no Drive, Rhodes, report, or Chat mutation "
+                "was attempted."
+            ),
+            review_required=True,
+            review_reason=(
+                "Create or link the site Drive folder through the AADP/Rhodes "
+                "folder-provisioning path, then rerun DDR readiness without dry-run."
+            ),
+            retryable=True,
+            workflow_owner=workflow_owner,
+        )
+
+    return _build_execution_action(
+        request,
+        as_of=as_of,
+        status="needs_review",
+        action_taken=(
+            "DDR handled the approved request as a missing Drive folder prerequisite. "
+            "DDR did not create or link the folder; AADP/Rhodes folder provisioning "
+            "must create or link the site Drive folder before DDR readiness can rerun."
+        ),
+        review_required=True,
+        review_reason=(
+            "Missing Drive folder URL is prerequisite site context, not a DDR report "
+            "generation step. Route to AADP/Rhodes folder provisioning and verify "
+            "Rhodes exposes the site Drive folder URL before rerunning DDR."
+        ),
+        retryable=True,
+        workflow_owner=workflow_owner,
+    )
+
+
 def _build_execution_action(
     request: dict[str, Any],
     *,
@@ -225,6 +280,7 @@ def _build_execution_action(
         "action_requested": _safe_text(
             _str(request.get("action_requested")) or _default_action_requested(alert_type)
         ),
+        "routing_instruction": _safe_text(_str(request.get("routing_instruction"))),
         "action_taken": _safe_text(action_taken),
         "as_of": as_of,
         "owner": {"workflow_owner": owner, "human_owner": "DDR operator"},
@@ -258,6 +314,17 @@ def _build_execution_action(
 
 
 def _attach_execution_result(request: dict[str, Any], action: dict[str, Any]) -> None:
+    remediation_summary = (
+        action.get("action_taken")
+        or action.get("review_reason")
+        or action.get("error_summary")
+        or ""
+    )
+    request["action_taken"] = action.get("action_taken", "")
+    request["review_reason"] = action.get("review_reason", "")
+    request["error_summary"] = action.get("error_summary", "")
+    request["execution_status"] = _execution_action_status(action["status"])
+    request["execution_summary"] = remediation_summary
     request["execution_action"] = {
         "schema_version": "review_execution_action.v1",
         "status": _execution_action_status(action["status"]),
@@ -268,13 +335,9 @@ def _attach_execution_result(request: dict[str, Any], action: dict[str, Any]) ->
         "action_id": action.get("action_id", ""),
         "alert_type": action.get("alert_type", ""),
         "workflow_owner": action.get("workflow_owner", ""),
-        "remediation_summary": (
-            action.get("action_taken")
-            or action.get("review_reason")
-            or action.get("error_summary")
-            or ""
-        ),
+        "remediation_summary": remediation_summary,
         "action_taken": action.get("action_taken", ""),
+        "routing_instruction": action.get("routing_instruction", ""),
         "review_required": action.get("review_required", False),
         "review_reason": action.get("review_reason", ""),
         "error_summary": action.get("error_summary", ""),
@@ -410,6 +473,8 @@ def _alert_type(request: dict[str, Any]) -> str:
 
 
 def _default_action_requested(alert_type: str) -> str:
+    if alert_type == MISSING_DRIVE_FOLDER_ALERT:
+        return "Create or link the site's Google Drive folder in Rhodes, then rerun DDR readiness."
     if alert_type == "report_generation_failed":
         return "Review the failed DDR generation step and rerun after correcting the source blocker."
     if alert_type == "source_read_issue":

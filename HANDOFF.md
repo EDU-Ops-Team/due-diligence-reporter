@@ -1,5 +1,170 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-16 - Missing Drive Folder Review-Execution Handler
+
+- Beads issue `ddr-0dj` tracked the source-repo slice.
+- Added a specific `missing_drive_folder_url` handler in
+  `src/due_diligence_reporter/review_execution.py`.
+- Approved missing-drive-folder review requests now emit `needs_review`
+  source-owned readback instead of the generic "no source-specific execution
+  handler" blocker.
+- The handler is intentionally non-mutating:
+  - it does not create or link Drive folders;
+  - it does not write Rhodes;
+  - it does not send Chat;
+  - it tells operators that AADP/Rhodes folder provisioning must create or link
+    the site Drive folder before DDR readiness can rerun.
+- Review-execution result attachment now overwrites request-level
+  `action_taken`, `review_reason`, `error_summary`, `execution_status`, and
+  `execution_summary` with the latest source readback so stale dashboard input
+  text is not echoed back into WTC.
+- Existing routing-instruction carry-through is preserved and sanitized.
+- Production WTC proof deployed at
+  `https://site-nu-seven-29.vercel.app` via Vercel deployment
+  `dpl_umCVw3yAuVbDx8fHqnWUSadtPAbd`.
+
+Verification:
+
+```powershell
+uv run pytest tests/test_review_execution.py tests/test_ddr_cli.py -q --basetemp C:\tmp\ddr-missing-folder-review-execution-2
+uv run ruff check src\due_diligence_reporter\review_execution.py tests\test_review_execution.py tests\test_ddr_cli.py
+uv run mypy --explicit-package-bases src\due_diligence_reporter\review_execution.py src\due_diligence_reporter\ddr_cli.py
+uv run python -B -c "import ast, pathlib; paths=['src/due_diligence_reporter/review_execution.py','tests/test_review_execution.py','tests/test_ddr_cli.py']; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8'), filename=p) for p in paths]; print('ddr ast ok')"
+uv run ddr review-execution --review-requests C:\Users\foote\.claude\Work\repos\workflow-telemetry-center\data\review-execution-requests-ddr-result.json --output C:\tmp\ddr-missing-folder-review-execution-result-v2.json
+```
+
+Results:
+
+- Focused pytest passed: `15 passed`.
+- Ruff passed.
+- Mypy passed for `review_execution.py` and `ddr_cli.py`.
+- AST parse passed.
+- CLI smoke produced `status=needs_review`, `attempted=1`,
+  `needs_review=1`, `blocked=0`, `errors=0`.
+- WTC live readback shows:
+  `DDR handled the approved request as a missing Drive folder prerequisite.
+  DDR did not create or link the folder; AADP/Rhodes folder provisioning must
+  create or link the site Drive folder before DDR readiness can rerun.`
+
+Next:
+
+- Commit and push the verified source/test changes when Greg approves making
+  the source repo durable.
+- Broader DDR review-execution automation still needs separate handlers for
+  report generation, source-read repair, and reconciliation-specific reruns.
+
+## 2026-06-15 - Manual Chat Houston Rhodes Resolver Fix
+
+- Beads issue `ddr-eer` tracks the repeated manual Google Chat / BrainTrust DDR
+  failure where the card still said Rhodes was unavailable after the earlier
+  public-tool folder fallback had shipped.
+- Live LocationOS reads confirmed Rhodes was available. The current
+  `listSites(location="Houston", status="active")` result now has two active
+  matches: `Alpha Houston 777 W 23rd St` and
+  `Alpha The Woodlands 2000 Woodlands Pkwy`.
+- Live `resolveSite(name="Houston")` still resolves to the old cancelled
+  `Alpha School Houston 5625`, so the broad city-only fallback became unsafe
+  once a second active Houston-metro site appeared.
+- Updated `RhodesClient.resolve_site` so broad name-only active-location
+  lookups still avoid inactive/cancelled fallback, but can choose a unique
+  central-city active match over metro/suburb matches. True ties remain
+  ambiguous and fall through to the existing resolver behavior.
+- Added focused coverage for the current Houston shape: Woodlands appears as a
+  Houston metro match, but `Alpha Houston 777 W 23rd St` wins because its name
+  and Rhodes region/market metadata match the requested city.
+- Live non-mutating smoke check from this checkout:
+  `lookup_rhodes_site_owner(site_name="Houston")` returned
+  `Alpha Houston 777 W 23rd St`, `777 W 23rd St, Houston, TX`, linked Drive
+  folder status `found`, and P1 Brandon Gee.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_rhodes.py tests\test_diagnose_site_readiness.py::test_missing_drive_url_resolves_rhodes_site_folder tests\test_diagnose_site_readiness.py::test_check_site_readiness_missing_drive_url_resolves_rhodes_site_folder tests\test_dd_output_fixes.py::TestListDriveDocumentsFiltering::test_missing_drive_url_resolves_rhodes_site_folder -q --basetemp C:\tmp\ddr-rhodes-chat-manual
+uv run ruff check src\due_diligence_reporter\rhodes.py tests\test_rhodes.py
+uv run mypy src\due_diligence_reporter\rhodes.py
+uv run python -c "from due_diligence_reporter.rhodes import lookup_rhodes_site_owner; import json; r=lookup_rhodes_site_owner(site_name='Houston'); print(json.dumps({k:r.get(k) for k in ['status','site_name','site_address','drive_folder_status','drive_folder_url','p1_assignee_name','message']}, indent=2, sort_keys=True))"
+```
+
+Results: focused pytest passed (`29 passed`); Ruff passed; mypy passed; live
+smoke resolved Houston to the active 777 W 23rd site with the linked Drive
+folder and Brandon Gee as P1.
+
+## 2026-06-15 - DDR Aerie-Style Formatting Alignment
+
+- Beads issue `ddr-8a6` tracks the DDR formatting alignment slice.
+- Updated the Google Docs renderer to keep the site metadata table first, then
+  render an Aerie-style Due Diligence table while omitting Completed Date and
+  DD Report.
+- Reordered the body so Fastest Open renders first, Max Capacity renders
+  second, Direct Answer follows those path narratives, path-specific cost
+  breakdown tables follow, and detailed score explanations render after costs.
+- Added answer-first support-bullet rendering for Fastest Open, Max Capacity,
+  Direct Answer, and score comments, preserving the tight answer line followed
+  by supporting facts.
+- Added score normalization for Aerie numeric inputs: `1 - Green`,
+  `2 - Yellow`, and `3 - Red`; four scored categories total to 4 best and 12
+  worst.
+- Added report tokens and aliases for `exec.fastest_open_summary`,
+  `exec.max_capacity_summary`, and the `regulatory`, `building`, `play_area`,
+  and `school_ops` score/comment pairs from Rhodes/Aerie-style data.
+- Updated the V4 markdown template, prompt contract, process docs, schema, and
+  Google Docs builder tests.
+- Validation on 2026-06-15:
+  - `uv run pytest tests/test_prompt_contract.py` passed (`3 passed`).
+  - `uv run pytest --basetemp C:\tmp\ddr-pytest-basetemp --ignore=pytest-cache-files-o55d_4rl --ignore=tests/_tmp/pytest-cache-files-lhmtb2lz` passed (`1196 passed` after score-normalization coverage).
+  - `uv run ruff check .` passed.
+  - `uv run mypy src/` passed.
+
+## 2026-06-11 - Boca Raton 1515 Scorecard v2 Re-run
+
+- Beads issue `ddr-e7n` tracks the Boca Raton 1515 updated-DDR scorecard
+  rerun.
+- Reviewed the current DDR, Rhodes due-diligence fields, registered documents,
+  Drive root/M1 contents, Jun 11 RayCon 8,500 SF max-buildout summary, Jun 11
+  Matterport-only RayCon summary, older Jun 7 RayCon summary, raw
+  `raycon_scenario.json`, Jun 10 building inspection PDF, Jun 09 SIR PDF, the
+  opening plan, Block Plan V2, and the Florida school-approval report.
+- Published corrected scorecard markdown to the synced M1 folder:
+  `G:\Shared drives\Education Ops\All Locations\Alpha Boca Raton 1515 N Federal Hwy\M1 - Acquire Property\Future-State Ops Scorecard - Alpha Boca Raton 1515 N Federal Hwy - 2026-06-11 v2.md`.
+- Drive indexed the v2 file as
+  `https://drive.google.com/file/d/1WQry2xJF4UHD0rwKA2HQAGRv9tfsb9S_/view?usp=drivesdk`.
+- Updated the existing Rhodes `other` / `acquireProperty` scorecard document
+  row to the v2 Drive file, instead of registering a duplicate document.
+- Corrected controlling values: Fastest Open remains 29 / ~$460k from the
+  updated DDR; Max Capacity is now 93 / $875,387 from the Jun 11 8,500 SF
+  RayCon run; all four dimensions remain YELLOW.
+- Important source-rank note: the prior 40/51/63-student RayCon artifacts are
+  superseded for MaxCap. The raw `raycon_scenario.json` failed validation and
+  carried wrong-source risks, while the Jun 11 8,500 SF summary was created to
+  correct the Matterport-only run.
+- Follow-up note: live Rhodes DD fields still have older target dates
+  (`2026-12-01` FO and `2026-12-17` MaxCap) and the school-ops comment still
+  says "MaxCap is only 40 students." The scorecard recommends replacing that
+  language with the 93-student MaxCap posture, but REBL3/Aerie Portfolio owns
+  DD field writes.
+
+## 2026-06-11 - Boston 3815 Washington Scorecard v2 Re-run
+
+- Beads issue `ddr-536` tracks the Boston / Croft 3815 Washington scorecard
+  evidence review.
+- Reviewed the current DDR, Rhodes due-diligence fields, registered documents,
+  M1 Drive contents, audited capacity analysis, audited block plan, opening
+  plan, OPS package, RayCon JSON, Jun 11 building inspection report, Jun 8 SIR,
+  and older April AI SIR / school-approval docs.
+- Published corrected scorecard markdown to the synced M1 folder:
+  `G:\Shared drives\Education Ops\All Locations\Alpha Boston 3815 Washington St\M1 - Acquire Property\Future-State Ops Scorecard - Alpha Boston 3815 Washington St - 2026-06-11 v2.md`.
+- Drive indexed the v2 file as
+  `https://drive.google.com/file/d/1g0J7Bw8ew61T-g25qgvy2Mp_zTxbAf-Y/view?usp=drivesdk`.
+- Updated the existing Rhodes `other` / `acquireProperty` scorecard document
+  row to the v2 Drive file, instead of registering a duplicate document.
+- Corrected controlling values: Fastest Open 322 / $1.64M / 2026-09-09; Max
+  Capacity 367 / $3.09M / 2027-08-10; scores Regulatory YELLOW, Building
+  YELLOW, Play Area YELLOW, School Ops YELLOW.
+- Important source-rank note: the later raw `raycon_scenario.json` showing
+  51/52 capacity was excluded because it resolved the physical model to 300
+  Cambridge St / 4,444 SF rather than the 3815 Washington Croft building.
+
 ## 2026-06-11 - Google Chat Rhodes Folder Fallback Hardened
 
 - Beads issue `ddr-0n3` tracks the incident where Google Chat / BrainTrust kept
