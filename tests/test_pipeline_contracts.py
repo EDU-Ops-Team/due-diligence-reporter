@@ -139,6 +139,66 @@ def test_pipeline_run_emits_sanitized_action_record_for_open_question() -> None:
     assert "Confirm zoning use" not in serialized
 
 
+def test_pipeline_run_emits_completed_actions_for_rhodes_writes() -> None:
+    run = PipelineRun(
+        run_id="run-1",
+        site_title="Alpha Keller",
+        site_id="SITE1",
+        started_at="2026-05-14T00:00:00+00:00",
+        ended_at="2026-05-14T00:00:02+00:00",
+        final_status="report_created",
+        steps=[
+            _step("succeeded", step="rhodes.due_diligence_update"),
+            _step("succeeded", step="rhodes.report_event"),
+        ],
+        rhodes_due_diligence_update={
+            "status": "updated",
+            "updated_fields": ["status", "dateCompleted", "ddReportLink"],
+        },
+        rhodes_report_event={
+            "status": "created",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        },
+    )
+
+    actions = {record["alert_type"]: record for record in run.to_dict()["action_records"]}
+
+    assert actions["ddr_sor_updated"]["status"] == "completed"
+    assert actions["ddr_sor_updated"]["review_required"] is False
+    assert actions["ddr_sor_updated"]["site_id"] == "SITE1"
+    assert "ddReportLink" in actions["ddr_sor_updated"]["evidence_summary"]
+    assert actions["ddr_p1_note_created"]["status"] == "completed"
+    assert actions["ddr_p1_note_created"]["review_required"] is False
+    assert "note_id=NOTE1" in actions["ddr_p1_note_created"]["evidence_summary"]
+
+
+def test_pipeline_run_emits_aadp_route_for_missing_p1_dri() -> None:
+    run = PipelineRun(
+        run_id="run-1",
+        site_title="Alpha Keller",
+        site_id="SITE1",
+        started_at="2026-05-14T00:00:00+00:00",
+        ended_at="2026-05-14T00:00:02+00:00",
+        final_status="report_created",
+        steps=[_step("succeeded", step="rhodes.owner_lookup")],
+        p1_dri_missing=True,
+    )
+
+    record = run.to_dict()["action_records"][0]
+
+    assert record["schema_version"] == "action_record.v1"
+    assert record["action_id"] == "ddr:site:SITE1:missing_p1_dri"
+    assert record["source_workflow"] == "ddr"
+    assert record["owning_workflow"] == "aadp"
+    assert record["workflow_owner"] == "aadp"
+    assert record["alert_type"] == "missing_p1_dri"
+    assert record["status"] == "queued"
+    assert record["review_required"] is False
+    assert record["retryable"] is True
+    assert "current P1 DRI" in record["evidence_summary"]
+
+
 def test_quality_caps_failed_step_without_operator_action() -> None:
     run = PipelineRun(
         run_id="run-1",

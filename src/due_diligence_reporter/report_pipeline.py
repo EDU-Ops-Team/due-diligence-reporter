@@ -64,7 +64,12 @@ from .raycon_client import (
     raycon_scenario_to_report_fields,
     read_raycon_scenario_from_m1,
 )
-from .rhodes import add_rhodes_site_note, lookup_rhodes_site_owner
+from .report_schema import AGENT_KEY_ALIASES
+from .rhodes import (
+    add_rhodes_site_note,
+    lookup_rhodes_site_owner,
+    update_rhodes_due_diligence,
+)
 from .rhodes_events import (
     post_google_chat_to_configured_webhooks,
     record_rhodes_automation_event,
@@ -74,6 +79,7 @@ from .sir_learning import build_sir_learning_review
 from .utils import (
     escape_html_text,
     extract_folder_id_from_url,
+    flatten_report_data_for_replacement,
     post_google_chat_message,
     sanitize_http_url,
     score_site_match_strength,
@@ -84,6 +90,30 @@ logger = logging.getLogger("report_pipeline")
 
 _RAYCON_REPORT_FIELD_PATHS: frozenset[str] = frozenset(raycon_token_paths())
 DD_REPORT_EVENT_FREQUENCY_CAP_BUSINESS_DAYS = 2
+DUE_DILIGENCE_UPDATE_STEP = "rhodes.due_diligence_update"
+
+_DUE_DILIGENCE_REPORT_FIELD_MAP: tuple[tuple[str, str], ...] = (
+    ("exec.fastest_open_capacity", "foCapacity"),
+    ("exec.fastest_open_capex", "foCapEx"),
+    ("exec.fastest_open_open_date", "foDate"),
+    ("exec.max_capacity_capacity", "maxCapCapacity"),
+    ("exec.max_capacity_capex", "maxCapCapEx"),
+    ("exec.max_capacity_open_date", "maxCapProjOpenDate"),
+    ("exec.regulatory_score", "regulatoryScore"),
+    ("exec.regulatory_comment", "regulatoryComment"),
+    ("exec.building_score", "buildingScore"),
+    ("exec.building_comment", "buildingComment"),
+    ("exec.play_area_score", "playAreaScore"),
+    ("exec.play_area_comment", "playAreaComment"),
+    ("exec.school_ops_score", "schoolOperationsScore"),
+    ("exec.school_ops_comment", "schoolOperationsComment"),
+)
+
+_DUE_DILIGENCE_RECOMMENDATION_KEYS: tuple[str, ...] = (
+    "due_diligence.recommendation",
+    "dueDiligence.recommendation",
+    "recommendation",
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tool definitions for the Claude API call (mirrors the MCP tools)
@@ -1021,6 +1051,7 @@ class PipelineResult:
     open_questions: list[dict[str, Any]] = field(default_factory=list)
     closed_open_questions: list[dict[str, Any]] = field(default_factory=list)
     republish_summary: dict[str, Any] | None = None
+    rhodes_due_diligence_update: dict[str, Any] | None = None
     rhodes_report_event: dict[str, Any] | None = None
     steps: list[StepResult] = field(default_factory=list)
 
@@ -1035,6 +1066,7 @@ class _RunRecorder:
         self.started_at = utc_now_iso()
         self.steps: list[StepResult] = []
         self.sir_learning_review: dict[str, Any] | None = None
+        self.p1_dri_missing = False
 
     def start(self) -> tuple[str, float]:
         return utc_now_iso(), time.monotonic()
@@ -1078,6 +1110,7 @@ class _RunRecorder:
             final_status=final_status,
             steps=list(self.steps),
             sir_learning_review=self.sir_learning_review,
+            p1_dri_missing=self.p1_dri_missing,
         )
 
 
@@ -1194,6 +1227,7 @@ def _attach_result_metadata(run: PipelineRun, result: PipelineResult) -> None:
     run.open_questions = result.open_questions
     run.closed_open_questions = result.closed_open_questions
     run.republish_summary = result.republish_summary
+    run.rhodes_due_diligence_update = result.rhodes_due_diligence_update
     run.rhodes_report_event = result.rhodes_report_event
 
 
@@ -1836,6 +1870,14 @@ def _owner_lookup_report_fields(result: dict[str, Any] | None) -> dict[str, Any]
     return fields if isinstance(fields, dict) else {}
 
 
+def _mark_missing_p1_dri_if_needed(
+    recorder: _RunRecorder,
+    result: dict[str, Any] | None,
+) -> None:
+    if isinstance(result, dict) and result.get("status") == "owner_missing":
+        recorder.p1_dri_missing = True
+
+
 def _drive_folder_from_rhodes(result: dict[str, Any] | None) -> str | None:
     if not isinstance(result, dict):
         return None
@@ -2093,6 +2135,165 @@ def _dd_report_email_skip_reason(
     return None
 
 
+def _record_rhodes_due_diligence_update_step(
+    recorder: _RunRecorder,
+    result: PipelineResult,
+    *,
+    site_id: str,
+    report_data: dict[str, Any],
+) -> None:
+    started_at, started_monotonic = recorder.start()
+    fields = _build_due_diligence_update_fields(
+        report_data,
+        result,
+        completed_at=recorder.started_at,
+    )
+    update_status = update_rhodes_due_diligence(site_id=site_id, fields=fields)
+    result.rhodes_due_diligence_update = update_status
+    artifact = ArtifactRef(
+        kind="rhodes_due_diligence",
+        name="Rhodes due diligence update",
+        metadata=update_status,
+    )
+    status = str(update_status.get("status") or "")
+    if status == "updated":
+        recorder.record(
+            DUE_DILIGENCE_UPDATE_STEP,
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[artifact],
+        )
+        return
+    if status == "skipped":
+        recorder.record(
+            DUE_DILIGENCE_UPDATE_STEP,
+            started_at,
+            started_monotonic,
+            "skipped",
+            skipped_reason=str(update_status.get("reason") or "skipped"),
+            artifacts=[artifact],
+        )
+        return
+
+    message = str(
+        update_status.get("error")
+        or update_status.get("reason")
+        or "Rhodes due diligence update failed"
+    )
+    recorder.record(
+        DUE_DILIGENCE_UPDATE_STEP,
+        started_at,
+        started_monotonic,
+        "failed",
+        error=_pipeline_error(
+            recorder.run_id,
+            DUE_DILIGENCE_UPDATE_STEP,
+            "rhodes_due_diligence_update_failed",
+            message,
+        ),
+        artifacts=[artifact],
+    )
+
+
+def _build_due_diligence_update_fields(
+    report_data: dict[str, Any],
+    result: PipelineResult,
+    *,
+    completed_at: str,
+) -> dict[str, Any]:
+    flat = _aliased_report_data(report_data)
+    final_ready = _due_diligence_result_is_final_ready(result)
+    fields: dict[str, Any] = {
+        "status": _due_diligence_status_for_result(result),
+    }
+    if final_ready:
+        fields["dateCompleted"] = _date_completed_value(completed_at)
+        doc_url = _clean_due_diligence_value(result.doc_url)
+        if doc_url is not None:
+            fields["ddReportLink"] = doc_url
+
+    for source_key, rhodes_key in _DUE_DILIGENCE_REPORT_FIELD_MAP:
+        value = _clean_due_diligence_value(flat.get(source_key))
+        if value is not None:
+            fields[rhodes_key] = value
+
+    recommendation = _explicit_due_diligence_recommendation(flat)
+    if recommendation:
+        fields["recommendation"] = recommendation
+
+    return fields
+
+
+def _aliased_report_data(report_data: dict[str, Any]) -> dict[str, Any]:
+    flat = flatten_report_data_for_replacement(report_data)
+    for alias, canonical in AGENT_KEY_ALIASES.items():
+        if alias in flat and canonical not in flat:
+            flat[canonical] = flat[alias]
+    return flat
+
+
+def _due_diligence_status_for_result(result: PipelineResult) -> str:
+    if _due_diligence_result_is_final_ready(result):
+        return "complete"
+    if _due_diligence_result_is_follow_up(result):
+        return "follow-up"
+    return "data-gathering"
+
+
+def _due_diligence_result_is_final_ready(result: PipelineResult) -> bool:
+    return not result.open_questions and not result.missing_docs
+
+
+def _due_diligence_result_is_follow_up(result: PipelineResult) -> bool:
+    return bool(result.source_event) and bool(result.open_questions) and not result.missing_docs
+
+
+def _date_completed_value(completed_at: str) -> str:
+    parsed = _parse_iso_datetime(completed_at)
+    if parsed is None:
+        parsed = datetime.now(UTC)
+    return parsed.date().isoformat()
+
+
+def _clean_due_diligence_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        if lowered.startswith("[not found") or text.startswith("{{"):
+            return None
+        return text
+    if isinstance(value, bool | int | float):
+        return value
+    return None
+
+
+def _explicit_due_diligence_recommendation(flat_report_data: dict[str, Any]) -> str | None:
+    for key in _DUE_DILIGENCE_RECOMMENDATION_KEYS:
+        value = _clean_due_diligence_value(flat_report_data.get(key))
+        if not isinstance(value, str):
+            continue
+        normalized = value.strip().lower().replace("_", "-")
+        if normalized == "go":
+            return "go"
+        if normalized in {"no-go", "no go", "nogo"}:
+            return "no-go"
+    return None
+
+
+def _due_diligence_update_failed(result: PipelineResult) -> bool:
+    update_status = result.rhodes_due_diligence_update
+    return isinstance(update_status, dict) and update_status.get("status") == "failed"
+
+
+def _due_diligence_update_was_written(update_status: dict[str, Any] | None) -> bool:
+    return isinstance(update_status, dict) and update_status.get("status") == "updated"
+
+
 def _record_rhodes_report_event_step(
     recorder: _RunRecorder,
     settings: Settings,
@@ -2113,13 +2314,16 @@ def _record_rhodes_report_event_step(
         open_questions=result.open_questions,
         closed_open_questions=result.closed_open_questions,
         missing_vendor_docs=result.missing_docs,
+        due_diligence_update=result.rhodes_due_diligence_update,
     )
-    cap_status = _dd_report_event_frequency_cap(
-        event,
-        site_title=result.site_title,
-        current_run_id=recorder.run_id,
-        now=_parse_iso_datetime(recorder.started_at) or datetime.now(UTC),
-    )
+    cap_status = None
+    if not _due_diligence_update_was_written(result.rhodes_due_diligence_update):
+        cap_status = _dd_report_event_frequency_cap(
+            event,
+            site_title=result.site_title,
+            current_run_id=recorder.run_id,
+            now=_parse_iso_datetime(recorder.started_at) or datetime.now(UTC),
+        )
     if cap_status is not None:
         result.rhodes_report_event = cap_status
         artifact = ArtifactRef(
@@ -2522,6 +2726,7 @@ def process_site_pipeline(
         resolved_site_id = str(rhodes_owner_context.get("site_id") or "").strip()
         if resolved_site_id and not recorder.site_id:
             recorder.site_id = resolved_site_id
+        _mark_missing_p1_dri_if_needed(recorder, rhodes_owner_context)
         initial_report_fields.update(_owner_lookup_report_fields(rhodes_owner_context))
         p1_name = p1_name or _first_text(
             rhodes_owner_context.get("p1_assignee_name"),
@@ -2717,6 +2922,7 @@ def process_site_pipeline(
         resolved_site_id = str(rhodes_owner_context.get("site_id") or "").strip()
         if resolved_site_id and not recorder.site_id:
             recorder.site_id = resolved_site_id
+        _mark_missing_p1_dri_if_needed(recorder, rhodes_owner_context)
         initial_report_fields.update(_owner_lookup_report_fields(rhodes_owner_context))
         p1_name = p1_name or _first_text(
             rhodes_owner_context.get("p1_assignee_name"),
@@ -2968,6 +3174,20 @@ def process_site_pipeline(
         open_questions_before=open_questions_before,
         validated=True,
     )
+    _record_rhodes_due_diligence_update_step(
+        recorder,
+        final_result,
+        site_id=recorder.site_id or site_id or "",
+        report_data=_report_data_from_trace(agent_result.get("trace")),
+    )
+    if _due_diligence_update_failed(final_result):
+        return _finalize_pipeline_result(
+            final_result,
+            recorder,
+            gc=gc,
+            drive_folder_url=drive_folder_url,
+        )
+
     _record_rhodes_report_event_step(
         recorder,
         settings,

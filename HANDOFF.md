@@ -1,5 +1,106 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-17 - WTC Action Records for DDR SOR Updates and Missing P1 Route
+
+- Beads issue `ddr-9ku` tracks Greg's follow-up decision to start missing P1
+  DRI handling with the existing WTC/AADP action-record route rather than a
+  direct AADP assignment attempt from DDR.
+- DDR due-diligence field writes now follow the agreed lifecycle:
+  - interim writes use `status=data-gathering`;
+  - source-triggered updates with the full vendor set present but open
+    verification items remaining use `status=follow-up`;
+  - final-ready writes use `status=complete`;
+  - `dateCompleted` and `ddReportLink` are written only for final-ready runs.
+- `PipelineRun.action_records` now emits WTC-compatible success facts for:
+  - `ddr_sor_updated` when `updateDueDiligence` returns `status=updated`;
+  - `ddr_p1_note_created` / `ddr_rhodes_note_created` when the Rhodes report
+    event note is created.
+- If Rhodes owner lookup returns `owner_missing`, the run manifest now carries
+  `p1_dri_missing=true` and emits a queued `missing_p1_dri` ActionRecord with
+  `source_workflow=ddr`, `owning_workflow=aadp`, and `workflow_owner=aadp`.
+  DDR does not attempt to assign the P1 DRI directly in this route; AADP owns
+  the remediation/readback.
+- Existing failed/blocked step and open-question ActionRecords remain in place.
+- Updated `docs/process/HOW-IT-WORKS.md` to describe the interim/final/follow-up
+  status behavior, final-only DD Report link, and WTC/AADP missing-P1 route.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_pipeline_contracts.py tests\test_report_pipeline.py -q --basetemp C:\tmp\ddr-wtc-action-records-focused-2
+uv run ruff check src\due_diligence_reporter\pipeline_contracts.py src\due_diligence_reporter\report_pipeline.py tests\test_pipeline_contracts.py tests\test_report_pipeline.py
+uv run mypy src\due_diligence_reporter\pipeline_contracts.py src\due_diligence_reporter\report_pipeline.py
+uv run ruff check .
+uv run mypy src\
+uv run pytest tests --ignore=tests\_tmp --basetemp C:\tmp\ddr-wtc-action-records-full-2
+```
+
+Results:
+
+- Focused pipeline/contract tests passed: `74 passed`.
+- Focused Ruff and mypy passed.
+- Full Ruff passed.
+- Full mypy passed: no issues in 47 source files.
+- Full pytest against `tests/` passed: `1210 passed`.
+
+## 2026-06-17 - DDR Due-Diligence Rhodes Field Write Before P1 Review Notice
+
+- Beads issue `ddr-691` tracks Greg's request for the workflow to write the
+  DD result to the system of record, then notify the P1 DRI so they can review
+  the action.
+- Added a LocationOS/Rhodes writer wrapper for `updateDueDiligence` in
+  `src/due_diligence_reporter/rhodes.py`.
+- `process_site_pipeline` now records a `rhodes.due_diligence_update` step
+  after a DD report validates and before the P1 review note/email path.
+- The workflow maps normalized DDR report fields to Rhodes due-diligence
+  fields:
+  `status`, `dateCompleted`, `ddReportLink`, Fastest Open capacity/capex/date,
+  Max Capacity capacity/capex/date, regulatory/building/play-area/school-ops
+  score/comment, and explicit `recommendation` when the report data already
+  supplies `go` or `no-go`.
+- Status is `complete` only when no open verification items or outstanding
+  full-report vendor docs remain; otherwise it writes `follow-up`.
+- Placeholder values such as `[Not found - ...]` and raw `{{token}}`
+  placeholders are not written into Rhodes due-diligence fields.
+- A real `updateDueDiligence` failure now fails closed for the P1 success/review
+  notification: `rhodes.report_event` and `notify.email` are not sent after a
+  failed SOR write. Skipped cases such as missing site identity remain visible
+  in the manifest and preserve prior notification behavior.
+- Successful SOR writes are included in the `dd_report_created` /
+  `dd_report_updated` AutomationEvent note, which now asks the P1 DRI to review
+  the Rhodes due-diligence fields and DD report. A successful SOR write bypasses
+  the old open-ask frequency cap so the P1 DRI is notified about the mutation.
+- Updated `docs/process/HOW-IT-WORKS.md` to reflect the write-then-notify
+  contract and fail-closed behavior.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_rhodes.py tests\test_report_pipeline.py -q --basetemp C:\tmp\ddr-due-diligence-update-tests
+uv run pytest tests\test_automation_event.py tests\test_pipeline_contracts.py -q --basetemp C:\tmp\ddr-due-diligence-contract-tests
+uv run pytest tests\test_rhodes.py tests\test_report_pipeline.py tests\test_automation_event.py tests\test_pipeline_contracts.py -q --basetemp C:\tmp\ddr-due-diligence-update-all-focused
+uv run ruff check src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\pipeline_contracts.py tests\test_rhodes.py tests\test_report_pipeline.py
+uv run mypy src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\pipeline_contracts.py
+uv run ruff check .
+uv run mypy src\
+uv run pytest tests --ignore=tests\_tmp --basetemp C:\tmp\ddr-due-diligence-full-tests
+```
+
+Results:
+
+- Focused Rhodes/report-pipeline tests: `89 passed`.
+- Adjacent AutomationEvent/pipeline-contract tests: `16 passed`.
+- Combined focused suite after final typing edit: `105 passed`.
+- Focused ruff and mypy passed.
+- Full ruff passed.
+- Full mypy passed: no issues in 47 source files.
+- Full pytest against `tests/` passed: `1204 passed`.
+- A raw `uv run pytest --basetemp C:\tmp\ddr-due-diligence-full-pytest`
+  still hits existing unreadable temp cache directories
+  `pytest-cache-files-o55d_4rl` and `tests/_tmp/pytest-cache-files-lhmtb2lz`
+  during collection; rerunning against `tests` with `--ignore=tests\_tmp`
+  avoids that unrelated Windows cache collection issue.
+
 ## 2026-06-16 - Missing Drive Folder Review-Execution Handler
 
 - Beads issue `ddr-0dj` tracked the source-repo slice.

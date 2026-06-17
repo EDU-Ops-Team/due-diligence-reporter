@@ -544,7 +544,7 @@ def _record_from_site_payload(
 
 
 class RhodesClient:
-    """Small HTTP JSON-RPC client for read-only Rhodes site lookups."""
+    """Small HTTP JSON-RPC client for Rhodes site lookups and scoped writes."""
 
     def __init__(self, cfg: RhodesConfig | None = None) -> None:
         self.cfg = cfg or load_rhodes_config()
@@ -777,6 +777,24 @@ class RhodesClient:
             payload["notes"] = notes.strip()
         return _coerce_document(self.call_tool("registerDocument", payload))
 
+    def update_due_diligence(
+        self,
+        *,
+        site_id: str,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        clean_site_id = site_id.strip()
+        if not clean_site_id:
+            raise RhodesError("site_id is required")
+        clean_fields = _clean_due_diligence_fields(fields)
+        if not clean_fields:
+            raise RhodesError("at least one due diligence field is required")
+
+        payload: dict[str, Any] = {"siteId": clean_site_id}
+        payload.update(clean_fields)
+        result = self.call_tool("updateDueDiligence", payload)
+        return result if isinstance(result, dict) else {"result": result}
+
     def add_site_note(
         self,
         *,
@@ -888,6 +906,104 @@ class RhodesClient:
             if _document_drive_file_id(document) == target:
                 return document
         return None
+
+
+def _clean_due_diligence_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    clean: dict[str, Any] = {}
+    for key, value in fields.items():
+        clean_key = str(key).strip()
+        if not clean_key or clean_key == "siteId":
+            continue
+        if value is None:
+            continue
+        if isinstance(value, str):
+            clean_value = value.strip()
+            if not clean_value:
+                continue
+            clean[clean_key] = clean_value
+        else:
+            clean[clean_key] = value
+    return clean
+
+
+def update_rhodes_due_diligence(
+    *,
+    site_id: str,
+    fields: dict[str, Any],
+    client: RhodesClient | None = None,
+) -> dict[str, Any]:
+    """Update Rhodes due diligence fields through LocationOS."""
+
+    clean_site_id = site_id.strip()
+    clean_fields = _clean_due_diligence_fields(fields)
+    base = {
+        "rhodes_site_id": clean_site_id,
+        "updated_fields": sorted(clean_fields),
+    }
+    if not clean_site_id:
+        return {**base, "status": "skipped", "reason": "missing_site_id"}
+    if not clean_fields:
+        return {**base, "status": "skipped", "reason": "missing_due_diligence_fields"}
+
+    try:
+        rhodes = client or RhodesClient()
+    except RhodesError as exc:
+        reason = "rhodes_not_configured" if "RHODES_API_KEY" in str(exc) else "rhodes_error"
+        status = "skipped" if reason == "rhodes_not_configured" else "failed"
+        return {**base, "status": status, "reason": reason, "error": str(exc)}
+
+    try:
+        response = rhodes.update_due_diligence(site_id=clean_site_id, fields=clean_fields)
+    except RhodesError as exc:
+        return {**base, "status": "failed", "reason": "rhodes_error", "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - workflow side effect should report cleanly
+        return {**base, "status": "failed", "reason": "unexpected_error", "error": str(exc)}
+
+    response_error = _due_diligence_response_error(response)
+    if response_error:
+        return {
+            **base,
+            "status": "failed",
+            "reason": "update_rejected",
+            "error": response_error,
+            "response": _summarize_due_diligence_response(response),
+        }
+
+    return {
+        **base,
+        "status": "updated",
+        "reason": "ok",
+        "response": _summarize_due_diligence_response(response),
+    }
+
+
+def _due_diligence_response_error(response: dict[str, Any]) -> str:
+    status = str(response.get("status") or "").strip().lower()
+    if status in {"error", "failed", "rejected"}:
+        return str(
+            response.get("error")
+            or response.get("message")
+            or response.get("rejectionReason")
+            or status
+        )
+    if response.get("success") is False:
+        return str(response.get("error") or response.get("message") or "success=false")
+    error = response.get("error")
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    return ""
+
+
+def _summarize_due_diligence_response(response: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "type": type(response).__name__,
+        "keys": sorted(str(key) for key in response.keys())[:20],
+    }
+    for key in ("status", "success", "message", "error", "id", "_id", "siteId"):
+        value = response.get(key)
+        if isinstance(value, str | bool | int | float) or value is None:
+            summary[key] = value
+    return summary
 
 
 def lookup_rhodes_site_owner(

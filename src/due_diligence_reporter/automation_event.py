@@ -66,6 +66,7 @@ def _render_dd_report_event_note(event: AutomationEvent) -> str:
     trigger_source = event.details.get("Trigger source", "").strip()
     source_file = event.details.get("Source file", "").strip()
     outstanding_docs = event.details.get("Outstanding vendor docs", "").strip()
+    rhodes_update = event.details.get("Rhodes due diligence update", "").strip()
 
     lines = [
         "AutomationEvent v1",
@@ -73,6 +74,8 @@ def _render_dd_report_event_note(event: AutomationEvent) -> str:
         f"Site: {event.site_name}",
         f"Open asks: {open_count}",
     ]
+    if rhodes_update:
+        lines.append(f"Rhodes due diligence update: {rhodes_update}")
     if trigger_source:
         source_label = _format_republish_source(trigger_source, source_file)
         lines.append(f"DDR republished due to: {source_label}")
@@ -181,6 +184,14 @@ def _format_republish_source(source_type: str, source_file: str = "") -> str:
 
 
 def _dd_report_action_needed(event: AutomationEvent, open_count: int) -> str:
+    if event.details.get("Rhodes due diligence update", "").strip():
+        if open_count <= 0:
+            return "Review the Rhodes due diligence fields and DD report."
+        item_word = "ask" if open_count == 1 else "asks"
+        return (
+            f"Review the Rhodes due diligence fields and DD report, then close "
+            f"{open_count} open verification {item_word}."
+        )
     if not event.decision_required or open_count <= 0:
         return "No operator action needed; DD report event is recorded."
     item_word = "ask" if open_count == 1 else "asks"
@@ -332,6 +343,7 @@ def build_dd_report_summary_event(
     open_questions: list[dict[str, Any]] | None = None,
     closed_open_questions: list[dict[str, Any]] | None = None,
     missing_vendor_docs: list[str] | None = None,
+    due_diligence_update: dict[str, Any] | None = None,
     created_at: str | None = None,
 ) -> AutomationEvent:
     """Build the DDR generated/updated report summary event."""
@@ -340,6 +352,13 @@ def build_dd_report_summary_event(
     closed_items = closed_open_questions or []
     source = source_event or {}
     is_update = bool(source)
+    due_diligence_update_data = (
+        due_diligence_update if isinstance(due_diligence_update, dict) else None
+    )
+    due_diligence_written = (
+        due_diligence_update_data is not None
+        and due_diligence_update_data.get("status") == "updated"
+    )
     artifact_ids = {
         "Run ID": run_id,
     }
@@ -357,9 +376,15 @@ def build_dd_report_summary_event(
         "Closed item count": str(len(closed_items)),
         "Outstanding vendor docs": _format_missing_docs(missing_vendor_docs),
     }
+    if due_diligence_written:
+        assert due_diligence_update_data is not None
+        details["Rhodes due diligence update"] = _format_due_diligence_update(
+            due_diligence_update_data
+        )
     details.update(_indexed_item_details("Open item", open_items))
     details.update(_indexed_item_details("Closed item", closed_items))
 
+    decision_required = bool(open_items) or due_diligence_written
     return AutomationEvent(
         source_system="due-diligence-reporter",
         source_id=run_id,
@@ -367,9 +392,15 @@ def build_dd_report_summary_event(
         site_name=site_name.strip() or "Unknown site",
         event_type="dd_report_updated" if is_update else "dd_report_created",
         artifact_ids=artifact_ids,
-        decision_required=bool(open_items),
+        decision_required=decision_required,
         requested_decision=(
-            "review and resolve DDR open verification items" if open_items else None
+            "review Rhodes due diligence fields and resolve DDR open verification items"
+            if open_items and due_diligence_written
+            else "review Rhodes due diligence fields and DD report"
+            if due_diligence_written
+            else "review and resolve DDR open verification items"
+            if open_items
+            else None
         ),
         mutation_status="report_created",
         details=details,
@@ -426,6 +457,15 @@ def _format_missing_docs(missing_docs: list[str] | None) -> str:
     if not missing_docs:
         return "None"
     return ", ".join(str(item).strip() for item in missing_docs if str(item).strip())
+
+
+def _format_due_diligence_update(update: dict[str, Any]) -> str:
+    fields = update.get("updated_fields")
+    if isinstance(fields, list):
+        clean_fields = [str(field).strip() for field in fields if str(field).strip()]
+        if clean_fields:
+            return f"updated {', '.join(clean_fields)}"
+    return "updated"
 
 
 def build_source_review_required_event(

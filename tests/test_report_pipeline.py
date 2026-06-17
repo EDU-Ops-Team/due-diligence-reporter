@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,6 +14,7 @@ from due_diligence_reporter.report_pipeline import (
     PipelineResult,
     ReportTrace,
     TraceEvent,
+    _build_due_diligence_update_fields,
     _canonicalize_site_tool_input,
     _dd_report_event_frequency_cap,
     _extract_source_read_issues,
@@ -28,6 +30,15 @@ from due_diligence_reporter.report_pipeline import (
 @pytest.fixture(autouse=True)
 def _isolate_report_event_manifest_dir(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("due_diligence_reporter.report_pipeline.RUN_MANIFEST_DIR", tmp_path)
+    monkeypatch.setattr(
+        "due_diligence_reporter.report_pipeline.update_rhodes_due_diligence",
+        lambda *, site_id, fields: {
+            "status": "skipped",
+            "reason": "test_default",
+            "rhodes_site_id": site_id,
+            "updated_fields": sorted(fields),
+        },
+    )
 
 
 def _open_ask_event():
@@ -207,6 +218,66 @@ def test_dd_report_event_frequency_cap_allows_source_triggered_updates(tmp_path)
     )
 
     assert cap is None
+
+
+def test_interim_due_diligence_fields_leave_final_fields_blank() -> None:
+    fields = _build_due_diligence_update_fields(
+        {
+            "exec.fastest_open_capacity": "36",
+            "exec.regulatory_comment": "Registration path is straightforward.",
+        },
+        PipelineResult(
+            site_title="Alpha Keller",
+            status="report_created",
+            missing_docs=["Vendor Building Inspection"],
+            doc_url="https://docs.google.com/document/d/doc123",
+        ),
+        completed_at="2026-06-17T15:00:00+00:00",
+    )
+
+    assert fields == {
+        "status": "data-gathering",
+        "foCapacity": "36",
+        "regulatoryComment": "Registration path is straightforward.",
+    }
+
+
+def test_final_due_diligence_fields_include_completed_date_and_report_link() -> None:
+    fields = _build_due_diligence_update_fields(
+        {"exec.fastest_open_capacity": "36"},
+        PipelineResult(
+            site_title="Alpha Keller",
+            status="report_created",
+            doc_url="https://docs.google.com/document/d/doc123",
+        ),
+        completed_at="2026-06-17T15:00:00+00:00",
+    )
+
+    assert fields == {
+        "status": "complete",
+        "dateCompleted": "2026-06-17",
+        "ddReportLink": "https://docs.google.com/document/d/doc123",
+        "foCapacity": "36",
+    }
+
+
+def test_source_triggered_open_item_due_diligence_status_is_follow_up() -> None:
+    fields = _build_due_diligence_update_fields(
+        {"exec.fastest_open_capacity": "36"},
+        PipelineResult(
+            site_title="Alpha Keller",
+            status="report_created",
+            doc_url="https://docs.google.com/document/d/doc123",
+            source_event={"source_type": "building_inspection", "fingerprint": "bi-1"},
+            open_questions=[{"display_text": "Confirm updated permit path"}],
+        ),
+        completed_at="2026-06-17T15:00:00+00:00",
+    )
+
+    assert fields == {
+        "status": "follow-up",
+        "foCapacity": "36",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -999,6 +1070,275 @@ class TestProcessSitePipeline:
         assert "Ask 1: Confirm zoning use from the vendor SIR" in note_kwargs["body"]
         step = next(step for step in result.steps if step.step == "rhodes.report_event")
         assert step.status == "succeeded"
+
+    @patch(
+        "due_diligence_reporter.report_pipeline.utc_now_iso",
+        return_value="2026-06-17T15:00:00+00:00",
+    )
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_report_created_updates_rhodes_due_diligence_before_notifying_p1(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+        mock_update_due_diligence,
+        mock_rhodes_note,
+        _mock_utc_now,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-17T15:00:00+00:00",
+            events=[],
+            final_report_data={
+                "due_diligence.fastest_open_capacity": "36",
+                "exec.fastest_open_capex": "$185,000",
+                "exec.fastest_open_open_date": "08/01/26",
+                "dueDiligence.maxCapacityCapacity": "54",
+                "dueDiligence.maxCapacityCapex": "$290,000",
+                "dueDiligence.maxCapacityTargetOpen": "04/27",
+                "exec.regulatory_score": "4",
+                "exec.regulatory_comment": "Registration path is straightforward.",
+                "exec.building_score": "3",
+                "exec.building_comment": "Minor building work remains.",
+                "exec.play_area_score": "2",
+                "exec.play_area_comment": "Outdoor play area needs review.",
+                "exec.school_ops_score": "5",
+                "exec.school_ops_comment": "Operational setup is strong.",
+                "dueDiligence.recommendation": "go",
+            },
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+            "trace": trace,
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+        events: list[str] = []
+
+        def update_side_effect(**kwargs):
+            events.append("update")
+            return {
+                "status": "updated",
+                "reason": "ok",
+                "updated_fields": sorted(kwargs["fields"]),
+            }
+
+        def note_side_effect(**kwargs):
+            events.append("note")
+            return {
+                "status": "created",
+                "reason": "ok",
+                "rhodes_note_id": "NOTE1",
+                "owner_notification": "mentioned",
+            }
+
+        mock_update_due_diligence.side_effect = update_side_effect
+        mock_rhodes_note.side_effect = note_side_effect
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            p1_email="owner@example.com",
+            site_id="SITE1",
+        )
+
+        assert result.status == "report_created"
+        assert events == ["update", "note"]
+        update_kwargs = mock_update_due_diligence.call_args.kwargs
+        assert update_kwargs["site_id"] == "SITE1"
+        assert update_kwargs["fields"] == {
+            "status": "complete",
+            "dateCompleted": "2026-06-17",
+            "ddReportLink": "https://docs.google.com/document/d/doc123",
+            "foCapacity": "36",
+            "foCapEx": "$185,000",
+            "foDate": "08/01/26",
+            "maxCapCapacity": "54",
+            "maxCapCapEx": "$290,000",
+            "maxCapProjOpenDate": "04/27",
+            "regulatoryScore": "4",
+            "regulatoryComment": "Registration path is straightforward.",
+            "buildingScore": "3",
+            "buildingComment": "Minor building work remains.",
+            "playAreaScore": "2",
+            "playAreaComment": "Outdoor play area needs review.",
+            "schoolOperationsScore": "5",
+            "schoolOperationsComment": "Operational setup is strong.",
+            "recommendation": "go",
+        }
+        assert result.rhodes_due_diligence_update is not None
+        assert result.rhodes_due_diligence_update["status"] == "updated"
+        note_body = mock_rhodes_note.call_args.kwargs["body"]
+        assert "Action needed: Review the Rhodes due diligence fields and DD report." in note_body
+        assert "Rhodes due diligence update: updated" in note_body
+        update_step = next(
+            step for step in result.steps if step.step == "rhodes.due_diligence_update"
+        )
+        assert update_step.status == "succeeded"
+
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_report_created_blocks_p1_notification_when_due_diligence_write_fails(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+        mock_update_due_diligence,
+        mock_rhodes_note,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-17T15:00:00+00:00",
+            events=[],
+            final_report_data={"exec.fastest_open_capacity": "36"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+            "trace": trace,
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+        mock_update_due_diligence.return_value = {
+            "status": "failed",
+            "reason": "rhodes_error",
+            "error": "updateDueDiligence rejected",
+        }
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            p1_email="owner@example.com",
+            site_id="SITE1",
+        )
+
+        assert result.status == "report_created"
+        assert result.failed_step == "rhodes.due_diligence_update"
+        assert result.rhodes_report_event is None
+        mock_rhodes_note.assert_not_called()
+        assert not any(step.step == "notify.email" for step in result.steps)
+        update_step = next(
+            step for step in result.steps if step.step == "rhodes.due_diligence_update"
+        )
+        assert update_step.status == "failed"
+
+    @patch("due_diligence_reporter.report_pipeline._resolve_rhodes_owner_for_pipeline")
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_missing_p1_dri_routes_aadp_action_record(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+        mock_update_due_diligence,
+        mock_rhodes_note,
+        mock_owner_lookup,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        mock_owner_lookup.return_value = {
+            "status": "owner_missing",
+            "site_id": "SITE1",
+            "site_name": "Alpha Keller",
+            "message": "Rhodes site exists, but p1Dri is not assigned.",
+            "report_data_fields": {},
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-17T15:00:00+00:00",
+            events=[],
+            final_report_data={"exec.fastest_open_capacity": "36"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+            "trace": trace,
+        }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+        mock_update_due_diligence.return_value = {
+            "status": "updated",
+            "reason": "ok",
+            "updated_fields": ["status", "dateCompleted", "ddReportLink", "foCapacity"],
+        }
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "none",
+        }
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            site_id="SITE1",
+        )
+
+        assert result.manifest_path is not None
+        manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
+        actions = {record["alert_type"]: record for record in manifest["action_records"]}
+        missing_p1 = actions["missing_p1_dri"]
+        assert missing_p1["source_workflow"] == "ddr"
+        assert missing_p1["owning_workflow"] == "aadp"
+        assert missing_p1["workflow_owner"] == "aadp"
+        assert missing_p1["status"] == "queued"
+        assert missing_p1["review_required"] is False
+        assert "Assign the site's P1 DRI in Rhodes." == missing_p1["action_requested"]
+        assert "owner@example.com" not in json.dumps(missing_p1)
 
     @patch("due_diligence_reporter.report_pipeline.post_google_chat_message")
     @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")

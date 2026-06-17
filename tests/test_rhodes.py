@@ -10,6 +10,7 @@ from due_diligence_reporter.rhodes import (
     lookup_rhodes_site_owner,
     map_ddr_doc_type_to_rhodes,
     register_rhodes_document_for_upload,
+    update_rhodes_due_diligence,
 )
 
 
@@ -22,6 +23,7 @@ class FakeRhodesClient:
         drive_root: tuple[str, str] | Exception | None = None,
         note_response: dict[str, Any] | None = None,
         note_responses: list[dict[str, Any] | None] | None = None,
+        due_diligence_response: dict[str, Any] | None = None,
     ) -> None:
         self.site = site or {}
         self.resolved_site = resolved_site
@@ -29,6 +31,7 @@ class FakeRhodesClient:
         self.drive_root = drive_root
         self.note_response = note_response
         self.note_responses = list(note_responses or [])
+        self.due_diligence_response = due_diligence_response
         self.documents: list[dict[str, Any]] = []
         self.registered_documents: list[dict[str, Any]] = []
         self.notes: list[dict[str, Any]] = []
@@ -130,6 +133,23 @@ class FakeRhodesClient:
         }
         self.registered_documents.append(document)
         return document
+
+    def update_due_diligence(
+        self,
+        *,
+        site_id: str,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "update_due_diligence",
+                {
+                    "site_id": site_id,
+                    "fields": ",".join(sorted(fields)),
+                },
+            )
+        )
+        return self.due_diligence_response or {"status": "ok", "siteId": site_id}
 
     def get_user(
         self,
@@ -714,6 +734,52 @@ def test_rhodes_client_add_site_note_sends_explicit_site_anchor() -> None:
             },
         )
     ]
+
+
+def test_rhodes_client_update_due_diligence_calls_locationos_tool() -> None:
+    client = RecordingRhodesClient()
+
+    result = client.update_due_diligence(
+        site_id=" SITE1 ",
+        fields={
+            "status": " complete ",
+            "ddReportLink": " https://docs.google.com/document/d/doc123 ",
+            "foCapacity": "36",
+            "blank": "",
+        },
+    )
+
+    assert result["_id"] == "NOTE1"
+    assert client.calls == [
+        (
+            "updateDueDiligence",
+            {
+                "siteId": "SITE1",
+                "status": "complete",
+                "ddReportLink": "https://docs.google.com/document/d/doc123",
+                "foCapacity": "36",
+            },
+        )
+    ]
+
+
+def test_update_rhodes_due_diligence_reports_rejected_response() -> None:
+    client = FakeRhodesClient(
+        due_diligence_response={
+            "status": "rejected",
+            "rejectionReason": "Action requires confirmation",
+        }
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"status": "complete"},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "update_rejected"
+    assert "Action requires confirmation" in result["error"]
 
 
 def test_add_rhodes_site_note_mentions_owner_user_id() -> None:
