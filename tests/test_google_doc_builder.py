@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from due_diligence_reporter.google_doc_builder import (
     _COST_BREAKDOWN_ROWS,
     _DUE_DILIGENCE_DATA_ROWS,
@@ -26,6 +28,7 @@ from due_diligence_reporter.google_doc_builder import (
     _sanitize_ascii_punctuation,
     _split_bullets_and_footnotes,
     _summary_display_lines,
+    _table_cell_range,
     build_dd_report_doc,
 )
 from due_diligence_reporter.report_schema import (
@@ -299,6 +302,45 @@ class TestCellIndex:
         idx = _cell_index(table, 0, 0)
         # First cell should start at start_index + 1 = 11
         assert idx == 11
+
+    def test_empty_cell_content_uses_cell_start_fallback(self) -> None:
+        table = _make_table_element(10, 2, 2)
+        cell = table["table"]["tableRows"][0]["tableCells"][0]
+        cell["content"] = []
+
+        assert _cell_index(table, 0, 0) == 11
+
+    def test_missing_paragraph_elements_use_paragraph_start_fallback(self) -> None:
+        table = _make_table_element(10, 2, 2)
+        para = table["table"]["tableRows"][0]["tableCells"][0]["content"][0]
+        para["paragraph"]["elements"] = []
+
+        assert _cell_index(table, 0, 0) == 11
+
+    def test_empty_cell_range_uses_cell_metadata(self) -> None:
+        table = _make_table_element(10, 2, 2)
+        cell = table["table"]["tableRows"][0]["tableCells"][0]
+        cell["content"] = []
+
+        assert _table_cell_range(table, 0, 0) == (11, 12)
+
+    def test_missing_cell_metadata_raises_clear_error(self) -> None:
+        table = _make_table_element(10, 2, 2)
+        cell = table["table"]["tableRows"][0]["tableCells"][0]
+        cell["content"] = []
+        cell.pop("startIndex")
+
+        with pytest.raises(ValueError, match="missing a valid start index"):
+            _cell_index(table, 0, 0)
+
+    def test_missing_cell_range_metadata_raises_clear_error(self) -> None:
+        table = _make_table_element(10, 2, 2)
+        cell = table["table"]["tableRows"][0]["tableCells"][0]
+        cell["content"] = []
+        cell.pop("startIndex")
+
+        with pytest.raises(ValueError, match="missing a valid start index"):
+            _table_cell_range(table, 0, 0)
 
 
 # ---------------------------------------------------------------------------

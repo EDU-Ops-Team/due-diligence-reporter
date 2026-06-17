@@ -1,5 +1,38 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-17 - Google Doc Builder Guard for Invalid Table Cell Indexes
+
+- Beads issue `ddr-2w8` tracks the manual Chapel Hill `create_dd_report`
+  failure where Google Docs returned
+  `Invalid requests[6].insertText: Index must be greater than or equal to 0`.
+- Root cause was not a DD template copy/permissions problem. The current
+  `create_dd_report` path creates a blank Google Doc and the programmatic
+  builder writes the structure. The builder could read back a table cell with
+  missing paragraph element indexes and fall back to insertion/range index `0`,
+  which is invalid for Docs body inserts.
+- Updated `src/due_diligence_reporter/google_doc_builder.py` so table-cell
+  insertion and style ranges use valid paragraph/text-run indexes, then valid
+  table-cell metadata. If Google returns a cell with no usable index metadata,
+  the builder now raises a clear local error instead of sending a corrupting
+  Docs request at index `0` or the document start.
+- Added regression coverage in `tests/test_google_doc_builder.py` for empty
+  table-cell content, missing paragraph elements, empty-cell ranges, and
+  missing metadata fail-closed behavior.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_google_doc_builder.py::TestCellIndex -q --basetemp C:\tmp\ddr-doc-builder-cell-index-tight
+uv run pytest tests\test_google_doc_builder.py -q --basetemp C:\tmp\ddr-doc-builder-full-tight
+uv run pytest tests\test_dd_output_fixes.py::TestAsyncOffloading::test_create_dd_report_uses_to_thread tests\test_dd_output_fixes.py::TestAsyncOffloading::test_create_dd_report_rebuilds_existing_same_day_doc tests\test_dd_output_fixes.py::TestAsyncOffloading::test_create_dd_report_moves_legacy_root_report_to_m1 -q --basetemp C:\tmp\ddr-create-report-wrapper-tight
+uv run ruff check src\due_diligence_reporter\google_doc_builder.py tests\test_google_doc_builder.py
+uv run mypy src\due_diligence_reporter\google_doc_builder.py
+```
+
+Results: focused cell-index tests passed (`6 passed`), full Google Doc builder
+tests passed (`80 passed`), create-dd-report wrapper tests passed (`3 passed`),
+Ruff passed, and mypy passed for the touched source file.
+
 ## 2026-06-17 - WTC Action Records for DDR SOR Updates and Missing P1 Route
 
 - Beads issue `ddr-9ku` tracks Greg's follow-up decision to start missing P1

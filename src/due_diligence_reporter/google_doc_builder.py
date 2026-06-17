@@ -890,10 +890,38 @@ def _is_due_diligence_section_row(row: tuple[str, str, str, str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _positive_index(value: Any) -> int | None:
+    """Return a valid Google Docs body index, or None when absent/invalid."""
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return None
+    return index if index >= 1 else None
+
+
+def _require_table_cell_index(
+    value: Any,
+    *,
+    table_start: Any,
+    row: int,
+    col: int,
+    source: str,
+) -> int:
+    index = _positive_index(value)
+    if index is not None:
+        return index
+    raise ValueError(
+        "Google Docs table cell is missing a valid "
+        f"{source} index for table_start={table_start!r}, row={row}, col={col}"
+    )
+
+
 def _cell_index(table_element: dict[str, Any], row: int, col: int) -> int:
     """Return the content start index for cell (row, col) in a table element."""
     rows = table_element["table"]["tableRows"]
     cell = rows[row]["tableCells"][col]
+    table_start = table_element.get("startIndex")
+    cell_start = _positive_index(cell.get("startIndex"))
     # Each cell has a content array; the first paragraph's first element
     # gives us the insertion point.
     content = cell["content"]
@@ -902,23 +930,54 @@ def _cell_index(table_element: dict[str, Any], row: int, col: int) -> int:
         if "paragraph" in first_para:
             elements = first_para["paragraph"].get("elements", [])
             if elements:
-                return int(elements[0].get("startIndex", 0))
-            return int(first_para.get("startIndex", 0))
-        return int(first_para.get("startIndex", 0))
-    return 0
+                element_start = _positive_index(elements[0].get("startIndex"))
+                if element_start is not None:
+                    return element_start
+            paragraph_start = _positive_index(first_para.get("startIndex"))
+            if paragraph_start is not None:
+                return paragraph_start
+        content_start = _positive_index(first_para.get("startIndex"))
+        if content_start is not None:
+            return content_start
+    return _require_table_cell_index(
+        cell_start,
+        table_start=table_start,
+        row=row,
+        col=col,
+        source="start",
+    )
 
 
 def _table_cell_range(table_element: dict[str, Any], row: int, col: int) -> tuple[int, int]:
     """Return (start, end) indices covering the full content of a cell."""
     rows = table_element["table"]["tableRows"]
     cell = rows[row]["tableCells"][col]
+    table_start = table_element.get("startIndex")
+    fallback_start = _positive_index(cell.get("startIndex"))
+    fallback_end = _positive_index(cell.get("endIndex"))
     content = cell["content"]
     if not content:
-        return (0, 0)
+        start = _require_table_cell_index(
+            fallback_start,
+            table_start=table_start,
+            row=row,
+            col=col,
+            source="start",
+        )
+        end = fallback_end if fallback_end is not None else start + 1
+        return (start, end if end > start else start + 1)
     first = content[0]
     last = content[-1]
-    start = first.get("startIndex", 0)
-    end = last.get("endIndex", start + 1)
+    start = _positive_index(first.get("startIndex")) or _require_table_cell_index(
+        fallback_start,
+        table_start=table_start,
+        row=row,
+        col=col,
+        source="start",
+    )
+    end = _positive_index(last.get("endIndex")) or fallback_end or start + 1
+    if end <= start:
+        end = start + 1
     return start, end
 
 
