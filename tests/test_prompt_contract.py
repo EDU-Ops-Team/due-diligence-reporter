@@ -47,12 +47,16 @@ def test_prompt_v4_keeps_first_round_contract() -> None:
     text = _prompt_text()
     required_phrases = [
         "Version:** 4.0.0",
-        "Last Updated:** 2026-06-09",
+        "Last Updated:** 2026-06-18",
         "V4 prompt contract",
         "first-round DDR",
         "current school year (8/12 or 9/8)",
         "lookup_rhodes_site_owner",
-        "returned `drive_folder_url`",
+        "never ask for a folder before lookup",
+        "internal LocationOS runtime blocker",
+        "do not expose auth details",
+        "Only then ask",
+        "use returned `drive_folder_url`",
         "linked/provisioned in Rhodes",
         "REBL Site ID",
         "create_dd_report",
@@ -77,3 +81,17 @@ def test_prompt_v4_keeps_first_round_contract() -> None:
 
     for phrase in required_phrases:
         assert phrase in text
+
+
+def test_prompt_v4_does_not_resurrect_api_key_folder_fallback() -> None:
+    text = _prompt_text()
+
+    stale_public_fallbacks = [
+        "API key not configured",
+        "Rhodes isn't reachable",
+        "Rhodes is not reachable",
+        "drop that here",
+    ]
+
+    for phrase in stale_public_fallbacks:
+        assert phrase not in text

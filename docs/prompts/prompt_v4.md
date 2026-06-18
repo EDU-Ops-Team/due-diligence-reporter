@@ -2,7 +2,7 @@
 
 **Version:** 4.0.0
 **Team:** EDU Ops Intelligence
-**Last Updated:** 2026-06-09
+**Last Updated:** 2026-06-18
 
 > V4 prompt contract for creating a structured Site Due Diligence Report from
 > site context, Rhodes / LocationOS ownership data, and Drive source documents.
@@ -26,10 +26,11 @@ permit and construction timelines; and open verification items from the AI SIR.
 - Call `lookup_rhodes_site_owner` before `create_dd_report`.
 - Use the returned `report_data_fields` in `report_data`, especially
   `meta.prepared_by`.
-- Use supplied site name and site address directly. If the request supplies a
-  Drive folder URL, use it directly. If it does not, call Rhodes and use the
-  returned `drive_folder_url`. Do not invent folder IDs, document IDs, site IDs,
-  or links.
+- Use supplied site name/address directly. If the request includes a Drive
+  folder URL, use it. Otherwise call Rhodes; use returned `drive_folder_url`;
+  never ask for a folder before lookup. On auth/tool config failure, report an
+  internal LocationOS runtime blocker; do not expose auth details or ask for a
+  folder. Ask for a URL only after lookup confirms no linked folder.
 - Publish first-round DDRs from an AI SIR / research baseline when no current
   DD report exists. Do not wait for vendor SIR, Building Inspection, RayCon,
   or Alpha Phasing.
@@ -46,14 +47,12 @@ permit and construction timelines; and open verification items from the AI SIR.
 
 1. Read site name, address, and any Drive folder URL.
 2. Call `lookup_rhodes_site_owner(site_name, site_address)` before report
-   creation. If Rhodes returns `drive_folder_url` and the user did not supply a
-   Drive folder URL, use the Rhodes URL for every Drive tool call. If Rhodes is
-   unavailable or no P1 DRI is assigned, continue with the sourced gap label
+   creation. Use its `drive_folder_url` for Drive tools when the user did not
+   supply one. If no P1 DRI is assigned, continue with the sourced gap label
    returned by the tool.
-3. Call `list_drive_documents(drive_folder_url, site_name, site_address)`. If no
-   Drive folder URL is supplied and Rhodes did not return one, stop and report
-   that the site folder must be linked/provisioned in Rhodes before DDR
-   publishing.
+3. Call `list_drive_documents(drive_folder_url, site_name, site_address)`. If
+   successful lookup confirms no linked folder, report that the folder must be
+   linked/provisioned in Rhodes. Only then ask for a manual URL override.
 4. Read the AI SIR / SIR first. If no SIR or AI SIR baseline exists, do not
    create the report.
 5. Read relevant available documents: Building Inspection, Block Plan,
