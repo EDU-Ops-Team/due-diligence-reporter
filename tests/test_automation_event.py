@@ -215,6 +215,43 @@ def test_dd_report_summary_event_rolls_up_long_open_item_list() -> None:
     assert "Additional asks: 2 more open item(s) are listed in the DD report." in note
 
 
+def test_dd_report_summary_event_renders_failed_due_diligence_write() -> None:
+    event = build_dd_report_summary_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        run_id="run-1",
+        doc_id="doc-1",
+        doc_url="https://docs.google.com/document/d/doc-1",
+        due_diligence_update={
+            "status": "failed",
+            "reason": "rhodes_error",
+            "error": "updateDueDiligence rejected",
+            "updated_fields": ["foCapacity", "status"],
+        },
+        created_at="2026-06-18T13:30:00+00:00",
+    )
+
+    assert event.decision_required is True
+    assert event.requested_decision == (
+        "review failed Rhodes due diligence write and DD report"
+    )
+
+    note = render_automation_event_note(event)
+
+    assert (
+        "Action needed: Review the failed Rhodes due diligence write and DD report."
+        in note
+    )
+    assert (
+        "Rhodes due diligence update: failed to update foCapacity, status: "
+        "updateDueDiligence rejected"
+    ) in note
+    assert (
+        "Requested decision: review failed Rhodes due diligence write and DD report"
+        in note
+    )
+
+
 def test_source_review_required_event_renders_source_issues() -> None:
     event = build_source_review_required_event(
         site_id="SITE1",

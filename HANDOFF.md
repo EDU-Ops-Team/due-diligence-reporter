@@ -1,5 +1,26 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-18 - P1 DRI Note Required for SOR Write Success or Failure
+
+- Beads issue `ddr-gmg` now includes the additional requirement that after a
+  DDR due-diligence SOR write is attempted, the workflow must add a Rhodes
+  report-event note and tag the P1 DRI with what was written or what failed.
+- The prior flow failed closed immediately after `updateDueDiligence` returned
+  `status=failed`, so the P1 DRI could miss the failed SOR mutation. The new
+  flow still treats the SOR write failure as a failed pipeline step and still
+  suppresses the success email, but it proceeds into `rhodes.report_event` so
+  Rhodes/Chat notification can carry the failure details.
+- `AutomationEvent` rendering now treats failed due-diligence writes as
+  decision-required. The note action line says to review the failed Rhodes
+  due-diligence write and DD report, and the detail line names the attempted
+  fields plus the failure reason when available.
+- `process_site_pipeline` now records `rhodes.report_event` after both
+  successful and failed due-diligence write attempts. It only sends the DD
+  success/update email when the SOR write did not fail.
+- `docs/process/HOW-IT-WORKS.md` was updated so the durable process contract
+  matches the new behavior: P1 DRI gets a note/fallback alert for write success
+  or write failure.
+
 ## 2026-06-18 - Chapel Hill Fresh DDR via LocationOS Folder Lookup
 
 - The earlier operator-facing blocker text saying Rhodes was unavailable

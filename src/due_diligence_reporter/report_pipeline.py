@@ -3180,13 +3180,7 @@ def process_site_pipeline(
         site_id=recorder.site_id or site_id or "",
         report_data=_report_data_from_trace(agent_result.get("trace")),
     )
-    if _due_diligence_update_failed(final_result):
-        return _finalize_pipeline_result(
-            final_result,
-            recorder,
-            gc=gc,
-            drive_folder_url=drive_folder_url,
-        )
+    due_diligence_update_failed = _due_diligence_update_failed(final_result)
 
     _record_rhodes_report_event_step(
         recorder,
@@ -3196,6 +3190,13 @@ def process_site_pipeline(
         owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
         owner_email=p1_email or "",
     )
+    if due_diligence_update_failed:
+        return _finalize_pipeline_result(
+            final_result,
+            recorder,
+            gc=gc,
+            drive_folder_url=drive_folder_url,
+        )
     _record_email_step(
         recorder,
         settings,

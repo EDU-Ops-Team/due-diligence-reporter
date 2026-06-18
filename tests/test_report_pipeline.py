@@ -1201,7 +1201,7 @@ class TestProcessSitePipeline:
     @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
-    def test_report_created_blocks_p1_notification_when_due_diligence_write_fails(
+    def test_report_created_notifies_p1_when_due_diligence_write_fails(
         self,
         mock_readiness,
         mock_agent,
@@ -1236,6 +1236,13 @@ class TestProcessSitePipeline:
             "status": "failed",
             "reason": "rhodes_error",
             "error": "updateDueDiligence rejected",
+            "updated_fields": ["foCapacity", "status"],
+        }
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
         }
 
         result = process_site_pipeline(
@@ -1252,13 +1259,30 @@ class TestProcessSitePipeline:
 
         assert result.status == "report_created"
         assert result.failed_step == "rhodes.due_diligence_update"
-        assert result.rhodes_report_event is None
-        mock_rhodes_note.assert_not_called()
+        assert result.rhodes_report_event is not None
+        assert result.rhodes_report_event["status"] == "created"
+        assert result.rhodes_report_event["owner_notification"] == "mentioned"
+        note_kwargs = mock_rhodes_note.call_args.kwargs
+        assert note_kwargs["site_id"] == "SITE1"
+        assert note_kwargs["owner_email"] == "owner@example.com"
+        assert "Action needed: Review the failed Rhodes due diligence write and DD report." in (
+            note_kwargs["body"]
+        )
+        assert (
+            "Requested decision: review failed Rhodes due diligence write and DD report"
+            in note_kwargs["body"]
+        )
+        assert (
+            "Rhodes due diligence update: failed to update foCapacity, status: "
+            "updateDueDiligence rejected"
+        ) in note_kwargs["body"]
         assert not any(step.step == "notify.email" for step in result.steps)
         update_step = next(
             step for step in result.steps if step.step == "rhodes.due_diligence_update"
         )
         assert update_step.status == "failed"
+        note_step = next(step for step in result.steps if step.step == "rhodes.report_event")
+        assert note_step.status == "succeeded"
 
     @patch("due_diligence_reporter.report_pipeline._resolve_rhodes_owner_for_pipeline")
     @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")

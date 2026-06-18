@@ -184,7 +184,16 @@ def _format_republish_source(source_type: str, source_file: str = "") -> str:
 
 
 def _dd_report_action_needed(event: AutomationEvent, open_count: int) -> str:
-    if event.details.get("Rhodes due diligence update", "").strip():
+    rhodes_update = event.details.get("Rhodes due diligence update", "").strip()
+    if rhodes_update.startswith("failed"):
+        if open_count <= 0:
+            return "Review the failed Rhodes due diligence write and DD report."
+        item_word = "ask" if open_count == 1 else "asks"
+        return (
+            f"Review the failed Rhodes due diligence write, DD report, and close "
+            f"{open_count} open verification {item_word}."
+        )
+    if rhodes_update:
         if open_count <= 0:
             return "Review the Rhodes due diligence fields and DD report."
         item_word = "ask" if open_count == 1 else "asks"
@@ -355,10 +364,13 @@ def build_dd_report_summary_event(
     due_diligence_update_data = (
         due_diligence_update if isinstance(due_diligence_update, dict) else None
     )
-    due_diligence_written = (
-        due_diligence_update_data is not None
-        and due_diligence_update_data.get("status") == "updated"
+    due_diligence_status = (
+        str(due_diligence_update_data.get("status") or "").strip().lower()
+        if due_diligence_update_data is not None
+        else ""
     )
+    due_diligence_written = due_diligence_status == "updated"
+    due_diligence_failed = due_diligence_status == "failed"
     artifact_ids = {
         "Run ID": run_id,
     }
@@ -376,7 +388,7 @@ def build_dd_report_summary_event(
         "Closed item count": str(len(closed_items)),
         "Outstanding vendor docs": _format_missing_docs(missing_vendor_docs),
     }
-    if due_diligence_written:
+    if due_diligence_written or due_diligence_failed:
         assert due_diligence_update_data is not None
         details["Rhodes due diligence update"] = _format_due_diligence_update(
             due_diligence_update_data
@@ -384,7 +396,7 @@ def build_dd_report_summary_event(
     details.update(_indexed_item_details("Open item", open_items))
     details.update(_indexed_item_details("Closed item", closed_items))
 
-    decision_required = bool(open_items) or due_diligence_written
+    decision_required = bool(open_items) or due_diligence_written or due_diligence_failed
     return AutomationEvent(
         source_system="due-diligence-reporter",
         source_id=run_id,
@@ -394,6 +406,11 @@ def build_dd_report_summary_event(
         artifact_ids=artifact_ids,
         decision_required=decision_required,
         requested_decision=(
+            "review failed Rhodes due diligence write and resolve DDR open verification items"
+            if open_items and due_diligence_failed
+            else "review failed Rhodes due diligence write and DD report"
+            if due_diligence_failed
+            else
             "review Rhodes due diligence fields and resolve DDR open verification items"
             if open_items and due_diligence_written
             else "review Rhodes due diligence fields and DD report"
@@ -460,11 +477,20 @@ def _format_missing_docs(missing_docs: list[str] | None) -> str:
 
 
 def _format_due_diligence_update(update: dict[str, Any]) -> str:
+    status = str(update.get("status") or "").strip().lower()
     fields = update.get("updated_fields")
+    field_text = ""
     if isinstance(fields, list):
         clean_fields = [str(field).strip() for field in fields if str(field).strip()]
         if clean_fields:
-            return f"updated {', '.join(clean_fields)}"
+            field_text = ", ".join(clean_fields)
+    if status == "failed":
+        error = str(update.get("error") or update.get("reason") or "unknown error").strip()
+        if field_text:
+            return f"failed to update {field_text}: {error}"
+        return f"failed: {error}"
+    if field_text:
+        return f"updated {field_text}"
     return "updated"
 
 
