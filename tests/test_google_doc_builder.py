@@ -29,6 +29,7 @@ from due_diligence_reporter.google_doc_builder import (
     _split_bullets_and_footnotes,
     _summary_display_lines,
     _table_cell_range,
+    _validate_batch_update_requests,
     build_dd_report_doc,
 )
 from due_diligence_reporter.report_schema import (
@@ -188,6 +189,23 @@ class TestDocBuilder:
         start, end = b.insert_paragraph("Some text")
         assert start == 1
         assert end == 11  # "Some text\n" = 10 chars
+
+
+class TestBatchUpdateValidation:
+    def test_rejects_insert_text_at_zero(self) -> None:
+        with pytest.raises(ValueError, match=r"requests\[0\].insertText.location.index"):
+            _validate_batch_update_requests([
+                {"insertText": {"location": {"index": 0}, "text": "bad"}},
+            ])
+
+    def test_rejects_insert_text_after_table_sentinel(self) -> None:
+        builder = _DocBuilder(start_index=10)
+        builder.insert_heading("First table", level=3)
+        builder.insert_table(2, 2)
+        builder.insert_heading("Second table", level=3)
+
+        with pytest.raises(ValueError, match="insertText.location.index"):
+            _validate_batch_update_requests(builder.requests)
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +648,39 @@ class TestBuildDdReportDoc:
             repl[f"exec.{key}_fastest_open"] = f"${hash(key) % 100},000"
             repl[f"exec.{key}_max_capacity"] = f"${hash(key) % 200},000"
         return repl
+
+    def test_cost_tables_are_created_in_separate_valid_batches(self) -> None:
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+
+        build_dd_report_doc(
+            docs_svc,
+            drive_svc,
+            "doc123",
+            self._full_replacements(),
+            "Alpha Boca Raton 2200",
+        )
+
+        structural_batches = []
+        for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list:
+            requests = call_args.kwargs["body"]["requests"]
+            inserted = [
+                request["insertText"]["text"]
+                for request in requests
+                if "insertText" in request
+            ]
+            if (
+                "Fastest Open Cost Breakdown\n" in inserted
+                or "Max Capacity Cost Breakdown\n" in inserted
+            ):
+                structural_batches.append(requests)
+
+        assert len(structural_batches) == 2
+        for requests in structural_batches:
+            assert sum(1 for request in requests if "insertTable" in request) == 1
+            for request in requests:
+                if "insertText" in request:
+                    assert request["insertText"]["location"]["index"] >= 1
 
     def test_returns_hyperlink_trace(self) -> None:
         """build_dd_report_doc returns a dict with applied/found/not_found."""
@@ -1410,5 +1461,46 @@ class TestReferencedReportsTableInsertOrder:
         for prev, cur in zip(insert_indices, insert_indices[1:], strict=False):
             assert cur <= prev, (
                 f"Phase 7 insert order is not strictly reverse: "
+                f"index {cur} follows {prev}"
+            )
+
+
+class TestCostBreakdownTableInsertOrder:
+    """Cost table inserts must be globally descending across both tables."""
+
+    def test_phase5_cost_table_inserts_are_in_descending_index_order(self) -> None:
+        docs_svc = _make_mock_docs_service()
+        drive_svc = MagicMock()
+        repl = TestBuildDdReportDoc()._full_replacements()
+
+        build_dd_report_doc(docs_svc, drive_svc, "doc123", repl, "Test")
+
+        cost_table_batch = None
+        for call_args in docs_svc.documents.return_value.batchUpdate.call_args_list:
+            requests = call_args.kwargs["body"]["requests"]
+            inserted_strings = [
+                request["insertText"]["text"]
+                for request in requests
+                if "insertText" in request
+            ]
+            if (
+                "Line Item" in inserted_strings
+                and "Amount" in inserted_strings
+                and "Demolition" in inserted_strings
+                and "Grand Total" in inserted_strings
+            ):
+                cost_table_batch = requests
+                break
+
+        assert cost_table_batch is not None, "Could not find Phase 5 cost table batch"
+
+        insert_indices = [
+            request["insertText"]["location"]["index"]
+            for request in cost_table_batch
+            if "insertText" in request
+        ]
+        for prev, cur in zip(insert_indices, insert_indices[1:], strict=False):
+            assert cur <= prev, (
+                f"Phase 5 cost table insert order is not strictly reverse: "
                 f"index {cur} follows {prev}"
             )

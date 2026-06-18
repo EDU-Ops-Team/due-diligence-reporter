@@ -1,5 +1,66 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-18 - Chapel Hill Fresh DDR via LocationOS Folder Lookup
+
+- The earlier operator-facing blocker text saying Rhodes was unavailable
+  because `RHODES_API_KEY` was missing was wrong for current operations.
+  `codex mcp list` / `codex mcp get locationos --json` showed the hosted
+  LocationOS MCP is configured and enabled on this machine. The current desktop
+  thread did not expose `mcp__locationos__...` tools directly, so a fresh
+  `codex exec --ephemeral` probe used LocationOS MCP to resolve the site.
+- LocationOS resolved `Alpha Chapel Hill 605 Eastowne Dr` /
+  `605 Eastowne Dr, Chapel Hill, NC` to the linked Drive folder:
+  `https://drive.google.com/drive/folders/1wRDbYbc57xjXMJtaOmy9_fPa9N2n0_Mr`.
+- A strict read-only readiness diagnostic found a Vendor SIR and no Building
+  Inspection, so the workflow could create a partial report but not a full
+  final-ready report.
+- Forced Chapel Hill regeneration initially exposed two additional Google Docs
+  builder defects beyond the prior `ddr-2w8` cell-index fix:
+  - Phase 5 reused one `_DocBuilder` after an `insert_table`, leaving `_idx=-1`
+    and causing a second append request at invalid body index `0`.
+  - Both cost tables were then populated in one forward batch, so inserts into
+    the first table shifted cached indexes for the second table.
+- Updated `src/due_diligence_reporter/google_doc_builder.py` so each cost table
+  is created in its own readback/append phase, cost-table text population runs
+  from later table to earlier table, and `_batch_update` now validates outgoing
+  Google Docs body indexes/ranges before sending invalid requests.
+- Added regression coverage in `tests/test_google_doc_builder.py` for invalid
+  index validation, separate cost-table batches, and descending cost-table
+  population order.
+- A fresh forced Chapel Hill run succeeded in report generation. Because the
+  active same-day document lacked the automation revision watermark, the system
+  protected it and created a candidate instead of overwriting:
+  `https://docs.google.com/document/d/11kFej7RiTPHIN707rDCUii0tXaWd5oHIuXyaKkyaBh8/edit?usp=drivesdk`.
+  The active protected doc was
+  `https://docs.google.com/document/d/1wEwkYD9-VG4HkfCLLaeCyqjKKVcvrXRk7IhSG8nYJ4g/edit?usp=drivesdk`.
+- Manifest:
+  `.ddr-runs\20260618130744-alpha-chapel-hill-605-eastowne-dr-380c2fed.json`.
+  Status was `republish_candidate_created`; missing docs included
+  `Building Inspection`.
+- Google export readback of the candidate showed the title, partial-report
+  banner, referenced-reports section, and no unresolved `{{...}}` braces.
+- Rhodes `report_event` still failed through the repo's older note-write path
+  with `rejectionReason=elicitation_unsupported`; Google Chat fallback was
+  skipped because `DDR_GOOGLE_CHAT_WEBHOOK_URL` was not configured. Track the
+  durable fix separately: DDR should route report-event/note writes through the
+  current LocationOS MCP-compatible write surface, with readback verification.
+- Failed blank/partial candidate docs from earlier forced attempts were left in
+  place. Do not delete them without explicit approval.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_google_doc_builder.py::TestBatchUpdateValidation tests\test_google_doc_builder.py::TestBuildDdReportDoc::test_cost_tables_are_created_in_separate_valid_batches tests\test_google_doc_builder.py::TestCostBreakdownTableInsertOrder tests\test_google_doc_builder.py::TestReferencedReportsTableInsertOrder -q --basetemp C:\tmp\ddr-doc-builder-cost-order
+uv run ruff check src\due_diligence_reporter\google_doc_builder.py tests\test_google_doc_builder.py
+uv run pytest tests\test_google_doc_builder.py -q --basetemp C:\tmp\ddr-doc-builder-full-cost-order
+uv run mypy src\due_diligence_reporter\google_doc_builder.py
+uv run pytest tests\test_dd_output_fixes.py::TestAsyncOffloading::test_create_dd_report_uses_to_thread tests\test_dd_output_fixes.py::TestAsyncOffloading::test_create_dd_report_rebuilds_existing_same_day_doc tests\test_dd_output_fixes.py::TestAsyncOffloading::test_create_dd_report_moves_legacy_root_report_to_m1 tests\test_dd_output_fixes.py::TestAsyncOffloading::test_create_dd_report_creates_candidate_when_existing_doc_has_no_watermark tests\test_dd_output_fixes.py::TestAsyncOffloading::test_create_dd_report_creates_candidate_when_active_revision_changed -q --basetemp C:\tmp\ddr-create-report-candidate-cost-order
+```
+
+Results: focused cost-order/index tests passed (`5 passed`), full Google Doc
+builder tests passed (`84 passed`), Ruff passed, mypy passed for the touched
+source file, and focused create-dd-report candidate tests passed (`5 passed`).
+
 ## 2026-06-17 - Google Doc Builder Guard for Invalid Table Cell Indexes
 
 - Beads issue `ddr-2w8` tracks the manual Chapel Hill `create_dd_report`

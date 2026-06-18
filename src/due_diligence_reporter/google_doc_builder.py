@@ -1669,32 +1669,30 @@ def build_dd_report_doc(
             )
         _batch_update(docs_service, doc_id, b4.requests)
 
-    doc = docs_service.documents().get(documentId=doc_id).execute()
-    body_content = doc.get("body", {}).get("content", [])
-    end_idx = _doc_end_index(body_content)
-
-    b5 = _DocBuilder(start_index=end_idx)
-    b5.insert_text("\n")
-    b5.insert_heading("Detailed Cost Breakdown", level=2)
-
     num_cost_rows = len(_COST_BREAKDOWN_ROWS) + 1  # +1 for header
     cost_sections = (
         ("Fastest Open Cost Breakdown", "fastest_open"),
         ("Max Capacity Cost Breakdown", "max_capacity"),
     )
     for section_idx, (section_heading, _section_key) in enumerate(cost_sections):
-        if section_idx:
-            b5.insert_text("\n")
+        doc = docs_service.documents().get(documentId=doc_id).execute()
+        body_content = doc.get("body", {}).get("content", [])
+        end_idx = _doc_end_index(body_content)
+
+        b5 = _DocBuilder(start_index=end_idx)
+        b5.insert_text("\n")
+        if section_idx == 0:
+            b5.insert_heading("Detailed Cost Breakdown", level=2)
         b5.insert_heading(section_heading, level=3)
         b5.insert_table(num_cost_rows, 2)
-
-    _batch_update(docs_service, doc_id, b5.requests)
+        _batch_update(docs_service, doc_id, b5.requests)
 
     # Populate cost tables
     doc = docs_service.documents().get(documentId=doc_id).execute()
     body_content = doc.get("body", {}).get("content", [])
     phase5_requests: list[dict[str, Any]] = []
-    for section_idx, (_section_heading, scenario_key) in enumerate(cost_sections):
+    for section_idx in range(len(cost_sections) - 1, -1, -1):
+        _section_heading, scenario_key = cost_sections[section_idx]
         cost_table = _find_table(body_content, 2 + section_idx)
         if cost_table is None:
             logger.error("Could not find %s cost breakdown table", scenario_key)
@@ -1709,7 +1707,9 @@ def build_dd_report_doc(
             )
             cost_rows_data.append((display_label, val))
 
-        # Populate in reverse order
+        # Populate in reverse order across both tables. Batch requests run
+        # sequentially against cached indices, so the later table must be
+        # filled before the earlier table.
         for row_idx in range(len(cost_rows_data) - 1, -1, -1):
             for col_idx in range(1, -1, -1):
                 text = cost_rows_data[row_idx][col_idx]
@@ -2035,12 +2035,98 @@ def _batch_update(
     """Execute a batchUpdate, returning the response."""
     if not requests:
         return None
+    _validate_batch_update_requests(requests)
     result: dict[str, Any] = (
         docs_service.documents()
         .batchUpdate(documentId=doc_id, body={"requests": requests})
         .execute()
     )
     return result
+
+
+def _validate_positive_body_index(value: Any, *, request_index: int, path: str) -> None:
+    index = _positive_index(value)
+    if index is not None:
+        return
+    raise ValueError(
+        "Google Docs batchUpdate request has invalid body index "
+        f"at requests[{request_index}].{path}: {value!r}"
+    )
+
+
+def _validate_non_empty_range(
+    range_obj: dict[str, Any],
+    *,
+    request_index: int,
+    path: str,
+) -> None:
+    start = _positive_index(range_obj.get("startIndex"))
+    end = _positive_index(range_obj.get("endIndex"))
+    if start is not None and end is not None and end > start:
+        return
+    raise ValueError(
+        "Google Docs batchUpdate request has invalid range "
+        f"at requests[{request_index}].{path}: {range_obj!r}"
+    )
+
+
+def _validate_batch_update_requests(requests: list[dict[str, Any]]) -> None:
+    """Fail locally before sending invalid body indexes to Google Docs."""
+    for request_index, request in enumerate(requests):
+        if "insertText" in request:
+            location = request["insertText"].get("location", {})
+            _validate_positive_body_index(
+                location.get("index"),
+                request_index=request_index,
+                path="insertText.location.index",
+            )
+        if "insertTable" in request:
+            location = request["insertTable"].get("location", {})
+            _validate_positive_body_index(
+                location.get("index"),
+                request_index=request_index,
+                path="insertTable.location.index",
+            )
+        if "updateTextStyle" in request:
+            _validate_non_empty_range(
+                request["updateTextStyle"].get("range", {}),
+                request_index=request_index,
+                path="updateTextStyle.range",
+            )
+        if "updateParagraphStyle" in request:
+            _validate_non_empty_range(
+                request["updateParagraphStyle"].get("range", {}),
+                request_index=request_index,
+                path="updateParagraphStyle.range",
+            )
+        if "createParagraphBullets" in request:
+            _validate_non_empty_range(
+                request["createParagraphBullets"].get("range", {}),
+                request_index=request_index,
+                path="createParagraphBullets.range",
+            )
+        if "updateTableCellStyle" in request:
+            cell_location = (
+                request["updateTableCellStyle"]
+                .get("tableRange", {})
+                .get("tableCellLocation", {})
+            )
+            table_start = cell_location.get("tableStartLocation", {})
+            _validate_positive_body_index(
+                table_start.get("index"),
+                request_index=request_index,
+                path="updateTableCellStyle.tableRange.tableCellLocation.tableStartLocation.index",
+            )
+        if "updateTableColumnProperties" in request:
+            table_start = request["updateTableColumnProperties"].get(
+                "tableStartLocation",
+                {},
+            )
+            _validate_positive_body_index(
+                table_start.get("index"),
+                request_index=request_index,
+                path="updateTableColumnProperties.tableStartLocation.index",
+            )
 
 
 def _find_table(
