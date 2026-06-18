@@ -132,6 +132,8 @@ DDR_AUTOMATION_UPDATED_AT_KEY = "ddrAutomationUpdatedAt"
 DDR_AUTOMATION_REVISION_ID_KEY = "ddrAutomationRevisionId"
 DDR_AUTOMATION_DOC_ROLE_KEY = "ddrAutomationDocRole"
 DDR_AUTOMATION_SOURCE_DOC_ID_KEY = "ddrAutomationSourceDocId"
+DDR_CANDIDATE_GUARD_REASON_KEY = "ddrCandidateGuardReason"
+DDR_CANDIDATE_REPORT_DATE_KEY = "ddrCandidateReportDate"
 
 
 CAN_WE_SECTION_DELIMITER = "Education Regulatory Approval:"
@@ -654,6 +656,8 @@ def _mark_dd_report_automation_write(
     doc_id: str,
     role: str,
     source_doc_id: str = "",
+    guard_reason: str = "",
+    report_date: str = "",
 ) -> dict[str, Any]:
     now = datetime.now(UTC)
     revision_id = _get_dd_report_revision_id(gc, doc_id=doc_id)
@@ -665,6 +669,10 @@ def _mark_dd_report_automation_write(
         properties[DDR_AUTOMATION_REVISION_ID_KEY] = revision_id
     if source_doc_id:
         properties[DDR_AUTOMATION_SOURCE_DOC_ID_KEY] = source_doc_id
+    if guard_reason:
+        properties[DDR_CANDIDATE_GUARD_REASON_KEY] = guard_reason
+    if report_date:
+        properties[DDR_CANDIDATE_REPORT_DATE_KEY] = report_date
     try:
         return gc.update_file_app_properties(doc_id, properties)
     except Exception as exc:  # noqa: BLE001 - the report is still usable
@@ -675,6 +683,10 @@ def _mark_dd_report_automation_write(
 def _candidate_dd_report_name(site_name: str, today_str: str) -> str:
     stamp = datetime.now(UTC).strftime("%H%M UTC")
     return f"{site_name.strip()} DD Report Candidate - {today_str} {stamp}"
+
+
+def _candidate_dd_report_prefix(site_name: str, today_str: str) -> str:
+    return f"{site_name.strip()} DD Report Candidate - {today_str} "
 
 
 # _classify_document_type moved to classifier.py (imported above as alias).
@@ -3031,6 +3043,61 @@ def _find_existing_report_doc(
     return candidate
 
 
+def _find_existing_candidate_report_doc(
+    gc: GoogleClient,
+    *,
+    folder_id: str,
+    site_name: str,
+    today_str: str,
+    source_doc_id: str,
+    guard_reason: str,
+) -> dict[str, Any] | None:
+    """Return the single matching automation-owned candidate, if one exists."""
+    try:
+        files = gc.list_files_in_folder(folder_id)
+    except Exception as e:
+        logger.warning("Could not list folder %s while checking for candidate report: %s", folder_id, e)
+        return None
+
+    prefix = _candidate_dd_report_prefix(site_name, today_str)
+    matches: list[dict[str, Any]] = []
+    for file_info in files:
+        doc_id = str(file_info.get("id") or "").strip()
+        name = str(file_info.get("name") or "").strip()
+        if not doc_id or not name.startswith(prefix):
+            continue
+
+        metadata = _get_dd_report_metadata(gc, doc_id=doc_id, fallback=file_info)
+        app_properties = metadata.get("appProperties")
+        if not isinstance(app_properties, dict):
+            app_properties = {}
+        if app_properties.get(DDR_AUTOMATION_DOC_ROLE_KEY) != "candidate":
+            continue
+        if str(app_properties.get(DDR_AUTOMATION_SOURCE_DOC_ID_KEY) or "").strip() != source_doc_id:
+            continue
+        stored_guard_reason = str(
+            app_properties.get(DDR_CANDIDATE_GUARD_REASON_KEY) or ""
+        ).strip()
+        if stored_guard_reason and stored_guard_reason != guard_reason:
+            continue
+        stored_report_date = str(
+            app_properties.get(DDR_CANDIDATE_REPORT_DATE_KEY) or ""
+        ).strip()
+        if stored_report_date and stored_report_date != today_str:
+            continue
+
+        matches.append({**file_info, **metadata})
+
+    if len(matches) > 1:
+        ids = ", ".join(str(match.get("id") or "") for match in matches)
+        raise RuntimeError(
+            "Multiple matching DD report candidates already exist for this "
+            f"active report/date/guard reason ({ids}). Review or clean up the "
+            "candidate docs before rerunning."
+        )
+    return matches[0] if matches else None
+
+
 def _fill_scenario_placeholders(
     replacements: dict[str, str],
     *,
@@ -3167,6 +3234,88 @@ def _apply_report_hyperlinks(
 
 
 @mcp.tool()
+async def prepare_due_diligence_data(
+    site_name: str,
+    drive_folder_url: str,
+    report_data: dict[str, Any],
+    site_address: str = "",
+    token_evidence: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Normalize DD report data without rendering a Google Doc.
+
+    This is the SOR-first handoff: the pipeline can use the normalized
+    due-diligence fields for Rhodes before it creates a DDR as a view.
+    """
+    logger.info("Tool called: prepare_due_diligence_data")
+    if not site_name or not site_name.strip():
+        return {
+            "status": "error",
+            "error": "Missing parameter",
+            "message": "site_name must be a non-empty string",
+        }
+    if not drive_folder_url or not drive_folder_url.strip():
+        return {
+            "status": "error",
+            "error": "Missing parameter",
+            "message": "drive_folder_url must be a non-empty string",
+        }
+    folder_id = extract_folder_id_from_url(drive_folder_url)
+    if not folder_id:
+        return {
+            "status": "error",
+            "error": "Invalid folder URL",
+            "message": f"Could not extract a Google Drive folder ID from: {drive_folder_url}",
+        }
+    if is_drive_root_folder_id(folder_id):
+        return {
+            "status": "error",
+            "error": "Invalid folder URL",
+            "message": (
+                "drive_folder_url points to Google Drive root. Provide the site Drive "
+                f"folder URL so the DD report can be created in {M1_FOLDER_NAME}."
+            ),
+        }
+    today_str = datetime.now().strftime("%m/%d/%Y")
+    try:
+        replacements, unmatched, unfilled, _token_sources, _rebl_resolution = (
+            _normalize_report_replacements(
+                report_data=report_data,
+                site_name=site_name.strip(),
+                report_date=today_str,
+                drive_folder_url=drive_folder_url,
+                site_address=site_address,
+            )
+        )
+        raycon_failure_reason = _raycon_failure_reason_from_flat(
+            flatten_report_data_for_replacement(report_data)
+        )
+        completeness = compute_completeness_block(
+            replacements,
+            raycon_failure_reason=raycon_failure_reason,
+        )
+        return {
+            "status": "success",
+            "message": "DD data normalized for SOR publish",
+            "site_name": site_name.strip(),
+            "drive_folder_url": drive_folder_url,
+            "site_address": site_address,
+            "replacements_applied": len(replacements),
+            "unmatched_agent_keys": len(unmatched),
+            "unfilled_template_tokens": len(unfilled),
+            "normalized_report_data": replacements,
+            "report_metadata": {"completeness": completeness},
+            "token_evidence_count": len(token_evidence or {}),
+        }
+    except Exception as e:  # noqa: BLE001 - tool returns structured failure
+        logger.error("Failed to prepare DD data: %s", e)
+        return {
+            "status": "error",
+            "error": "Failed to prepare DD data",
+            "message": str(e),
+        }
+
+
+@mcp.tool()
 async def create_dd_report(
     site_name: str,
     drive_folder_url: str,
@@ -3257,24 +3406,56 @@ async def create_dd_report(
                 if republish_guard.get("status") == "blocked":
                     source_doc_id = existing_doc_id
                     document_role = "candidate"
-                    document_name = _candidate_dd_report_name(site_name, today_str)
-                    logger.info(
-                        "Existing DD report is protected (%s); creating candidate %s",
-                        republish_guard.get("reason"),
-                        document_name,
-                    )
-                    candidate_doc = gc.create_document(
-                        name=document_name,
+                    guard_reason = str(republish_guard.get("reason") or "").strip()
+                    existing_candidate = _find_existing_candidate_report_doc(
+                        gc,
                         folder_id=target_folder_id,
-                        text_content="",
+                        site_name=site_name,
+                        today_str=today_str,
+                        source_doc_id=source_doc_id,
+                        guard_reason=guard_reason,
                     )
-                    doc_id = candidate_doc.get("id")
-                    doc_url = candidate_doc.get("webViewLink")
-                    if not doc_id or not isinstance(doc_id, str):
-                        raise RuntimeError("Invalid document ID returned from candidate create operation")
+                    candidate_reused = existing_candidate is not None
+                    if existing_candidate is not None:
+                        doc_id = str(existing_candidate.get("id") or "").strip()
+                        document_name = str(existing_candidate.get("name") or "").strip()
+                        doc_url = str(existing_candidate.get("webViewLink") or "").strip()
+                        if not doc_id:
+                            raise RuntimeError("Existing candidate DD report is missing a valid document ID")
+                        logger.info(
+                            "Existing DD report is protected (%s); reusing candidate %s",
+                            guard_reason,
+                            document_name or doc_id,
+                        )
+                        _clear_document_body(gc, doc_id=doc_id)
+                    else:
+                        document_name = _candidate_dd_report_name(site_name, today_str)
+                        logger.info(
+                            "Existing DD report is protected (%s); creating candidate %s",
+                            guard_reason,
+                            document_name,
+                        )
+                        candidate_doc = gc.create_document(
+                            name=document_name,
+                            folder_id=target_folder_id,
+                            text_content="",
+                        )
+                        doc_id = candidate_doc.get("id")
+                        doc_url = candidate_doc.get("webViewLink")
+                        if not doc_id or not isinstance(doc_id, str):
+                            raise RuntimeError("Invalid document ID returned from candidate create operation")
+                    _mark_dd_report_automation_write(
+                        gc,
+                        doc_id=doc_id,
+                        role=document_role,
+                        source_doc_id=source_doc_id,
+                        guard_reason=guard_reason,
+                        report_date=today_str,
+                    )
                     republish_guard = {
                         **republish_guard,
-                        "candidate_created": True,
+                        "candidate_created": not candidate_reused,
+                        "candidate_reused": candidate_reused,
                         "candidate_doc_id": doc_id,
                         "candidate_doc_url": str(doc_url or ""),
                     }
@@ -3371,6 +3552,10 @@ async def create_dd_report(
                 doc_id=doc_id,
                 role=document_role,
                 source_doc_id=source_doc_id,
+                guard_reason=str(republish_guard.get("reason") or "")
+                if document_role == "candidate"
+                else "",
+                report_date=today_str if document_role == "candidate" else "",
             )
 
             hyperlink_trace = {

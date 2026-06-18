@@ -42,7 +42,7 @@ The V4 DD Report is a **structured executive one-pager** -- not the multi-page n
 
 ### Alpha Phasing Plan
 
-Run `apply_alpha_phasing_plan_skill` after the source reads and the E-Occupancy, School Approval, and RayCon context are available, but before `create_dd_report`. This is an enrichment step, not a first-round publish blocker and not part of the final vendor-readiness gate.
+Run `apply_alpha_phasing_plan_skill` after the source reads and the E-Occupancy, School Approval, and RayCon context are available, but before `prepare_due_diligence_data`. This is an enrichment step, not a first-round publish blocker and not part of the final vendor-readiness gate.
 
 The tool publishes an Excel workbook in the site's M1 folder, auto-registers the workbook on the Rhodes site record as an `other` support document for the `acquireProperty` milestone when `site_id` is available, and returns a DDR source link plus a compact Buildout Analysis summary:
 
@@ -399,7 +399,7 @@ team can run the review process in `docs/process/sir-learning-loop.md`.
 
 ### Step 5 â€” Run Skill Tools
 
-Five skill tools analyze the source data and produce structured outputs. E-Occupancy, School Approval, and Opening Plan publish Google Docs; Alpha Capacity Analysis publishes a machine-readable JSON artifact; Alpha Phasing publishes an Excel workbook. These enrichment tools should run after source reads and before `create_dd_report`.
+Five skill tools analyze the source data and produce structured outputs. E-Occupancy, School Approval, and Opening Plan publish Google Docs; Alpha Capacity Analysis publishes a machine-readable JSON artifact; Alpha Phasing publishes an Excel workbook. These enrichment tools should run after source reads and before `prepare_due_diligence_data`.
 
 **E-Occupancy Skill** â€” `apply_e_occupancy_skill(building_type_description, stories, ..., ibc_occupancy_group, fire_area_sqft, has_below_grade_space, already_sprinklered, construction_type, max_travel_distance_ft, existing_exit_count, projected_occupant_load, site_name, drive_folder_url)`
 1. Loads the hosted `ease-of-conversion` skill and rating-band reference from Ops-Skills (`OPS_SKILLS_REPO_PATH`, the sibling Ops-Skills checkout, or the installed Ops Skills plugin cache)
@@ -465,6 +465,14 @@ Five skill tools analyze the source data and produce structured outputs. E-Occup
 
 **Output:** Google Doc URL + diagnostics.
 
+**SOR-first split:** The current agent contract now calls
+`prepare_due_diligence_data(site_name, drive_folder_url, report_data,
+token_evidence=evidence)` before any Google Doc is rendered. That tool performs
+the deterministic normalization and returns SOR-ready DD data to the pipeline
+without creating a document. The pipeline writes those structured fields to
+Rhodes first, then calls `create_dd_report` internally to render the DDR as a
+supporting view of the SOR data.
+
 ---
 
 ### Step 7 â€” Check Completeness
@@ -499,9 +507,9 @@ even if it also starts an automatic retry. The note carries the RayCon failure
 reason and run ID. If no site owner can be mentioned, the same event body goes
 to the configured Google Chat webhook.
 
-**Activity:** When the report reaches `report_created`, the pipeline first calls the Rhodes / LocationOS `updateDueDiligence` writer with the status badge, Fastest Open fields, Maximum Capacity fields, and score/comment fields that were present in the normalized report data. Interim writes use `status=data-gathering` and intentionally leave `dateCompleted` and `ddReportLink` blank. Source-triggered updates with the full vendor set present but open verification items still unresolved use `status=follow-up`. The workflow writes `status=complete`, `dateCompleted`, and `ddReportLink` only when the full vendor-readiness document set is present and no open verification items remain. Whether the write succeeds or fails, the next Rhodes note tags the P1 DRI with what was written or what failed. If the due-diligence write fails, the workflow records `rhodes.due_diligence_update` as failed and suppresses the success email, but it still records a decision-required `rhodes.report_event` note/fallback alert so the P1 DRI can repair the SOR write.
+**Activity:** When the pipeline has normalized due-diligence data from `prepare_due_diligence_data`, a generated active report, or a protected DDR candidate, it first calls the Rhodes / LocationOS `updateDueDiligence` writer with the status badge, Fastest Open fields, Maximum Capacity fields, and score/comment fields that were present in the normalized report data. Interim writes use `status=data-gathering` and intentionally leave `dateCompleted` and `ddReportLink` blank. Source-triggered updates with the full vendor set present but open verification items still unresolved use `status=follow-up`. The workflow writes `status=complete` and `dateCompleted` when the full vendor-readiness document set is present and no open verification items remain; it writes `ddReportLink` only when a DDR URL already exists. Whether the write succeeds or fails, the next Rhodes note tags the P1 DRI with what was written or what failed. If the due-diligence write fails, the workflow records `rhodes.due_diligence_update` as failed and suppresses the success email, but it still records a decision-required `rhodes.report_event` note/fallback alert so the P1 DRI can repair the SOR write.
 
-After the due-diligence write attempt, the pipeline records an `AutomationEvent v1` site note in Rhodes. Report-created and report-updated notes put the operator ask first: review the Rhodes due-diligence fields and DD report when the write succeeded, or review the failed Rhodes due-diligence write and DD report when the write failed. The note includes the DD report link when final, the fields written or attempted, the failure reason when present, the number of open asks, up to five asks to close, how to close those asks, and any items resolved by the latest source. The close instruction tells operators that asks come from the DD report Open Items to Verify section; to close one, move the answer/evidence into the right report section or Rhodes/source record and remove the ask from Open Items to Verify. System metadata such as run ID, trigger source, document IDs, updated Rhodes fields, and counts remains below the action section for audit/debugging. It mentions the P1 DRI when a Rhodes user can be resolved from the owner context. To avoid repeating the same open-ask notification while operators wait on outside answers, decision-required report-created/report-updated notifications without a new Rhodes due-diligence write are capped at once per site every two business days. Capped runs keep the DD report work intact, record `rhodes.report_event` as `skipped` with `reason=frequency_cap` in the run manifest, and do not send a Rhodes or Google Chat notification until the next allowed time.
+After the due-diligence write attempt, the pipeline records an `AutomationEvent v1` site note in Rhodes. Report-created, report-updated, and protected-candidate notes put the operator ask first: review the Rhodes due-diligence fields and DD report/candidate when the write succeeded, or review the failed Rhodes due-diligence write and DD report/candidate when the write failed. The note includes the DD report or candidate link, the fields written or attempted, the failure reason when present, the number of open asks, up to five asks to close, how to close those asks, and any items resolved by the latest source. The close instruction tells operators that asks come from the DD report Open Items to Verify section; to close one, move the answer/evidence into the right report section or Rhodes/source record and remove the ask from Open Items to Verify. System metadata such as run ID, trigger source, document IDs, updated Rhodes fields, and counts remains below the action section for audit/debugging. It mentions the P1 DRI when a Rhodes user can be resolved from the owner context. To avoid repeating the same open-ask notification while operators wait on outside answers, decision-required report-created/report-updated notifications without a new Rhodes due-diligence write are capped at once per site every two business days. Capped runs keep the DD report work intact, record `rhodes.report_event` as `skipped` with `reason=frequency_cap` in the run manifest, and do not send a Rhodes or Google Chat notification until the next allowed time.
 
 DDR run manifests emit WTC-compatible `action_record.v1` facts for the successful SOR write (`ddr_sor_updated`), successful Rhodes note (`ddr_p1_note_created` or `ddr_rhodes_note_created`), failed or blocked steps, and open verification items. If Rhodes owner lookup finds the site but no P1 DRI, DDR emits a queued `missing_p1_dri` action record with `owning_workflow=aadp` and does not attempt a direct AADP assignment from DDR.
 
@@ -562,7 +570,8 @@ For each site folder in the Drive root:
   4. If ready -> run Claude agent loop:
      a. check_site_readiness -> list_drive_documents -> read available first-round sources
      b. apply_e_occupancy_skill + apply_school_approval_skill + apply_opening_plan_skill + apply_alpha_phasing_plan_skill (Opening Plan reuses existing docs; Alpha Phasing returns open items instead of a workbook when phasing inputs are incomplete)
-     c. create_dd_report (with normalize_report_data + compute_deltas)
+     c. prepare_due_diligence_data (normalize SOR-ready DD data)
+     d. create_dd_report (render DDR view with normalize_report_data + compute_deltas)
      d. check_report_completeness
      e. If complete -> send first/final email only when the email gate passes
      f. If incomplete -> post Google Chat alert with unfilled tokens

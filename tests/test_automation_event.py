@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from due_diligence_reporter.automation_event import (
+    build_dd_report_republish_candidate_event,
     build_dd_report_republish_failed_event,
     build_dd_report_summary_event,
     build_document_registration_failed_event,
@@ -250,6 +251,46 @@ def test_dd_report_summary_event_renders_failed_due_diligence_write() -> None:
         "Requested decision: review failed Rhodes due diligence write and DD report"
         in note
     )
+
+
+def test_dd_report_candidate_event_renders_due_diligence_write() -> None:
+    event = build_dd_report_republish_candidate_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        run_id="run-1",
+        candidate_doc_id="doc-candidate",
+        candidate_doc_url="https://docs.google.com/document/d/doc-candidate",
+        overwrite_guard={
+            "active_doc_id": "doc-active",
+            "active_doc_url": "https://docs.google.com/document/d/doc-active",
+            "reason": "missing_automation_revision",
+        },
+        due_diligence_update={
+            "status": "updated",
+            "reason": "ok",
+            "updated_fields": ["foCapacity", "status"],
+        },
+        created_at="2026-06-18T13:30:00+00:00",
+    )
+
+    assert event.decision_required is True
+    assert event.requested_decision == (
+        "review Rhodes due diligence fields and candidate DDR before replacing active report"
+    )
+
+    note = render_automation_event_note(event)
+
+    assert (
+        "Action needed: Review the Rhodes due diligence fields and candidate DDR "
+        "before replacing the active report."
+    ) in note
+    assert "Rhodes due diligence update: updated foCapacity, status" in note
+    assert "Active DD report: https://docs.google.com/document/d/doc-active" in note
+    assert "Candidate DD report: https://docs.google.com/document/d/doc-candidate" in note
+    assert (
+        "Requested decision: review Rhodes due diligence fields and candidate DDR "
+        "before replacing active report"
+    ) in note
 
 
 def test_source_review_required_event_renders_source_issues() -> None:

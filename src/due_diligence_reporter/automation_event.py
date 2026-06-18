@@ -135,12 +135,15 @@ def _render_dd_report_candidate_note(event: AutomationEvent) -> str:
     active_url = event.details.get("Active DD report URL", "").strip()
     candidate_url = event.details.get("Candidate DD report URL", "").strip()
     reason = event.details.get("Guard reason", "").strip()
+    rhodes_update = event.details.get("Rhodes due diligence update", "").strip()
 
     lines = [
         "AutomationEvent v1",
-        "Action needed: Review the candidate DDR before replacing the active report.",
+        f"Action needed: {_dd_report_candidate_action_needed(event)}",
         f"Site: {event.site_name}",
     ]
+    if rhodes_update:
+        lines.append(f"Rhodes due diligence update: {rhodes_update}")
     if trigger_source:
         lines.append(
             f"Candidate created due to: {_format_republish_source(trigger_source, source_file)}"
@@ -169,6 +172,21 @@ def _render_dd_report_candidate_note(event: AutomationEvent) -> str:
         lines.append(f"{label}: {value or 'unknown'}")
     lines.append(f"Created at: {event.created_at}")
     return "\n".join(lines)
+
+
+def _dd_report_candidate_action_needed(event: AutomationEvent) -> str:
+    rhodes_update = event.details.get("Rhodes due diligence update", "").strip()
+    if rhodes_update.startswith("failed"):
+        return (
+            "Review the failed Rhodes due diligence write and candidate DDR "
+            "before replacing the active report."
+        )
+    if rhodes_update:
+        return (
+            "Review the Rhodes due diligence fields and candidate DDR before "
+            "replacing the active report."
+        )
+    return "Review the candidate DDR before replacing the active report."
 
 
 def _format_republish_source(source_type: str, source_file: str = "") -> str:
@@ -435,18 +453,42 @@ def build_dd_report_republish_candidate_event(
     source_event: dict[str, Any] | None = None,
     missing_vendor_docs: list[str] | None = None,
     overwrite_guard: dict[str, Any] | None = None,
+    due_diligence_update: dict[str, Any] | None = None,
     created_at: str | None = None,
 ) -> AutomationEvent:
     """Build a review event when republish creates a candidate instead of overwriting."""
 
     source = source_event or {}
     guard = overwrite_guard or {}
+    due_diligence_update_data = (
+        due_diligence_update if isinstance(due_diligence_update, dict) else None
+    )
+    due_diligence_status = (
+        str(due_diligence_update_data.get("status") or "").strip().lower()
+        if due_diligence_update_data is not None
+        else ""
+    )
+    due_diligence_written = due_diligence_status == "updated"
+    due_diligence_failed = due_diligence_status == "failed"
     artifact_ids = {"Run ID": run_id}
     if candidate_doc_id:
         artifact_ids["Candidate DD report ID"] = candidate_doc_id
     active_doc_id = str(guard.get("active_doc_id") or "").strip()
     if active_doc_id:
         artifact_ids["Active DD report ID"] = active_doc_id
+    details = {
+        "Trigger source": str(source.get("source_type") or "").strip(),
+        "Source file": str(source.get("file_name") or "").strip(),
+        "Outstanding vendor docs": _format_missing_docs(missing_vendor_docs),
+        "Active DD report URL": str(guard.get("active_doc_url") or "").strip(),
+        "Candidate DD report URL": str(candidate_doc_url or "").strip(),
+        "Guard reason": str(guard.get("reason") or "").strip(),
+    }
+    if due_diligence_written or due_diligence_failed:
+        assert due_diligence_update_data is not None
+        details["Rhodes due diligence update"] = _format_due_diligence_update(
+            due_diligence_update_data
+        )
 
     return AutomationEvent(
         source_system="due-diligence-reporter",
@@ -456,16 +498,15 @@ def build_dd_report_republish_candidate_event(
         event_type="dd_report_republish_candidate_created",
         artifact_ids=artifact_ids,
         decision_required=True,
-        requested_decision="review candidate DDR and decide whether to replace the active report",
+        requested_decision=(
+            "review failed Rhodes due diligence write and candidate DDR"
+            if due_diligence_failed
+            else "review Rhodes due diligence fields and candidate DDR before replacing active report"
+            if due_diligence_written
+            else "review candidate DDR and decide whether to replace the active report"
+        ),
         mutation_status="candidate_created",
-        details={
-            "Trigger source": str(source.get("source_type") or "").strip(),
-            "Source file": str(source.get("file_name") or "").strip(),
-            "Outstanding vendor docs": _format_missing_docs(missing_vendor_docs),
-            "Active DD report URL": str(guard.get("active_doc_url") or "").strip(),
-            "Candidate DD report URL": str(candidate_doc_url or "").strip(),
-            "Guard reason": str(guard.get("reason") or "").strip(),
-        },
+        details=details,
         created_at=created_at or datetime.now(UTC).isoformat(),
     )
 

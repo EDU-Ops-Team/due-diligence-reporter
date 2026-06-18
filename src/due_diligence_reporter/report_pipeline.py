@@ -150,7 +150,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Read the Rhodes/LocationOS site record for the supplied site and return "
             "the current P1 DRI / site owner and linked Google Drive folder URL. "
-            "Call this before list_drive_documents or create_dd_report when the "
+            "Call this before list_drive_documents or prepare_due_diligence_data when the "
             "request does not include a Drive folder URL. "
             "Use returned report_data_fields for meta.prepared_by and include the "
             "owner email in send_dd_report_email additional_recipients."
@@ -203,7 +203,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_opening_plan_skill",
-        "description": "Create or reuse the Opening Plan Google Doc after source reads and School Approval context are available, before Alpha Phasing and create_dd_report. Pass the full SIR text as sir_content plus optional School Approval and Building Inspection text. On success, copy returned report_data_fields into create_dd_report, especially sources.opening_plan_link.",
+        "description": "Create or reuse the Opening Plan Google Doc after source reads and School Approval context are available, before Alpha Phasing and prepare_due_diligence_data. Pass the full SIR text as sir_content plus optional School Approval and Building Inspection text. On success, copy returned report_data_fields into report_data, especially sources.opening_plan_link.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -237,7 +237,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_alpha_phasing_plan_skill",
-        "description": "Create and publish the Alpha Phasing Plan workbook after source reads, E-Occupancy, School Approval, and RayCon context are available. Pass only confirmed phasing inputs; if deferred Phase II scope is not confirmed, call the tool with the missing fields so it returns concrete verification.open_items instead of inventing scope. On success, copy returned report_data_fields into create_dd_report, including sources.alpha_phasing_plan_link and exec.alpha_phasing_* summary fields.",
+        "description": "Create and publish the Alpha Phasing Plan workbook after source reads, E-Occupancy, School Approval, and RayCon context are available. Pass only confirmed phasing inputs; if deferred Phase II scope is not confirmed, call the tool with the missing fields so it returns concrete verification.open_items instead of inventing scope. On success, copy returned report_data_fields into report_data before prepare_due_diligence_data, including sources.alpha_phasing_plan_link and exec.alpha_phasing_* summary fields.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -268,6 +268,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "must_complete_before_opening",
                 "deferred_scopes",
             ],
+        },
+    },
+    {
+        "name": "prepare_due_diligence_data",
+        "description": "Normalize due-diligence report_data without creating a Google Doc. Call this after source reads and enrichment tools, before create_dd_report, so the pipeline can publish structured DD fields to Rhodes first. The report_data dict must use exact current template token keys. Copy report_data_fields from skill tools directly into report_data. Pass token_evidence for source traceability.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "site_name": {"type": "string"},
+                "drive_folder_url": {"type": "string"},
+                "site_address": {"type": "string", "description": "Optional full property address used for deterministic REBL site ID resolution"},
+                "report_data": {"type": "object"},
+                "token_evidence": {"type": "object", "description": "Optional dict mapping token names to raw source excerpts for local diagnostics"},
+            },
+            "required": ["site_name", "drive_folder_url", "report_data"],
         },
     },
     {
@@ -345,6 +360,7 @@ async def route_tool_call(tool_name: str, tool_input: dict[str, Any]) -> Any:
         "apply_opening_plan_skill": srv.apply_opening_plan_skill,
         "apply_alpha_capacity_analysis_skill": srv.apply_alpha_capacity_analysis_skill,
         "apply_alpha_phasing_plan_skill": srv.apply_alpha_phasing_plan_skill,
+        "prepare_due_diligence_data": srv.prepare_due_diligence_data,
         "create_dd_report": srv.create_dd_report,
         "check_report_completeness": srv.check_report_completeness,
         "save_skill_report": srv.save_skill_report,
@@ -384,6 +400,7 @@ def _canonicalize_site_tool_input(
         "apply_opening_plan_skill",
         "apply_alpha_capacity_analysis_skill",
         "apply_alpha_phasing_plan_skill",
+        "prepare_due_diligence_data",
         "create_dd_report",
         "save_skill_report",
         "send_dd_report_email",
@@ -403,6 +420,7 @@ def _canonicalize_site_tool_input(
         "apply_opening_plan_skill",
         "apply_alpha_capacity_analysis_skill",
         "apply_alpha_phasing_plan_skill",
+        "prepare_due_diligence_data",
         "create_dd_report",
         "save_skill_report",
     }:
@@ -415,6 +433,7 @@ def _canonicalize_site_tool_input(
         "apply_opening_plan_skill",
         "apply_alpha_capacity_analysis_skill",
         "apply_alpha_phasing_plan_skill",
+        "prepare_due_diligence_data",
         "create_dd_report",
     }:
         canonical["site_address"] = site_address
@@ -872,6 +891,8 @@ def run_dd_report_agent(
     doc_url: str | None = None
     document_role = "active"
     republish_guard: dict[str, Any] | None = None
+    prepared_render_input: dict[str, Any] | None = None
+    prepared_report_metadata: dict[str, Any] | None = None
     cached_report_fields: dict[str, Any] = dict(initial_report_fields or {})
     if effective_site_address:
         cached_report_fields.setdefault("site.address", effective_site_address)
@@ -917,7 +938,7 @@ def run_dd_report_agent(
                 drive_folder_url=effective_drive_folder_url,
                 site_address=effective_site_address,
             )
-            if tool_use.name == "create_dd_report":
+            if tool_use.name in {"prepare_due_diligence_data", "create_dd_report"}:
                 tool_input = _merge_cached_report_fields(tool_input, cached_report_fields)
 
             t0 = time.monotonic()
@@ -941,8 +962,30 @@ def run_dd_report_agent(
                 error=tool_error,
             ))
 
+            # Capture normalized DD data before rendering so the pipeline can
+            # write the SOR first, then create the DDR as a view.
+            if tool_use.name == "prepare_due_diligence_data" and isinstance(result, dict):
+                if result.get("status") == "success":
+                    rd = tool_input.get("report_data")
+                    normalized = result.get("normalized_report_data")
+                    if isinstance(rd, dict):
+                        trace.final_report_data = dict(rd)
+                    if isinstance(normalized, dict):
+                        trace.final_report_data.update(normalized)
+                    prepared_render_input = {
+                        "site_name": tool_input.get("site_name", site_title),
+                        "drive_folder_url": tool_input.get("drive_folder_url", ""),
+                        "report_data": dict(trace.final_report_data),
+                        "site_address": tool_input.get("site_address", ""),
+                    }
+                    token_evidence = tool_input.get("token_evidence")
+                    if isinstance(token_evidence, dict):
+                        prepared_render_input["token_evidence"] = dict(token_evidence)
+                    metadata = result.get("report_metadata")
+                    prepared_report_metadata = metadata if isinstance(metadata, dict) else None
+                    logger.info("Prepared DD data for SOR-first publish")
             # Capture doc_id from create_dd_report
-            if tool_use.name == "create_dd_report" and isinstance(result, dict):
+            elif tool_use.name == "create_dd_report" and isinstance(result, dict):
                 doc_data = result.get("document", {})
                 if doc_data.get("id"):
                     doc_id = doc_data["id"]
@@ -993,21 +1036,32 @@ def run_dd_report_agent(
                 "content": json.dumps(result),
             })
 
-            if doc_id:
-                logger.info("Report created during tool batch, skipping remaining tool calls")
+            if doc_id or prepared_render_input is not None:
+                logger.info("DD report handoff complete during tool batch, skipping remaining tool calls")
                 break
 
         messages.append({"role": "user", "content": tool_results})
 
-        # Stop as soon as we have a report — completeness check happens separately
-        if doc_id:
-            logger.info("Report created, stopping agent loop after %d iterations", iteration + 1)
+        # Stop as soon as data is prepared or a report exists. Pipeline handles
+        # SOR publish, rendering, validation, and notifications.
+        if doc_id or prepared_render_input is not None:
+            logger.info("Agent handoff complete after %d iterations", iteration + 1)
             break
 
     # Finalize trace
     trace.ended_at = datetime.now(UTC).isoformat()
     trace.total_duration_ms = int((time.monotonic() - run_start) * 1000)
-    trace.final_status = "success" if doc_id else "no_report"
+    trace.final_status = "success" if doc_id or prepared_render_input is not None else "no_report"
+
+    if prepared_render_input is not None and doc_id is None:
+        return {
+            "success": True,
+            "prepared": True,
+            "trace": trace,
+            "render_input": prepared_render_input,
+            "prepared_report_data": trace.final_report_data,
+            "report_metadata": prepared_report_metadata or {},
+        }
 
     if doc_id:
         return {
@@ -1031,7 +1085,7 @@ class PipelineResult:
     """Structured result from a single-site pipeline run."""
 
     site_title: str
-    status: str  # waiting_on_docs | report_exists | report_created | republish_candidate_created | report_incomplete | generation_failed | error | yielded_to_pipeline
+    status: str  # waiting_on_docs | report_exists | report_data_prepared | report_created | republish_candidate_created | report_incomplete | generation_failed | error | yielded_to_pipeline
     missing_docs: list[str] = field(default_factory=list)
     doc_id: str | None = None
     doc_url: str | None = None
@@ -1276,8 +1330,8 @@ class ReportTrace:
     doc_id: str | None = None
     tokens_filled: int = 0
     tokens_unfilled: int = 0
-    # Full report_data passed to create_dd_report (flat token dict). Kept on
-    # the in-memory trace for validation and local run diagnostics.
+    # Full normalized report_data prepared for SOR publish and DDR rendering.
+    # Kept on the in-memory trace for validation and local run diagnostics.
     final_report_data: dict[str, Any] = field(default_factory=dict)
 
     def add_event(self, event: TraceEvent) -> None:
@@ -1367,7 +1421,7 @@ def _merge_cached_report_fields(
     tool_input: dict[str, Any],
     cached_report_fields: dict[str, Any],
 ) -> dict[str, Any]:
-    """Merge cached tool report_data_fields into create_dd_report input."""
+    """Merge cached tool report_data_fields into a report-data tool input."""
     if not cached_report_fields:
         return tool_input
 
@@ -1751,6 +1805,26 @@ def _run_pipeline_agent(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _render_prepared_dd_report(agent_result: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """Render a DDR from a prior prepare_due_diligence_data handoff."""
+    render_input = agent_result.get("render_input")
+    if not isinstance(render_input, dict):
+        return None, "Prepared DD data result did not include render_input"
+    try:
+        result = route_tool_call_sync("create_dd_report", render_input)
+    except Exception as exc:  # noqa: BLE001 - pipeline records a clean failure
+        return None, str(exc)
+    if not isinstance(result, dict):
+        return None, f"create_dd_report returned {type(result).__name__}, expected object"
+    if result.get("status") != "success":
+        message = str(result.get("message") or result.get("error") or "create_dd_report failed")
+        return None, message
+    document = result.get("document")
+    if not isinstance(document, dict) or not str(document.get("id") or "").strip():
+        return None, "create_dd_report did not return a valid document"
+    return result, ""
+
 
 def _check_generated_report(
     site_title: str,
@@ -2439,6 +2513,7 @@ def _record_republish_candidate_event_step(
         source_event=result.source_event,
         missing_vendor_docs=result.missing_docs,
         overwrite_guard=guard,
+        due_diligence_update=result.rhodes_due_diligence_update,
     )
     event_status, body = record_rhodes_automation_event(
         event,
@@ -3024,9 +3099,8 @@ def process_site_pipeline(
     assert agent_result is not None
     recorder.record("report.generate", started_at, started_monotonic, "succeeded")
 
-    doc_id = agent_result["doc_id"]
-    doc_url = agent_result.get("doc_url", "")
-    final_report_data = getattr(agent_result.get("trace"), "final_report_data", None)
+    trace = agent_result.get("trace")
+    final_report_data = getattr(trace, "final_report_data", None)
     if isinstance(final_report_data, dict):
         p1_name = p1_name or _first_text(
             final_report_data.get("p1_assignee_name"),
@@ -3045,7 +3119,7 @@ def process_site_pipeline(
         recorder,
         settings,
         site_title,
-        agent_result.get("trace"),
+        trace,
         drive_folder_url=drive_folder_url,
         trace_url=trace_url or "",
         site_id=recorder.site_id or site_id or "",
@@ -3053,7 +3127,120 @@ def process_site_pipeline(
         owner_email=p1_email or "",
     )
 
-    if agent_result.get("document_role") == "candidate":
+    pre_render_due_diligence_update: dict[str, Any] | None = None
+    if agent_result.get("prepared"):
+        prepared_result = PipelineResult(
+            site_title=site_title,
+            status="report_data_prepared",
+            missing_docs=missing_full_report_docs,
+            trace_url=trace_url,
+            trace=trace,
+        )
+        _set_open_question_state(
+            prepared_result,
+            trace=trace,
+            run_id=recorder.run_id,
+            source_event=source_event,
+            open_questions_before=open_questions_before,
+            validated=False,
+        )
+        prepare_metadata = agent_result.get("report_metadata")
+        recorder.record(
+            "due_diligence.prepare",
+            *recorder.start(),
+            "succeeded",
+            artifacts=[
+                ArtifactRef(
+                    kind="due_diligence_data",
+                    name="Normalized DD data",
+                    metadata=prepare_metadata if isinstance(prepare_metadata, dict) else {},
+                )
+            ],
+        )
+        _record_rhodes_due_diligence_update_step(
+            recorder,
+            prepared_result,
+            site_id=recorder.site_id or site_id or "",
+            report_data=_report_data_from_trace(trace),
+        )
+        pre_render_due_diligence_update = prepared_result.rhodes_due_diligence_update
+        if _due_diligence_update_failed(prepared_result):
+            _record_rhodes_report_event_step(
+                recorder,
+                settings,
+                prepared_result,
+                site_id=recorder.site_id or site_id or "",
+                owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+                owner_email=p1_email or "",
+            )
+            return _finalize_pipeline_result(
+                prepared_result,
+                recorder,
+                gc=gc,
+                drive_folder_url=drive_folder_url,
+            )
+
+        started_at, started_monotonic = recorder.start()
+        render_result, render_error = _render_prepared_dd_report(agent_result)
+        if render_result is None:
+            recorder.record(
+                "report.render",
+                started_at,
+                started_monotonic,
+                "failed",
+                error=_pipeline_error(
+                    recorder.run_id,
+                    "report.render",
+                    "report_render_failed",
+                    render_error or "DD report render failed",
+                ),
+            )
+            prepared_result.status = "generation_failed"
+            prepared_result.error = render_error or "DD report render failed"
+            _record_rhodes_report_event_step(
+                recorder,
+                settings,
+                prepared_result,
+                site_id=recorder.site_id or site_id or "",
+                owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+                owner_email=p1_email or "",
+            )
+            return _finalize_pipeline_result(
+                prepared_result,
+                recorder,
+                gc=gc,
+                drive_folder_url=drive_folder_url,
+            )
+        document = render_result["document"]
+        doc_id = str(document.get("id") or "")
+        doc_url = str(document.get("url") or "")
+        document_role = str(document.get("role") or "active")
+        guard = render_result.get("republish_guard")
+        if isinstance(guard, dict):
+            agent_result["republish_guard"] = guard
+        normalized = render_result.get("normalized_report_data")
+        if isinstance(trace, ReportTrace) and isinstance(normalized, dict):
+            trace.final_report_data.update(normalized)
+        recorder.record(
+            "report.render",
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[
+                ArtifactRef(
+                    kind="google_doc",
+                    name="DD report",
+                    uri=doc_url,
+                    drive_file_id=doc_id,
+                )
+            ],
+        )
+    else:
+        doc_id = agent_result["doc_id"]
+        doc_url = agent_result.get("doc_url", "")
+        document_role = str(agent_result.get("document_role") or "active")
+
+    if document_role == "candidate":
         candidate_result = PipelineResult(
             site_title=site_title,
             status="republish_candidate_created",
@@ -3078,6 +3265,15 @@ def process_site_pipeline(
                 "overwrite_guard": guard,
                 "outstanding_vendor_docs": missing_full_report_docs,
             }
+        if pre_render_due_diligence_update is None:
+            _record_rhodes_due_diligence_update_step(
+                recorder,
+                candidate_result,
+                site_id=recorder.site_id or site_id or "",
+                report_data=_report_data_from_trace(trace),
+            )
+        else:
+            candidate_result.rhodes_due_diligence_update = pre_render_due_diligence_update
         _record_republish_candidate_event_step(
             recorder,
             settings,
@@ -3182,12 +3378,15 @@ def process_site_pipeline(
         open_questions_before=open_questions_before,
         validated=True,
     )
-    _record_rhodes_due_diligence_update_step(
-        recorder,
-        final_result,
-        site_id=recorder.site_id or site_id or "",
-        report_data=_report_data_from_trace(agent_result.get("trace")),
-    )
+    if pre_render_due_diligence_update is None:
+        _record_rhodes_due_diligence_update_step(
+            recorder,
+            final_result,
+            site_id=recorder.site_id or site_id or "",
+            report_data=_report_data_from_trace(trace),
+        )
+    else:
+        final_result.rhodes_due_diligence_update = pre_render_due_diligence_update
     due_diligence_update_failed = _due_diligence_update_failed(final_result)
 
     _record_rhodes_report_event_step(

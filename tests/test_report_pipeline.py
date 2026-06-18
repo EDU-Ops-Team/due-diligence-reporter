@@ -1211,6 +1211,307 @@ class TestProcessSitePipeline:
         )
         assert update_step.status == "succeeded"
 
+    @patch(
+        "due_diligence_reporter.report_pipeline.utc_now_iso",
+        return_value="2026-06-17T15:00:00+00:00",
+    )
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_prepared_data_updates_sor_before_rendering_ddr(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_route_tool_call_sync,
+        mock_completeness,
+        mock_update_due_diligence,
+        mock_rhodes_note,
+        _mock_utc_now,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-17T15:00:00+00:00",
+            events=[],
+            final_report_data={"due_diligence.fastest_open_capacity": "36"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "prepared": True,
+            "trace": trace,
+            "render_input": {
+                "site_name": "Alpha Keller",
+                "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                "report_data": {"due_diligence.fastest_open_capacity": "36"},
+            },
+            "prepared_report_data": {"due_diligence.fastest_open_capacity": "36"},
+            "report_metadata": {"completeness": {"stage": "complete"}},
+        }
+        events: list[str] = []
+
+        def update_side_effect(**kwargs):
+            events.append("update")
+            return {
+                "status": "updated",
+                "reason": "ok",
+                "updated_fields": sorted(kwargs["fields"]),
+            }
+
+        def render_side_effect(tool_name, tool_input):
+            events.append("render")
+            assert tool_name == "create_dd_report"
+            assert tool_input["report_data"]["due_diligence.fastest_open_capacity"] == "36"
+            return {
+                "status": "success",
+                "document": {
+                    "id": "doc123",
+                    "url": "https://docs.google.com/document/d/doc123",
+                    "role": "active",
+                },
+                "normalized_report_data": {
+                    "due_diligence.fastest_open_capacity": "36",
+                },
+            }
+
+        def note_side_effect(**kwargs):
+            events.append("note")
+            return {
+                "status": "created",
+                "reason": "ok",
+                "rhodes_note_id": "NOTE1",
+                "owner_notification": "mentioned",
+            }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_update_due_diligence.side_effect = update_side_effect
+        mock_route_tool_call_sync.side_effect = render_side_effect
+        mock_rhodes_note.side_effect = note_side_effect
+        mock_completeness.side_effect = fake_completeness
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            p1_email="owner@example.com",
+            site_id="SITE1",
+        )
+
+        assert result.status == "report_created"
+        assert events == ["update", "render", "note"]
+        update_kwargs = mock_update_due_diligence.call_args.kwargs
+        assert update_kwargs["fields"] == {
+            "status": "complete",
+            "dateCompleted": "2026-06-17",
+            "foCapacity": "36",
+        }
+        assert "ddReportLink" not in update_kwargs["fields"]
+        note_body = mock_rhodes_note.call_args.kwargs["body"]
+        assert "DD report: https://docs.google.com/document/d/doc123" in note_body
+        assert "Rhodes due diligence update: updated dateCompleted, foCapacity, status" in note_body
+        prepare_step = next(step for step in result.steps if step.step == "due_diligence.prepare")
+        assert prepare_step.status == "succeeded"
+        render_step = next(step for step in result.steps if step.step == "report.render")
+        assert render_step.status == "succeeded"
+        update_step = next(
+            step for step in result.steps if step.step == "rhodes.due_diligence_update"
+        )
+        assert update_step.status == "succeeded"
+
+    @patch(
+        "due_diligence_reporter.report_pipeline.utc_now_iso",
+        return_value="2026-06-17T15:00:00+00:00",
+    )
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_prepared_data_sor_failure_stops_before_rendering_ddr(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_route_tool_call_sync,
+        mock_update_due_diligence,
+        mock_rhodes_note,
+        _mock_utc_now,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-17T15:00:00+00:00",
+            events=[],
+            final_report_data={"due_diligence.fastest_open_capacity": "36"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "prepared": True,
+            "trace": trace,
+            "render_input": {
+                "site_name": "Alpha Keller",
+                "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                "report_data": {"due_diligence.fastest_open_capacity": "36"},
+            },
+            "prepared_report_data": {"due_diligence.fastest_open_capacity": "36"},
+            "report_metadata": {"completeness": {"stage": "complete"}},
+        }
+        mock_update_due_diligence.return_value = {
+            "status": "failed",
+            "reason": "rhodes_error",
+            "error": "updateDueDiligence rejected",
+            "updated_fields": ["foCapacity", "status"],
+        }
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        }
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            p1_email="owner@example.com",
+            site_id="SITE1",
+        )
+
+        assert result.status == "report_data_prepared"
+        assert result.failed_step == "rhodes.due_diligence_update"
+        mock_route_tool_call_sync.assert_not_called()
+        assert not any(step.step == "report.render" for step in result.steps)
+        note_body = mock_rhodes_note.call_args.kwargs["body"]
+        assert "Rhodes due diligence update: failed to update foCapacity, status" in note_body
+
+    @patch(
+        "due_diligence_reporter.report_pipeline.utc_now_iso",
+        return_value="2026-06-17T15:00:00+00:00",
+    )
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_candidate_publish_updates_sor_before_review_event(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_update_due_diligence,
+        mock_rhodes_note,
+        _mock_utc_now,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-17T15:00:00+00:00",
+            events=[],
+            final_report_data={"due_diligence.fastest_open_capacity": "36"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc-candidate",
+            "doc_url": "https://docs.google.com/document/d/doc-candidate",
+            "document_role": "candidate",
+            "republish_guard": {
+                "status": "blocked",
+                "reason": "missing_automation_revision",
+                "active_doc_id": "doc-active",
+                "active_doc_url": "https://docs.google.com/document/d/doc-active",
+                "candidate_doc_id": "doc-candidate",
+                "candidate_doc_url": "https://docs.google.com/document/d/doc-candidate",
+                "candidate_reused": True,
+            },
+            "trace": trace,
+        }
+        events: list[str] = []
+
+        def update_side_effect(**kwargs):
+            events.append("update")
+            return {
+                "status": "updated",
+                "reason": "ok",
+                "updated_fields": sorted(kwargs["fields"]),
+            }
+
+        def note_side_effect(**kwargs):
+            events.append("note")
+            return {
+                "status": "created",
+                "reason": "ok",
+                "rhodes_note_id": "NOTE1",
+                "owner_notification": "mentioned",
+            }
+
+        mock_update_due_diligence.side_effect = update_side_effect
+        mock_rhodes_note.side_effect = note_side_effect
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            p1_email="owner@example.com",
+            site_id="SITE1",
+        )
+
+        assert result.status == "republish_candidate_created"
+        assert events == ["update", "note"]
+        assert result.rhodes_due_diligence_update is not None
+        assert result.rhodes_due_diligence_update["status"] == "updated"
+        update_kwargs = mock_update_due_diligence.call_args.kwargs
+        assert update_kwargs["site_id"] == "SITE1"
+        assert update_kwargs["fields"] == {
+            "status": "complete",
+            "dateCompleted": "2026-06-17",
+            "ddReportLink": "https://docs.google.com/document/d/doc-candidate",
+            "foCapacity": "36",
+        }
+        mock_rhodes_note.assert_called_once()
+        note_body = mock_rhodes_note.call_args.kwargs["body"]
+        assert "Kind: dd_report_republish_candidate_created" in note_body
+        assert (
+            "Action needed: Review the Rhodes due diligence fields and candidate DDR "
+            "before replacing the active report."
+        ) in note_body
+        assert (
+            "Rhodes due diligence update: updated dateCompleted, ddReportLink, "
+            "foCapacity, status"
+        ) in note_body
+        assert "Candidate DD report: https://docs.google.com/document/d/doc-candidate" in note_body
+        update_step = next(
+            step for step in result.steps if step.step == "rhodes.due_diligence_update"
+        )
+        assert update_step.status == "succeeded"
+
     @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
     @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
     @patch("due_diligence_reporter.server.check_report_completeness")
@@ -2164,6 +2465,94 @@ class TestAgentToolMerging:
             == "capacity_not_defensible"
         )
         assert merged["report_data"]["exec.fastest_open_capex"] == ""
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
+    @patch("due_diligence_reporter.report_pipeline.anthropic.Anthropic")
+    def test_run_dd_report_agent_stops_after_preparing_due_diligence_data(
+        self,
+        mock_anthropic,
+        mock_route_tool_call_sync,
+    ):
+        class FakeToolUse:
+            def __init__(self, tool_id, name, tool_input):
+                self.type = "tool_use"
+                self.id = tool_id
+                self.name = name
+                self.input = tool_input
+
+        response = MagicMock()
+        response.content = [
+            FakeToolUse(
+                "tool-1",
+                "apply_school_approval_skill",
+                {"site_name": "Alpha Keller", "address": "123 Main St"},
+            ),
+            FakeToolUse(
+                "tool-2",
+                "prepare_due_diligence_data",
+                {
+                    "site_name": "Alpha Keller",
+                    "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                    "report_data": {"exec.fastest_open_capacity": "25"},
+                    "token_evidence": {"exec.fastest_open_capacity": "SIR p. 2"},
+                },
+            ),
+            FakeToolUse(
+                "tool-3",
+                "create_dd_report",
+                {
+                    "site_name": "Alpha Keller",
+                    "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                    "report_data": {},
+                },
+            ),
+        ]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = response
+        mock_anthropic.return_value = mock_client
+        mock_route_tool_call_sync.side_effect = [
+            {
+                "status": "success",
+                "report_data_fields": {
+                    "q2.school_approval_difficulty": "easy",
+                    "q2.school_approval_score": "9",
+                },
+            },
+            {
+                "status": "success",
+                "normalized_report_data": {
+                    "exec.fastest_open_capacity": "25",
+                    "q2.school_approval_difficulty": "easy",
+                    "q2.school_approval_score": "9",
+                    "meta.prepared_by": "Devin Bates",
+                },
+                "report_metadata": {"completeness": {"stage": "complete"}},
+            },
+        ]
+
+        result = run_dd_report_agent(
+            "Alpha Keller",
+            "system prompt",
+            "claude-test",
+            initial_report_fields={
+                "meta.prepared_by": "Devin Bates",
+            },
+        )
+
+        assert result["success"] is True
+        assert result["prepared"] is True
+        assert mock_route_tool_call_sync.call_count == 2
+        prepare_call = mock_route_tool_call_sync.call_args_list[1]
+        assert prepare_call.args[0] == "prepare_due_diligence_data"
+        prepare_input = prepare_call.args[1]
+        assert prepare_input["report_data"]["exec.fastest_open_capacity"] == "25"
+        assert prepare_input["report_data"]["meta.prepared_by"] == "Devin Bates"
+        assert prepare_input["report_data"]["q2.school_approval_difficulty"] == "easy"
+        assert result["render_input"]["report_data"]["exec.fastest_open_capacity"] == "25"
+        assert result["render_input"]["token_evidence"] == {
+            "exec.fastest_open_capacity": "SIR p. 2"
+        }
 
     @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
     @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")

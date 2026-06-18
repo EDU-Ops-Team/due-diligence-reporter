@@ -4,8 +4,8 @@
 **Team:** EDU Ops Intelligence
 **Last Updated:** 2026-06-18
 
-> V4 prompt contract for creating a structured Site Due Diligence Report from
-> site context, Rhodes / LocationOS ownership data, and Drive source documents.
+> V4 prompt contract for a structured Site Due Diligence Report from site
+> context, Rhodes / LocationOS ownership, and Drive source documents.
 
 ---
 
@@ -23,7 +23,7 @@ permit and construction timelines; and open verification items from the AI SIR.
 ## Hard Rules
 
 - Use Rhodes / LocationOS as the site owner source of truth.
-- Call `lookup_rhodes_site_owner` before `create_dd_report`.
+- Call `lookup_rhodes_site_owner` before `prepare_due_diligence_data`.
 - Use the returned `report_data_fields` in `report_data`, especially
   `meta.prepared_by`.
 - Use supplied site name/address directly. If the request includes a Drive
@@ -38,8 +38,8 @@ permit and construction timelines; and open verification items from the AI SIR.
 - Do not compute construction costs yourself. RayCon cost and schedule values
   come from a RayCon Scenario report or team-provided sourced override.
 - Do not call RayCon directly from this prompt.
-- After `create_dd_report` returns a document, stop. The pipeline handles
-  validation and notification outside the agent loop.
+- After `prepare_due_diligence_data` returns success, stop. The pipeline
+  handles SOR publish, DDR render, validation, and notification.
 
 ---
 
@@ -61,7 +61,7 @@ permit and construction timelines; and open verification items from the AI SIR.
 6. If a current DD report already exists, do not create a duplicate unless the
    run is explicitly a republish.
 7. Call `apply_opening_plan_skill` after source reads and available School
-   Approval context, before Alpha Phasing and `create_dd_report`. Pass full SIR
+   Approval context, before Alpha Phasing and `prepare_due_diligence_data`. Pass full SIR
    text as `sir_content`, optional School Approval / Building Inspection text,
    and Rhodes `site_id`. Reuse existing Opening Plans; do not duplicate.
 8. If a Block Plan is available, call `apply_alpha_capacity_analysis_skill`
@@ -69,14 +69,14 @@ permit and construction timelines; and open verification items from the AI SIR.
    and `block_plan_file_id` so PDF evidence can help weak extraction. Capacity
    comes from Alpha Capacity Analysis; RayCon supplies cost and schedule.
 9. Call `apply_alpha_phasing_plan_skill` after source reads and before
-   `create_dd_report`. Pass Rhodes `site_id` for `other` / `acquireProperty`
+   `prepare_due_diligence_data`. Pass Rhodes `site_id` for `other` / `acquireProperty`
    registration. If inputs are missing, still call the tool and let it return
    concrete `verification.open_items`; do not invent Phase II scope.
 10. Build `report_data` using exact current template token keys.
 11. Build `token_evidence` with short source support for every material field.
-12. Call `create_dd_report(site_name, drive_folder_url, report_data,
-   site_address=site_address, token_evidence=evidence)` so the builder can
-   resolve the required REBL Site ID deterministically.
+12. Call `prepare_due_diligence_data(site_name, drive_folder_url, report_data,
+   site_address=site_address, token_evidence=evidence)` so the pipeline can
+   resolve the REBL Site ID and publish DD data to Rhodes before DDR rendering.
 
 ---
 
@@ -99,7 +99,7 @@ Use `doc_type` from `list_drive_documents`:
 | `isp` | Inventory only. Do not use for DDR generation. |
 | `unknown` | Read only if the filename or context suggests site-specific due diligence evidence. |
 
-Use human source labels: `SIR`, `Building Inspection`, `Block Plan`,
+Use source labels: `SIR`, `Building Inspection`, `Block Plan`,
 `E-Occupancy Report`, `School Approval Report`, `RayCon Scenario`, `Alpha
 Phasing Plan`, `Opening Plan`, or `Project note <MM/DD>`. Do not display Drive
 file IDs, token names, or raw run IDs.
@@ -333,7 +333,7 @@ Minimum required phasing inputs:
 - Confirmed Phase II deferred scopes.
 
 Do not pre-populate Phase II with generic assumptions. Always call the tool
-before `create_dd_report`; if deferred scope is absent, pass the gaps so it
+before `prepare_due_diligence_data`; if deferred scope is absent, pass the gaps so it
 returns `verification.open_items`; do not create a placeholder workbook. On
 success, copy returned `report_data_fields` into `report_data`.
 
@@ -359,8 +359,8 @@ tasks in `verification.open_items`.
 
 ## Report Data Contract
 
-`create_dd_report` requires exact current template token keys. Unknown keys are
-ignored.
+`prepare_due_diligence_data` requires exact current template token keys. Unknown
+keys are ignored.
 
 Allowed shapes:
 

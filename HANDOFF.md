@@ -1,5 +1,103 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-18 - SOR-First DD Data Preparation Before DDR Rendering
+
+- Beads issue `ddr-8cu` tracks Greg's approval to split normalized
+  due-diligence data extraction from DDR rendering.
+- ADR `docs/decisions/0001-sor-first-dd-data-before-ddr-render.md` records the
+  accepted boundary: structured DD data is prepared and published to Rhodes
+  before a DDR Google Doc is created or updated.
+- Added `prepare_due_diligence_data(...)` as the non-rendering handoff tool. It
+  performs deterministic report-data normalization, REBL/default injection, and
+  completeness metadata generation without creating a Google Doc.
+- Updated the agent loop so the preferred path stops after
+  `prepare_due_diligence_data` succeeds. The shared pipeline then records
+  `due_diligence.prepare`, calls `rhodes.due_diligence_update`, and only then
+  renders the DDR through the existing `create_dd_report` tool.
+- If the pre-render Rhodes due-diligence write fails, the pipeline writes/tags
+  the P1 DRI with the failed SOR write and stops before rendering the DDR. If
+  the SOR write is skipped for a non-failed reason such as missing site ID, the
+  existing non-blocking behavior is preserved.
+- The old direct `create_dd_report` path remains as a compatibility fallback
+  for callers that have not yet moved to the prepared-data handoff.
+- Updated `docs/prompts/prompt_v4.md`, `docs/process/HOW-IT-WORKS.md`, and
+  `docs/process/dd-end-to-end-flow.mmd` to describe the SOR-first sequence:
+  prepare normalized data, write Rhodes, then render the DDR as a supporting
+  view.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_report_pipeline.py::TestAgentToolMerging::test_run_dd_report_agent_stops_after_preparing_due_diligence_data tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_updates_sor_before_rendering_ddr tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_sor_failure_stops_before_rendering_ddr tests\test_prompt_contract.py::test_prompt_v4_keeps_first_round_contract -q --basetemp C:\tmp\ddr-sor-first-prepare-focused-3
+uv run pytest tests\test_report_pipeline.py::TestProcessSitePipeline tests\test_report_pipeline.py::TestAgentToolMerging tests\test_prompt_contract.py tests\test_automation_event.py tests\test_dd_output_fixes.py::TestAsyncOffloading -q --basetemp C:\tmp\ddr-sor-first-prepare-affected-4
+uv run pytest tests\test_report_pipeline.py -q --basetemp C:\tmp\ddr-sor-first-report-pipeline-full
+uv run pytest tests\test_pipeline_contracts.py -q --basetemp C:\tmp\ddr-sor-first-pipeline-contracts-final
+uv run ruff check docs src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\automation_event.py tests\test_report_pipeline.py tests\test_prompt_contract.py tests\test_automation_event.py tests\test_dd_output_fixes.py
+uv run mypy src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py
+git diff --check
+```
+
+Results: focused SOR-first prepare tests passed (`4 passed`), the broad
+affected suite passed (`62 passed`), full `test_report_pipeline.py` passed
+(`69 passed`), pipeline contracts passed (`10 passed`), Ruff passed, mypy
+passed for `server.py` and `report_pipeline.py`, and `git diff --check` passed
+with expected Windows LF-to-CRLF warnings only.
+
+## 2026-06-18 - DDR Candidate Idempotency and SOR-First Publish Behavior
+
+- Beads issue `ddr-fs5` tracks Greg's request to prevent forced/manual DDR
+  reruns from creating many same-day DD Report Candidate Google Docs.
+- Beads issue `ddr-zna` tracks Greg's follow-up direction that candidate
+  publishes must still update the system of record first, then log what
+  changed or failed and tag the P1 DRI.
+- `create_dd_report` now makes candidate creation idempotent when the active
+  same-day DDR is protected by the overwrite guard. It searches the target M1
+  folder for one automation-owned candidate with the same active source doc,
+  report date, and guard reason. If found, it clears and rebuilds that
+  candidate instead of creating another Google Doc.
+- Candidate docs are now marked with automation appProperties immediately after
+  create/reuse and again after the builder succeeds. That means a builder
+  failure no longer leaves the next run unable to identify the candidate it just
+  created.
+- If more than one matching automation-owned candidate exists for the same
+  source/date/guard reason, the run fails closed and tells the operator to
+  review or clean up the candidates before rerunning.
+- SOR behavior was updated: active/final DD report publishes and protected
+  candidate publishes both go through `rhodes.due_diligence_update` as soon as
+  normalized report data exists. The follow-up `rhodes.report_event` note then
+  includes the Rhodes write result or failure and tags the P1 DRI when a Rhodes
+  owner can be resolved. Candidate notes still tell the operator to review the
+  candidate before replacing the protected active DDR, but the structured DD
+  data is no longer held back from Rhodes.
+- `docs/process/HOW-IT-WORKS.md` now states the SOR-first contract: structured
+  DD data goes to Rhodes before the DDR/candidate note, and the DDR can serve
+  as a supporting view rather than the first place the data becomes durable.
+
+Validation:
+
+```powershell
+uv run ruff check src\due_diligence_reporter\server.py tests\test_dd_output_fixes.py tests\test_report_pipeline.py
+uv run mypy src\due_diligence_reporter\server.py src\due_diligence_reporter\report_pipeline.py
+uv run pytest tests\test_dd_output_fixes.py::TestAsyncOffloading -q --basetemp C:\tmp\ddr-candidate-offloading-final
+uv run pytest tests\test_report_pipeline.py::TestProcessSitePipeline -q --basetemp C:\tmp\ddr-candidate-process-pipeline-final
+uv run pytest tests\test_report_pipeline.py::TestProcessSitePipeline::test_candidate_publish_updates_sor_before_review_event tests\test_report_pipeline.py::TestProcessSitePipeline::test_report_created_updates_rhodes_due_diligence_before_notifying_p1 -q --basetemp C:\tmp\ddr-candidate-sor-first-focused
+uv run pytest tests\test_automation_event.py::test_dd_report_candidate_event_renders_due_diligence_write tests\test_automation_event.py::test_dd_report_summary_event_renders_failed_due_diligence_write -q --basetemp C:\tmp\ddr-candidate-event-focused
+uv run ruff check src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\report_pipeline.py tests\test_automation_event.py tests\test_report_pipeline.py
+uv run mypy src\due_diligence_reporter\automation_event.py src\due_diligence_reporter\report_pipeline.py
+uv run pytest tests\test_automation_event.py tests\test_report_pipeline.py::TestProcessSitePipeline -q --basetemp C:\tmp\ddr-sor-first-candidate-suite
+uv run pytest tests\test_dd_output_fixes.py::TestAsyncOffloading tests\test_automation_event.py tests\test_report_pipeline.py::TestProcessSitePipeline tests\test_pipeline_contracts.py -q --basetemp C:\tmp\ddr-sor-first-affected-final
+git diff --check
+```
+
+Results: Ruff passed, mypy passed for `server.py` and `report_pipeline.py`,
+`TestAsyncOffloading` passed (`9 passed`), `TestProcessSitePipeline` passed
+(`29 passed` before the SOR-first follow-up), candidate SOR-first focused
+pipeline tests passed (`2 passed`), candidate event tests passed (`2 passed`),
+Ruff and mypy passed for `automation_event.py` and `report_pipeline.py`, the
+event/process pipeline suite passed (`40 passed`), the broad affected suite
+passed (`59 passed`), and `git diff --check` passed with expected Windows
+LF-to-CRLF warnings only.
+
 ## 2026-06-18 - DDR Missing-Folder Site Identity Hardening
 
 - Beads issue `ddr-xon` tracks the WTC/AADP source identity slice.
