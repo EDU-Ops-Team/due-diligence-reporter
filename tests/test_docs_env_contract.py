@@ -11,6 +11,7 @@ def test_env_example_lists_current_rhodes_and_model_requirements() -> None:
     for name in (
         "ANTHROPIC_API_KEY",
         "OPENAI_CAPACITY_MODEL",
+        "LOCATIONOS_MCP_API_KEY",
         "RHODES_API_KEY",
         "RHODES_MCP_URL",
         "INBOX_INTERNAL_SKIP_LABEL",

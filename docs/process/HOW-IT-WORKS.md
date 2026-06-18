@@ -615,7 +615,8 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 | `OPENAI_API_KEY` | OpenAI access for inbox classification, fuzzy site matching, and Alpha Capacity Analysis from Block Plans |
 | `OPENAI_CAPACITY_MODEL` | Optional model override for Alpha Capacity Analysis generation; defaults to `gpt-4o` |
 | `ANTHROPIC_API_KEY` | Claude API for automated report generation agent |
-| `RHODES_API_KEY` | Rhodes / LocationOS MCP token for site roster, Drive-folder context, P1 DRI lookup, and document registration |
+| `LOCATIONOS_MCP_API_KEY` | Preferred LocationOS MCP bearer token for site roster, Drive-folder context, P1 DRI lookup, due-diligence SOR writes, notes, and document registration |
+| `RHODES_API_KEY` | Legacy alias for the LocationOS MCP bearer token |
 | `RHODES_MCP_URL` | Optional Rhodes / LocationOS MCP endpoint override |
 | `DD_TEMPLATE_V3_GOOGLE_DOC_ID` | Master DD report template Google Doc ID |
 | `GOOGLE_DRIVE_ROOT_FOLDER_ID` | Legacy/root fallback Drive folder ID; not the source of truth for daily site roster |
@@ -644,7 +645,7 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 | `src/due_diligence_reporter/inbox_scanner.py` | Gmail inbox scan, three-tier filename classification, Drive upload |
 | `src/due_diligence_reporter/open_questions.py` | Structured open-question and source-event state for partial DDR closure |
 | `src/due_diligence_reporter/vendor_doc_sweep.py` | Rhodes-backed core source sweep that triggers in-place republish |
-| `src/due_diligence_reporter/rhodes.py` | Rhodes / LocationOS MCP client for P1 DRI lookup and document registration |
+| `src/due_diligence_reporter/rhodes.py` | Rhodes / LocationOS MCP client for P1 DRI lookup, due-diligence SOR writes, note writes, document registration, and readback verification |
 | `src/due_diligence_reporter/google_client.py` | Google Drive v3 + Docs v1 + Gmail API client (OAuth), `list_files_recursive()` |
 | `src/due_diligence_reporter/config.py` | Pydantic settings loader |
 | `src/due_diligence_reporter/utils.py` | PDF extraction, placeholder builder, email, Google Chat |
@@ -665,8 +666,8 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 
 ## GitHub Secrets
 
-**Publish workflow:** `MCP_HIVE_API_KEY`, `MCP_HIVE_ID`, `OPENAI_API_KEY`, optional `OPENAI_CAPACITY_MODEL`, `ANTHROPIC_API_KEY`, `DD_TEMPLATE_V3_GOOGLE_DOC_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_REFRESH_TOKEN`, `RHODES_API_KEY`, optional `RHODES_MCP_URL`, and optional RayCon secrets.
+**Publish workflow:** `MCP_HIVE_API_KEY`, `MCP_HIVE_ID`, `OPENAI_API_KEY`, optional `OPENAI_CAPACITY_MODEL`, `ANTHROPIC_API_KEY`, `DD_TEMPLATE_V3_GOOGLE_DOC_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_REFRESH_TOKEN`, preferred `LOCATIONOS_MCP_API_KEY` or legacy `RHODES_API_KEY`, optional `RHODES_MCP_URL`, and optional RayCon secrets.
 
-**Cron + inbox workflows:** OAuth secrets, shared Drive folder IDs, `OPENAI_API_KEY`, optional `OPENAI_CAPACITY_MODEL`, `ANTHROPIC_API_KEY`, `RHODES_API_KEY`, optional `RHODES_MCP_URL`, notification/email secrets, and optional RayCon secrets. `PRICING_API_KEY` is not a current DDR workflow requirement.
+**Cron + inbox workflows:** OAuth secrets, shared Drive folder IDs, `OPENAI_API_KEY`, optional `OPENAI_CAPACITY_MODEL`, `ANTHROPIC_API_KEY`, preferred `LOCATIONOS_MCP_API_KEY` or legacy `RHODES_API_KEY`, optional `RHODES_MCP_URL`, notification/email secrets, and optional RayCon secrets. `PRICING_API_KEY` is not a current DDR workflow requirement.
 
 

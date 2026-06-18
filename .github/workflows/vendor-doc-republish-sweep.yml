@@ -60,7 +60,7 @@ jobs:
           [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ] || { echo "OAUTH_CLIENT_SECRET missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ] || { echo "OAUTH_REFRESH_TOKEN missing"; exit 1; }
           [ -n "${{ secrets.OPENAI_API_KEY }}" ] || { echo "OPENAI_API_KEY missing"; exit 1; }
-          [ -n "${{ secrets.RHODES_API_KEY }}" ] || { echo "RHODES_API_KEY missing"; exit 1; }
+          [ -n "${{ secrets.LOCATIONOS_MCP_API_KEY || secrets.RHODES_API_KEY }}" ] || { echo "LOCATIONOS_MCP_API_KEY or RHODES_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ] || { echo "ANTHROPIC_API_KEY missing"; exit 1; }
 
       - name: Create .env file from secrets
@@ -74,6 +74,7 @@ jobs:
           SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
           ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
           BUILDING_INSPECTION_FOLDER_ID: ${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}
+          LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
           RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
           RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
           DD_REPUBLISH_STATE_STORE: ${{ vars.DD_REPUBLISH_STATE_STORE }}
@@ -91,7 +92,9 @@ jobs:
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
           echo "BUILDING_INSPECTION_FOLDER_ID=${BUILDING_INSPECTION_FOLDER_ID}" >> .env
-          echo "RHODES_API_KEY=${RHODES_API_KEY}" >> .env
+          LOCATIONOS_TOKEN="${LOCATIONOS_MCP_API_KEY:-${RHODES_API_KEY:-}}"
+          echo "LOCATIONOS_MCP_API_KEY=${LOCATIONOS_TOKEN}" >> .env
+          echo "RHODES_API_KEY=${RHODES_API_KEY:-${LOCATIONOS_TOKEN}}" >> .env
           echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
           echo "DD_REPUBLISH_STATE_STORE=${DD_REPUBLISH_STATE_STORE}" >> .env
           echo "DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID=${DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID}" >> .env

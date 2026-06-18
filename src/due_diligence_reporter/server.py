@@ -1083,6 +1083,15 @@ def _missing_drive_folder_message(site_name: str, context: dict[str, Any] | None
     status = str(context.get("status") or "error").strip()
     detail = str(context.get("message") or "").strip()
     site_label = site_name.strip() or "the supplied site"
+    if status == "not_configured":
+        base = (
+            f"No Drive folder URL was supplied, and LocationOS MCP auth is not "
+            f"configured, so DDR could not resolve the linked Drive folder for "
+            f"{site_label}."
+        )
+        if detail:
+            base += f" {detail}"
+        return base
     base = (
         f"No Drive folder URL was supplied, and Rhodes did not return a linked "
         f"Drive folder for {site_label}."

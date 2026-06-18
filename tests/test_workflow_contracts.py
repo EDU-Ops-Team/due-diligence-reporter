@@ -60,6 +60,7 @@ def test_workflows_do_not_use_generic_ops_skill_chat_webhook() -> None:
 def test_publish_to_mcp_hive_never_packages_generated_secret_files() -> None:
     text = _workflow_text("publish-to-mcp-hive.yml")
 
+    assert "LOCATIONOS_MCP_API_KEY" in text
     assert "RHODES_API_KEY" in text
     assert "RHODES_MCP_URL" in text
     assert "ANTHROPIC_API_KEY" in text
@@ -125,10 +126,12 @@ def test_vendor_doc_republish_scheduled_runs_are_gated_by_repo_variable() -> Non
 def test_portfolio_gap_snapshot_triggers_aadp_remediation_without_oauth() -> None:
     text = _workflow_text("portfolio-automation-gaps.yml")
 
+    assert "LOCATIONOS_MCP_API_KEY" in text
     assert "RHODES_API_KEY" in text
     assert (
         "name: Build portfolio gap snapshot\n"
         "        env:\n"
+        "          LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}\n"
         "          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}"
     ) in text
     assert "DDR_GOOGLE_CHAT_WEBHOOK_URL" in text
@@ -148,6 +151,7 @@ def test_portfolio_gap_snapshot_triggers_aadp_remediation_without_oauth() -> Non
         "          PIPELINE_STATUS_FIRESTORE_DATABASE: edu-ops-email-router\n"
         "          PIPELINE_STATUS_FIRESTORE_PROJECT_ID: ap-automation-464623\n"
         "          PIPELINE_STATUS_STORE: firestore\n"
+        "          LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}\n"
         "          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}"
     ) in text
     assert "AADP telemetry not persisted" in text
@@ -243,3 +247,32 @@ def test_alpha_capacity_workflows_fail_fast_without_openai_key() -> None:
         assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in text
         assert "OPENAI_CAPACITY_MODEL: ${{ vars.OPENAI_CAPACITY_MODEL || 'gpt-4o' }}" in text
         assert "OPENAI_API_KEY missing" in text
+
+
+def test_locationos_workflows_accept_preferred_or_legacy_secret() -> None:
+    for workflow in (
+        "daily-dd-check.yml",
+        "drive-rhodes-reconciliation.yml",
+        "portfolio-automation-gaps.yml",
+        "publish-to-mcp-hive.yml",
+        "raycon-followup.yml",
+        "vendor-doc-republish-sweep.yml",
+    ):
+        text = _workflow_text(workflow)
+
+        assert "secrets.LOCATIONOS_MCP_API_KEY || secrets.RHODES_API_KEY" in text
+        assert "LOCATIONOS_MCP_API_KEY or RHODES_API_KEY missing" in text
+
+    for workflow in (
+        "daily-dd-check.yml",
+        "drive-rhodes-reconciliation.yml",
+        "inbox-scan.yml",
+        "portfolio-automation-gaps.yml",
+        "publish-to-mcp-hive.yml",
+        "raycon-followup.yml",
+        "vendor-doc-republish-sweep.yml",
+    ):
+        text = _workflow_text(workflow)
+
+        assert "LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}" in text
+        assert 'echo "LOCATIONOS_MCP_API_KEY=${LOCATIONOS_TOKEN}" >> .env' in text

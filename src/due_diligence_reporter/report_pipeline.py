@@ -2710,7 +2710,7 @@ def process_site_pipeline(
                 started_at,
                 started_monotonic,
                 "skipped",
-                skipped_reason="RHODES_API_KEY not configured",
+                skipped_reason="LocationOS MCP auth not configured",
             )
         elif rhodes_status == "error":
             recorder.record(
@@ -2746,11 +2746,19 @@ def process_site_pipeline(
             drive_folder_url = rhodes_drive_folder_url
 
     if not drive_folder_url.strip():
-        message = (
-            "No Drive folder URL was supplied and Rhodes did not return a linked "
-            "Google Drive folder for this site. Link/provision the site folder in "
-            "Rhodes and rerun."
-        )
+        if str((rhodes_owner_context or {}).get("status") or "") == "not_configured":
+            message = (
+                "No Drive folder URL was supplied and LocationOS MCP auth is not "
+                "configured, so DDR could not resolve the linked site Drive folder. "
+                "Refresh/configure LocationOS MCP auth or provide a site-linked "
+                "Drive folder, then rerun."
+            )
+        else:
+            message = (
+                "No Drive folder URL was supplied and Rhodes did not return a linked "
+                "Google Drive folder for this site. Link/provision the site folder in "
+                "Rhodes and rerun."
+            )
         started_at, started_monotonic = recorder.start()
         recorder.record(
             "readiness.check",
@@ -2906,7 +2914,7 @@ def process_site_pipeline(
                 started_at,
                 started_monotonic,
                 "skipped",
-                skipped_reason="RHODES_API_KEY not configured",
+                skipped_reason="LocationOS MCP auth not configured",
             )
         elif rhodes_status == "error":
             recorder.record(

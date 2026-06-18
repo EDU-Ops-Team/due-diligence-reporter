@@ -42,7 +42,7 @@ jobs:
           [ -n "${{ secrets.OPENAI_API_KEY }}" ]             || { echo "[ERROR] OPENAI_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]          || { echo "[ERROR] ANTHROPIC_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}" ] || { echo "[ERROR] _GOOGLE_DOC_ID missing"; exit 1; }
-          [ -n "${{ secrets.RHODES_API_KEY }}" ]             || { echo "[ERROR] RHODES_API_KEY missing"; exit 1; }
+          [ -n "${{ secrets.LOCATIONOS_MCP_API_KEY || secrets.RHODES_API_KEY }}" ] || { echo "[ERROR] LOCATIONOS_MCP_API_KEY or RHODES_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ]            || { echo "[ERROR] OAUTH_CLIENT_ID missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ]        || { echo "[ERROR] OAUTH_CLIENT_SECRET missing"; exit 1; }
           [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ]        || { echo "[ERROR] OAUTH_REFRESH_TOKEN missing"; exit 1; }
@@ -63,6 +63,7 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           GLOBAL_EMAIL_CC: ${{ secrets.GLOBAL_EMAIL_CC }}
+          LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
           RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
           RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
 
@@ -84,7 +85,9 @@ jobs:
           echo "EMAIL_SENDER=${EMAIL_SENDER}" >> .env
           echo "EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}" >> .env
           echo "GLOBAL_EMAIL_CC=${GLOBAL_EMAIL_CC}" >> .env
-          echo "RHODES_API_KEY=${RHODES_API_KEY}" >> .env
+          LOCATIONOS_TOKEN="${LOCATIONOS_MCP_API_KEY:-${RHODES_API_KEY:-}}"
+          echo "LOCATIONOS_MCP_API_KEY=${LOCATIONOS_TOKEN}" >> .env
+          echo "RHODES_API_KEY=${RHODES_API_KEY:-${LOCATIONOS_TOKEN}}" >> .env
           echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
 
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env

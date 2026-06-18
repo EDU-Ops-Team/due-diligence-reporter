@@ -68,6 +68,19 @@ def _vendor_gate_off(monkeypatch):
     monkeypatch.setenv("VENDOR_GATE_ENABLED", "0")
 
 
+def test_missing_drive_folder_message_distinguishes_locationos_auth_gap() -> None:
+    message = server._missing_drive_folder_message(
+        "Alpha Keller",
+        {
+            "status": "not_configured",
+            "message": "Missing LocationOS MCP bearer token env var",
+        },
+    )
+
+    assert "LocationOS MCP auth is not configured" in message
+    assert "did not return a linked Drive folder" not in message
+
+
 def _no_dispatch_state(tmp_path: Path, monkeypatch):
     """Point the dispatch state path at an empty location."""
     monkeypatch.setattr(

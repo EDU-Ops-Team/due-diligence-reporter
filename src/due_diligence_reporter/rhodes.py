@@ -14,6 +14,7 @@ DEFAULT_RHODES_MCP_URL = "https://location-os-mcp.ephor.workers.dev/mcp"
 MCP_PROTOCOL_VERSION = "2025-03-26"
 RHODES_TIMEOUT_SECONDS = 20.0
 DRIVE_FOLDER_URL_PREFIX = "https://drive.google.com/drive/folders/"
+LOCATIONOS_NOT_CONFIGURED_REASON = "locationos_mcp_not_configured"
 
 
 class RhodesError(RuntimeError):
@@ -30,9 +31,16 @@ class RhodesConfig:
 
 def load_rhodes_config() -> RhodesConfig:
     """Load Rhodes MCP configuration from environment variables."""
-    api_key = (os.getenv("RHODES_API_KEY") or "").strip()
+    api_key = (
+        os.getenv("LOCATIONOS_MCP_API_KEY")
+        or os.getenv("RHODES_API_KEY")
+        or ""
+    ).strip()
     if not api_key:
-        raise RhodesError("Missing RHODES_API_KEY env var")
+        raise RhodesError(
+            "Missing LocationOS MCP bearer token env var "
+            "(LOCATIONOS_MCP_API_KEY or RHODES_API_KEY)"
+        )
     return RhodesConfig(
         mcp_url=(os.getenv("RHODES_MCP_URL") or DEFAULT_RHODES_MCP_URL).strip(),
         api_key=api_key,
@@ -948,8 +956,12 @@ def update_rhodes_due_diligence(
     try:
         rhodes = client or RhodesClient()
     except RhodesError as exc:
-        reason = "rhodes_not_configured" if "RHODES_API_KEY" in str(exc) else "rhodes_error"
-        status = "skipped" if reason == "rhodes_not_configured" else "failed"
+        reason = (
+            LOCATIONOS_NOT_CONFIGURED_REASON
+            if _is_locationos_not_configured_error(exc)
+            else "locationos_mcp_error"
+        )
+        status = "skipped" if reason == LOCATIONOS_NOT_CONFIGURED_REASON else "failed"
         return {**base, "status": status, "reason": reason, "error": str(exc)}
 
     try:
@@ -964,9 +976,24 @@ def update_rhodes_due_diligence(
         return {
             **base,
             "status": "failed",
-            "reason": "update_rejected",
+            "reason": "write_rejected",
             "error": response_error,
             "response": _summarize_due_diligence_response(response),
+        }
+
+    readback = _verify_due_diligence_readback(
+        rhodes,
+        site_id=clean_site_id,
+        fields=clean_fields,
+    )
+    if readback["status"] != "verified":
+        return {
+            **base,
+            "status": "failed",
+            "reason": "readback_failed",
+            "error": _due_diligence_readback_error(readback),
+            "response": _summarize_due_diligence_response(response),
+            "readback": readback,
         }
 
     return {
@@ -974,7 +1001,94 @@ def update_rhodes_due_diligence(
         "status": "updated",
         "reason": "ok",
         "response": _summarize_due_diligence_response(response),
+        "readback": readback,
     }
+
+
+def _is_locationos_not_configured_error(exc: Exception) -> bool:
+    return "LocationOS MCP bearer token" in str(exc)
+
+
+def _verify_due_diligence_readback(
+    rhodes: RhodesClient,
+    *,
+    site_id: str,
+    fields: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        site = rhodes.get_site(site_id=site_id)
+    except RhodesError as exc:
+        return {"status": "failed", "reason": "get_site_failed", "error": str(exc)}
+
+    mismatches: list[dict[str, str]] = []
+    verified_fields: list[str] = []
+    for key, expected in fields.items():
+        actual = _due_diligence_readback_value(site, key)
+        if _readback_values_match(expected, actual):
+            verified_fields.append(key)
+            continue
+        mismatches.append(
+            {
+                "field": key,
+                "expected": _safe_readback_value(expected),
+                "actual": _safe_readback_value(actual),
+            }
+        )
+
+    if mismatches:
+        return {
+            "status": "failed",
+            "reason": "field_mismatch",
+            "mismatches": mismatches,
+            "verified_fields": sorted(verified_fields),
+        }
+    return {
+        "status": "verified",
+        "verified_fields": sorted(verified_fields),
+    }
+
+
+def _due_diligence_readback_value(site: dict[str, Any], key: str) -> Any:
+    for container_key in ("dueDiligence", "due_diligence", "dueDiligenceFields"):
+        container = site.get(container_key)
+        if isinstance(container, dict) and key in container:
+            return container.get(key)
+    if key in site:
+        return site.get(key)
+    return None
+
+
+def _readback_values_match(expected: Any, actual: Any) -> bool:
+    if actual is None:
+        return False
+    return _normalize_readback_value(expected) == _normalize_readback_value(actual)
+
+
+def _normalize_readback_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value).strip()
+
+
+def _safe_readback_value(value: Any) -> str:
+    text = _normalize_readback_value(value)
+    return text if len(text) <= 160 else f"{text[:157]}..."
+
+
+def _due_diligence_readback_error(readback: dict[str, Any]) -> str:
+    reason = str(readback.get("reason") or "readback_failed")
+    mismatches = readback.get("mismatches")
+    if isinstance(mismatches, list) and mismatches:
+        fields = [
+            str(item.get("field") or "").strip()
+            for item in mismatches
+            if isinstance(item, dict)
+        ]
+        fields = [field for field in fields if field]
+        if fields:
+            return f"LocationOS readback mismatch for {', '.join(fields)}"
+    error = str(readback.get("error") or "").strip()
+    return f"LocationOS readback failed: {error or reason}"
 
 
 def _due_diligence_response_error(response: dict[str, Any]) -> str:
@@ -1202,16 +1316,91 @@ def add_rhodes_site_note(
             "note_response_summaries": note_response_summaries,
         }
 
+    readback = _verify_note_readback(
+        rhodes,
+        site_id=clean_site_id,
+        site_slug=clean_site_slug,
+        body=clean_body,
+        note_id=note_id,
+    )
+    if readback["status"] != "verified":
+        return {
+            **base,
+            "status": "failed",
+            "reason": "note_readback_failed",
+            "error": _note_readback_error(readback),
+            "rhodes_note_id": note_id,
+            "owner_user_id": resolved_owner_user_id,
+            "owner_resolution": owner_resolution,
+            "mentioned_user_ids": mention_user_ids,
+            "readback": readback,
+            "note_response_summaries": note_response_summaries,
+        }
+    verified_note_id = str(readback.get("rhodes_note_id") or note_id).strip() or note_id
+
     return {
         **base,
         "status": "created",
         "reason": "ok",
-        "rhodes_note_id": note_id,
+        "rhodes_note_id": verified_note_id,
         "owner_user_id": resolved_owner_user_id,
         "owner_resolution": owner_resolution,
         "owner_notification": "mentioned" if resolved_owner_user_id else "none",
         "mentioned_user_ids": mention_user_ids,
+        "readback": readback,
     }
+
+
+def _verify_note_readback(
+    rhodes: RhodesClient,
+    *,
+    site_id: str,
+    site_slug: str,
+    body: str,
+    note_id: str,
+) -> dict[str, Any]:
+    try:
+        notes = rhodes.list_notes(site_id=site_id, site_slug=site_slug, limit=50)
+    except RhodesError as exc:
+        return {"status": "failed", "reason": "list_notes_failed", "error": str(exc)}
+
+    clean_body = body.strip()
+    body_match_id = ""
+    for note in notes:
+        current_id = _note_id(note)
+        current_body = str(note.get("body") or "").strip()
+        if current_id and current_id == note_id:
+            if current_body and current_body != clean_body:
+                return {
+                    "status": "failed",
+                    "reason": "note_body_mismatch",
+                    "rhodes_note_id": note_id,
+                }
+            return {
+                "status": "verified",
+                "rhodes_note_id": note_id,
+                "matched_by": "note_id",
+            }
+        if current_body == clean_body and current_id:
+            body_match_id = current_id
+
+    if body_match_id:
+        return {
+            "status": "verified",
+            "rhodes_note_id": body_match_id,
+            "matched_by": "body",
+        }
+    return {
+        "status": "failed",
+        "reason": "note_not_found",
+        "rhodes_note_id": note_id,
+    }
+
+
+def _note_readback_error(readback: dict[str, Any]) -> str:
+    reason = str(readback.get("reason") or "note_readback_failed")
+    error = str(readback.get("error") or "").strip()
+    return f"LocationOS note readback failed: {error or reason}"
 
 
 def _recover_note_without_id(

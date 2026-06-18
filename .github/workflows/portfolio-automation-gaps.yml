@@ -53,19 +53,23 @@ jobs:
 
       - name: Verify required secrets
         run: |
-          [ -n "${{ secrets.RHODES_API_KEY }}" ] || { echo "RHODES_API_KEY missing"; exit 1; }
+          [ -n "${{ secrets.LOCATIONOS_MCP_API_KEY || secrets.RHODES_API_KEY }}" ] || { echo "LOCATIONOS_MCP_API_KEY or RHODES_API_KEY missing"; exit 1; }
 
       - name: Create .env file from secrets
         env:
+          LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
           RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
           RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
         run: |
           touch .env
-          echo "RHODES_API_KEY=${RHODES_API_KEY}" >> .env
+          LOCATIONOS_TOKEN="${LOCATIONOS_MCP_API_KEY:-${RHODES_API_KEY:-}}"
+          echo "LOCATIONOS_MCP_API_KEY=${LOCATIONOS_TOKEN}" >> .env
+          echo "RHODES_API_KEY=${RHODES_API_KEY:-${LOCATIONOS_TOKEN}}" >> .env
           echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
 
       - name: Build portfolio gap snapshot
         env:
+          LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
           RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
           RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
           INPUT_MAX_SITES: ${{ inputs.max_sites }}
@@ -113,6 +117,7 @@ jobs:
           PIPELINE_STATUS_FIRESTORE_DATABASE: edu-ops-email-router
           PIPELINE_STATUS_FIRESTORE_PROJECT_ID: ap-automation-464623
           PIPELINE_STATUS_STORE: firestore
+          LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
           RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
         run: |
           if [ -z "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON:-}" ]; then

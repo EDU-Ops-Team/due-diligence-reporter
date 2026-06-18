@@ -14,6 +14,20 @@ from due_diligence_reporter.rhodes import (
 )
 
 
+def _fake_response_id(payload: Any, keys: tuple[str, ...] = ("noteId", "_id", "id")) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for nested_key in ("note", "record", "data"):
+        nested_id = _fake_response_id(payload.get(nested_key), keys)
+        if nested_id:
+            return nested_id
+    return ""
+
+
 class FakeRhodesClient:
     def __init__(
         self,
@@ -149,6 +163,10 @@ class FakeRhodesClient:
                 },
             )
         )
+        if self.due_diligence_response is None:
+            due_diligence = self.site.setdefault("dueDiligence", {})
+            if isinstance(due_diligence, dict):
+                due_diligence.update(fields)
         return self.due_diligence_response or {"status": "ok", "siteId": site_id}
 
     def get_user(
@@ -184,8 +202,22 @@ class FakeRhodesClient:
         if self.note_responses:
             response = self.note_responses.pop(0)
             if response is not None:
+                self._record_note_response(
+                    response,
+                    site_id=site_id,
+                    site_slug=site_slug,
+                    body=body,
+                    mentions=mentions or [],
+                )
                 return response
         if self.note_response is not None:
+            self._record_note_response(
+                self.note_response,
+                site_id=site_id,
+                site_slug=site_slug,
+                body=body,
+                mentions=mentions or [],
+            )
             return self.note_response
         note = {
             "_id": f"NOTE{len(self.notes) + 1}",
@@ -196,6 +228,30 @@ class FakeRhodesClient:
         }
         self.notes.append(note)
         return note
+
+    def _record_note_response(
+        self,
+        response: dict[str, Any],
+        *,
+        site_id: str,
+        site_slug: str,
+        body: str,
+        mentions: list[str],
+    ) -> None:
+        note_id = _fake_response_id(response)
+        if not note_id:
+            return
+        if any(_fake_response_id(note) == note_id for note in self.notes):
+            return
+        self.notes.append(
+            {
+                "_id": note_id,
+                "siteId": site_id,
+                "siteSlug": site_slug,
+                "body": body,
+                "mentions": mentions,
+            }
+        )
 
     def list_notes(
         self,
@@ -537,12 +593,13 @@ def test_lookup_rhodes_site_owner_handles_missing_p1() -> None:
 
 def test_lookup_rhodes_site_owner_reports_not_configured(monkeypatch) -> None:
     monkeypatch.delenv("RHODES_API_KEY", raising=False)
+    monkeypatch.delenv("LOCATIONOS_MCP_API_KEY", raising=False)
 
     result = lookup_rhodes_site_owner(site_name="Alpha Test")
 
     assert result["status"] == "not_configured"
     assert result["report_data_fields"] == {}
-    assert "RHODES_API_KEY" in result["message"]
+    assert "LocationOS MCP bearer token" in result["message"]
 
 
 def test_list_rhodes_site_records_returns_drive_ready_inbox_records() -> None:
@@ -699,6 +756,7 @@ def test_register_rhodes_document_for_upload_skips_existing_drive_file() -> None
 
 def test_register_rhodes_document_for_upload_handles_missing_config(monkeypatch) -> None:
     monkeypatch.delenv("RHODES_API_KEY", raising=False)
+    monkeypatch.delenv("LOCATIONOS_MCP_API_KEY", raising=False)
 
     result = register_rhodes_document_for_upload(
         site_id="SITE1",
@@ -709,7 +767,7 @@ def test_register_rhodes_document_for_upload_handles_missing_config(monkeypatch)
 
     assert result["status"] == "failed"
     assert result["reason"] == "rhodes_error"
-    assert "RHODES_API_KEY" in result["error"]
+    assert "LocationOS MCP bearer token" in result["error"]
 
 
 def test_rhodes_client_add_site_note_sends_explicit_site_anchor() -> None:
@@ -778,8 +836,58 @@ def test_update_rhodes_due_diligence_reports_rejected_response() -> None:
     )
 
     assert result["status"] == "failed"
-    assert result["reason"] == "update_rejected"
+    assert result["reason"] == "write_rejected"
     assert "Action requires confirmation" in result["error"]
+
+
+def test_update_rhodes_due_diligence_verifies_readback() -> None:
+    client = FakeRhodesClient(site={"_id": "SITE1", "name": "Alpha Test"})
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"status": "complete", "foCapacity": "36"},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "updated"
+    assert result["readback"] == {
+        "status": "verified",
+        "verified_fields": ["foCapacity", "status"],
+    }
+    assert client.calls == [
+        (
+            "update_due_diligence",
+            {
+                "site_id": "SITE1",
+                "fields": "foCapacity,status",
+            },
+        ),
+        ("get_site", {"site_id": "SITE1", "slug": ""}),
+    ]
+
+
+def test_update_rhodes_due_diligence_fails_when_readback_mismatches() -> None:
+    client = FakeRhodesClient(
+        site={"_id": "SITE1", "dueDiligence": {"status": "data-gathering"}},
+        due_diligence_response={"status": "ok", "siteId": "SITE1"},
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"status": "complete"},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "readback_failed"
+    assert result["error"] == "LocationOS readback mismatch for status"
+    assert result["readback"]["mismatches"] == [
+        {
+            "field": "status",
+            "expected": "complete",
+            "actual": "data-gathering",
+        }
+    ]
 
 
 def test_add_rhodes_site_note_mentions_owner_user_id() -> None:
@@ -796,6 +904,11 @@ def test_add_rhodes_site_note_mentions_owner_user_id() -> None:
     assert result["rhodes_note_id"] == "NOTE1"
     assert result["owner_notification"] == "mentioned"
     assert client.notes[0]["mentions"] == ["USER1"]
+    assert result["readback"] == {
+        "status": "verified",
+        "rhodes_note_id": "NOTE1",
+        "matched_by": "note_id",
+    }
 
 
 def test_add_rhodes_site_note_mentions_owner_and_extra_users() -> None:
@@ -828,6 +941,11 @@ def test_add_rhodes_site_note_accepts_nested_note_id_response() -> None:
     assert result["status"] == "created"
     assert result["rhodes_note_id"] == "NOTE-NESTED"
     assert result["owner_notification"] == "mentioned"
+    assert result["readback"] == {
+        "status": "verified",
+        "rhodes_note_id": "NOTE-NESTED",
+        "matched_by": "note_id",
+    }
     assert client.calls == [
         (
             "add_site_note",
@@ -837,7 +955,15 @@ def test_add_rhodes_site_note_accepts_nested_note_id_response() -> None:
                 "body": "AutomationEvent v1\nKind: raycon_followup_alert",
                 "mentions": "OWNER1",
             },
-        )
+        ),
+        (
+            "list_notes",
+            {
+                "site_id": "SITE1",
+                "site_slug": "",
+                "limit": "50",
+            },
+        ),
     ]
 
 
@@ -874,6 +1000,43 @@ def test_add_rhodes_site_note_requires_returned_note_id() -> None:
             "text_prefix": "created",
         }
     ]
+
+
+def test_add_rhodes_site_note_fails_when_readback_missing() -> None:
+    body = "AutomationEvent v1\nKind: raycon_followup_alert"
+    client = FakeRhodesClient(note_response={"_id": "NOTE-MISSING"})
+    client.notes = []
+
+    def empty_list_notes(**kwargs):
+        client.calls.append(
+            (
+                "list_notes",
+                {
+                    "site_id": kwargs.get("site_id", ""),
+                    "site_slug": kwargs.get("site_slug", ""),
+                    "limit": str(kwargs.get("limit", "")),
+                },
+            )
+        )
+        return []
+
+    client.list_notes = empty_list_notes  # type: ignore[method-assign]
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body=body,
+        owner_user_id="OWNER1",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "note_readback_failed"
+    assert result["rhodes_note_id"] == "NOTE-MISSING"
+    assert result["readback"] == {
+        "status": "failed",
+        "reason": "note_not_found",
+        "rhodes_note_id": "NOTE-MISSING",
+    }
 
 
 def test_add_rhodes_site_note_recovers_note_id_from_readback() -> None:

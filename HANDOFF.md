@@ -1,5 +1,61 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-18 - LocationOS MCP Readback Guard for DDR SOR and Note Writes
+
+- Beads issue `ddr-gmg` tracks the broader migration away from stale
+  `RHODES_API_KEY` blocker language and older write assumptions. This slice
+  keeps the existing hosted LocationOS MCP JSON-RPC transport, but now treats
+  the bearer token as LocationOS MCP auth: `LOCATIONOS_MCP_API_KEY` is preferred
+  and `RHODES_API_KEY` remains a legacy/GitHub-workflow alias.
+- A fresh read-only `codex exec --ephemeral` LocationOS probe resolved Chapel
+  Hill and confirmed current read shapes for `getSite` due-diligence data and
+  `listNotes`. No live mutation was run in this slice because production
+  Rhodes/LocationOS writes require exact target/body preview and explicit
+  approval.
+- `update_rhodes_due_diligence` now readbacks `getSite` after
+  `updateDueDiligence` and fails closed with `reason=readback_failed` if any
+  attempted field is missing or mismatched. Successful results include
+  `readback.status=verified` and the verified field list.
+- `add_rhodes_site_note` now readbacks `listNotes` after note creation. It
+  verifies either the returned note ID or exact body match, returns the
+  canonical readback note ID, and fails with `reason=note_readback_failed` if
+  the note cannot be found or the body mismatches.
+- Operator-facing missing-folder/auth messages now distinguish "LocationOS MCP
+  auth is not configured" from "Rhodes did not return a linked Drive folder,"
+  so the workflow no longer tells operators that an API key is the blocker when
+  the issue is auth context or missing folder linkage.
+- GitHub workflows that need LocationOS/Rhodes auth now accept either
+  `LOCATIONOS_MCP_API_KEY` or legacy `RHODES_API_KEY`, fail fast with
+  `LOCATIONOS_MCP_API_KEY or RHODES_API_KEY missing`, and write
+  `LOCATIONOS_MCP_API_KEY` into `.env` for runtime use while preserving the
+  legacy alias.
+- `docs/process/HOW-IT-WORKS.md` and `.env.example` document the preferred
+  `LOCATIONOS_MCP_API_KEY` name, legacy `RHODES_API_KEY` alias, and the
+  readback responsibilities in `rhodes.py`.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_rhodes.py tests\test_report_pipeline.py tests\test_rhodes_events.py tests\test_diagnose_site_readiness.py tests\test_dd_output_fixes.py tests\test_docs_env_contract.py -q --basetemp C:\tmp\ddr-locationos-readback-affected
+uv run ruff check src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\server.py tests\test_rhodes.py tests\test_report_pipeline.py tests\test_diagnose_site_readiness.py tests\test_docs_env_contract.py
+uv run mypy src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\server.py
+uv run pytest tests\test_workflow_contracts.py tests\test_docs_env_contract.py -q --basetemp C:\tmp\ddr-locationos-env-contract
+uv run pytest tests\test_workflow_contracts.py tests\test_docs_env_contract.py -q --basetemp C:\tmp\ddr-locationos-workflow-contract
+uv run ruff check .
+uv run mypy src\
+uv run pytest tests --ignore=tests\_tmp --basetemp C:\tmp\ddr-locationos-full-final
+git diff --check
+```
+
+Results: affected suite passed (`186 passed`), env/workflow contracts passed
+(`18 passed`, then `19 passed` after workflow secret-contract coverage), full
+Ruff passed, full mypy passed (`47 source files`), and full tracked pytest
+passed (`1225 passed`). Raw `uv run pytest` still collects
+existing unreadable local temp/cache directories
+`pytest-cache-files-o55d_4rl` and `tests/_tmp/pytest-cache-files-lhmtb2lz`;
+running against `tests` with `--ignore=tests\_tmp` avoids that unrelated
+Windows scratch-directory issue.
+
 ## 2026-06-18 - P1 DRI Note Required for SOR Write Success or Failure
 
 - Beads issue `ddr-gmg` now includes the additional requirement that after a
