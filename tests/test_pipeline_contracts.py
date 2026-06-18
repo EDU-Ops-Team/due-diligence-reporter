@@ -96,6 +96,8 @@ def test_pipeline_run_emits_action_record_for_failed_step() -> None:
     assert record["source_workflow"] == "ddr"
     assert record["owning_workflow"] == "ddr"
     assert record["alert_type"] == "report_generation_failed"
+    assert record["site_id"] == "SITE1"
+    assert record["site_name"] == "Alpha Keller"
     assert record["site"] == {
         "site_id": "SITE1",
         "name": "Alpha Keller",
@@ -107,6 +109,38 @@ def test_pipeline_run_emits_action_record_for_failed_step() -> None:
         "summary": "Agent completed without creating a report",
         "retryable": True,
     }
+
+
+def test_pipeline_run_marks_missing_drive_folder_without_site_id_as_source_context_blocked() -> None:
+    err = PipelineError(
+        code="missing_drive_folder_url",
+        message=(
+            "No Drive folder URL was supplied and Rhodes did not return a linked "
+            "Google Drive folder for this site."
+        ),
+        retryable=False,
+        operator_action="ddr rerun --run-id run-1 --step readiness.check",
+    )
+    run = PipelineRun(
+        run_id="run-1",
+        site_title="Alpha Los Angeles 5400 Beethoven St",
+        site_id=None,
+        started_at="2026-05-14T00:00:00+00:00",
+        ended_at="2026-05-14T00:00:02+00:00",
+        final_status="error",
+        steps=[_step("blocked", step="readiness.check", error=err)],
+    )
+
+    record = run.to_dict()["action_records"][0]
+
+    assert record["alert_type"] == "missing_drive_folder_url"
+    assert record["site_id"] == ""
+    assert record["site"]["site_id"] == ""
+    assert "Resolve the Rhodes site ID" in record["action_requested"]
+    assert "verified site ID" in record["review"]["reason"]
+    assert "verified Rhodes site ID" in record["action_taken"]
+    assert record["owning_workflow"] == "ddr"
+    assert record["workflow_owner"] == "ddr"
 
 
 def test_pipeline_run_emits_sanitized_action_record_for_open_question() -> None:

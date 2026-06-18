@@ -1,5 +1,46 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-18 - WTC Source-Context Blocker for Missing Drive Folder
+
+- Bead `ddr-3kd` was created and closed for the WTC/AADP source-context gap.
+- DDR failed-step `ActionRecord` payloads now include flat `site_id`,
+  `site_name`, and `current_milestone` fields in addition to the nested `site`
+  payload, so WTC/AADP can consume the same site identity consistently when it
+  exists.
+- When DDR records `missing_drive_folder_url` but `PipelineRun.site_id` is
+  empty, the action record now says the Rhodes site ID or site record URL must
+  be resolved before AADP can safely create or link the Drive folder. It keeps
+  `owning_workflow=ddr` / `workflow_owner=ddr` instead of implying AADP can act
+  from a display name alone.
+- This pairs with the WTC change that only force-routes
+  `missing_drive_folder_url` to AADP when `site_id` is present. No-site-ID
+  actions remain source-context blocked on the dashboard.
+- Live evidence: WTC inspected the selected Alpha LA DDR manifest
+  `20260610174320-alpha-los-angeles-5400-beethoven-st-101c1d16`; it had
+  `site_id=null` and nested `site.site_id=""`. Newer Alpha LA missing-folder
+  manifests on 2026-06-18 also lacked `site_id`, so the dashboard should not
+  keep sending those records to AADP until DDR/Rhodes emits verified identity.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_pipeline_contracts.py::test_pipeline_run_emits_action_record_for_failed_step tests\test_pipeline_contracts.py::test_pipeline_run_marks_missing_drive_folder_without_site_id_as_source_context_blocked tests\test_report_pipeline.py::TestProcessSitePipeline::test_missing_drive_folder_blocks_with_rhodes_setup_message -q --basetemp C:\tmp\ddr-source-context-focused
+uv run pytest tests\test_pipeline_contracts.py tests\test_report_pipeline.py -q --basetemp C:\tmp\ddr-source-context-suite
+uv run ruff check src\due_diligence_reporter\pipeline_contracts.py tests\test_pipeline_contracts.py
+uv run mypy src\due_diligence_reporter\pipeline_contracts.py
+uv run python -m py_compile src\due_diligence_reporter\pipeline_contracts.py tests\test_pipeline_contracts.py
+git diff --check
+```
+
+Results:
+
+- Focused source-context tests passed: `3 passed`.
+- Pipeline contract/report pipeline suite passed: `75 passed`.
+- Ruff passed.
+- Mypy passed for `pipeline_contracts.py`.
+- `py_compile` passed.
+- `git diff --check` passed with expected LF-to-CRLF warnings only.
+
 ## 2026-06-18 - LocationOS MCP Readback Guard for DDR SOR and Note Writes
 
 - Beads issue `ddr-gmg` tracks the broader migration away from stale

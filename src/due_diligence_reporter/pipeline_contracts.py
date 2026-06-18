@@ -197,25 +197,43 @@ def _step_action_record(run: PipelineRun, step: StepResult) -> dict[str, Any]:
     error = step.error
     alert_type = error.code if error else step.step
     status = "blocked" if step.status == "blocked" else "error"
+    action_requested = (
+        error.operator_action
+        if error and error.operator_action
+        else step.rerun_command
+        or f"Review DDR step {step.step}."
+    )
+    review_reason = error.message if error else f"DDR step {step.step} needs review."
+    action_taken = (
+        f"DDR recorded {step.status} step {step.step}; "
+        "no completed remediation has been verified yet."
+    )
+    if _action_token(alert_type) == "missing_drive_folder_url" and not (run.site_id or "").strip():
+        action_requested = (
+            "Resolve the Rhodes site ID or site record URL, then route AADP to "
+            "create or link the site Drive folder."
+        )
+        review_reason = (
+            f"{review_reason} AADP cannot safely provision or link the Drive "
+            "folder until DDR/Rhodes provides a verified site ID."
+        )
+        action_taken = (
+            "DDR recorded a missing Drive-folder prerequisite, but the run did "
+            "not include a verified Rhodes site ID for AADP remediation."
+        )
     return {
         "schema_version": "action_record.v1",
         "action_id": f"ddr:{run.run_id}:step:{step.step}",
         "source_workflow": "ddr",
         "owning_workflow": "ddr",
+        "workflow_owner": "ddr",
         "alert_type": _action_token(alert_type),
+        **_flat_site_payload(run),
         "site": _site_payload(run),
         "severity": "critical" if step.status == "blocked" else "high",
         "status": status,
-        "action_requested": (
-            error.operator_action
-            if error and error.operator_action
-            else step.rerun_command
-            or f"Review DDR step {step.step}."
-        ),
-        "action_taken": (
-            f"DDR recorded {step.status} step {step.step}; "
-            "no completed remediation has been verified yet."
-        ),
+        "action_requested": action_requested,
+        "action_taken": action_taken,
         "as_of": step.ended_at or run.ended_at or run.started_at,
         "owner": {
             "workflow_owner": "ddr",
@@ -226,7 +244,7 @@ def _step_action_record(run: PipelineRun, step: StepResult) -> dict[str, Any]:
         },
         "review": {
             "required": True,
-            "reason": error.message if error else f"DDR step {step.step} needs review.",
+            "reason": review_reason,
             "review_url": "",
         },
         "error": {
