@@ -441,6 +441,7 @@ class TestProcessSitePipeline:
     ):
         mock_rhodes_owner.return_value = {
             "status": "found",
+            "site_id": "SITE1",
             "drive_folder_status": "missing",
             "drive_folder_message": "Site has no Google Drive folder",
             "report_data_fields": {},
@@ -458,8 +459,22 @@ class TestProcessSitePipeline:
         )
 
         assert result.status == "error"
+        assert result.run_id is not None
         assert result.failed_step == "readiness.check"
         assert "Link/provision the site folder in Rhodes" in (result.error or "")
+        run_record = next(
+            record
+            for record in result.steps
+            if record.step == "readiness.check"
+        )
+        assert run_record.error is not None
+        assert result.manifest_path is not None
+        manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
+        action_record = manifest["action_records"][0]
+        assert manifest["site_id"] == "SITE1"
+        assert action_record["alert_type"] == "missing_drive_folder_url"
+        assert action_record["site_id"] == "SITE1"
+        assert action_record["site"]["site_id"] == "SITE1"
         mock_readiness.assert_not_called()
 
     @patch("due_diligence_reporter.report_pipeline._resolve_rhodes_owner_for_pipeline")

@@ -1,5 +1,41 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-18 - DDR Missing-Folder Site Identity Hardening
+
+- Beads issue `ddr-xon` tracks the WTC/AADP source identity slice.
+- Read-only live proof on 2026-06-18 showed
+  `lookup_rhodes_site_owner(site_name="Alpha Los Angeles 5400 Beethoven St",
+  site_address="5400 Beethoven St, Los Angeles, CA 90066")` now resolves to
+  Rhodes site ID `k179e1zh0jg4h3ty1q9knptt8h88ddxz` and linked Drive folder
+  `https://drive.google.com/drive/folders/1G8fc0sX3dP83A7uMF5Bhz2pXnhRpaRJz`.
+- The helper `_site_id()` now accepts the snake_case `site_id` key in addition
+  to `siteId`, `_id`, and `id`, so alternate LocationOS/Rhodes payload shapes
+  cannot silently drop verified site identity.
+- The missing Drive-folder pipeline test now asserts the saved run manifest and
+  emitted `ActionRecord` carry top-level `site_id`, flat action `site_id`, and
+  nested `site.site_id` whenever Rhodes lookup supplied a verified site ID.
+- No live mutation was performed in this slice.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_rhodes.py::test_lookup_rhodes_site_owner_accepts_snake_case_site_id tests\test_report_pipeline.py::TestProcessSitePipeline::test_missing_drive_folder_blocks_with_rhodes_setup_message -q --basetemp C:\tmp\ddr-site-id-focused
+uv run pytest tests\test_rhodes.py tests\test_report_pipeline.py tests\test_pipeline_contracts.py -q --basetemp C:\tmp\ddr-site-id-suite
+uv run ruff check src\due_diligence_reporter\rhodes.py tests\test_rhodes.py tests\test_report_pipeline.py
+uv run mypy src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\report_pipeline.py
+uv run python -m py_compile src\due_diligence_reporter\rhodes.py tests\test_rhodes.py tests\test_report_pipeline.py
+git diff --check
+```
+
+Results:
+
+- Focused tests passed: `2 passed`.
+- Affected suite passed: `107 passed`.
+- Ruff passed.
+- Mypy passed for `rhodes.py` and `report_pipeline.py`.
+- `py_compile` passed.
+- `git diff --check` passed with expected LF-to-CRLF warnings only.
+
 ## 2026-06-18 - WTC Source-Context Blocker for Missing Drive Folder
 
 - Bead `ddr-3kd` was created and closed for the WTC/AADP source-context gap.

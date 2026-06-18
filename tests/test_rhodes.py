@@ -382,6 +382,48 @@ def test_lookup_rhodes_site_owner_returns_p1_report_fields() -> None:
     ]
 
 
+def test_lookup_rhodes_site_owner_accepts_snake_case_site_id() -> None:
+    client = FakeRhodesClient(
+        {
+            "site_id": "SITE1",
+            "name": "Alpha Los Angeles 5401 Beethoven St",
+            "slug": "5400-beethoven-st-los-angeles-ca",
+            "address": "5401 Beethoven St, Los Angeles, CA",
+            "p1Dri": {
+                "name": "Devin Bates",
+                "email": "devin.bates@trilogy.com",
+                "userId": "USER1",
+            },
+            "driveFolderId": "drive-root-1",
+        },
+        resolved_site={
+            "site_id": "SITE1",
+            "name": "Alpha Los Angeles 5401 Beethoven St",
+        },
+    )
+
+    result = lookup_rhodes_site_owner(
+        site_name="Alpha Los Angeles 5400 Beethoven St",
+        site_address="5400 Beethoven St, Los Angeles, CA 90066",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "found"
+    assert result["site_id"] == "SITE1"
+    assert result["drive_folder_status"] == "found"
+    assert result["drive_folder_url"].endswith("/drive-root-1")
+    assert client.calls == [
+        (
+            "resolve_site",
+            {
+                "name": "Alpha Los Angeles 5400 Beethoven St",
+                "address": "5400 Beethoven St, Los Angeles, CA 90066",
+            },
+        ),
+        ("get_site", {"site_id": "SITE1", "slug": ""}),
+    ]
+
+
 def test_resolve_site_prefers_single_active_location_match_for_broad_name() -> None:
     client = SequencedToolRhodesClient(
         [

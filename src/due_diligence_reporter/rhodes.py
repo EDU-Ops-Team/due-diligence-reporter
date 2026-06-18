@@ -285,7 +285,7 @@ DDR_DOC_TYPE_TO_RHODES: dict[str, RhodesDocumentMapping] = {
 
 
 def _site_id(site: dict[str, Any]) -> str:
-    for key in ("siteId", "_id", "id"):
+    for key in ("siteId", "site_id", "_id", "id"):
         value = site.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
