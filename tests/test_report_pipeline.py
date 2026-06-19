@@ -23,6 +23,7 @@ from due_diligence_reporter.report_pipeline import (
     match_site_in_shared_cache,
     post_completed_report_bundle_summary,
     process_site_pipeline,
+    resume_locationos_mcp_write_from_manifest,
     run_dd_report_agent,
 )
 
@@ -280,6 +281,78 @@ def test_source_triggered_open_item_due_diligence_status_is_follow_up() -> None:
     }
 
 
+def test_due_diligence_score_fields_normalize_to_locationos_enum_values() -> None:
+    fields = _build_due_diligence_update_fields(
+        {
+            "exec.regulatory_score": "1 - Green",
+            "exec.building_score": "YELLOW",
+            "exec.play_area_score": "3",
+            "exec.school_ops_score": 2.0,
+            "exec.regulatory_comment": "Registration path is straightforward.",
+        },
+        PipelineResult(
+            site_title="Alpha Keller",
+            status="report_created",
+            missing_docs=["Vendor Building Inspection"],
+        ),
+        completed_at="2026-06-17T15:00:00+00:00",
+    )
+
+    assert fields == {
+        "status": "data-gathering",
+        "regulatoryScore": 1,
+        "buildingScore": 2,
+        "playAreaScore": 3,
+        "schoolOperationsScore": 2,
+        "regulatoryComment": "Registration path is straightforward.",
+    }
+
+
+def test_invalid_due_diligence_score_fields_are_not_sent_to_locationos() -> None:
+    fields = _build_due_diligence_update_fields(
+        {
+            "exec.regulatory_score": "4",
+            "exec.building_score": "medium",
+            "exec.play_area_score": 0,
+            "exec.school_ops_score": True,
+            "exec.building_comment": "Needs review.",
+        },
+        PipelineResult(
+            site_title="Alpha Keller",
+            status="report_created",
+            missing_docs=["Vendor Building Inspection"],
+        ),
+        completed_at="2026-06-17T15:00:00+00:00",
+    )
+
+    assert fields == {
+        "status": "data-gathering",
+        "buildingComment": "Needs review.",
+    }
+
+
+def test_due_diligence_numeric_fields_parse_currency_and_skip_gaps() -> None:
+    fields = _build_due_diligence_update_fields(
+        {
+            "exec.fastest_open_capex": "$185,000",
+            "exec.max_capacity_capex": "$3.2M-$8.5M range",
+            "exec.regulatory_comment": "RayCon scenario still pending.",
+        },
+        PipelineResult(
+            site_title="Alpha Keller",
+            status="report_created",
+            missing_docs=["Vendor Building Inspection"],
+        ),
+        completed_at="2026-06-17T15:00:00+00:00",
+    )
+
+    assert fields == {
+        "status": "data-gathering",
+        "foCapEx": 185000,
+        "regulatoryComment": "RayCon scenario still pending.",
+    }
+
+
 # ---------------------------------------------------------------------------
 # match_site_in_shared_cache
 # ---------------------------------------------------------------------------
@@ -404,6 +477,53 @@ def _make_settings():
     settings.dd_report_email_recipients = ""
     settings.google_chat_webhook_url = ""
     return settings
+
+
+def _mcp_resume_manifest() -> dict:
+    request = {
+        "server": "locationos",
+        "tool": "updateDueDiligence",
+        "run_id": "source-run",
+        "arguments": {
+            "siteId": "SITE1",
+            "foCapacity": "36",
+            "status": "complete",
+        },
+        "readback": {
+            "server": "locationos",
+            "tool": "getSite",
+            "arguments": {"siteId": "SITE1"},
+            "verify_fields": ["foCapacity", "status"],
+        },
+    }
+    return {
+        "run_id": "source-run",
+        "site_title": "Alpha Keller",
+        "site_id": "SITE1",
+        "locationos_mcp_resume": {
+            "schema_version": "locationos_mcp_resume.v1",
+            "source_run_id": "source-run",
+            "site_id": "SITE1",
+            "site_title": "Alpha Keller",
+            "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+            "owner_user_id": "OWNER1",
+            "owner_email": "owner@example.com",
+            "p1_name": "Owner One",
+            "locationos_mcp_write_request": request,
+            "render_input": {
+                "site_name": "Alpha Keller",
+                "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                "report_data": {"due_diligence.fastest_open_capacity": "36"},
+            },
+            "prepared_report_data": {"due_diligence.fastest_open_capacity": "36"},
+            "report_metadata": {"completeness": {"stage": "complete"}},
+            "missing_docs": [],
+            "source_event": None,
+            "open_questions": [],
+            "closed_open_questions": [],
+            "trace_url": "",
+        },
+    }
 
 
 class TestProcessSitePipeline:
@@ -1121,13 +1241,13 @@ class TestProcessSitePipeline:
                 "dueDiligence.maxCapacityCapacity": "54",
                 "dueDiligence.maxCapacityCapex": "$290,000",
                 "dueDiligence.maxCapacityTargetOpen": "04/27",
-                "exec.regulatory_score": "4",
+                "exec.regulatory_score": "1 - Green",
                 "exec.regulatory_comment": "Registration path is straightforward.",
-                "exec.building_score": "3",
+                "exec.building_score": "2",
                 "exec.building_comment": "Minor building work remains.",
-                "exec.play_area_score": "2",
+                "exec.play_area_score": "RED",
                 "exec.play_area_comment": "Outdoor play area needs review.",
-                "exec.school_ops_score": "5",
+                "exec.school_ops_score": 1,
                 "exec.school_ops_comment": "Operational setup is strong.",
                 "dueDiligence.recommendation": "go",
             },
@@ -1186,18 +1306,18 @@ class TestProcessSitePipeline:
             "dateCompleted": "2026-06-17",
             "ddReportLink": "https://docs.google.com/document/d/doc123",
             "foCapacity": "36",
-            "foCapEx": "$185,000",
+            "foCapEx": 185000,
             "foDate": "08/01/26",
             "maxCapCapacity": "54",
-            "maxCapCapEx": "$290,000",
+            "maxCapCapEx": 290000,
             "maxCapProjOpenDate": "04/27",
-            "regulatoryScore": "4",
+            "regulatoryScore": 1,
             "regulatoryComment": "Registration path is straightforward.",
-            "buildingScore": "3",
+            "buildingScore": 2,
             "buildingComment": "Minor building work remains.",
-            "playAreaScore": "2",
+            "playAreaScore": 3,
             "playAreaComment": "Outdoor play area needs review.",
-            "schoolOperationsScore": "5",
+            "schoolOperationsScore": 1,
             "schoolOperationsComment": "Operational setup is strong.",
             "recommendation": "go",
         }
@@ -1404,6 +1524,370 @@ class TestProcessSitePipeline:
         assert not any(step.step == "report.render" for step in result.steps)
         note_body = mock_rhodes_note.call_args.kwargs["body"]
         assert "Rhodes due diligence update: failed to update foCapacity, status" in note_body
+
+    @patch(
+        "due_diligence_reporter.report_pipeline.utc_now_iso",
+        return_value="2026-06-17T15:00:00+00:00",
+    )
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_prepared_data_mcp_assisted_sor_failure_emits_write_request(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_route_tool_call_sync,
+        mock_update_due_diligence,
+        mock_rhodes_note,
+        _mock_utc_now,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-17T15:00:00+00:00",
+            events=[],
+            final_report_data={"due_diligence.fastest_open_capacity": "36"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "prepared": True,
+            "trace": trace,
+            "render_input": {
+                "site_name": "Alpha Keller",
+                "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                "report_data": {"due_diligence.fastest_open_capacity": "36"},
+            },
+            "prepared_report_data": {"due_diligence.fastest_open_capacity": "36"},
+            "report_metadata": {"completeness": {"stage": "complete"}},
+        }
+        mock_update_due_diligence.return_value = {
+            "status": "failed",
+            "reason": "rhodes_error",
+            "error": "Error: elicitation_unsupported",
+            "updated_fields": ["dateCompleted", "foCapacity", "status"],
+        }
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            p1_email="owner@example.com",
+            site_id="SITE1",
+            due_diligence_write_mode="mcp_assisted",
+        )
+
+        assert result.status == "locationos_mcp_write_required"
+        assert result.failed_step == "rhodes.due_diligence_update"
+        mock_route_tool_call_sync.assert_not_called()
+        mock_rhodes_note.assert_not_called()
+        assert result.rhodes_due_diligence_update is not None
+        request = result.rhodes_due_diligence_update["locationos_mcp_write_request"]
+        assert request["server"] == "locationos"
+        assert request["tool"] == "updateDueDiligence"
+        assert request["arguments"] == {
+            "siteId": "SITE1",
+            "dateCompleted": "2026-06-17",
+            "foCapacity": "36",
+            "status": "complete",
+        }
+        assert request["readback"]["tool"] == "getSite"
+        assert request["readback"]["verify_fields"] == [
+            "dateCompleted",
+            "foCapacity",
+            "status",
+        ]
+        assert result.locationos_mcp_resume is not None
+        assert result.locationos_mcp_resume["schema_version"] == "locationos_mcp_resume.v1"
+        assert result.locationos_mcp_resume["site_id"] == "SITE1"
+        assert (
+            result.locationos_mcp_resume["locationos_mcp_write_request"]["arguments"]
+            == request["arguments"]
+        )
+        assert result.locationos_mcp_resume["render_input"] == {
+            "site_name": "Alpha Keller",
+            "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+            "report_data": {"due_diligence.fastest_open_capacity": "36"},
+        }
+        assert result.locationos_mcp_resume["owner_email"] == "owner@example.com"
+
+    @patch(
+        "due_diligence_reporter.report_pipeline.utc_now_iso",
+        return_value="2026-06-17T15:00:00+00:00",
+    )
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.report_pipeline.verify_rhodes_due_diligence_fields")
+    @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_prepared_data_mcp_completed_verifies_readback_before_rendering(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_route_tool_call_sync,
+        mock_completeness,
+        mock_update_due_diligence,
+        mock_verify_due_diligence,
+        mock_rhodes_note,
+        _mock_utc_now,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-17T15:00:00+00:00",
+            events=[],
+            final_report_data={"due_diligence.fastest_open_capacity": "36"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "prepared": True,
+            "trace": trace,
+            "render_input": {
+                "site_name": "Alpha Keller",
+                "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                "report_data": {"due_diligence.fastest_open_capacity": "36"},
+            },
+            "prepared_report_data": {"due_diligence.fastest_open_capacity": "36"},
+            "report_metadata": {"completeness": {"stage": "complete"}},
+        }
+
+        def render_side_effect(tool_name, tool_input):
+            assert tool_name == "create_dd_report"
+            assert tool_input["report_data"]["due_diligence.fastest_open_capacity"] == "36"
+            return {
+                "status": "success",
+                "document": {
+                    "id": "doc123",
+                    "url": "https://docs.google.com/document/d/doc123",
+                    "role": "active",
+                },
+                "normalized_report_data": {
+                    "due_diligence.fastest_open_capacity": "36",
+                },
+            }
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_verify_due_diligence.return_value = {
+            "status": "verified",
+            "reason": "ok",
+            "readback": {
+                "status": "verified",
+                "verified_fields": ["dateCompleted", "foCapacity", "status"],
+            },
+        }
+        mock_route_tool_call_sync.side_effect = render_side_effect
+        mock_completeness.side_effect = fake_completeness
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        }
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            p1_email="owner@example.com",
+            site_id="SITE1",
+            due_diligence_write_mode="mcp_assisted",
+            locationos_mcp_write_completed=True,
+        )
+
+        assert result.status == "report_created"
+        mock_update_due_diligence.assert_not_called()
+        mock_verify_due_diligence.assert_called_once_with(
+            site_id="SITE1",
+            fields={
+                "status": "complete",
+                "dateCompleted": "2026-06-17",
+                "foCapacity": "36",
+            },
+        )
+        assert result.rhodes_due_diligence_update is not None
+        assert (
+            result.rhodes_due_diligence_update["reason"]
+            == "locationos_mcp_readback_verified"
+        )
+        note_body = mock_rhodes_note.call_args.kwargs["body"]
+        assert "Rhodes due diligence update: updated dateCompleted, foCapacity, status" in (
+            note_body
+        )
+
+    def test_resume_locationos_mcp_write_from_manifest_uses_saved_render_input(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        manifest = _mcp_resume_manifest()
+        monkeypatch.setattr(
+            "due_diligence_reporter.report_pipeline.load_run_manifest",
+            MagicMock(return_value=manifest),
+        )
+
+        def fake_persist(run):
+            path = tmp_path / f"{run.run_id}.json"
+            path.write_text(json.dumps(run.to_dict()), encoding="utf-8")
+            run.manifest_path = str(path)
+            return path
+
+        monkeypatch.setattr(
+            "due_diligence_reporter.report_pipeline.persist_run_manifest",
+            fake_persist,
+        )
+        verify_due_diligence = MagicMock(
+            return_value={
+                "status": "verified",
+                "reason": "ok",
+                "readback": {
+                    "status": "verified",
+                    "verified_fields": ["foCapacity", "status"],
+                },
+            }
+        )
+        monkeypatch.setattr(
+            "due_diligence_reporter.report_pipeline.verify_rhodes_due_diligence_fields",
+            verify_due_diligence,
+        )
+
+        def render_side_effect(tool_name, tool_input):
+            assert tool_name == "create_dd_report"
+            assert tool_input == manifest["locationos_mcp_resume"]["render_input"]
+            return {
+                "status": "success",
+                "document": {
+                    "id": "doc123",
+                    "url": "https://docs.google.com/document/d/doc123",
+                    "role": "active",
+                },
+            }
+
+        route_tool_call = MagicMock(side_effect=render_side_effect)
+        monkeypatch.setattr(
+            "due_diligence_reporter.report_pipeline.route_tool_call_sync",
+            route_tool_call,
+        )
+
+        async def fake_completeness(doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        monkeypatch.setattr(
+            "due_diligence_reporter.server.check_report_completeness",
+            fake_completeness,
+        )
+        rhodes_note = MagicMock(
+            return_value={
+                "status": "created",
+                "reason": "ok",
+                "rhodes_note_id": "NOTE1",
+                "owner_notification": "mentioned",
+            }
+        )
+        monkeypatch.setattr(
+            "due_diligence_reporter.report_pipeline.add_rhodes_site_note",
+            rhodes_note,
+        )
+        run_agent = MagicMock()
+        monkeypatch.setattr(
+            "due_diligence_reporter.report_pipeline.run_dd_report_agent",
+            run_agent,
+        )
+
+        result = resume_locationos_mcp_write_from_manifest(
+            "source-run",
+            settings=_make_settings(),
+        )
+
+        assert result.status == "report_created"
+        assert result.doc_id == "doc123"
+        verify_due_diligence.assert_called_once_with(
+            site_id="SITE1",
+            fields={"foCapacity": "36", "status": "complete"},
+        )
+        route_tool_call.assert_called_once()
+        run_agent.assert_not_called()
+        assert result.rhodes_due_diligence_update is not None
+        assert result.rhodes_due_diligence_update["status"] == "updated"
+        assert result.locationos_mcp_resume is not None
+        assert result.locationos_mcp_resume["source_run_id"] == "source-run"
+        note_body = rhodes_note.call_args.kwargs["body"]
+        assert "Rhodes due diligence update: updated foCapacity, status" in note_body
+
+    def test_resume_locationos_mcp_write_from_manifest_blocks_on_readback_mismatch(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        manifest = _mcp_resume_manifest()
+        monkeypatch.setattr(
+            "due_diligence_reporter.report_pipeline.load_run_manifest",
+            MagicMock(return_value=manifest),
+        )
+
+        def fake_persist(run):
+            path = tmp_path / f"{run.run_id}.json"
+            path.write_text(json.dumps(run.to_dict()), encoding="utf-8")
+            run.manifest_path = str(path)
+            return path
+
+        monkeypatch.setattr(
+            "due_diligence_reporter.report_pipeline.persist_run_manifest",
+            fake_persist,
+        )
+        monkeypatch.setattr(
+            "due_diligence_reporter.report_pipeline.verify_rhodes_due_diligence_fields",
+            MagicMock(
+                return_value={
+                    "status": "failed",
+                    "reason": "mismatch",
+                    "error": "foCapacity did not match",
+                }
+            ),
+        )
+        route_tool_call = MagicMock()
+        monkeypatch.setattr(
+            "due_diligence_reporter.report_pipeline.route_tool_call_sync",
+            route_tool_call,
+        )
+        rhodes_note = MagicMock()
+        monkeypatch.setattr(
+            "due_diligence_reporter.report_pipeline.add_rhodes_site_note",
+            rhodes_note,
+        )
+
+        result = resume_locationos_mcp_write_from_manifest(
+            "source-run",
+            settings=_make_settings(),
+        )
+
+        assert result.status == "report_data_prepared"
+        assert result.failed_step == "rhodes.due_diligence_update"
+        assert result.error == "foCapacity did not match"
+        route_tool_call.assert_not_called()
+        rhodes_note.assert_not_called()
 
     @patch(
         "due_diligence_reporter.report_pipeline.utc_now_iso",

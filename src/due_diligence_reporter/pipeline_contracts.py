@@ -144,6 +144,7 @@ class PipelineRun:
     republish_summary: dict[str, Any] | None = None
     rhodes_due_diligence_update: dict[str, Any] | None = None
     rhodes_report_event: dict[str, Any] | None = None
+    locationos_mcp_resume: dict[str, Any] | None = None
     p1_dri_missing: bool = False
     manifest_path: str | None = None
     manifest_url: str | None = None
@@ -165,6 +166,7 @@ class PipelineRun:
             "republish_summary": self.republish_summary,
             "rhodes_due_diligence_update": self.rhodes_due_diligence_update,
             "rhodes_report_event": self.rhodes_report_event,
+            "locationos_mcp_resume": self.locationos_mcp_resume,
             "p1_dri_missing": self.p1_dri_missing,
             "manifest_path": self.manifest_path,
             "manifest_url": self.manifest_url,

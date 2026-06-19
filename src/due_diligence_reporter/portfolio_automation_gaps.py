@@ -487,7 +487,8 @@ def _source_action_record(site: dict[str, Any], gap_type: Any, *, as_of: str) ->
     status = str(route["status"])
     site_id = str(site.get("site_id") or "")
     site_name = str(site.get("site_name") or "Unknown site")
-    return {
+    action_id = _action_id(site_id, site_name, gap)
+    record = {
         "schema_version": "action_record.v1",
         "source": source,
         "source_workflow": PORTFOLIO_GAPS_SOURCE,
@@ -509,12 +510,29 @@ def _source_action_record(site: dict[str, Any], gap_type: Any, *, as_of: str) ->
         "review_reason": str(route.get("review_reason") or ""),
         "error_summary": str(route.get("error_summary") or ""),
         "retryable": bool(route.get("retryable")),
-        "action_id": _action_id(site_id, site_name, gap),
+        "action_id": action_id,
+        "idempotency_key": str(route.get("idempotency_key") or action_id),
     }
+    for key in (
+        "autonomy_mode",
+        "sor_system",
+        "sor_write_status",
+        "sor_readback_status",
+        "sor_readback_summary",
+        "operating_note_status",
+        "p1_dri_route_status",
+        "failure_route",
+        "next_step",
+    ):
+        if key in route:
+            record[key] = str(route.get(key) or "")
+    return record
 
 
 def _action_route(gap: str, site: dict[str, Any]) -> dict[str, Any]:
     if gap == "missing_p1_dri":
+        if not str(site.get("site_id") or "").strip():
+            return _missing_site_identity_route(gap)
         return {
             "source": "alpha-analysis-downstream-processing",
             "owning_workflow": "aadp",
@@ -528,8 +546,22 @@ def _action_route(gap: str, site: dict[str, Any]) -> dict[str, Any]:
             "evidence_summary": "Rhodes snapshot did not expose a current P1 DRI for this site.",
             "review_required": False,
             "retryable": True,
+            "autonomy_mode": "automatic_candidate",
+            "sor_system": "rhodes",
+            "sor_write_status": "not_started",
+            "sor_readback_status": "not_verified",
+            "sor_readback_summary": "Awaiting AADP remediation and Rhodes readback.",
+            "operating_note_status": "not_started",
+            "p1_dri_route_status": "missing_owner",
+            "failure_route": "",
+            "next_step": (
+                "AADP should assign the deterministic P1 DRI, verify Rhodes readback, "
+                "write an operating note, and emit final action status."
+            ),
         }
     if gap == "missing_drive_folder":
+        if not str(site.get("site_id") or "").strip():
+            return _missing_site_identity_route(gap)
         return {
             "source": "alpha-analysis-downstream-processing",
             "owning_workflow": "aadp",
@@ -543,6 +575,18 @@ def _action_route(gap: str, site: dict[str, Any]) -> dict[str, Any]:
             "evidence_summary": "Rhodes snapshot did not expose a linked site Drive folder.",
             "review_required": False,
             "retryable": True,
+            "autonomy_mode": "automatic_candidate",
+            "sor_system": "drive,rhodes",
+            "sor_write_status": "not_started",
+            "sor_readback_status": "not_verified",
+            "sor_readback_summary": "Awaiting AADP remediation and Drive/Rhodes readback.",
+            "operating_note_status": "not_started",
+            "p1_dri_route_status": "not_started",
+            "failure_route": "",
+            "next_step": (
+                "AADP should create or link the Drive folder, verify Drive/Rhodes readback, "
+                "write an operating note, and emit final action status."
+            ),
         }
     if gap == "snapshot_read_errors":
         return {
@@ -601,6 +645,38 @@ def _action_route(gap: str, site: dict[str, Any]) -> dict[str, Any]:
             "retryable": False,
         }
     return {}
+
+
+def _missing_site_identity_route(gap: str) -> dict[str, Any]:
+    label = ACTION_LABELS.get(gap, gap)
+    return {
+        "source": PORTFOLIO_GAPS_SOURCE,
+        "owning_workflow": PORTFOLIO_GAPS_SOURCE,
+        "workflow_owner": PORTFOLIO_GAPS_SOURCE,
+        "status": "blocked",
+        "severity": "high",
+        "action_requested": "Resolve verified Rhodes site identity before routing remediation.",
+        "action_taken": (
+            f"Portfolio Gaps found {label} but did not route it to AADP because "
+            "the Rhodes snapshot did not include a verified site ID."
+        ),
+        "evidence_summary": (
+            "Portfolio Gaps requires a verified Rhodes site ID before an autonomous "
+            "source workflow can mutate Rhodes or Drive for this site."
+        ),
+        "review_required": True,
+        "review_reason": "Resolve the site identity in Rhodes/source data, then rerun Portfolio Gaps.",
+        "retryable": True,
+        "autonomy_mode": "source_context_blocked",
+        "sor_system": "rhodes",
+        "sor_write_status": "blocked",
+        "sor_readback_status": "not_verified",
+        "sor_readback_summary": "No source-system readback was attempted because site ID is missing.",
+        "operating_note_status": "not_started",
+        "p1_dri_route_status": "not_started",
+        "failure_route": PORTFOLIO_GAPS_SOURCE,
+        "next_step": "Resolve verified Rhodes site ID, then rerun Portfolio Gaps before AADP remediation.",
+    }
 
 
 def _owner_for_open_failures(site: dict[str, Any]) -> str:

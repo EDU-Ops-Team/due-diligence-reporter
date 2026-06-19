@@ -90,8 +90,14 @@ def mark_aadp_remediation_unavailable(
         for gap_type in ACTION_LABELS:
             if gap_type not in _gap_reasons(site):
                 continue
+            site_id = _site_id(site)
+            if not site_id:
+                _replace_action(site, _missing_site_identity_action(site, gap_type, as_of=as_of))
+                remediation["needs_review_count"] = int(remediation["needs_review_count"]) + 1
+                continue
             remediation["attempted_count"] = int(remediation["attempted_count"]) + 1
             review_required = status in {"blocked", "needs_review", "error"}
+            action_id = _action_id(site_id, _site_name(site), gap_type)
             action = {
                 "schema_version": "action_record.v1",
                 "source": AADP_SOURCE,
@@ -102,8 +108,9 @@ def mark_aadp_remediation_unavailable(
                 "alert": ACTION_LABELS[gap_type],
                 "status": status,
                 "as_of": as_of,
-                "site_id": _site_id(site),
+                "site_id": site_id,
                 "site_name": _site_name(site),
+                "current_milestone": _current_milestone_label(site),
                 "action_requested": ACTION_LABELS[gap_type],
                 "action_taken": "" if review_required else summary,
                 "remediation_summary": summary,
@@ -115,6 +122,22 @@ def mark_aadp_remediation_unavailable(
                 "review_reason": summary if review_required else "",
                 "error_summary": summary if status == "error" else "",
                 "retryable": status in {"blocked", "error"},
+                "action_id": action_id,
+                "idempotency_key": action_id,
+                "autonomy_mode": "automatic_candidate",
+                "sor_system": _sor_system_for_gap(gap_type),
+                "sor_write_status": "not_started",
+                "sor_readback_status": "not_verified",
+                "sor_readback_summary": "No AADP source-system readback has been verified yet.",
+                "operating_note_status": "not_started",
+                "p1_dri_route_status": (
+                    "missing_owner" if gap_type == "missing_p1_dri" else "not_started"
+                ),
+                "failure_route": "",
+                "next_step": (
+                    "Restore the AADP remediation runner, then rerun Portfolio Gaps "
+                    "or the AADP remediation trigger."
+                ),
             }
             _replace_action(site, action)
             if status == "error":
@@ -122,9 +145,64 @@ def mark_aadp_remediation_unavailable(
             else:
                 remediation["needs_review_count"] = int(remediation["needs_review_count"]) + 1
 
-    remediation["status"] = "needs_review" if int(remediation["attempted_count"]) else "skipped"
+    remediation["status"] = (
+        "needs_review"
+        if int(remediation["attempted_count"]) or int(remediation["needs_review_count"])
+        else "skipped"
+    )
     enriched["remediation"] = remediation
     return enriched
+
+
+def _missing_site_identity_action(
+    site: dict[str, Any],
+    gap_type: str,
+    *,
+    as_of: str,
+) -> dict[str, Any]:
+    site_name = _site_name(site)
+    action_id = _action_id("", site_name, gap_type)
+    label = ACTION_LABELS[gap_type]
+    summary = (
+        f"Portfolio Gaps found {label} but did not route it to AADP because "
+        "the Rhodes snapshot did not include a verified site ID."
+    )
+    return {
+        "schema_version": "action_record.v1",
+        "source": PORTFOLIO_GAPS_SOURCE,
+        "source_workflow": PORTFOLIO_GAPS_SOURCE,
+        "owning_workflow": PORTFOLIO_GAPS_SOURCE,
+        "workflow_owner": PORTFOLIO_GAPS_SOURCE,
+        "gap_type": gap_type,
+        "alert": label,
+        "status": "blocked",
+        "as_of": as_of,
+        "site_id": "",
+        "site_name": site_name,
+        "current_milestone": _current_milestone_label(site),
+        "action_requested": "Resolve verified Rhodes site identity before routing remediation.",
+        "action_taken": summary,
+        "remediation_summary": summary,
+        "evidence_summary": (
+            "Portfolio Gaps requires a verified Rhodes site ID before an autonomous "
+            "source workflow can mutate Rhodes or Drive for this site."
+        ),
+        "review_required": True,
+        "review_reason": "Resolve the site identity in Rhodes/source data, then rerun Portfolio Gaps.",
+        "error_summary": "",
+        "retryable": True,
+        "action_id": action_id,
+        "idempotency_key": action_id,
+        "autonomy_mode": "source_context_blocked",
+        "sor_system": "rhodes",
+        "sor_write_status": "blocked",
+        "sor_readback_status": "not_verified",
+        "sor_readback_summary": "No source-system readback was attempted because site ID is missing.",
+        "operating_note_status": "not_started",
+        "p1_dri_route_status": "not_started",
+        "failure_route": PORTFOLIO_GAPS_SOURCE,
+        "next_step": "Resolve verified Rhodes site ID, then rerun Portfolio Gaps before AADP remediation.",
+    }
 
 
 def mark_rhodes_snapshot_read_actions(
@@ -242,6 +320,23 @@ def _site_id(site: dict[str, Any]) -> str:
 
 def _site_name(site: dict[str, Any]) -> str:
     return _first_str(site, "site_name", "name", "title", "marketingName") or "Unknown site"
+
+
+def _sor_system_for_gap(gap_type: str) -> str:
+    if gap_type == "missing_drive_folder":
+        return "drive,rhodes"
+    return "rhodes"
+
+
+def _action_id(site_id: str, site_name: str, gap_type: str) -> str:
+    site_key = _action_id_part(site_id or site_name or "unknown-site")
+    gap_key = _action_id_part(gap_type or "unknown-gap")
+    return f"portfolio-gaps:{site_key}:{gap_key}"
+
+
+def _action_id_part(value: str) -> str:
+    cleaned = "".join(char.lower() if char.isalnum() else "-" for char in value.strip())
+    return "-".join(part for part in cleaned.split("-") if part)[:80] or "unknown"
 
 
 def _current_milestone_label(site: dict[str, Any]) -> str:

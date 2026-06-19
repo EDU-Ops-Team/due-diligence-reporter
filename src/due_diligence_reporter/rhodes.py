@@ -1005,6 +1005,56 @@ def update_rhodes_due_diligence(
     }
 
 
+def verify_rhodes_due_diligence_fields(
+    *,
+    site_id: str,
+    fields: dict[str, Any],
+    client: RhodesClient | None = None,
+) -> dict[str, Any]:
+    """Verify that LocationOS already has the expected due diligence fields."""
+
+    clean_site_id = site_id.strip()
+    clean_fields = _clean_due_diligence_fields(fields)
+    base = {
+        "rhodes_site_id": clean_site_id,
+        "verified_fields": sorted(clean_fields),
+    }
+    if not clean_site_id:
+        return {**base, "status": "failed", "reason": "missing_site_id"}
+    if not clean_fields:
+        return {**base, "status": "failed", "reason": "missing_due_diligence_fields"}
+
+    try:
+        rhodes = client or RhodesClient()
+    except RhodesError as exc:
+        reason = (
+            LOCATIONOS_NOT_CONFIGURED_REASON
+            if _is_locationos_not_configured_error(exc)
+            else "locationos_mcp_error"
+        )
+        return {**base, "status": "failed", "reason": reason, "error": str(exc)}
+
+    readback = _verify_due_diligence_readback(
+        rhodes,
+        site_id=clean_site_id,
+        fields=clean_fields,
+    )
+    if readback["status"] != "verified":
+        return {
+            **base,
+            "status": "failed",
+            "reason": "readback_failed",
+            "error": _due_diligence_readback_error(readback),
+            "readback": readback,
+        }
+    return {
+        **base,
+        "status": "verified",
+        "reason": "ok",
+        "readback": readback,
+    }
+
+
 def _is_locationos_not_configured_error(exc: Exception) -> bool:
     return "LocationOS MCP bearer token" in str(exc)
 

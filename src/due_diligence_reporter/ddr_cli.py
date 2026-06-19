@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .adhoc_runner import add_run_site_parser, run_site_command
 from .pipeline_manifest import load_run_manifest
 from .portfolio_automation_gaps import build_portfolio_automation_gap_snapshot
 from .review_execution import execute_ddr_review_requests
@@ -22,7 +23,7 @@ from .sir_trends import (
 )
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ddr", description="Inspect DD pipeline runs")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -39,6 +40,8 @@ def main(argv: list[str] | None = None) -> None:
 
     diagnose_parser = subparsers.add_parser("diagnose", help="Print diagnostic command")
     diagnose_parser.add_argument("--site", required=True)
+
+    add_run_site_parser(subparsers)
 
     review_parser = subparsers.add_parser("sir-review", help="Record SIR review outcomes")
     review_subparsers = review_parser.add_subparsers(dest="sir_review_command", required=True)
@@ -112,7 +115,11 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "rerun":
         _print_rerun(load_run_manifest(args.run_id), args.step)
     elif args.command == "diagnose":
-        print(f"uv run python scripts/daily_dd_check.py --site \"{args.site}\"")
+        print(f"uv run ddr run-site diagnose --site \"{args.site}\"")
+    elif args.command == "run-site":
+        exit_code, payload = run_site_command(args)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return exit_code
     elif args.command == "sir-review":
         _handle_sir_review(args)
     elif args.command == "sir-trends":
@@ -123,6 +130,7 @@ def main(argv: list[str] | None = None) -> None:
         _print_portfolio_gaps(args)
     elif args.command == "review-execution":
         _run_review_execution(args)
+    return 0
 
 
 def _print_status(manifest: dict[str, Any]) -> None:
@@ -380,4 +388,4 @@ def _doc_label(name: str, file_id: str, uri: str) -> str:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

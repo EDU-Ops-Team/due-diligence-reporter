@@ -43,11 +43,53 @@ def test_unavailable_aadp_runner_marks_p1_and_drive_actions() -> None:
     assert result["sites"][0]["remediation_actions"][0]["owning_workflow"] == "aadp"
     assert result["sites"][0]["remediation_actions"][0]["status"] == "blocked"
     assert result["sites"][0]["remediation_actions"][0]["review_required"] is True
+    assert result["sites"][0]["remediation_actions"][0]["autonomy_mode"] == "automatic_candidate"
+    assert result["sites"][0]["remediation_actions"][0]["sor_system"] == "rhodes"
+    assert (
+        result["sites"][0]["remediation_actions"][0]["idempotency_key"]
+        == result["sites"][0]["remediation_actions"][0]["action_id"]
+    )
     assert (
         "no AADP remediation or source-system readback has been verified yet"
         in result["sites"][0]["remediation_actions"][0]["evidence_summary"]
     )
     assert result["sites"][1]["remediation_actions"][0]["gap_type"] == "missing_drive_folder"
+    assert result["sites"][1]["remediation_actions"][0]["sor_system"] == "drive,rhodes"
+
+
+def test_unavailable_aadp_runner_blocks_missing_site_identity_before_aadp_route() -> None:
+    snapshot = {
+        "sites": [
+            {
+                "site_name": "Alpha Identity Gap",
+                "gap_reasons": ["missing_p1_dri", "missing_drive_folder"],
+                "current_milestone": {"key": "conductingDiligence", "label": "Conducting Diligence"},
+            }
+        ]
+    }
+
+    result = mark_aadp_remediation_unavailable(
+        snapshot,
+        as_of="2026-06-05T15:00:00+00:00",
+        status="blocked",
+        summary="AADP trigger unavailable.",
+    )
+
+    assert result["remediation"]["status"] == "needs_review"
+    assert result["remediation"]["attempted_count"] == 0
+    assert result["remediation"]["needs_review_count"] == 2
+    actions = {action["gap_type"]: action for action in result["sites"][0]["remediation_actions"]}
+    assert set(actions) == {"missing_p1_dri", "missing_drive_folder"}
+    for action in actions.values():
+        assert action["source"] == "portfolio-gaps"
+        assert action["owning_workflow"] == "portfolio-gaps"
+        assert action["status"] == "blocked"
+        assert action["current_milestone"] == "Conducting Diligence"
+        assert action["review_required"] is True
+        assert action["autonomy_mode"] == "source_context_blocked"
+        assert action["sor_write_status"] == "blocked"
+        assert action["failure_route"] == "portfolio-gaps"
+        assert "verified Rhodes site ID" in action["next_step"]
 
 
 def test_rhodes_snapshot_read_actions_mark_snapshot_errors() -> None:

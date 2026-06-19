@@ -5,6 +5,35 @@ import json
 from due_diligence_reporter import ddr_cli
 
 
+def test_ddr_diagnose_points_to_run_site(capsys) -> None:
+    exit_code = ddr_cli.main(["diagnose", "--site", "Alpha Keller"])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert 'uv run ddr run-site diagnose --site "Alpha Keller"' in out
+
+
+def test_ddr_run_site_prints_runner_payload(monkeypatch, capsys) -> None:
+    def fake_run_site_command(args):
+        return 2, {
+            "status": "error",
+            "mode": args.mode,
+            "site": args.site,
+        }
+
+    monkeypatch.setattr(ddr_cli, "run_site_command", fake_run_site_command)
+
+    exit_code = ddr_cli.main(["run-site", "diagnose", "--site", "Alpha Keller"])
+
+    out = capsys.readouterr().out
+    assert exit_code == 2
+    assert json.loads(out) == {
+        "mode": "diagnose",
+        "site": "Alpha Keller",
+        "status": "error",
+    }
+
+
 def test_ddr_status_reads_manifest(monkeypatch, tmp_path, capsys) -> None:
     manifest = {
         "run_id": "run-1",

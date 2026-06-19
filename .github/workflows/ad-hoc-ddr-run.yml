@@ -1,0 +1,373 @@
+name: Ad-Hoc DDR Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Runner mode'
+        required: true
+        default: diagnose
+        type: choice
+        options:
+          - diagnose
+          - first-publish
+          - force-regenerate
+          - source-sweep
+          - source-republish
+          - resume-mcp-write
+      site:
+        description: 'Site name or substring; required except resume-mcp-write'
+        required: false
+        type: string
+      run_id:
+        description: 'Source run ID for resume-mcp-write'
+        required: false
+        type: string
+      address:
+        description: 'Optional full site address'
+        required: false
+        type: string
+      site_id:
+        description: 'Optional Rhodes site ID'
+        required: false
+        type: string
+      slug:
+        description: 'Optional Rhodes site slug'
+        required: false
+        type: string
+      drive_folder_url:
+        description: 'Optional site Drive folder URL override'
+        required: false
+        type: string
+      notify:
+        description: 'Enable normal DDR Chat/email notifications'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      sor_write_mode:
+        description: 'LocationOS due-diligence SOR write mode'
+        required: true
+        default: api
+        type: choice
+        options:
+          - api
+          - mcp-assisted
+      mcp_write_completed:
+        description: 'Verify a completed OAuth LocationOS MCP write before rendering'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      apply_source_sweep:
+        description: 'Apply source-sweep republish decisions instead of dry-run'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      source_type:
+        description: 'Required for source-republish'
+        required: false
+        type: string
+      fingerprint:
+        description: 'Required for source-republish'
+        required: false
+        type: string
+      doc_type:
+        description: 'Optional source-republish doc type'
+        required: false
+        type: string
+      drive_file_id:
+        description: 'Optional source-republish Drive file ID'
+        required: false
+        type: string
+      drive_modified_time:
+        description: 'Optional source-republish Drive modifiedTime'
+        required: false
+        type: string
+      file_name:
+        description: 'Optional source-republish file name'
+        required: false
+        type: string
+      drive_url:
+        description: 'Optional source-republish Drive URL'
+        required: false
+        type: string
+
+concurrency:
+  group: ad-hoc-ddr-run
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  VENDOR_GATE_ENABLED: "1"
+
+jobs:
+  ad-hoc-ddr-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore DD republish dedup state
+        id: restore-dd-republish-state
+        uses: actions/cache/restore@v4
+        with:
+          path: .dd_republish_state.json
+          key: dd-republish-state-${{ github.run_id }}
+          restore-keys: |
+            dd-republish-state-
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.14"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Verify required secrets
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_APPLY_SOURCE_SWEEP: ${{ inputs.apply_source_sweep }}
+        run: |
+          [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ] || { echo "OAUTH_CLIENT_ID missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ] || { echo "OAUTH_CLIENT_SECRET missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ] || { echo "OAUTH_REFRESH_TOKEN missing"; exit 1; }
+          [ -n "${{ secrets.LOCATIONOS_MCP_API_KEY || secrets.RHODES_API_KEY }}" ] || { echo "LOCATIONOS_MCP_API_KEY or RHODES_API_KEY missing"; exit 1; }
+          NEEDS_GENERATION_SECRETS=false
+          if [ "${INPUT_MODE}" != "diagnose" ]; then
+            NEEDS_GENERATION_SECRETS=true
+          fi
+          if [ "${INPUT_MODE}" = "source-sweep" ] && [ "${INPUT_APPLY_SOURCE_SWEEP:-false}" != "true" ]; then
+            NEEDS_GENERATION_SECRETS=false
+          fi
+          if [ "$NEEDS_GENERATION_SECRETS" = "true" ]; then
+            [ -n "${{ secrets.OPENAI_API_KEY }}" ] || { echo "OPENAI_API_KEY missing"; exit 1; }
+            [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ] || { echo "ANTHROPIC_API_KEY missing"; exit 1; }
+            [ -n "${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}" ] || { echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID missing"; exit 1; }
+          else
+            echo "Generation secrets not required for this ad-hoc DDR mode"
+          fi
+          echo "All required secrets are present"
+
+      - name: Create .env file from secrets
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_CAPACITY_MODEL: ${{ vars.OPENAI_CAPACITY_MODEL || 'gpt-4o' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DD_TEMPLATE_V3_GOOGLE_DOC_ID: ${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}
+          GOOGLE_DRIVE_ROOT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}
+          DDR_GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.DDR_GOOGLE_CHAT_WEBHOOK_URL }}
+          DD_REPORT_EMAIL_RECIPIENTS: ${{ secrets.DD_REPORT_EMAIL_RECIPIENTS }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          GLOBAL_EMAIL_CC: ${{ secrets.GLOBAL_EMAIL_CC }}
+          SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
+          ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
+          BUILDING_INSPECTION_FOLDER_ID: ${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}
+          LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
+          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
+          RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
+          DD_REPUBLISH_STATE_STORE: ${{ vars.DD_REPUBLISH_STATE_STORE }}
+          DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID: ${{ vars.DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID }}
+          DD_REPUBLISH_STATE_FIRESTORE_DATABASE: ${{ vars.DD_REPUBLISH_STATE_FIRESTORE_DATABASE }}
+          DD_REPUBLISH_STATE_FIRESTORE_COLLECTION: ${{ vars.DD_REPUBLISH_STATE_FIRESTORE_COLLECTION }}
+        run: |
+          touch .env
+          echo "OPENAI_API_KEY=${OPENAI_API_KEY}" >> .env
+          echo "OPENAI_CAPACITY_MODEL=${OPENAI_CAPACITY_MODEL}" >> .env
+          echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> .env
+          echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID=${DD_TEMPLATE_V3_GOOGLE_DOC_ID}" >> .env
+          echo "GOOGLE_DRIVE_ROOT_FOLDER_ID=${GOOGLE_DRIVE_ROOT_FOLDER_ID}" >> .env
+          echo "DDR_GOOGLE_CHAT_WEBHOOK_URL=${DDR_GOOGLE_CHAT_WEBHOOK_URL}" >> .env
+          echo "DD_REPORT_EMAIL_RECIPIENTS=${DD_REPORT_EMAIL_RECIPIENTS}" >> .env
+          echo "EMAIL_SENDER=${EMAIL_SENDER}" >> .env
+          echo "EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}" >> .env
+          echo "GLOBAL_EMAIL_CC=${GLOBAL_EMAIL_CC}" >> .env
+          echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
+          echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
+          echo "BUILDING_INSPECTION_FOLDER_ID=${BUILDING_INSPECTION_FOLDER_ID}" >> .env
+          LOCATIONOS_TOKEN="${LOCATIONOS_MCP_API_KEY:-${RHODES_API_KEY:-}}"
+          echo "LOCATIONOS_MCP_API_KEY=${LOCATIONOS_TOKEN}" >> .env
+          echo "RHODES_API_KEY=${RHODES_API_KEY:-${LOCATIONOS_TOKEN}}" >> .env
+          echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
+          echo "DD_REPUBLISH_STATE_STORE=${DD_REPUBLISH_STATE_STORE}" >> .env
+          echo "DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID=${DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID}" >> .env
+          echo "DD_REPUBLISH_STATE_FIRESTORE_DATABASE=${DD_REPUBLISH_STATE_FIRESTORE_DATABASE}" >> .env
+          echo "DD_REPUBLISH_STATE_FIRESTORE_COLLECTION=${DD_REPUBLISH_STATE_FIRESTORE_COLLECTION}" >> .env
+          echo "Created .env file"
+
+      - name: Write Google OAuth client secrets
+        env:
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+        run: |
+          mkdir -p credentials
+          python -c "
+          import json, os
+          data = {
+              'installed': {
+                  'client_id': os.environ['OAUTH_CLIENT_ID'],
+                  'client_secret': os.environ['OAUTH_CLIENT_SECRET'],
+                  'redirect_uris': ['http://localhost'],
+                  'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+                  'token_uri': 'https://oauth2.googleapis.com/token',
+              }
+          }
+          with open('credentials/client_secrets.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+
+      - name: Write Google OAuth refresh token
+        env:
+          OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+        run: |
+          python -c "
+          import json, os
+          data = {
+              'token': None,
+              'refresh_token': os.environ['OAUTH_REFRESH_TOKEN'],
+              'token_uri': 'https://oauth2.googleapis.com/token',
+              'client_id': os.environ['OAUTH_CLIENT_ID'],
+              'client_secret': os.environ['OAUTH_CLIENT_SECRET'],
+              'scopes': [
+                  'https://www.googleapis.com/auth/drive',
+                  'https://www.googleapis.com/auth/documents',
+                  'https://www.googleapis.com/auth/gmail.modify',
+              ],
+          }
+          with open('.gcp-saved-tokens.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+
+      - name: Write Firestore service account credentials
+        env:
+          GCP_FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON}" ]; then
+            echo "No Firestore service account configured; DD republish state will use JSON/cache fallback"
+            exit 0
+          fi
+          mkdir -p credentials
+          printf '%s' "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON}" > credentials/firestore-service-account.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=${GITHUB_WORKSPACE}/credentials/firestore-service-account.json" >> "$GITHUB_ENV"
+          echo "Firestore service account credentials configured"
+
+      - name: Run ad-hoc DDR
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_SITE: ${{ inputs.site }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          INPUT_ADDRESS: ${{ inputs.address }}
+          INPUT_SITE_ID: ${{ inputs.site_id }}
+          INPUT_SLUG: ${{ inputs.slug }}
+          INPUT_DRIVE_FOLDER_URL: ${{ inputs.drive_folder_url }}
+          INPUT_NOTIFY: ${{ inputs.notify }}
+          INPUT_SOR_WRITE_MODE: ${{ inputs.sor_write_mode }}
+          INPUT_MCP_WRITE_COMPLETED: ${{ inputs.mcp_write_completed }}
+          INPUT_APPLY_SOURCE_SWEEP: ${{ inputs.apply_source_sweep }}
+          INPUT_SOURCE_TYPE: ${{ inputs.source_type }}
+          INPUT_FINGERPRINT: ${{ inputs.fingerprint }}
+          INPUT_DOC_TYPE: ${{ inputs.doc_type }}
+          INPUT_DRIVE_FILE_ID: ${{ inputs.drive_file_id }}
+          INPUT_DRIVE_MODIFIED_TIME: ${{ inputs.drive_modified_time }}
+          INPUT_FILE_NAME: ${{ inputs.file_name }}
+          INPUT_DRIVE_URL: ${{ inputs.drive_url }}
+        run: |
+          set -euo pipefail
+          if [ "$INPUT_MODE" = "resume-mcp-write" ]; then
+            if [ -z "${INPUT_RUN_ID:-}" ]; then
+              echo "run_id is required for resume-mcp-write"
+              exit 2
+            fi
+            ARGS=("$INPUT_MODE" --run-id "$INPUT_RUN_ID")
+          else
+            if [ -z "${INPUT_SITE:-}" ]; then
+              echo "site is required for $INPUT_MODE"
+              exit 2
+            fi
+            ARGS=("$INPUT_MODE" --site "$INPUT_SITE")
+          fi
+          if [ "$INPUT_MODE" != "resume-mcp-write" ]; then
+            if [ -n "${INPUT_ADDRESS:-}" ]; then
+              ARGS+=(--address "$INPUT_ADDRESS")
+            fi
+            if [ -n "${INPUT_SITE_ID:-}" ]; then
+              ARGS+=(--site-id "$INPUT_SITE_ID")
+            fi
+            if [ -n "${INPUT_SLUG:-}" ]; then
+              ARGS+=(--slug "$INPUT_SLUG")
+            fi
+            if [ -n "${INPUT_DRIVE_FOLDER_URL:-}" ]; then
+              ARGS+=(--drive-folder-url "$INPUT_DRIVE_FOLDER_URL")
+            fi
+          fi
+          if [ "${INPUT_NOTIFY:-false}" = "true" ]; then
+            ARGS+=(--notify)
+          fi
+          if [ "$INPUT_MODE" != "resume-mcp-write" ]; then
+            if [ "${INPUT_SOR_WRITE_MODE:-api}" != "api" ]; then
+              ARGS+=(--sor-write-mode "$INPUT_SOR_WRITE_MODE")
+            fi
+            if [ "${INPUT_MCP_WRITE_COMPLETED:-false}" = "true" ]; then
+              ARGS+=(--mcp-write-completed)
+            fi
+          fi
+          if [ "$INPUT_MODE" = "source-sweep" ]; then
+            if [ "${INPUT_APPLY_SOURCE_SWEEP:-false}" = "true" ]; then
+              ARGS+=(--apply)
+            else
+              ARGS+=(--dry-run)
+            fi
+          fi
+          if [ "$INPUT_MODE" = "source-republish" ]; then
+            if [ -z "${INPUT_SOURCE_TYPE:-}" ] || [ -z "${INPUT_FINGERPRINT:-}" ]; then
+              echo "source_type and fingerprint are required for source-republish"
+              exit 2
+            fi
+            ARGS+=(--source-type "$INPUT_SOURCE_TYPE" --fingerprint "$INPUT_FINGERPRINT")
+            if [ -n "${INPUT_DOC_TYPE:-}" ]; then
+              ARGS+=(--doc-type "$INPUT_DOC_TYPE")
+            fi
+            if [ -n "${INPUT_DRIVE_FILE_ID:-}" ]; then
+              ARGS+=(--drive-file-id "$INPUT_DRIVE_FILE_ID")
+            fi
+            if [ -n "${INPUT_DRIVE_MODIFIED_TIME:-}" ]; then
+              ARGS+=(--drive-modified-time "$INPUT_DRIVE_MODIFIED_TIME")
+            fi
+            if [ -n "${INPUT_FILE_NAME:-}" ]; then
+              ARGS+=(--file-name "$INPUT_FILE_NAME")
+            fi
+            if [ -n "${INPUT_DRIVE_URL:-}" ]; then
+              ARGS+=(--drive-url "$INPUT_DRIVE_URL")
+            fi
+          fi
+          uv run ddr run-site "${ARGS[@]}" | tee ad-hoc-ddr-run.json
+
+      - name: Upload ad-hoc DDR result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ad-hoc-ddr-run
+          path: |
+            ad-hoc-ddr-run.json
+            .ddr-runs/*.json
+          if-no-files-found: warn
+
+      - name: Save DD republish dedup state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .dd_republish_state.json
+          key: dd-republish-state-${{ github.run_id }}

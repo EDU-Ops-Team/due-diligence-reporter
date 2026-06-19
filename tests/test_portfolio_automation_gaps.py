@@ -174,6 +174,44 @@ class SnapshotReadErrorClient(FakeRhodesPortfolioClient):
         return super().list_notes(site_id=site_id, **_)
 
 
+class MissingSiteIdentityClient(FakeRhodesPortfolioClient):
+    def list_sites(self, *, status: str | None = "active") -> list[dict[str, Any]]:
+        assert status == "active"
+        return [
+            {
+                "name": "Alpha Identity Gap",
+                "slug": "alpha-identity-gap",
+                "stage": "diligence",
+                "status": "active",
+            }
+        ]
+
+    def get_site(self, *, site_id: str) -> dict[str, Any]:
+        assert site_id == ""
+        return {
+            "name": "Alpha Identity Gap",
+            "slug": "alpha-identity-gap",
+            "stage": "diligence",
+            "status": "active",
+        }
+
+    def get_missing_documents(self, *, site_id: str) -> dict[str, Any]:
+        assert site_id == ""
+        return {"milestones": []}
+
+    def list_notes(self, *, site_id: str = "", **_: Any) -> list[dict[str, Any]]:
+        assert site_id == ""
+        return []
+
+    def list_tasks(self, *, site_id: str, **_: Any) -> list[dict[str, Any]]:
+        assert site_id == ""
+        return []
+
+    def resolve_drive_root(self, *, site_id: str) -> tuple[str, str]:
+        assert site_id == ""
+        raise RhodesError("Rhodes site has no linked Google Drive folder")
+
+
 def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
     result = build_portfolio_automation_gap_snapshot(
         client=FakeRhodesPortfolioClient(),  # type: ignore[arg-type]
@@ -211,8 +249,17 @@ def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
     assert actions["missing_p1_dri"]["schema_version"] == "action_record.v1"
     assert actions["missing_p1_dri"]["owning_workflow"] == "aadp"
     assert actions["missing_p1_dri"]["status"] == "queued"
+    assert actions["missing_p1_dri"]["autonomy_mode"] == "automatic_candidate"
+    assert actions["missing_p1_dri"]["sor_system"] == "rhodes"
+    assert actions["missing_p1_dri"]["sor_readback_status"] == "not_verified"
+    assert actions["missing_p1_dri"]["p1_dri_route_status"] == "missing_owner"
+    assert actions["missing_p1_dri"]["idempotency_key"] == actions["missing_p1_dri"]["action_id"]
     assert "current P1 DRI" in actions["missing_p1_dri"]["evidence_summary"]
     assert actions["missing_drive_folder"]["owning_workflow"] == "aadp"
+    assert actions["missing_drive_folder"]["autonomy_mode"] == "automatic_candidate"
+    assert actions["missing_drive_folder"]["sor_system"] == "drive,rhodes"
+    assert actions["missing_drive_folder"]["failure_route"] == ""
+    assert "AADP should create or link the Drive folder" in actions["missing_drive_folder"]["next_step"]
     assert "linked site Drive folder" in actions["missing_drive_folder"]["evidence_summary"]
     assert actions["open_automation_failures"]["owning_workflow"] == "ddr"
     assert actions["pending_review_tasks"]["owning_workflow"] == "rhodes"
@@ -229,6 +276,29 @@ def test_portfolio_snapshot_rolls_up_automation_gaps() -> None:
         == "edu-ops-email-router:owner_added_to_thread:gmail-1"
     )
     assert "remediation_actions" not in austin
+
+
+def test_portfolio_snapshot_blocks_aadp_actions_without_verified_site_identity() -> None:
+    result = build_portfolio_automation_gap_snapshot(
+        client=MissingSiteIdentityClient(),  # type: ignore[arg-type]
+        include_clean=False,
+    )
+
+    site = result["sites"][0]
+    assert site["site_id"] == ""
+    actions = {action["gap_type"]: action for action in site["remediation_actions"]}
+    assert set(actions) == {"missing_p1_dri", "missing_drive_folder"}
+    for action in actions.values():
+        assert action["owning_workflow"] == "portfolio-gaps"
+        assert action["workflow_owner"] == "portfolio-gaps"
+        assert action["status"] == "blocked"
+        assert action["review_required"] is True
+        assert action["autonomy_mode"] == "source_context_blocked"
+        assert action["sor_write_status"] == "blocked"
+        assert action["sor_readback_status"] == "not_verified"
+        assert action["failure_route"] == "portfolio-gaps"
+        assert "verified Rhodes site ID" in action["next_step"]
+        assert "did not route it to AADP" in action["action_taken"]
 
 
 def test_portfolio_snapshot_can_filter_clean_sites() -> None:

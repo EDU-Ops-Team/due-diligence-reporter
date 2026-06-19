@@ -262,6 +262,7 @@ jobs:
             "Daily DD Check"
             "RayCon Follow-up"
             "Drive Rhodes Reconciliation"
+            "Ad-Hoc DDR Run"
           )
           for workflow in "${workflows[@]}"; do
             gh run list \

@@ -1,5 +1,375 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-19 - DDR Ad-Hoc Runner Skill Updated for Authenticated LocationOS Completion
+
+- Updated `.agents/skills/ddr-adhoc-runner/SKILL.md` so future operators and
+  agents can follow the full authenticated LocationOS completion path, not just
+  the original manifest-bound resume.
+- The skill now requires `codex mcp list` / `codex mcp get locationos --json`,
+  a safe live `getSite` proof for the intended target, and fallback to a fresh
+  Codex process/thread or duplicate-safe interactive OAuth MCP helper when the
+  current desktop thread has no callable `mcp__locationos` tools.
+- Added the authenticated completion checklist for
+  `locationos_mcp_write_required`: exact target read, exact manifest payload,
+  OAuth-backed `updateDueDiligence`, Aerie/LocationOS confirmation, `getSite`
+  field readback, manifest-bound `resume-mcp-write`, failed-step inspection,
+  confirmation-gated `addNote` recovery, and `ddReportLink` update/readback.
+- Added completion criteria requiring due-diligence readback, DD Report Drive
+  artifact, report-event note readback or explicit blocker, `ddReportLink`
+  readback when a report URL exists, and Beads/handoff state for residual code
+  gaps.
+- Added Ops-Skills-compatible `metadata.scorecard.themeId` and counts-only
+  usage telemetry instructions required by the available skill linter.
+- Validation: `node C:\Users\foote\.claude\Work\repos\Ops-Skills\scripts\skill-lint.mjs`
+  passed against an isolated `ddr-adhoc-runner` copy under
+  `C:\tmp\ddr-skill-lint-root-20260619-final`. Running the same linter from
+  `.agents` still fails only on the unrelated `beads` skill, which lacks
+  Ops-Skills telemetry and scorecard metadata.
+
+## 2026-06-18 - 35 E 62nd St OAuth LocationOS Write Completed, Report Rendered
+
+- User approved the live LocationOS/Rhodes write for source run
+  `20260618222025-35-e-62nd-st-new-york-ny-10065-2490016f`.
+- Direct OAuth MCP helper `C:\tmp\rhodes_dd_update_35e62_oauth_mcp.py`
+  called `updateDueDiligence` once with the exact 9-field payload from that
+  source manifest. LocationOS returned `status=approved`; REBL3 returned
+  `httpStatus=200`, `ok=true`, slug `35-e-62nd-st-new-york-ny`; Rhodes returned
+  `ok=true`, `outcome=updated`.
+- Post-write `getSite` readback verified all intended fields:
+  `buildingComment`, `buildingScore`, `playAreaComment`, `playAreaScore`,
+  `regulatoryComment`, `regulatoryScore`, `schoolOperationsComment`,
+  `schoolOperationsScore`, and `status`.
+- Manifest-bound resume then succeeded for the DDR render:
+  `uv run ddr run-site resume-mcp-write --run-id 20260618222025-35-e-62nd-st-new-york-ny-10065-2490016f`.
+  Resume run:
+  `20260618224737-35-e-62nd-st-new-york-ny-10065-78406154`.
+  DD Report:
+  `https://docs.google.com/document/d/143DobftGC9WASR5XDCCjZOHcNsnPfuZosiWfWEJFIg0/edit?usp=drivesdk`.
+  Manifest:
+  `.ddr-runs\20260618224737-35-e-62nd-st-new-york-ny-10065-78406154.json`.
+  Status is `report_created`; quality is `90` / `green`; notifications were
+  suppressed; missing docs still include `Building Inspection`; open asks are
+  `14`.
+- The resume run still has failed step `rhodes.report_event`: the DD report
+  AutomationEvent note could not be verified because `addNote` returned
+  `elicitation_unsupported` through the repo's normal Rhodes client. This is a
+  narrower report-event note blocker, not the original due-diligence SOR write
+  blocker.
+- Attempted the same report-event note through
+  `C:\tmp\rhodes_dd_report_event_note_35e62_oauth_mcp.py`; the OAuth callback
+  did not complete within 300 seconds, so no `addNote` call occurred.
+- Attempted a duplicate-safe lower-level MCP note helper
+  `C:\tmp\rhodes_dd_report_event_note_35e62_api_mcp.py`. It proved API-key MCP
+  reads work with elicitation capability, but `addNote` returned LocationOS
+  server error request IDs `d0911650c7a637cb` /
+  `ddc14628-2158-448f-9f60-7659948a004c`; `listNotes` did not find the exact
+  body afterward.
+- Retried the interactive OAuth-backed report-event note on 2026-06-19 with
+  Greg back at the computer. Updated helper
+  `C:\tmp\rhodes_dd_report_event_note_35e62_oauth_mcp.py` to precheck
+  `listNotes` for the exact rendered body before posting. `addNote` returned
+  `status=approved` with note ID `hx7q07enmt4nvyn7ypbw8j894x88y5dr`, author
+  Greg Foote, and a Brandon Gee mention. Post-write `listNotes` readback
+  verified the exact 2,521-character AutomationEvent body.
+- Added the latest DDR Google Doc URL to `dueDiligence.ddReportLink` on
+  2026-06-19 using
+  `C:\tmp\rhodes_dd_report_link_35e62_oauth_mcp.py`. Evidence source was the
+  M1 Drive folder listing: `35 E 62ND ST, New York, NY 10065 DD Report -
+  06/18/2026`, document ID `143DobftGC9WASR5XDCCjZOHcNsnPfuZosiWfWEJFIg0`,
+  modified `2026-06-18T22:48:00.284Z`. Before value was `null`; LocationOS
+  `updateDueDiligence` returned `status=approved`, REBL3 `ok=true`, Rhodes
+  `outcome=updated`; post-write `getSite` readback verified:
+  `https://docs.google.com/document/d/143DobftGC9WASR5XDCCjZOHcNsnPfuZosiWfWEJFIg0/edit?usp=drivesdk`.
+- Current next action, if a fully clean run is required: complete the
+  site-specific 35 E 62nd DDR work is now complete. Durable follow-up
+  `ddr-uwg` remains open because DDR's normal Rhodes note client still does not
+  support confirmation/elicitation for future `addNote` report events.
+
+## 2026-06-18 - Manifest-Bound LocationOS MCP Resume for 35 E 62nd St
+
+- Beads issue `ddr-76b` tracks the fix for the MCP-assisted DDR resume
+  blocker discovered on the 35 E 62nd St run.
+- Root cause: the old `--mcp-write-completed` resume command reran the DDR
+  agent, so the readback check could compare LocationOS against a regenerated
+  payload instead of the exact payload approved through the OAuth-backed
+  LocationOS MCP.
+- Implemented `locationos_mcp_resume.v1` on pipeline manifests. When
+  `status=locationos_mcp_write_required`, DDR now persists the exact
+  `locationos.updateDueDiligence` arguments plus the saved `render_input`,
+  prepared report data, owner context, open questions, and missing-doc state.
+- Added `uv run ddr run-site resume-mcp-write --run-id <source_run_id>`.
+  This path loads the source manifest, verifies LocationOS readback against the
+  saved MCP arguments, and renders from saved `render_input` without calling
+  the DDR agent or regenerating DD data.
+- Updated the ad-hoc runner output, project-local `ddr-adhoc-runner` skill, and
+  GitHub `Ad-Hoc DDR Run` workflow dispatch to use the manifest-bound resume
+  mode.
+- Fresh 35 E 62nd mcp-assisted first-publish run:
+  `20260618222025-35-e-62nd-st-new-york-ny-10065-2490016f`.
+  Manifest:
+  `.ddr-runs\20260618222025-35-e-62nd-st-new-york-ny-10065-2490016f.json`.
+  Status remains `locationos_mcp_write_required`; notifications suppressed; no
+  DD Report doc was rendered. The emitted resume command is:
+  `uv run ddr run-site resume-mcp-write --run-id 20260618222025-35-e-62nd-st-new-york-ny-10065-2490016f`.
+- Pre-write resume test run:
+  `20260618222342-35-e-62nd-st-new-york-ny-10065-a9a26d2c`.
+  It failed only the LocationOS readback step, produced no `doc_id`/`doc_url`,
+  and did not render because LocationOS still does not match the saved MCP
+  payload. This confirms the guard works before the OAuth write is completed.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_adhoc_runner.py tests\test_ddr_cli.py tests\test_workflow_contracts.py tests\test_report_pipeline.py -q --basetemp C:\tmp\ddr-manifest-resume-suite-2
+uv run ruff check src\due_diligence_reporter\adhoc_runner.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\pipeline_contracts.py tests\test_adhoc_runner.py tests\test_report_pipeline.py tests\test_workflow_contracts.py
+uv run mypy -m due_diligence_reporter.adhoc_runner -m due_diligence_reporter.report_pipeline -m due_diligence_reporter.pipeline_contracts
+uv run ddr status --run-id 20260618222025-35-e-62nd-st-new-york-ny-10065-2490016f
+uv run ddr trace --run-id 20260618222025-35-e-62nd-st-new-york-ny-10065-2490016f --failed-only
+uv run ddr status --run-id 20260618222342-35-e-62nd-st-new-york-ny-10065-a9a26d2c
+uv run ddr trace --run-id 20260618222342-35-e-62nd-st-new-york-ny-10065-a9a26d2c --failed-only
+```
+
+Results: affected tests passed (`113 passed`), Ruff passed, mypy passed for
+the touched modules, the fresh source manifest has `locationos_mcp_resume.v1`
+with saved `render_input` and 9 LocationOS fields, and the pre-write resume
+test stopped at `locationos_mcp_readback_failed` without rendering.
+
+Remaining operator action:
+
+1. Use an OAuth-backed `locationos` MCP surface to run
+   `locationos.updateDueDiligence` with the exact
+   `locationos_mcp_write_request.arguments` from source run
+   `20260618222025-35-e-62nd-st-new-york-ny-10065-2490016f`.
+2. Approve the Aerie card if prompted.
+3. Run
+   `uv run ddr run-site resume-mcp-write --run-id 20260618222025-35-e-62nd-st-new-york-ny-10065-2490016f`.
+   If readback matches, DDR will render the DD Report from the saved manifest
+   payload.
+
+## 2026-06-18 - Portfolio Gaps Emits Phase 1 Site Identity Contract
+
+- Implemented DDR/Portfolio Gaps source-side work for WTC bead `wtc-bmg.2.5`.
+- `portfolio_automation_gaps.py` now treats verified Rhodes `site_id` as a
+  prerequisite before routing `missing_p1_dri` or `missing_drive_folder`
+  findings to AADP.
+- If `site_id` is present, those findings remain AADP-owned automatic
+  candidates and include Phase 1 closed-loop fields:
+  `idempotency_key`, `autonomy_mode`, SOR system/write/readback status,
+  operating-note status, P1 DRI route status, failure route, and next step.
+- If `site_id` is missing, Portfolio Gaps emits a source-context blocker owned
+  by `portfolio-gaps`; it does not route the finding to AADP as executable
+  work.
+- `run_aadp_portfolio_gap_remediation.py` now follows the same rule when the
+  AADP remediation runner is unavailable: no-site rows become Portfolio Gaps
+  blockers and are not counted as AADP attempts.
+- Missing required/current-milestone documents remain excluded from Portfolio
+  Gaps action records.
+
+Verification:
+
+```powershell
+uv run pytest tests\test_portfolio_automation_gaps.py tests\test_aadp_portfolio_gap_remediation_trigger.py tests\test_portfolio_gap_telemetry.py tests\test_portfolio_gap_notifications.py tests\test_pipeline_contracts.py -q --basetemp C:\tmp\wtc-phase1-ddr
+uv run ruff check src\due_diligence_reporter\portfolio_automation_gaps.py scripts\run_aadp_portfolio_gap_remediation.py tests\test_portfolio_automation_gaps.py tests\test_aadp_portfolio_gap_remediation_trigger.py
+git diff --check -- src/due_diligence_reporter/portfolio_automation_gaps.py scripts/run_aadp_portfolio_gap_remediation.py tests/test_portfolio_automation_gaps.py tests/test_aadp_portfolio_gap_remediation_trigger.py
+```
+
+Results:
+
+- Focused DDR tests passed: `27 passed`.
+- Ruff passed.
+- Scoped `git diff --check` passed with expected LF-to-CRLF warnings only.
+
+Remaining:
+
+- AADP must consume executable Portfolio Gaps records and emit SOR/Drive
+  write/readback, operating-note, P1 DRI route, and final action status
+  telemetry.
+- WTC must publish the preserved closed-loop fields in the business-readable
+  Phase 1 dashboard view.
+
+## 2026-06-18 - 35 E 62nd St Ad-Hoc DDR Run Blocked at LocationOS MCP Approval
+
+- Beads issue `ddr-1ef` tracks the operator-requested DDR run for
+  `35 E 62ND ST, New York, NY 10065`.
+- Important safety note: the first diagnosis using the broad site text
+  `Alpha New York 35 E 62nd St` resolved to the wrong Rhodes site
+  (`Alpha New York City 787 11th Ave`). Use the exact site ID
+  `k17fsrj9m5y8843d04x5nmf0ch88daws` for this run until the resolver is
+  hardened. Follow-up bug: `ddr-0bu`.
+- Correct-site diagnosis:
+  `uv run ddr run-site diagnose --site "35 E 62ND ST, New York, NY 10065" --site-id "k17fsrj9m5y8843d04x5nmf0ch88daws" --address "35 E 62nd St, New York, NY 10065"`
+  resolved the M1 folder
+  `https://drive.google.com/drive/folders/1eYYvDFoXpHrcTBEHEakLE0waRuIHc-YA`,
+  P1 owner Brandon Gee, `partial_report_possible=true`, and
+  `ready_for_full_report=false` because Building Inspection and RayCon scenario
+  remain unavailable.
+- A first-publish run initially failed LocationOS validation because
+  `foCapEx` was sent as a string. Fixed the report-pipeline SOR field mapper to
+  parse single currency values for `foCapEx` / `maxCapCapEx` and suppress
+  range or pending/gap labels rather than sending invalid strings.
+- Latest first-publish run:
+  `20260618204045-35-e-62nd-st-new-york-ny-10065-4ef0f302`.
+  Manifest:
+  `.ddr-runs\20260618204045-35-e-62nd-st-new-york-ny-10065-4ef0f302.json`.
+  Status is `locationos_mcp_write_required`; no DD Report doc was rendered yet.
+- The manifest contains the exact
+  `locationos_mcp_write_request.arguments` for
+  `locationos.updateDueDiligence`, plus the resume command. This Codex thread
+  did not expose a callable `mcp__locationos` tool even though
+  `codex mcp list` shows `locationos` enabled with OAuth, so the write still
+  needs to be completed through an OAuth-backed LocationOS MCP surface and then
+  resumed with:
+  `uv run ddr run-site first-publish --site "35 E 62ND ST, New York, NY 10065" --sor-write-mode mcp-assisted --mcp-write-completed --address "35 E 62ND ST, New York, NY 10065" --site-id "k17fsrj9m5y8843d04x5nmf0ch88daws" --drive-folder-url "https://drive.google.com/drive/folders/1eYYvDFoXpHrcTBEHEakLE0waRuIHc-YA"`.
+- Notifications remained suppressed. Rhodes report event was not attempted on
+  the latest run because the pipeline stopped before DD Report rendering.
+
+Validation so far:
+
+```powershell
+uv run pytest tests\test_report_pipeline.py::test_due_diligence_numeric_fields_parse_currency_and_skip_gaps tests\test_report_pipeline.py::test_due_diligence_score_fields_normalize_to_locationos_enum_values tests\test_report_pipeline.py::test_invalid_due_diligence_score_fields_are_not_sent_to_locationos -q --basetemp C:\tmp\ddr-fo-capex-focused
+uv run pytest tests\test_report_pipeline.py::TestProcessSitePipeline::test_report_created_updates_rhodes_due_diligence_before_notifying_p1 -q --basetemp C:\tmp\ddr-fo-capex-process
+uv run ruff check src\due_diligence_reporter\report_pipeline.py tests\test_report_pipeline.py
+uv run mypy -m due_diligence_reporter.report_pipeline
+```
+
+Results: focused mapper tests passed (`3 passed`) and process payload test
+passed (`1 passed`), Ruff passed, and module mypy passed.
+
+## 2026-06-18 - LocationOS MCP-Assisted SOR Write Path
+
+- Beads issue `ddr-8gs` tracks the MCP-assisted LocationOS SOR write path for
+  ad-hoc DDR.
+- Added a read-only Rhodes helper
+  `verify_rhodes_due_diligence_fields(...)` that reuses LocationOS `getSite`
+  readback verification without calling `updateDueDiligence`.
+- `process_site_pipeline(...)` now accepts
+  `due_diligence_write_mode="api"|"mcp_assisted"` and
+  `locationos_mcp_write_completed`. Default `api` behavior is unchanged.
+- In `mcp_assisted` mode, if the bearer-token `updateDueDiligence` path fails
+  with `elicitation_unsupported`, the pipeline stops before DD Report rendering
+  with `status=locationos_mcp_write_required` and embeds an exact
+  `locationos_mcp_write_request` containing the `locationos.updateDueDiligence`
+  arguments and `getSite` readback fields. It does not write the P1 report note
+  for that pending handoff.
+- After the user/operator completes the OAuth-backed `locationos` MCP
+  `updateDueDiligence` call and approves Aerie, rerun the emitted
+  `mcp_resume_command`. That passes `--mcp-write-completed`; DDR rebuilds the
+  normalized DD fields, verifies LocationOS readback, records the SOR step as
+  `reason=locationos_mcp_readback_verified`, and then renders the DD Report.
+- `uv run ddr run-site ...` now exposes `--sor-write-mode mcp-assisted` and
+  `--mcp-write-completed`, promotes the MCP write request to top-level JSON,
+  and emits a command-array `mcp_resume_command`.
+- `.github/workflows/ad-hoc-ddr-run.yml` exposes matching dispatch inputs
+  (`sor_write_mode`, `mcp_write_completed`) using the same env-var shell
+  assembly pattern as the rest of the workflow.
+- `.agents/skills/ddr-adhoc-runner/SKILL.md` documents the new MCP-assisted
+  SOR write and resume flow.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_rhodes.py::test_verify_rhodes_due_diligence_fields_uses_readback_without_write tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_mcp_assisted_sor_failure_emits_write_request tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_mcp_completed_verifies_readback_before_rendering tests\test_adhoc_runner.py::test_run_site_mcp_write_completed_requires_mcp_assisted_mode tests\test_adhoc_runner.py::test_force_regenerate_mcp_assisted_surfaces_write_request_and_resume_command tests\test_workflow_contracts.py::test_ad_hoc_ddr_workflow_dispatch_uses_runner_and_opt_in_notifications -q --basetemp C:\tmp\ddr-mcp-assisted-focused-2
+uv run pytest tests\test_adhoc_runner.py tests\test_report_pipeline.py tests\test_rhodes.py tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-mcp-assisted-suite
+uv run ruff check src\due_diligence_reporter\adhoc_runner.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\rhodes.py tests\test_adhoc_runner.py tests\test_report_pipeline.py tests\test_rhodes.py tests\test_workflow_contracts.py
+uv run mypy -m due_diligence_reporter.adhoc_runner -m due_diligence_reporter.report_pipeline -m due_diligence_reporter.rhodes
+git diff --check
+```
+
+Results: focused tests passed (`6 passed`), affected suite passed
+(`130 passed`), Ruff passed, module-name mypy passed, and `git diff --check`
+passed with expected Windows LF-to-CRLF warnings only. Direct path mypy on
+`src\...` still hits the repo's known duplicate-module import issue.
+
+## 2026-06-18 - Ad-Hoc DDR Runner Design Review
+
+- Beads issue `ddr-9fm` tracks the operator-safe ad-hoc DDR runner. The core
+  method is now implemented as package CLI plus workflow dispatch; the
+  project-local skill remains the invocation contract for agents/operators.
+- Added `src/due_diligence_reporter/adhoc_runner.py` and wired
+  `uv run ddr run-site ...` into `ddr_cli.py`. Supported modes:
+  `diagnose`, `first-publish`, `force-regenerate`, `source-sweep`, and explicit
+  `source-republish`.
+- The runner suppresses outbound Chat/email env vars by default before loading
+  repo settings; `--notify` re-enables normal notifications. Rhodes
+  due-diligence writes and Rhodes report-event notes remain part of mutating
+  pipeline behavior because they are SOR writes, not external notifications.
+- Added `.github/workflows/ad-hoc-ddr-run.yml` as the manual operator surface.
+  Workflow inputs are passed through env vars before shell assembly, not
+  interpolated directly in `run: |` blocks. The workflow defaults
+  `source-sweep` to `--dry-run`, requires explicit `apply_source_sweep=true`
+  for `--apply`, requires explicit `notify=true` for `--notify`, preserves DD
+  republish state, and uploads `ad-hoc-ddr-run.json` plus run manifests.
+- Updated `.agents/skills/ddr-adhoc-runner` so the skill points to
+  `uv run ddr run-site ...`. The bundled script
+  `.agents/skills/ddr-adhoc-runner/scripts/run_ddr_site.py` is now a thin
+  compatibility wrapper around the package CLI.
+- Focused validation passed:
+  `uv run pytest tests\test_adhoc_runner.py tests\test_ddr_cli.py
+  tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-adhoc-runner-final-2`
+  -> `34 passed`; `uv run ruff check src\due_diligence_reporter\adhoc_runner.py
+  src\due_diligence_reporter\ddr_cli.py tests\test_adhoc_runner.py
+  tests\test_ddr_cli.py tests\test_workflow_contracts.py
+  .agents\skills\ddr-adhoc-runner\scripts\run_ddr_site.py` passed;
+  `uv run mypy -m due_diligence_reporter.adhoc_runner -m
+  due_diligence_reporter.ddr_cli` passed; `uv run python -m py_compile
+  .agents\skills\ddr-adhoc-runner\scripts\run_ddr_site.py` passed.
+- Validation limitation: the repo-standard `uv run mypy src/` currently exits
+  before checking code with `Source file found twice under different module
+  names: "src.due_diligence_reporter.server" and
+  "due_diligence_reporter.server"`. The skill-creator `quick_validate.py`
+  still cannot run on this host because `PyYAML` is not installed
+  (`ModuleNotFoundError: No module named 'yaml'`).
+- Greg asked for a repo review because BrainTrust / Google Chat remains an
+  unreliable ad-hoc launch surface for DDR runs.
+- Current repo review found that BrainTrust is not a first-class source-code
+  dependency in this repo. The repeated failures are captured in prior
+  handoff/changelog notes as MCP Hive / Google Chat runtime and tool-list
+  issues, while the durable DDR execution path is the Python
+  `process_site_pipeline(...)` flow.
+- Current ad-hoc surfaces are fragmented: `ddr diagnose` only prints the
+  `daily_dd_check.py --site` command, `daily_dd_check.py --site` runs the cron
+  first-publish path, and `vendor_doc_republish_sweep.py --site` runs the
+  source-triggered republish path. None is a single operator command with
+  explicit mode, preflight, force, notification, and manifest-readback controls.
+- Recommended method is now implemented: use `uv run ddr run-site ...` locally
+  or the `Ad-Hoc DDR Run` GitHub workflow dispatch, both backed by
+  `process_site_pipeline(...)` and not BrainTrust.
+- Important safety constraints for implementation: keep the existing SOR-first
+  sequence, preserve candidate idempotency, do not bypass missing-drive-folder
+  or vendor-gate semantics unless the selected mode explicitly says it is a
+  partial first publish, and make notification suppression a runner-level
+  setting rather than an environment hack.
+
+## 2026-06-18 - RayCon Overhaul Planning Review
+
+- Greg asked for a repo review and overhaul plan because RayCon is not reliably
+  producing the needed Fastest Open and Max Capacity cost/timeline estimates.
+- Current deployed RayCon API health/version checks passed on 2026-06-18:
+  `/health` returned `status=ok`; `/version` returned
+  `git_commit=e385f6328dd58399d6051ed7f735c72a11c007a7` and
+  `calculation_version=raycon-engine-2.0.0`.
+- Focused local DDR RayCon contract tests passed:
+  `uv run pytest tests\test_raycon_client.py tests\test_raycon_followup.py -q
+  --basetemp C:\tmp\ddr-raycon-plan-review` -> `154 passed`.
+- Key finding: the repo already has the right target contract in
+  `docs/reference/RayCon-DDR-Rebuild-Package.md`: RayCon should be a
+  deterministic async scenario engine that writes one canonical
+  `raycon_scenario.json` into M1 and keeps narrative/chat separate from
+  authoritative numbers.
+- Key finding: the current DDR integration is a recovery/polling shell around
+  external RayCon behavior. It dispatches `/v1/jobs`, requires complete Alpha
+  Capacity Analysis before automated dispatch, reads `raycon_scenario.json`,
+  maps only Alpha-sourced capacity, and blanks failed scenario fields. That is
+  protective, but it does not by itself prove RayCon can hit 95%+ estimate
+  success across prior site inputs.
+- Recommended overhaul plan: first build a golden-corpus eval harness from prior
+  DDR/RayCon inputs and expected FO/MaxCap outputs; then make a shared
+  deterministic scenario engine the product core; then wrap it with async jobs,
+  synchronous analysis/proof endpoints, callback/Drive writeback, and DDR
+  ingestion. Preserve useful RayCon pieces only when they serve that contract:
+  cost category vocabulary, timeline and city-multiplier tables, Drive/M1
+  writeback, status/idempotency, and structured provenance.
+
 ## 2026-06-18 - SOR-First DD Data Preparation Before DDR Rendering
 
 - Beads issue `ddr-8cu` tracks Greg's approval to split normalized
@@ -6688,3 +7058,42 @@ inbox/Alpha Capacity/RayCon client pytest `86 passed`; broad affected DDR suite
 `474 passed` after adding inbox capacity observability. DDR Alpha Capacity and
 inbox ruff/mypy passed. RayCon syntax checks passed; DDR and RayCon
 `git diff --check` passed with expected Windows LF-to-CRLF warnings only.
+
+## 2026-06-18 - 35 E 62nd St DDR run
+
+Request: run a new DDR for `35 E 62ND ST, New York, NY 10065`
+(`site_id=k17fsrj9m5y8843d04x5nmf0ch88daws`, Drive folder
+`1eYYvDFoXpHrcTBEHEakLE0waRuIHc-YA`).
+
+Outcome:
+
+- Normal DDR runs prepared SOR-ready DD data but stopped before DD Report
+  rendering because `rhodes.due_diligence_update` failed.
+- Latest normal run before SDK probing:
+  `20260618183427-35-e-62nd-st-new-york-ny-10065-3fec8fc1`.
+- Latest SDK-backed scoped pipeline probe:
+  `20260618185254-35-e-62nd-st-new-york-ny-10065-503af102`.
+- Status remains `report_data_prepared`; no DD Report `doc_id` or `doc_url`
+  was produced.
+
+Fix applied locally:
+
+- Normalized DDR score fields before `updateDueDiligence` so LocationOS gets
+  numeric enum values `1|2|3` for `regulatoryScore`, `buildingScore`,
+  `playAreaScore`, and `schoolOperationsScore`.
+- Focused validation passed:
+  `uv run pytest tests\test_report_pipeline.py -q --basetemp C:\tmp\ddr-score-normalization-test-final2`,
+  `uv run ruff check src\due_diligence_reporter\report_pipeline.py tests\test_report_pipeline.py`,
+  and `uv run mypy src\due_diligence_reporter\report_pipeline.py`.
+
+Remaining blocker:
+
+- After score normalization, LocationOS rejects the normal HTTP write with
+  `elicitation_unsupported`.
+- An SDK-backed no-op `updateDueDiligence` probe negotiated MCP
+  `2025-11-25` but returned a server tool error instead of emitting an
+  elicitation callback: `Error: [Request ID: 298902344d8de90e] Server Error`.
+- Repo docs and tests intentionally require the SOR write before rendering a
+  DD Report, so the DDR should not be marked complete until LocationOS accepts
+  the `updateDueDiligence` write and the pipeline can proceed to
+  `report.render`.

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -51,6 +52,7 @@ from .pipeline_contracts import (
 )
 from .pipeline_manifest import (
     RUN_MANIFEST_DIR,
+    load_run_manifest,
     manifest_has_secret_like_value,
     persist_run_manifest,
 )
@@ -69,6 +71,7 @@ from .rhodes import (
     add_rhodes_site_note,
     lookup_rhodes_site_owner,
     update_rhodes_due_diligence,
+    verify_rhodes_due_diligence_fields,
 )
 from .rhodes_events import (
     post_google_chat_to_configured_webhooks,
@@ -91,6 +94,10 @@ logger = logging.getLogger("report_pipeline")
 _RAYCON_REPORT_FIELD_PATHS: frozenset[str] = frozenset(raycon_token_paths())
 DD_REPORT_EVENT_FREQUENCY_CAP_BUSINESS_DAYS = 2
 DUE_DILIGENCE_UPDATE_STEP = "rhodes.due_diligence_update"
+LOCATIONOS_MCP_WRITE_REQUIRED_STATUS = "locationos_mcp_write_required"
+LOCATIONOS_MCP_WRITE_REQUEST_KEY = "locationos_mcp_write_request"
+LOCATIONOS_MCP_RESUME_SCHEMA_VERSION = "locationos_mcp_resume.v1"
+LOCATIONOS_MCP_WRITE_MODES = frozenset({"api", "mcp_assisted"})
 
 _DUE_DILIGENCE_REPORT_FIELD_MAP: tuple[tuple[str, str], ...] = (
     ("exec.fastest_open_capacity", "foCapacity"),
@@ -108,6 +115,27 @@ _DUE_DILIGENCE_REPORT_FIELD_MAP: tuple[tuple[str, str], ...] = (
     ("exec.school_ops_score", "schoolOperationsScore"),
     ("exec.school_ops_comment", "schoolOperationsComment"),
 )
+
+_DUE_DILIGENCE_SCORE_FIELD_KEYS: frozenset[str] = frozenset(
+    {
+        "regulatoryScore",
+        "buildingScore",
+        "playAreaScore",
+        "schoolOperationsScore",
+    }
+)
+_DUE_DILIGENCE_NUMERIC_FIELD_KEYS: frozenset[str] = frozenset(
+    {
+        "foCapEx",
+        "maxCapCapEx",
+    }
+)
+_DUE_DILIGENCE_NUMBER_RE = re.compile(r"^\d+(?:\.\d+)?$")
+_DUE_DILIGENCE_SCORE_LABELS: dict[str, int] = {
+    "green": 1,
+    "yellow": 2,
+    "red": 3,
+}
 
 _DUE_DILIGENCE_RECOMMENDATION_KEYS: tuple[str, ...] = (
     "due_diligence.recommendation",
@@ -1085,7 +1113,7 @@ class PipelineResult:
     """Structured result from a single-site pipeline run."""
 
     site_title: str
-    status: str  # waiting_on_docs | report_exists | report_data_prepared | report_created | republish_candidate_created | report_incomplete | generation_failed | error | yielded_to_pipeline
+    status: str  # waiting_on_docs | report_exists | report_data_prepared | locationos_mcp_write_required | report_created | republish_candidate_created | report_incomplete | generation_failed | error | yielded_to_pipeline
     missing_docs: list[str] = field(default_factory=list)
     doc_id: str | None = None
     doc_url: str | None = None
@@ -1107,6 +1135,7 @@ class PipelineResult:
     republish_summary: dict[str, Any] | None = None
     rhodes_due_diligence_update: dict[str, Any] | None = None
     rhodes_report_event: dict[str, Any] | None = None
+    locationos_mcp_resume: dict[str, Any] | None = None
     steps: list[StepResult] = field(default_factory=list)
 
 
@@ -1283,6 +1312,7 @@ def _attach_result_metadata(run: PipelineRun, result: PipelineResult) -> None:
     run.republish_summary = result.republish_summary
     run.rhodes_due_diligence_update = result.rhodes_due_diligence_update
     run.rhodes_report_event = result.rhodes_report_event
+    run.locationos_mcp_resume = result.locationos_mcp_resume
 
 
 def _get_payload_error(result: dict[str, Any]) -> str | None:
@@ -2215,6 +2245,8 @@ def _record_rhodes_due_diligence_update_step(
     *,
     site_id: str,
     report_data: dict[str, Any],
+    due_diligence_write_mode: str = "api",
+    locationos_mcp_write_completed: bool = False,
 ) -> None:
     started_at, started_monotonic = recorder.start()
     fields = _build_due_diligence_update_fields(
@@ -2222,7 +2254,27 @@ def _record_rhodes_due_diligence_update_step(
         result,
         completed_at=recorder.started_at,
     )
-    update_status = update_rhodes_due_diligence(site_id=site_id, fields=fields)
+    if due_diligence_write_mode == "mcp_assisted" and locationos_mcp_write_completed:
+        update_status = _verify_locationos_mcp_due_diligence_update(
+            site_id=site_id,
+            fields=fields,
+        )
+    else:
+        update_status = update_rhodes_due_diligence(site_id=site_id, fields=fields)
+        if (
+            due_diligence_write_mode == "mcp_assisted"
+            and _due_diligence_update_needs_locationos_mcp(update_status)
+        ):
+            update_status = {
+                **update_status,
+                LOCATIONOS_MCP_WRITE_REQUEST_KEY: _build_locationos_mcp_write_request(
+                    run_id=recorder.run_id,
+                    site_title=result.site_title,
+                    site_id=site_id,
+                    fields=fields,
+                    error=str(update_status.get("error") or ""),
+                ),
+            }
     result.rhodes_due_diligence_update = update_status
     artifact = ArtifactRef(
         kind="rhodes_due_diligence",
@@ -2270,6 +2322,192 @@ def _record_rhodes_due_diligence_update_step(
     )
 
 
+def _verify_locationos_mcp_due_diligence_update(
+    *,
+    site_id: str,
+    fields: dict[str, Any],
+) -> dict[str, Any]:
+    readback_status = verify_rhodes_due_diligence_fields(site_id=site_id, fields=fields)
+    base = {
+        "rhodes_site_id": site_id.strip(),
+        "updated_fields": sorted(fields),
+        "write_mode": "locationos_mcp",
+        "mcp_write_completed": True,
+    }
+    if readback_status.get("status") == "verified":
+        return {
+            **base,
+            "status": "updated",
+            "reason": "locationos_mcp_readback_verified",
+            "readback": readback_status.get("readback"),
+        }
+    return {
+        **base,
+        "status": "failed",
+        "reason": "locationos_mcp_readback_failed",
+        "error": str(readback_status.get("error") or readback_status.get("reason") or ""),
+        "readback": readback_status,
+    }
+
+
+def _due_diligence_update_needs_locationos_mcp(update_status: dict[str, Any]) -> bool:
+    if update_status.get("status") != "failed":
+        return False
+    return "elicitation_unsupported" in json.dumps(update_status, default=str).lower()
+
+
+def _build_locationos_mcp_write_request(
+    *,
+    run_id: str,
+    site_title: str,
+    site_id: str,
+    fields: dict[str, Any],
+    error: str,
+) -> dict[str, Any]:
+    arguments: dict[str, Any] = {"siteId": site_id.strip()}
+    for key in sorted(fields):
+        arguments[key] = fields[key]
+    return {
+        "status": "pending",
+        "server": "locationos",
+        "tool": "updateDueDiligence",
+        "reason": "updateDueDiligence requires OAuth-backed LocationOS MCP elicitation",
+        "error": error,
+        "site_id": site_id.strip(),
+        "site_title": site_title,
+        "run_id": run_id,
+        "arguments": arguments,
+        "readback": {
+            "server": "locationos",
+            "tool": "getSite",
+            "arguments": {"siteId": site_id.strip()},
+            "verify_fields": sorted(fields),
+        },
+        "resume": {
+            "condition": (
+                "Run updateDueDiligence through the user's OAuth-backed "
+                "locationos MCP, approve the Aerie card if prompted, then rerun "
+                "the emitted manifest-bound resume command."
+            )
+        },
+    }
+
+
+def _locationos_mcp_write_request_from_result(
+    result: PipelineResult,
+) -> dict[str, Any] | None:
+    update_status = result.rhodes_due_diligence_update
+    if not isinstance(update_status, dict):
+        return None
+    request = update_status.get(LOCATIONOS_MCP_WRITE_REQUEST_KEY)
+    return request if isinstance(request, dict) else None
+
+
+def _build_locationos_mcp_resume_payload(
+    *,
+    recorder: _RunRecorder,
+    result: PipelineResult,
+    agent_result: dict[str, Any],
+    site_id: str,
+    drive_folder_url: str,
+    owner_user_id: str,
+    owner_email: str,
+    p1_name: str | None,
+) -> dict[str, Any] | None:
+    request = _locationos_mcp_write_request_from_result(result)
+    render_input = agent_result.get("render_input")
+    if request is None or not isinstance(render_input, dict):
+        return None
+    prepared_report_data = agent_result.get("prepared_report_data")
+    if not isinstance(prepared_report_data, dict):
+        prepared_report_data = _report_data_from_trace(result.trace)
+    report_metadata = agent_result.get("report_metadata")
+    return {
+        "schema_version": LOCATIONOS_MCP_RESUME_SCHEMA_VERSION,
+        "source_run_id": recorder.run_id,
+        "site_id": site_id.strip(),
+        "site_title": result.site_title,
+        "drive_folder_url": drive_folder_url,
+        "owner_user_id": owner_user_id,
+        "owner_email": owner_email,
+        "p1_name": p1_name or "",
+        "locationos_mcp_write_request": request,
+        "render_input": render_input,
+        "prepared_report_data": prepared_report_data,
+        "report_metadata": report_metadata if isinstance(report_metadata, dict) else {},
+        "missing_docs": list(result.missing_docs),
+        "source_event": result.source_event,
+        "open_questions": list(result.open_questions),
+        "closed_open_questions": list(result.closed_open_questions),
+        "trace_url": result.trace_url or "",
+    }
+
+
+def _locationos_mcp_resume_fields(
+    resume_payload: dict[str, Any],
+) -> tuple[str, dict[str, Any], str | None]:
+    request = resume_payload.get("locationos_mcp_write_request")
+    if not isinstance(request, dict):
+        return "", {}, "Manifest resume payload is missing locationos_mcp_write_request"
+    arguments = request.get("arguments")
+    if not isinstance(arguments, dict):
+        return "", {}, "LocationOS MCP write request is missing arguments"
+    site_id = str(arguments.get("siteId") or resume_payload.get("site_id") or "").strip()
+    if not site_id:
+        return "", {}, "LocationOS MCP write request is missing siteId"
+    fields = {str(key): value for key, value in arguments.items() if key != "siteId"}
+    if not fields:
+        return site_id, {}, "LocationOS MCP write request has no due diligence fields"
+    return site_id, fields, None
+
+
+def _record_locationos_mcp_resume_readback_step(
+    recorder: _RunRecorder,
+    result: PipelineResult,
+    *,
+    site_id: str,
+    fields: dict[str, Any],
+) -> None:
+    started_at, started_monotonic = recorder.start()
+    update_status = _verify_locationos_mcp_due_diligence_update(
+        site_id=site_id,
+        fields=fields,
+    )
+    result.rhodes_due_diligence_update = update_status
+    artifact = ArtifactRef(
+        kind="rhodes_due_diligence",
+        name="Rhodes due diligence MCP readback",
+        metadata=update_status,
+    )
+    if update_status.get("status") == "updated":
+        recorder.record(
+            DUE_DILIGENCE_UPDATE_STEP,
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[artifact],
+        )
+        return
+    message = str(
+        update_status.get("error")
+        or update_status.get("reason")
+        or "LocationOS MCP due diligence readback failed"
+    )
+    recorder.record(
+        DUE_DILIGENCE_UPDATE_STEP,
+        started_at,
+        started_monotonic,
+        "failed",
+        error=_pipeline_error(
+            recorder.run_id,
+            DUE_DILIGENCE_UPDATE_STEP,
+            "locationos_mcp_readback_failed",
+            message,
+        ),
+        artifacts=[artifact],
+    )
+
+
 def _build_due_diligence_update_fields(
     report_data: dict[str, Any],
     result: PipelineResult,
@@ -2288,7 +2526,7 @@ def _build_due_diligence_update_fields(
             fields["ddReportLink"] = doc_url
 
     for source_key, rhodes_key in _DUE_DILIGENCE_REPORT_FIELD_MAP:
-        value = _clean_due_diligence_value(flat.get(source_key))
+        value = _clean_due_diligence_field_value(rhodes_key, flat.get(source_key))
         if value is not None:
             fields[rhodes_key] = value
 
@@ -2297,6 +2535,17 @@ def _build_due_diligence_update_fields(
         fields["recommendation"] = recommendation
 
     return fields
+
+
+def _clean_due_diligence_field_value(rhodes_key: str, value: Any) -> Any:
+    cleaned = _clean_due_diligence_value(value)
+    if cleaned is None:
+        return None
+    if rhodes_key in _DUE_DILIGENCE_SCORE_FIELD_KEYS:
+        return _normalize_due_diligence_score_value(cleaned)
+    if rhodes_key in _DUE_DILIGENCE_NUMERIC_FIELD_KEYS:
+        return _normalize_due_diligence_numeric_value(cleaned)
+    return cleaned
 
 
 def _aliased_report_data(report_data: dict[str, Any]) -> dict[str, Any]:
@@ -2344,6 +2593,70 @@ def _clean_due_diligence_value(value: Any) -> Any:
     if isinstance(value, bool | int | float):
         return value
     return None
+
+
+def _normalize_due_diligence_score_value(value: Any) -> int | None:
+    """Normalize report-facing score text to LocationOS score enum values."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value in {1, 2, 3} else None
+    if isinstance(value, float):
+        if value.is_integer():
+            numeric = int(value)
+            return numeric if numeric in {1, 2, 3} else None
+        return None
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip().lower()
+    if not text:
+        return None
+    if text in {"1", "2", "3"}:
+        return int(text)
+    try:
+        parsed_score = float(text)
+    except ValueError:
+        parsed_score = None
+    if parsed_score is not None and parsed_score.is_integer():
+        score = int(parsed_score)
+        return score if score in {1, 2, 3} else None
+    for label, score in _DUE_DILIGENCE_SCORE_LABELS.items():
+        if label in text:
+            return score
+    return None
+
+
+def _normalize_due_diligence_numeric_value(value: Any) -> int | float | None:
+    """Normalize LocationOS numeric fields without guessing at ranges or gaps."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if (
+        any(marker in lowered for marker in ("not found", "pending", "unknown", "tbd"))
+        or "-" in text
+        or " to " in lowered
+    ):
+        return None
+
+    compact = text.replace("$", "").replace(",", "").strip()
+    if compact.upper().endswith("USD"):
+        compact = compact[:-3].strip()
+    if not _DUE_DILIGENCE_NUMBER_RE.fullmatch(compact):
+        return None
+
+    parsed = float(compact)
+    return int(parsed) if parsed.is_integer() else parsed
 
 
 def _explicit_due_diligence_recommendation(flat_report_data: dict[str, Any]) -> str | None:
@@ -2576,6 +2889,373 @@ def _record_republish_candidate_event_step(
     )
 
 
+def resume_locationos_mcp_write_from_manifest(
+    run_id: str,
+    *,
+    settings: Settings | None = None,
+    gc: GoogleClient | None = None,
+) -> PipelineResult:
+    """Resume a blocked MCP-assisted SOR handoff without regenerating DD data."""
+
+    try:
+        manifest = load_run_manifest(run_id)
+    except Exception as exc:  # noqa: BLE001 - CLI should return structured failure
+        return PipelineResult(
+            site_title="",
+            status="error",
+            error=f"Unable to load run manifest {run_id}: {exc}",
+        )
+
+    resume_payload = manifest.get("locationos_mcp_resume")
+    site_title_source = (
+        resume_payload.get("site_title")
+        if isinstance(resume_payload, dict)
+        else manifest.get("site_title")
+    )
+    site_title = str(site_title_source or "").strip() or str(
+        manifest.get("site_title") or run_id
+    )
+    site_id_source = (
+        resume_payload.get("site_id")
+        if isinstance(resume_payload, dict)
+        else manifest.get("site_id")
+    )
+    site_id = str(site_id_source or "").strip()
+    recorder = _RunRecorder(site_title, site_id=site_id or None)
+    base_result = PipelineResult(site_title=site_title, status="report_data_prepared")
+
+    if not isinstance(resume_payload, dict):
+        started_at, started_monotonic = recorder.start()
+        recorder.record(
+            "locationos_mcp.resume_load",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "locationos_mcp.resume_load",
+                "locationos_mcp_resume_missing",
+                f"Run manifest {run_id} does not contain a LocationOS MCP resume payload",
+                retryable=False,
+            ),
+        )
+        base_result.status = "error"
+        base_result.error = (
+            f"Run manifest {run_id} does not contain a LocationOS MCP resume payload"
+        )
+        return _finalize_pipeline_result(base_result, recorder, gc=gc)
+
+    base_result.locationos_mcp_resume = resume_payload
+    base_result.missing_docs = _string_list(resume_payload.get("missing_docs"))
+    base_result.source_event = (
+        resume_payload.get("source_event")
+        if isinstance(resume_payload.get("source_event"), dict)
+        else None
+    )
+    base_result.open_questions = _dict_list(resume_payload.get("open_questions"))
+    base_result.closed_open_questions = _dict_list(
+        resume_payload.get("closed_open_questions")
+    )
+    base_result.trace_url = str(resume_payload.get("trace_url") or "")
+
+    source_run_id = str(resume_payload.get("source_run_id") or run_id)
+    started_at, started_monotonic = recorder.start()
+    if resume_payload.get("schema_version") != LOCATIONOS_MCP_RESUME_SCHEMA_VERSION:
+        recorder.record(
+            "locationos_mcp.resume_load",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "locationos_mcp.resume_load",
+                "locationos_mcp_resume_schema_unsupported",
+                "Run manifest LocationOS MCP resume payload has an unsupported schema",
+                retryable=False,
+            ),
+        )
+        base_result.status = "error"
+        base_result.error = "Unsupported LocationOS MCP resume payload schema"
+        return _finalize_pipeline_result(base_result, recorder, gc=gc)
+
+    render_input = resume_payload.get("render_input")
+    if not isinstance(render_input, dict):
+        recorder.record(
+            "locationos_mcp.resume_load",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "locationos_mcp.resume_load",
+                "locationos_mcp_resume_render_input_missing",
+                "Run manifest LocationOS MCP resume payload is missing render_input",
+                retryable=False,
+            ),
+        )
+        base_result.status = "error"
+        base_result.error = "LocationOS MCP resume payload is missing render_input"
+        return _finalize_pipeline_result(base_result, recorder, gc=gc)
+
+    readback_site_id, fields, fields_error = _locationos_mcp_resume_fields(
+        resume_payload
+    )
+    if fields_error:
+        recorder.record(
+            "locationos_mcp.resume_load",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "locationos_mcp.resume_load",
+                "locationos_mcp_resume_arguments_invalid",
+                fields_error,
+                retryable=False,
+            ),
+        )
+        base_result.status = "error"
+        base_result.error = fields_error
+        return _finalize_pipeline_result(base_result, recorder, gc=gc)
+
+    if readback_site_id and readback_site_id != recorder.site_id:
+        recorder.site_id = readback_site_id
+
+    recorder.record(
+        "locationos_mcp.resume_load",
+        started_at,
+        started_monotonic,
+        "succeeded",
+        artifacts=[
+            ArtifactRef(
+                kind="manifest",
+                name=f"{source_run_id}.json",
+                metadata={
+                    "source_run_id": source_run_id,
+                    "resume_schema": LOCATIONOS_MCP_RESUME_SCHEMA_VERSION,
+                },
+            )
+        ],
+    )
+
+    _record_locationos_mcp_resume_readback_step(
+        recorder,
+        base_result,
+        site_id=readback_site_id,
+        fields=fields,
+    )
+    if _due_diligence_update_failed(base_result):
+        base_result.error = str(
+            (base_result.rhodes_due_diligence_update or {}).get("error")
+            or "LocationOS MCP readback failed"
+        )
+        return _finalize_pipeline_result(
+            base_result,
+            recorder,
+            gc=gc,
+            drive_folder_url=str(resume_payload.get("drive_folder_url") or ""),
+        )
+
+    agent_result: dict[str, Any] = {
+        "render_input": render_input,
+        "prepared_report_data": resume_payload.get("prepared_report_data")
+        if isinstance(resume_payload.get("prepared_report_data"), dict)
+        else {},
+        "report_metadata": resume_payload.get("report_metadata")
+        if isinstance(resume_payload.get("report_metadata"), dict)
+        else {},
+        "trace": None,
+    }
+    started_at, started_monotonic = recorder.start()
+    render_result, render_error = _render_prepared_dd_report(agent_result)
+    if render_result is None:
+        recorder.record(
+            "report.render",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "report.render",
+                "report_render_failed",
+                render_error or "DD report render failed",
+            ),
+        )
+        base_result.status = "generation_failed"
+        base_result.error = render_error or "DD report render failed"
+        return _finalize_pipeline_result(
+            base_result,
+            recorder,
+            gc=gc,
+            drive_folder_url=str(resume_payload.get("drive_folder_url") or ""),
+        )
+
+    document = render_result["document"]
+    doc_id = str(document.get("id") or "")
+    doc_url = str(document.get("url") or "")
+    document_role = str(document.get("role") or "active")
+    recorder.record(
+        "report.render",
+        started_at,
+        started_monotonic,
+        "succeeded",
+        artifacts=[
+            ArtifactRef(
+                kind="google_doc",
+                name="DD report",
+                uri=doc_url,
+                drive_file_id=doc_id,
+            )
+        ],
+    )
+
+    effective_settings = settings or get_settings()
+    owner_user_id = str(resume_payload.get("owner_user_id") or "")
+    owner_email = str(resume_payload.get("owner_email") or "")
+    drive_folder_url = str(resume_payload.get("drive_folder_url") or "")
+
+    if document_role == "candidate":
+        candidate_result = PipelineResult(
+            site_title=site_title,
+            status="republish_candidate_created",
+            missing_docs=list(base_result.missing_docs),
+            doc_id=doc_id,
+            doc_url=doc_url,
+            source_event=base_result.source_event,
+            open_questions=list(base_result.open_questions),
+            closed_open_questions=list(base_result.closed_open_questions),
+            rhodes_due_diligence_update=base_result.rhodes_due_diligence_update,
+            locationos_mcp_resume=resume_payload,
+        )
+        guard = render_result.get("republish_guard")
+        if isinstance(guard, dict):
+            candidate_result.republish_summary = {
+                "overwrite_guard": guard,
+                "outstanding_vendor_docs": candidate_result.missing_docs,
+            }
+        _record_republish_candidate_event_step(
+            recorder,
+            effective_settings,
+            candidate_result,
+            site_id=readback_site_id,
+            owner_user_id=owner_user_id,
+            owner_email=owner_email,
+        )
+        return _finalize_pipeline_result(
+            candidate_result,
+            recorder,
+            gc=gc,
+            drive_folder_url=drive_folder_url,
+        )
+
+    started_at, started_monotonic = recorder.start()
+    completeness, completeness_result = _check_generated_report(site_title, doc_id, doc_url)
+    if completeness_result is not None:
+        validation_code = "report_validation_error"
+        if completeness_result.status != "error":
+            validation_code = "report_validation_failed"
+        recorder.record(
+            "report.validate",
+            started_at,
+            started_monotonic,
+            "failed",
+            error=_pipeline_error(
+                recorder.run_id,
+                "report.validate",
+                validation_code,
+                completeness_result.error
+                or f"{len(completeness_result.unresolved_tokens)} unresolved token(s)",
+            ),
+            artifacts=[
+                ArtifactRef(
+                    kind="google_doc",
+                    name="DD report",
+                    uri=doc_url,
+                    drive_file_id=doc_id,
+                )
+            ],
+        )
+        completeness_result.missing_docs = list(base_result.missing_docs)
+        completeness_result.source_event = base_result.source_event
+        completeness_result.open_questions = list(base_result.open_questions)
+        completeness_result.closed_open_questions = list(base_result.closed_open_questions)
+        completeness_result.rhodes_due_diligence_update = (
+            base_result.rhodes_due_diligence_update
+        )
+        completeness_result.locationos_mcp_resume = resume_payload
+        return _finalize_pipeline_result(
+            completeness_result,
+            recorder,
+            gc=gc,
+            drive_folder_url=drive_folder_url,
+        )
+    assert completeness is not None
+    recorder.record(
+        "report.validate",
+        started_at,
+        started_monotonic,
+        "succeeded",
+        artifacts=[
+            ArtifactRef(
+                kind="google_doc",
+                name="DD report",
+                uri=doc_url,
+                drive_file_id=doc_id,
+            )
+        ],
+    )
+
+    final_result = PipelineResult(
+        site_title=site_title,
+        status="report_created",
+        missing_docs=list(base_result.missing_docs),
+        doc_id=doc_id,
+        doc_url=doc_url,
+        pending_count=completeness.get("pending_section_count", 0),
+        source_event=base_result.source_event,
+        open_questions=list(base_result.open_questions),
+        closed_open_questions=list(base_result.closed_open_questions),
+        rhodes_due_diligence_update=base_result.rhodes_due_diligence_update,
+        locationos_mcp_resume=resume_payload,
+    )
+    _record_rhodes_report_event_step(
+        recorder,
+        effective_settings,
+        final_result,
+        site_id=readback_site_id,
+        owner_user_id=owner_user_id,
+        owner_email=owner_email,
+    )
+    _record_email_step(
+        recorder,
+        effective_settings,
+        site_title,
+        doc_url,
+        owner_email or None,
+        is_update=final_result.source_event is not None,
+        open_question_count=len(final_result.open_questions),
+        full_report_inputs_present=not final_result.missing_docs,
+    )
+    return _finalize_pipeline_result(
+        final_result,
+        recorder,
+        gc=gc,
+        drive_folder_url=drive_folder_url,
+    )
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
 def _dd_report_event_frequency_cap(
     event: Any,
     *,
@@ -2766,11 +3446,17 @@ def process_site_pipeline(
     # inputs (e.g. raycon_scenario.json) have just landed. All other gates
     # — vendor gate, missing required docs — still apply.
     force_regenerate: bool = False,
+    due_diligence_write_mode: str = "api",
+    locationos_mcp_write_completed: bool = False,
 ) -> PipelineResult:
     """Full single-site pipeline: readiness -> report generation -> completeness -> email gate.
 
     Returns a PipelineResult describing what happened.
     """
+    if due_diligence_write_mode not in LOCATIONOS_MCP_WRITE_MODES:
+        raise ValueError(f"Unsupported due diligence write mode: {due_diligence_write_mode}")
+    if locationos_mcp_write_completed and due_diligence_write_mode != "mcp_assisted":
+        raise ValueError("--mcp-write-completed requires due_diligence_write_mode=mcp_assisted")
     recorder = _RunRecorder(site_title, site_id=site_id)
     rhodes_owner_context: dict[str, Any] | None = None
     initial_report_fields: dict[str, Any] = {}
@@ -3162,17 +3848,34 @@ def process_site_pipeline(
             prepared_result,
             site_id=recorder.site_id or site_id or "",
             report_data=_report_data_from_trace(trace),
+            due_diligence_write_mode=due_diligence_write_mode,
+            locationos_mcp_write_completed=locationos_mcp_write_completed,
         )
         pre_render_due_diligence_update = prepared_result.rhodes_due_diligence_update
         if _due_diligence_update_failed(prepared_result):
-            _record_rhodes_report_event_step(
-                recorder,
-                settings,
-                prepared_result,
-                site_id=recorder.site_id or site_id or "",
-                owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
-                owner_email=p1_email or "",
-            )
+            if _locationos_mcp_write_request_from_result(prepared_result) is not None:
+                prepared_result.status = LOCATIONOS_MCP_WRITE_REQUIRED_STATUS
+                prepared_result.locationos_mcp_resume = (
+                    _build_locationos_mcp_resume_payload(
+                        recorder=recorder,
+                        result=prepared_result,
+                        agent_result=agent_result,
+                        site_id=recorder.site_id or site_id or "",
+                        drive_folder_url=drive_folder_url,
+                        owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+                        owner_email=p1_email or "",
+                        p1_name=p1_name,
+                    )
+                )
+            else:
+                _record_rhodes_report_event_step(
+                    recorder,
+                    settings,
+                    prepared_result,
+                    site_id=recorder.site_id or site_id or "",
+                    owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+                    owner_email=p1_email or "",
+                )
             return _finalize_pipeline_result(
                 prepared_result,
                 recorder,
@@ -3271,6 +3974,8 @@ def process_site_pipeline(
                 candidate_result,
                 site_id=recorder.site_id or site_id or "",
                 report_data=_report_data_from_trace(trace),
+                due_diligence_write_mode=due_diligence_write_mode,
+                locationos_mcp_write_completed=locationos_mcp_write_completed,
             )
         else:
             candidate_result.rhodes_due_diligence_update = pre_render_due_diligence_update
@@ -3384,6 +4089,8 @@ def process_site_pipeline(
             final_result,
             site_id=recorder.site_id or site_id or "",
             report_data=_report_data_from_trace(trace),
+            due_diligence_write_mode=due_diligence_write_mode,
+            locationos_mcp_write_completed=locationos_mcp_write_completed,
         )
     else:
         final_result.rhodes_due_diligence_update = pre_render_due_diligence_update

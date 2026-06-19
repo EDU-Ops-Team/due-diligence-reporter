@@ -38,17 +38,30 @@ def test_workflow_dispatch_site_inputs_are_not_interpolated_in_shell() -> None:
     for workflow in (
         "daily-dd-check.yml",
         "vendor-doc-republish-sweep.yml",
+        "ad-hoc-ddr-run.yml",
         "reprocess-mislabeled.yml",
         "drive-rhodes-reconciliation.yml",
         "portfolio-automation-gaps.yml",
     ):
         shell = "\n".join(_run_blocks(_workflow_text(workflow)))
         assert "${{ inputs.site }}" not in shell
+        assert "${{ inputs.run_id }}" not in shell
         assert "${{ inputs.since }}" not in shell
         assert "${{ inputs.max_results }}" not in shell
         assert "${{ inputs.max_sites }}" not in shell
         assert "${{ inputs.include_clean }}" not in shell
         assert "${{ inputs.trigger_remediation }}" not in shell
+        assert "${{ inputs.mode }}" not in shell
+        assert "${{ inputs.address }}" not in shell
+        assert "${{ inputs.site_id }}" not in shell
+        assert "${{ inputs.slug }}" not in shell
+        assert "${{ inputs.drive_folder_url }}" not in shell
+        assert "${{ inputs.notify }}" not in shell
+        assert "${{ inputs.sor_write_mode }}" not in shell
+        assert "${{ inputs.mcp_write_completed }}" not in shell
+        assert "${{ inputs.apply_source_sweep }}" not in shell
+        assert "${{ inputs.source_type }}" not in shell
+        assert "${{ inputs.fingerprint }}" not in shell
 
 
 def test_workflows_do_not_use_generic_ops_skill_chat_webhook() -> None:
@@ -94,6 +107,7 @@ def test_publish_to_mcp_hive_cancels_stale_mutating_runs() -> None:
         '"Daily DD Check"',
         '"RayCon Follow-up"',
         '"Drive Rhodes Reconciliation"',
+        '"Ad-Hoc DDR Run"',
     ):
         assert workflow in text
 
@@ -102,6 +116,42 @@ def test_long_running_mutating_workflows_have_timeouts() -> None:
     assert "timeout-minutes: 60" in _workflow_text("inbox-scan.yml")
     assert "timeout-minutes: 60" in _workflow_text("vendor-doc-republish-sweep.yml")
     assert "timeout-minutes: 60" in _workflow_text("drive-rhodes-reconciliation.yml")
+    assert "timeout-minutes: 60" in _workflow_text("ad-hoc-ddr-run.yml")
+
+
+def test_ad_hoc_ddr_workflow_dispatch_uses_runner_and_opt_in_notifications() -> None:
+    text = _workflow_text("ad-hoc-ddr-run.yml")
+    shell = "\n".join(_run_blocks(text))
+
+    assert "name: Ad-Hoc DDR Run" in text
+    assert "mode:" in text
+    assert "source-republish" in text
+    assert "resume-mcp-write" in text
+    assert "INPUT_MODE: ${{ inputs.mode }}" in text
+    assert "INPUT_NOTIFY: ${{ inputs.notify }}" in text
+    assert "INPUT_RUN_ID: ${{ inputs.run_id }}" in text
+    assert "INPUT_SOR_WRITE_MODE: ${{ inputs.sor_write_mode }}" in text
+    assert "INPUT_MCP_WRITE_COMPLETED: ${{ inputs.mcp_write_completed }}" in text
+    assert "INPUT_APPLY_SOURCE_SWEEP: ${{ inputs.apply_source_sweep }}" in text
+    assert "Generation secrets not required for this ad-hoc DDR mode" in text
+    assert 'if [ "$INPUT_MODE" = "resume-mcp-write" ]; then' in shell
+    assert 'ARGS=("$INPUT_MODE" --run-id "$INPUT_RUN_ID")' in shell
+    assert 'echo "site is required for $INPUT_MODE"' in shell
+    assert 'ARGS=("$INPUT_MODE" --site "$INPUT_SITE")' in shell
+    assert 'if [ "$INPUT_MODE" != "resume-mcp-write" ]; then' in shell
+    assert 'if [ "${INPUT_NOTIFY:-false}" = "true" ]; then' in shell
+    assert "ARGS+=(--notify)" in shell
+    assert 'if [ "${INPUT_SOR_WRITE_MODE:-api}" != "api" ]; then' in shell
+    assert 'ARGS+=(--sor-write-mode "$INPUT_SOR_WRITE_MODE")' in shell
+    assert 'if [ "${INPUT_MCP_WRITE_COMPLETED:-false}" = "true" ]; then' in shell
+    assert "ARGS+=(--mcp-write-completed)" in shell
+    assert 'if [ "${INPUT_APPLY_SOURCE_SWEEP:-false}" = "true" ]; then' in shell
+    assert "ARGS+=(--apply)" in shell
+    assert "ARGS+=(--dry-run)" in shell
+    assert 'uv run ddr run-site "${ARGS[@]}" | tee ad-hoc-ddr-run.json' in shell
+    assert "actions/upload-artifact@v4" in text
+    assert "DD_REPUBLISH_STATE_STORE" in text
+    assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing" not in text
 
 
 def test_drive_rhodes_reconciliation_uploads_dashboard_telemetry() -> None:
@@ -184,6 +234,7 @@ def test_dd_republish_workflows_can_enable_firestore_state_without_required_secr
         "inbox-scan.yml",
         "raycon-followup.yml",
         "vendor-doc-republish-sweep.yml",
+        "ad-hoc-ddr-run.yml",
     ):
         text = _workflow_text(workflow)
 
@@ -240,6 +291,7 @@ def test_alpha_capacity_workflows_fail_fast_without_openai_key() -> None:
         "raycon-followup.yml",
         "vendor-doc-republish-sweep.yml",
         "daily-dd-check.yml",
+        "ad-hoc-ddr-run.yml",
         "publish-to-mcp-hive.yml",
     ):
         text = _workflow_text(workflow)
@@ -257,6 +309,7 @@ def test_locationos_workflows_accept_preferred_or_legacy_secret() -> None:
         "publish-to-mcp-hive.yml",
         "raycon-followup.yml",
         "vendor-doc-republish-sweep.yml",
+        "ad-hoc-ddr-run.yml",
     ):
         text = _workflow_text(workflow)
 
@@ -271,6 +324,7 @@ def test_locationos_workflows_accept_preferred_or_legacy_secret() -> None:
         "publish-to-mcp-hive.yml",
         "raycon-followup.yml",
         "vendor-doc-republish-sweep.yml",
+        "ad-hoc-ddr-run.yml",
     ):
         text = _workflow_text(workflow)
 

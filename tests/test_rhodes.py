@@ -11,6 +11,7 @@ from due_diligence_reporter.rhodes import (
     map_ddr_doc_type_to_rhodes,
     register_rhodes_document_for_upload,
     update_rhodes_due_diligence,
+    verify_rhodes_due_diligence_fields,
 )
 
 
@@ -906,6 +907,25 @@ def test_update_rhodes_due_diligence_verifies_readback() -> None:
         ),
         ("get_site", {"site_id": "SITE1", "slug": ""}),
     ]
+
+
+def test_verify_rhodes_due_diligence_fields_uses_readback_without_write() -> None:
+    client = FakeRhodesClient(
+        site={"_id": "SITE1", "dueDiligence": {"status": "complete", "foCapacity": "36"}}
+    )
+
+    result = verify_rhodes_due_diligence_fields(
+        site_id="SITE1",
+        fields={"status": "complete", "foCapacity": "36"},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "verified"
+    assert result["readback"] == {
+        "status": "verified",
+        "verified_fields": ["foCapacity", "status"],
+    }
+    assert client.calls == [("get_site", {"site_id": "SITE1", "slug": ""})]
 
 
 def test_update_rhodes_due_diligence_fails_when_readback_mismatches() -> None:
