@@ -1,4 +1,0 @@
-interface:
-  display_name: "DDR Ad-Hoc Runner"
-  short_description: "Run DDR ad hoc without BrainTrust"
-  default_prompt: "Use $ddr-adhoc-runner to run or diagnose a DDR for a single site without BrainTrust."

@@ -1,30 +1,16 @@
 # Due Diligence Reporter Handoff
 
-## 2026-06-19 - DDR Ad-Hoc Runner Skill Updated for Authenticated LocationOS Completion
+## 2026-06-19 - DDR Ad-Hoc Runner Skill Source Corrected
 
-- Updated `.agents/skills/ddr-adhoc-runner/SKILL.md` so future operators and
-  agents can follow the full authenticated LocationOS completion path, not just
-  the original manifest-bound resume.
-- The skill now requires `codex mcp list` / `codex mcp get locationos --json`,
-  a safe live `getSite` proof for the intended target, and fallback to a fresh
-  Codex process/thread or duplicate-safe interactive OAuth MCP helper when the
-  current desktop thread has no callable `mcp__locationos` tools.
-- Added the authenticated completion checklist for
-  `locationos_mcp_write_required`: exact target read, exact manifest payload,
-  OAuth-backed `updateDueDiligence`, Aerie/LocationOS confirmation, `getSite`
-  field readback, manifest-bound `resume-mcp-write`, failed-step inspection,
-  confirmation-gated `addNote` recovery, and `ddReportLink` update/readback.
-- Added completion criteria requiring due-diligence readback, DD Report Drive
-  artifact, report-event note readback or explicit blocker, `ddReportLink`
-  readback when a report URL exists, and Beads/handoff state for residual code
-  gaps.
-- Added Ops-Skills-compatible `metadata.scorecard.themeId` and counts-only
-  usage telemetry instructions required by the available skill linter.
-- Validation: `node C:\Users\foote\.claude\Work\repos\Ops-Skills\scripts\skill-lint.mjs`
-  passed against an isolated `ddr-adhoc-runner` copy under
-  `C:\tmp\ddr-skill-lint-root-20260619-final`. Running the same linter from
-  `.agents` still fails only on the unrelated `beads` skill, which lacks
-  Ops-Skills telemetry and scorecard metadata.
+- The durable `ddr-adhoc-runner` skill update belongs in
+  `EDU-Ops-Team/Ops-Skills`, not this DDR application repo's project-local
+  `.agents` folder.
+- Removed the project-local `.agents/skills/ddr-adhoc-runner` files from this
+  DDR PR branch after opening the corrected Ops-Skills PR:
+  `https://github.com/EDU-Ops-Team/Ops-Skills/pull/110`.
+- This DDR branch remains scoped to the application/runtime support for the
+  ad-hoc runner, LocationOS MCP-assisted write/resume path, workflow dispatch,
+  and tests.
 
 ## 2026-06-18 - 35 E 62nd St OAuth LocationOS Write Completed, Report Rendered
 
