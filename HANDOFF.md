@@ -1,5 +1,38 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-23 - Document-first DDR fallback for Rhodes readback blockers
+
+- Branch/worktree: `codex/ddr-document-first-on-readback` at
+  `C:\tmp\ddr-document-first-on-readback`, based on
+  `origin/codex/ddr-adhoc-locationos-runner`.
+- Added `uv run ddr run-site ... --document-first-on-sor-blocker`.
+- The flag is opt-in. Default behavior remains SOR-first: prepared DD data
+  stops before render when `rhodes.due_diligence_update` fails.
+- With the flag, eligible Rhodes/LocationOS SOR blockers can continue to
+  `report.render`, return `status=report_created` and `doc_url`, preserve
+  `failed_step=rhodes.due_diligence_update`, and keep any
+  `locationos_mcp_write_request` / resume metadata in the run payload.
+- Field mismatches, invalid/rejected writes, missing source data, missing Drive
+  folder, Google OAuth failures, and render failures still block the run.
+- Ops-Skills companion docs in
+  `C:\tmp\ops-skills-ddr-runner-self-service` now instruct agents to report
+  this as "DD Report Google Doc created; Rhodes/SOR readback pending" until
+  live Rhodes readback verifies fields, report-event note, and
+  `dueDiligence.ddReportLink`.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_sor_failure_stops_before_rendering_ddr tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_document_first_on_readback_blocker_creates_ddr tests\test_report_pipeline.py::TestProcessSitePipeline::test_document_first_sor_blocker_rejects_field_mismatch tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_mcp_assisted_sor_failure_emits_write_request tests\test_adhoc_runner.py::test_force_regenerate_suppresses_notifications_and_calls_pipeline tests\test_adhoc_runner.py::test_force_regenerate_mcp_assisted_surfaces_write_request_and_resume_command -q --basetemp C:\tmp\ddr-document-first-on-readback-tests
+uv run ruff check src\due_diligence_reporter\adhoc_runner.py src\due_diligence_reporter\report_pipeline.py tests\test_adhoc_runner.py tests\test_report_pipeline.py
+uv run mypy -m due_diligence_reporter.adhoc_runner -m due_diligence_reporter.report_pipeline
+git diff --check
+```
+
+Results: focused pytest passed (`6 passed`), Ruff passed, mypy passed for the
+touched modules, and `git diff --check` passed with only normal LF-to-CRLF
+warnings for edited files.
+
 ## 2026-06-19 - DDR Ad-Hoc Runner Skill Source Corrected
 
 - The durable `ddr-adhoc-runner` skill update belongs in

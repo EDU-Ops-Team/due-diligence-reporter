@@ -121,6 +121,7 @@ def test_force_regenerate_suppresses_notifications_and_calls_pipeline(
         "force-regenerate",
         "--site",
         "Alpha Keller",
+        "--document-first-on-sor-blocker",
     ])
 
     exit_code, payload = adhoc_runner.run_site_command(args)
@@ -130,9 +131,13 @@ def test_force_regenerate_suppresses_notifications_and_calls_pipeline(
     assert os.environ["DD_REPORT_EMAIL_RECIPIENTS"] == ""
     assert payload["status"] == "report_created"
     assert payload["notifications"] == "suppressed"
+    assert payload["document_first_on_sor_blocker"] is True
     assert payload["run_id"] == "run-1"
     assert process_site_pipeline.call_args.kwargs["force_regenerate"] is True
     assert process_site_pipeline.call_args.kwargs["site_id"] == "SITE1"
+    assert (
+        process_site_pipeline.call_args.kwargs["document_first_on_sor_blocker"] is True
+    )
     post_pipeline_result.assert_not_called()
 
 
@@ -202,6 +207,7 @@ def test_force_regenerate_mcp_assisted_surfaces_write_request_and_resume_command
     assert exit_code == 0
     assert payload["status"] == "locationos_mcp_write_required"
     assert payload["sor_write_mode"] == "mcp-assisted"
+    assert payload["document_first_on_sor_blocker"] is False
     assert payload["locationos_mcp_write_request"]["arguments"] == {
         "siteId": "SITE1",
         "status": "complete",
@@ -221,6 +227,9 @@ def test_force_regenerate_mcp_assisted_surfaces_write_request_and_resume_command
     )
     assert (
         process_site_pipeline.call_args.kwargs["locationos_mcp_write_completed"] is False
+    )
+    assert (
+        process_site_pipeline.call_args.kwargs["document_first_on_sor_blocker"] is False
     )
 
 

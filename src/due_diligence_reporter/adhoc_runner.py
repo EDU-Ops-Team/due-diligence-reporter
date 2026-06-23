@@ -172,6 +172,15 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
             "write by readback and continue instead of calling updateDueDiligence."
         ),
     )
+    parser.add_argument(
+        "--document-first-on-sor-blocker",
+        action="store_true",
+        help=(
+            "Create the Google Doc when a Rhodes/LocationOS write or readback "
+            "blocker is recorded, leaving the SOR step pending instead of "
+            "stopping before render."
+        ),
+    )
 
 
 def _apply_notification_policy(*, notify: bool) -> None:
@@ -264,6 +273,7 @@ def _run_pipeline_mode(
         force_regenerate=force_regenerate,
         due_diligence_write_mode=_pipeline_sor_write_mode(args),
         locationos_mcp_write_completed=bool(args.mcp_write_completed),
+        document_first_on_sor_blocker=bool(args.document_first_on_sor_blocker),
     )
     if args.notify and settings.google_chat_webhook_url:
         post_pipeline_result(
@@ -277,6 +287,7 @@ def _run_pipeline_mode(
         notify=args.notify,
         sor_write_mode=args.sor_write_mode,
         mcp_write_completed=bool(args.mcp_write_completed),
+        document_first_on_sor_blocker=bool(args.document_first_on_sor_blocker),
     )
     _attach_mcp_resume_command(payload, args=args, site=site)
     payload["resolved_site_context"] = site
@@ -464,6 +475,9 @@ def _source_sweep_pipeline_runner(args: argparse.Namespace, pipeline_runner: Any
     def _runner(*runner_args: Any, **runner_kwargs: Any) -> Any:
         runner_kwargs["due_diligence_write_mode"] = _pipeline_sor_write_mode(args)
         runner_kwargs["locationos_mcp_write_completed"] = False
+        runner_kwargs["document_first_on_sor_blocker"] = bool(
+            args.document_first_on_sor_blocker
+        )
         return pipeline_runner(*runner_args, **runner_kwargs)
 
     return _runner
@@ -476,6 +490,7 @@ def _result_payload(
     notify: bool,
     sor_write_mode: str,
     mcp_write_completed: bool,
+    document_first_on_sor_blocker: bool = False,
 ) -> dict[str, Any]:
     from due_diligence_reporter.pipeline_contracts import next_operator_action
 
@@ -484,6 +499,7 @@ def _result_payload(
         "notifications": "enabled" if notify else "suppressed",
         "sor_write_mode": sor_write_mode,
         "mcp_write_completed": mcp_write_completed,
+        "document_first_on_sor_blocker": document_first_on_sor_blocker,
         "site_title": getattr(result, "site_title", ""),
         "status": getattr(result, "status", ""),
         "run_id": getattr(result, "run_id", None),

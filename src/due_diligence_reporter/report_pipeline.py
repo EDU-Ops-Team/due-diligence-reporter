@@ -2677,6 +2677,30 @@ def _due_diligence_update_failed(result: PipelineResult) -> bool:
     return isinstance(update_status, dict) and update_status.get("status") == "failed"
 
 
+def _due_diligence_update_is_document_first_blocker(result: PipelineResult) -> bool:
+    update_status = result.rhodes_due_diligence_update
+    if not isinstance(update_status, dict) or update_status.get("status") != "failed":
+        return False
+
+    if _locationos_mcp_write_request_from_result(result) is not None:
+        return True
+
+    reason = str(update_status.get("reason") or "").strip().lower()
+    readback = update_status.get("readback")
+    readback_reason = ""
+    if isinstance(readback, dict):
+        if readback.get("mismatches"):
+            return False
+        readback_reason = str(readback.get("reason") or "").strip().lower()
+        if readback_reason == "field_mismatch":
+            return False
+
+    if reason in {"readback_failed", "locationos_mcp_readback_failed"}:
+        return True
+
+    return readback_reason in {"get_site_failed", "readback_failed"}
+
+
 def _due_diligence_update_was_written(update_status: dict[str, Any] | None) -> bool:
     return isinstance(update_status, dict) and update_status.get("status") == "updated"
 
@@ -3448,6 +3472,7 @@ def process_site_pipeline(
     force_regenerate: bool = False,
     due_diligence_write_mode: str = "api",
     locationos_mcp_write_completed: bool = False,
+    document_first_on_sor_blocker: bool = False,
 ) -> PipelineResult:
     """Full single-site pipeline: readiness -> report generation -> completeness -> email gate.
 
@@ -3814,6 +3839,7 @@ def process_site_pipeline(
     )
 
     pre_render_due_diligence_update: dict[str, Any] | None = None
+    pre_render_locationos_mcp_resume: dict[str, Any] | None = None
     if agent_result.get("prepared"):
         prepared_result = PipelineResult(
             site_title=site_title,
@@ -3853,35 +3879,56 @@ def process_site_pipeline(
         )
         pre_render_due_diligence_update = prepared_result.rhodes_due_diligence_update
         if _due_diligence_update_failed(prepared_result):
-            if _locationos_mcp_write_request_from_result(prepared_result) is not None:
-                prepared_result.status = LOCATIONOS_MCP_WRITE_REQUIRED_STATUS
-                prepared_result.locationos_mcp_resume = (
-                    _build_locationos_mcp_resume_payload(
-                        recorder=recorder,
-                        result=prepared_result,
-                        agent_result=agent_result,
+            if (
+                document_first_on_sor_blocker
+                and _due_diligence_update_is_document_first_blocker(prepared_result)
+            ):
+                if _locationos_mcp_write_request_from_result(prepared_result) is not None:
+                    prepared_result.locationos_mcp_resume = (
+                        _build_locationos_mcp_resume_payload(
+                            recorder=recorder,
+                            result=prepared_result,
+                            agent_result=agent_result,
+                            site_id=recorder.site_id or site_id or "",
+                            drive_folder_url=drive_folder_url,
+                            owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+                            owner_email=p1_email or "",
+                            p1_name=p1_name,
+                        )
+                    )
+                    pre_render_locationos_mcp_resume = prepared_result.locationos_mcp_resume
+            else:
+                if _locationos_mcp_write_request_from_result(prepared_result) is not None:
+                    prepared_result.status = LOCATIONOS_MCP_WRITE_REQUIRED_STATUS
+                    prepared_result.locationos_mcp_resume = (
+                        _build_locationos_mcp_resume_payload(
+                            recorder=recorder,
+                            result=prepared_result,
+                            agent_result=agent_result,
+                            site_id=recorder.site_id or site_id or "",
+                            drive_folder_url=drive_folder_url,
+                            owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
+                            owner_email=p1_email or "",
+                            p1_name=p1_name,
+                        )
+                    )
+                else:
+                    _record_rhodes_report_event_step(
+                        recorder,
+                        settings,
+                        prepared_result,
                         site_id=recorder.site_id or site_id or "",
-                        drive_folder_url=drive_folder_url,
                         owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
                         owner_email=p1_email or "",
-                        p1_name=p1_name,
                     )
-                )
-            else:
-                _record_rhodes_report_event_step(
-                    recorder,
-                    settings,
+                return _finalize_pipeline_result(
                     prepared_result,
-                    site_id=recorder.site_id or site_id or "",
-                    owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
-                    owner_email=p1_email or "",
+                    recorder,
+                    gc=gc,
+                    drive_folder_url=drive_folder_url,
                 )
-            return _finalize_pipeline_result(
-                prepared_result,
-                recorder,
-                gc=gc,
-                drive_folder_url=drive_folder_url,
-            )
+        if pre_render_locationos_mcp_resume is None:
+            pre_render_locationos_mcp_resume = prepared_result.locationos_mcp_resume
 
         started_at, started_monotonic = recorder.start()
         render_result, render_error = _render_prepared_dd_report(agent_result)
@@ -3979,6 +4026,7 @@ def process_site_pipeline(
             )
         else:
             candidate_result.rhodes_due_diligence_update = pre_render_due_diligence_update
+            candidate_result.locationos_mcp_resume = pre_render_locationos_mcp_resume
         _record_republish_candidate_event_step(
             recorder,
             settings,
@@ -4094,6 +4142,7 @@ def process_site_pipeline(
         )
     else:
         final_result.rhodes_due_diligence_update = pre_render_due_diligence_update
+        final_result.locationos_mcp_resume = pre_render_locationos_mcp_resume
     due_diligence_update_failed = _due_diligence_update_failed(final_result)
 
     _record_rhodes_report_event_step(

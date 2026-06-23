@@ -17,6 +17,7 @@ from due_diligence_reporter.report_pipeline import (
     _build_due_diligence_update_fields,
     _canonicalize_site_tool_input,
     _dd_report_event_frequency_cap,
+    _due_diligence_update_is_document_first_blocker,
     _extract_source_read_issues,
     _merge_cached_report_fields,
     check_site_readiness_direct,
@@ -1524,6 +1525,133 @@ class TestProcessSitePipeline:
         assert not any(step.step == "report.render" for step in result.steps)
         note_body = mock_rhodes_note.call_args.kwargs["body"]
         assert "Rhodes due diligence update: failed to update foCapacity, status" in note_body
+
+    @patch(
+        "due_diligence_reporter.report_pipeline.utc_now_iso",
+        return_value="2026-06-17T15:00:00+00:00",
+    )
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_prepared_data_document_first_on_readback_blocker_creates_ddr(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_route_tool_call_sync,
+        mock_completeness,
+        mock_update_due_diligence,
+        mock_rhodes_note,
+        _mock_utc_now,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-17T15:00:00+00:00",
+            events=[],
+            final_report_data={"due_diligence.fastest_open_capacity": "36"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "prepared": True,
+            "trace": trace,
+            "render_input": {
+                "site_name": "Alpha Keller",
+                "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
+                "report_data": {"due_diligence.fastest_open_capacity": "36"},
+            },
+            "prepared_report_data": {"due_diligence.fastest_open_capacity": "36"},
+            "report_metadata": {"completeness": {"stage": "complete"}},
+        }
+        mock_update_due_diligence.return_value = {
+            "status": "failed",
+            "reason": "readback_failed",
+            "error": "LocationOS readback failed: get_site_failed",
+            "updated_fields": ["foCapacity", "status"],
+            "readback": {
+                "status": "failed",
+                "reason": "get_site_failed",
+                "error": "agent readback unavailable",
+            },
+        }
+        mock_route_tool_call_sync.return_value = {
+            "status": "success",
+            "document": {
+                "id": "doc123",
+                "url": "https://docs.google.com/document/d/doc123",
+                "role": "active",
+            },
+            "normalized_report_data": {"due_diligence.fastest_open_capacity": "36"},
+        }
+
+        async def fake_completeness(_doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        }
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            p1_email="owner@example.com",
+            site_id="SITE1",
+            document_first_on_sor_blocker=True,
+        )
+
+        assert result.status == "report_created"
+        assert result.doc_url == "https://docs.google.com/document/d/doc123"
+        assert result.failed_step == "rhodes.due_diligence_update"
+        mock_route_tool_call_sync.assert_called_once()
+        render_step = next(step for step in result.steps if step.step == "report.render")
+        assert render_step.status == "succeeded"
+        update_step = next(
+            step for step in result.steps if step.step == "rhodes.due_diligence_update"
+        )
+        assert update_step.status == "failed"
+        note_body = mock_rhodes_note.call_args.kwargs["body"]
+        assert "Action needed: Review the failed Rhodes due diligence write and DD report." in (
+            note_body
+        )
+        assert "Rhodes due diligence update: failed to update foCapacity, status" in (
+            note_body
+        )
+        assert not any(step.step == "notify.email" for step in result.steps)
+
+    def test_document_first_sor_blocker_rejects_field_mismatch(self):
+        result = PipelineResult(
+            site_title="Alpha Keller",
+            status="report_data_prepared",
+            rhodes_due_diligence_update={
+                "status": "failed",
+                "reason": "readback_failed",
+                "readback": {
+                    "status": "failed",
+                    "reason": "field_mismatch",
+                    "mismatches": [
+                        {"field": "status", "expected": "complete", "actual": "pending"}
+                    ],
+                },
+            },
+        )
+
+        assert _due_diligence_update_is_document_first_blocker(result) is False
 
     @patch(
         "due_diligence_reporter.report_pipeline.utc_now_iso",
