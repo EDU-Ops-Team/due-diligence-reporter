@@ -174,11 +174,13 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--document-first-on-sor-blocker",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
             "Create the Google Doc when a Rhodes/LocationOS write or readback "
             "blocker is recorded, leaving the SOR step pending instead of "
-            "stopping before render."
+            "stopping before render. Default enabled for ad-hoc runs; use "
+            "--no-document-first-on-sor-blocker for strict SOR-first behavior."
         ),
     )
 
@@ -274,6 +276,12 @@ def _run_pipeline_mode(
         due_diligence_write_mode=_pipeline_sor_write_mode(args),
         locationos_mcp_write_completed=bool(args.mcp_write_completed),
         document_first_on_sor_blocker=bool(args.document_first_on_sor_blocker),
+        launch_context=_pipeline_launch_context(
+            args,
+            site=site,
+            force_regenerate=force_regenerate,
+            source_event=source_event,
+        ),
     )
     if args.notify and settings.google_chat_webhook_url:
         post_pipeline_result(
@@ -471,6 +479,41 @@ def _pipeline_sor_write_mode(args: argparse.Namespace) -> str:
     return "mcp_assisted" if args.sor_write_mode == "mcp-assisted" else "api"
 
 
+def _pipeline_launch_context(
+    args: argparse.Namespace,
+    *,
+    site: dict[str, str],
+    force_regenerate: bool,
+    source_event: dict[str, Any] | None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "schema_version": "ddr_run_site_launch.v1",
+        "mode": args.mode,
+        "site": site["site_title"],
+        "address": site["site_address"],
+        "site_id": site["site_id"],
+        "slug": args.slug,
+        "drive_folder_url": site["drive_folder_url"],
+        "notify": bool(args.notify),
+        "sor_write_mode": args.sor_write_mode,
+        "mcp_write_completed": bool(args.mcp_write_completed),
+        "document_first_on_sor_blocker": bool(args.document_first_on_sor_blocker),
+        "force_regenerate": force_regenerate,
+    }
+    if source_event is not None:
+        context["source_event"] = dict(source_event)
+        context.update({
+            "source_type": args.source_type,
+            "fingerprint": args.fingerprint,
+            "doc_type": args.doc_type,
+            "drive_file_id": args.drive_file_id,
+            "drive_modified_time": args.drive_modified_time,
+            "file_name": args.file_name,
+            "drive_url": args.drive_url,
+        })
+    return context
+
+
 def _source_sweep_pipeline_runner(args: argparse.Namespace, pipeline_runner: Any) -> Any:
     def _runner(*runner_args: Any, **runner_kwargs: Any) -> Any:
         runner_kwargs["due_diligence_write_mode"] = _pipeline_sor_write_mode(args)
@@ -513,6 +556,7 @@ def _result_payload(
         "unresolved_tokens": getattr(result, "unresolved_tokens", []),
         "pending_count": getattr(result, "pending_count", 0),
         "error": getattr(result, "error", None),
+        "warnings": _result_warnings(result),
         "rhodes_due_diligence_update": getattr(
             result,
             "rhodes_due_diligence_update",
@@ -528,9 +572,6 @@ def _result_payload(
             getattr(result, "steps", []) or []
         ),
     }
-    mcp_request = _locationos_mcp_write_request(result)
-    if mcp_request is not None:
-        payload["locationos_mcp_write_request"] = mcp_request
     resume_payload = getattr(result, "locationos_mcp_resume", None)
     if isinstance(resume_payload, dict):
         payload["locationos_mcp_resume"] = {
@@ -539,7 +580,27 @@ def _result_payload(
             "site_id": resume_payload.get("site_id"),
             "site_title": resume_payload.get("site_title"),
         }
+    mcp_request = _locationos_mcp_write_request(result)
+    if mcp_request is not None:
+        payload["locationos_mcp_write_request"] = mcp_request
     return payload
+
+
+def _result_warnings(result: Any) -> list[str]:
+    warnings: list[str] = []
+    doc_url = str(getattr(result, "doc_url", "") or "").strip()
+    update_status = getattr(result, "rhodes_due_diligence_update", None)
+    if doc_url and isinstance(update_status, dict) and update_status.get("status") == "failed":
+        warnings.append(
+            "DD Report Google Doc created; Rhodes/LocationOS dueDiligence "
+            "write or readback is pending manual verification."
+        )
+    event_status = getattr(result, "rhodes_report_event", None)
+    if isinstance(event_status, dict) and event_status.get("severity") == "warning":
+        warning = str(event_status.get("warning") or "").strip()
+        if warning:
+            warnings.append(warning)
+    return warnings
 
 
 def _locationos_mcp_write_request(result: Any) -> dict[str, Any] | None:
@@ -558,6 +619,8 @@ def _attach_mcp_resume_command(
 ) -> None:
     request = payload.get("locationos_mcp_write_request")
     if not isinstance(request, dict):
+        return
+    if not isinstance(payload.get("locationos_mcp_resume"), dict):
         return
     command = _mcp_resume_command(request=request, fallback_run_id=payload.get("run_id"))
     request["resume_command"] = command

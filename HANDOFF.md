@@ -1,5 +1,91 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-23 - DDR Doc/SOR/event-note sequencing
+
+- Branch/worktree: `codex/ddr-document-first-on-readback` at
+  `C:\tmp\ddr-document-first-on-readback`.
+- Feedback addressed: Jarvis Brandon's cloud agent runs could prepare DDR data
+  but usefulness was blocked when SOR readback or Rhodes event note paths
+  failed. Greg asked that ad-hoc DDR runs always produce the Google Doc when
+  render succeeds, always attempt LocationOS/Rhodes `dueDiligence`, and then
+  try the Rhodes report-event note as a warning-only side effect if it fails.
+- Prepared-data runs now render/validate the DD Report before the default
+  Rhodes due-diligence write. That write now includes `ddReportLink` because
+  the Doc URL exists before `rhodes.due_diligence_update` runs.
+- `--document-first-on-sor-blocker` is now the default for ad-hoc runs via
+  `argparse.BooleanOptionalAction`; `--no-document-first-on-sor-blocker` keeps
+  the strict pre-render SOR-first path for debugging.
+- Failed due-diligence writes/readbacks after Doc creation keep
+  `status=report_created`, `doc_url`, and
+  `failed_step=rhodes.due_diligence_update`, plus a top-level warning in the
+  ad-hoc runner payload.
+- Failed Rhodes report-event note writes now record `rhodes.report_event` as a
+  skipped warning with `rhodes_report_event.severity=warning` and manual-check
+  metadata. They no longer set `failed_step` when the Doc and dueDiligence
+  steps succeeded.
+- Post-Doc `locationos_mcp_write_request` payloads no longer get an automatic
+  `mcp_resume_command`; the request tells the operator to run
+  OAuth-backed `updateDueDiligence` and verify `getSite`. Strict pre-render
+  MCP handoffs still emit the manifest-bound resume command.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_renders_ddr_before_updating_sor tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_sor_failure_still_renders_ddr_and_warns tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_document_first_on_readback_blocker_creates_ddr tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_mcp_assisted_sor_failure_creates_doc_and_emits_write_request tests\test_report_pipeline.py::TestProcessSitePipeline::test_prepared_data_mcp_completed_verifies_readback_after_rendering tests\test_report_pipeline.py::TestProcessSitePipeline::test_report_event_note_failure_is_warning_after_doc_and_sor tests\test_report_pipeline.py::TestProcessSitePipeline::test_report_created_still_attempts_event_note_when_prior_warning_exists tests\test_adhoc_runner.py::test_force_regenerate_suppresses_notifications_and_calls_pipeline tests\test_adhoc_runner.py::test_force_regenerate_mcp_assisted_surfaces_write_request_and_resume_command tests\test_adhoc_runner.py::test_result_payload_surfaces_manual_check_warnings -q --basetemp C:\tmp\ddr-doc-sor-note-focused
+uv run pytest tests\test_ddr_cli.py tests\test_adhoc_runner.py -q --basetemp C:\tmp\ddr-doc-sor-note-cli
+uv run pytest tests\test_pipeline_contracts.py tests\test_report_pipeline.py -q --basetemp C:\tmp\ddr-doc-sor-note-pipeline
+uv run ruff check src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\adhoc_runner.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\pipeline_contracts.py tests\test_ddr_cli.py tests\test_adhoc_runner.py tests\test_report_pipeline.py
+uv run mypy --explicit-package-bases src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\adhoc_runner.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\pipeline_contracts.py
+uv run ddr run-site first-publish --help
+git diff --check
+```
+
+Results: focused sequencing pytest passed (`10 passed`), CLI/runner pytest
+passed (`25 passed`), pipeline/contract pytest passed (`89 passed`), Ruff
+passed, mypy passed for the touched source files, help shows
+`--document-first-on-sor-blocker | --no-document-first-on-sor-blocker`, and
+`git diff --check` passed with only normal LF-to-CRLF warnings.
+
+## 2026-06-23 - Actionable report.generate 529 recovery
+
+- Branch/worktree: `codex/ddr-document-first-on-readback` at
+  `C:\tmp\ddr-document-first-on-readback`.
+- Feedback addressed: Alpha Boca Raton 5000 T-Rex Ave first-publish reached
+  partial-report readiness, then three suppressed runs failed at
+  `report.generate` with Anthropic `529 overloaded_error`; the emitted
+  `ddr rerun --run-id ... --step report.generate` action only printed a
+  command and did not execute recovery.
+- `run-site` now persists a secret-free `launch_context` in the run manifest:
+  mode, site/address/site ID/slug/Drive folder URL, notification preference,
+  SOR write mode, MCP-completed flag, document-first flag, force-regenerate
+  flag, and source-republish metadata when applicable.
+- `ddr rerun --run-id <run_id> --step report.generate` now executes the saved
+  `ddr run-site ...` launch context. It supports bounded retries with
+  `--max-attempts` and `--backoff-seconds`, and only repeats attempts for
+  retryable generation-provider failures such as Anthropic 529/overload/rate
+  limit/timeouts.
+- Legacy manifests without `launch_context` get a best-effort inferred
+  first-publish retry from `site_title` and `site_id`. If the manifest lacks
+  enough site context, the command exits with an actionable error instead of
+  printing a no-op.
+- This does not change the document-first SOR fallback. The 529 failure occurs
+  before DD facts are prepared or any Rhodes/SOR write/render step starts, so
+  the fix is an executable generation retry path.
+
+Validation:
+
+```powershell
+uv run pytest tests\test_ddr_cli.py tests\test_adhoc_runner.py -q --basetemp C:\tmp\ddr-529-rerun-tests
+uv run pytest tests\test_pipeline_contracts.py tests\test_report_pipeline.py -q --basetemp C:\tmp\ddr-529-pipeline-tests
+uv run ruff check src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\adhoc_runner.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\pipeline_contracts.py tests\test_ddr_cli.py tests\test_adhoc_runner.py
+uv run mypy --explicit-package-bases src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\adhoc_runner.py src\due_diligence_reporter\report_pipeline.py src\due_diligence_reporter\pipeline_contracts.py
+```
+
+Results: focused CLI/runner pytest passed (`24 passed`), pipeline contract and
+report pipeline pytest passed (`88 passed`), Ruff passed, and mypy passed for
+the touched source files. Plain `uv run mypy src/` still hits the existing
+duplicate-module mapping issue in `vendor_doc_sweep.py`.
+
 ## 2026-06-23 - Document-first DDR fallback for Rhodes readback blockers
 
 - Branch/worktree: `codex/ddr-document-first-on-readback` at

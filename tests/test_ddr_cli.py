@@ -79,6 +79,143 @@ def test_ddr_trace_failed_only_filters_successes(monkeypatch, tmp_path, capsys) 
     assert "readiness.check" not in out
 
 
+def test_ddr_rerun_report_generate_executes_launch_context(monkeypatch, capsys) -> None:
+    manifest = {
+        "run_id": "run-1",
+        "site_title": "Alpha Keller",
+        "steps": [{"step": "report.generate", "status": "failed"}],
+        "launch_context": {
+            "schema_version": "ddr_run_site_launch.v1",
+            "mode": "force-regenerate",
+            "site": "Alpha Keller",
+            "address": "123 Main St, Keller, TX",
+            "site_id": "SITE1",
+            "slug": "",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site",
+            "notify": False,
+            "sor_write_mode": "mcp-assisted",
+            "mcp_write_completed": False,
+            "document_first_on_sor_blocker": True,
+            "force_regenerate": True,
+        },
+    }
+    calls = []
+
+    def fake_run_site_command(args):
+        calls.append(args)
+        return 0, {"status": "report_created", "run_id": "run-2"}
+
+    monkeypatch.setattr(ddr_cli, "load_run_manifest", lambda run_id: manifest)
+    monkeypatch.setattr(ddr_cli, "run_site_command", fake_run_site_command)
+
+    exit_code = ddr_cli.main([
+        "rerun",
+        "--run-id",
+        "run-1",
+        "--step",
+        "report.generate",
+        "--max-attempts",
+        "1",
+    ])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert json.loads(out[out.index("{"):]) == {
+        "run_id": "run-2",
+        "status": "report_created",
+    }
+    assert calls[0].mode == "force-regenerate"
+    assert calls[0].site == "Alpha Keller"
+    assert calls[0].site_id == "SITE1"
+    assert calls[0].drive_folder_url == "https://drive.google.com/drive/folders/site"
+    assert calls[0].sor_write_mode == "mcp-assisted"
+    assert calls[0].document_first_on_sor_blocker is True
+
+
+def test_ddr_rerun_retries_anthropic_529(monkeypatch) -> None:
+    manifest = {
+        "run_id": "run-1",
+        "site_title": "Alpha Keller",
+        "steps": [{"step": "report.generate", "status": "failed"}],
+        "launch_context": {
+            "schema_version": "ddr_run_site_launch.v1",
+            "mode": "first-publish",
+            "site": "Alpha Keller",
+            "address": "",
+            "site_id": "SITE1",
+            "drive_folder_url": "",
+            "notify": False,
+            "sor_write_mode": "api",
+            "mcp_write_completed": False,
+            "document_first_on_sor_blocker": False,
+        },
+    }
+    calls = []
+    sleeps = []
+
+    def fake_run_site_command(args):
+        calls.append(args)
+        if len(calls) == 1:
+            return 1, {
+                "status": "generation_failed",
+                "failed_step": "report.generate",
+                "error": "Anthropic 529 overloaded_error",
+            }
+        return 0, {"status": "report_created", "run_id": "run-2"}
+
+    monkeypatch.setattr(ddr_cli, "load_run_manifest", lambda run_id: manifest)
+    monkeypatch.setattr(ddr_cli, "run_site_command", fake_run_site_command)
+    monkeypatch.setattr(ddr_cli.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    exit_code = ddr_cli.main([
+        "rerun",
+        "--run-id",
+        "run-1",
+        "--step",
+        "report.generate",
+        "--max-attempts",
+        "2",
+        "--backoff-seconds",
+        "5",
+    ])
+
+    assert exit_code == 0
+    assert len(calls) == 2
+    assert sleeps == [5]
+
+
+def test_ddr_rerun_infers_first_publish_for_legacy_manifest(monkeypatch) -> None:
+    manifest = {
+        "run_id": "run-1",
+        "site_title": "Alpha Boca Raton 5000 T-Rex Ave",
+        "site_id": "k175pgrk93nrqx065f5fkhwk8h88sdy3",
+        "steps": [{"step": "report.generate", "status": "failed"}],
+    }
+    calls = []
+
+    def fake_run_site_command(args):
+        calls.append(args)
+        return 0, {"status": "report_created", "run_id": "run-2"}
+
+    monkeypatch.setattr(ddr_cli, "load_run_manifest", lambda run_id: manifest)
+    monkeypatch.setattr(ddr_cli, "run_site_command", fake_run_site_command)
+
+    exit_code = ddr_cli.main([
+        "rerun",
+        "--run-id",
+        "run-1",
+        "--step",
+        "report.generate",
+        "--max-attempts",
+        "1",
+    ])
+
+    assert exit_code == 0
+    assert calls[0].mode == "first-publish"
+    assert calls[0].site == "Alpha Boca Raton 5000 T-Rex Ave"
+    assert calls[0].site_id == "k175pgrk93nrqx065f5fkhwk8h88sdy3"
+
+
 def test_ddr_sir_review_add_records_issue(tmp_path, capsys) -> None:
     store = tmp_path / "sir-review-outcomes.jsonl"
 

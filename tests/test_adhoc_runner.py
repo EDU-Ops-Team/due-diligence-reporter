@@ -121,7 +121,6 @@ def test_force_regenerate_suppresses_notifications_and_calls_pipeline(
         "force-regenerate",
         "--site",
         "Alpha Keller",
-        "--document-first-on-sor-blocker",
     ])
 
     exit_code, payload = adhoc_runner.run_site_command(args)
@@ -138,6 +137,20 @@ def test_force_regenerate_suppresses_notifications_and_calls_pipeline(
     assert (
         process_site_pipeline.call_args.kwargs["document_first_on_sor_blocker"] is True
     )
+    assert process_site_pipeline.call_args.kwargs["launch_context"] == {
+        "schema_version": "ddr_run_site_launch.v1",
+        "mode": "force-regenerate",
+        "site": "Alpha Keller",
+        "address": "123 Main St, Keller, TX",
+        "site_id": "SITE1",
+        "slug": "",
+        "drive_folder_url": "https://drive.google.com/drive/folders/site",
+        "notify": False,
+        "sor_write_mode": "api",
+        "mcp_write_completed": False,
+        "document_first_on_sor_blocker": True,
+        "force_regenerate": True,
+    }
     post_pipeline_result.assert_not_called()
 
 
@@ -188,6 +201,12 @@ def test_force_regenerate_mcp_assisted_surfaces_write_request_and_resume_command
                 "error": "Error: elicitation_unsupported",
                 "locationos_mcp_write_request": request,
             },
+            locationos_mcp_resume={
+                "schema_version": "locationos_mcp_resume.v1",
+                "source_run_id": "run-1",
+                "site_id": "SITE1",
+                "site_title": "Alpha Keller",
+            },
         )
     )
     monkeypatch.setattr(
@@ -200,6 +219,7 @@ def test_force_regenerate_mcp_assisted_surfaces_write_request_and_resume_command
         "Alpha Keller",
         "--sor-write-mode",
         "mcp-assisted",
+        "--no-document-first-on-sor-blocker",
     ])
 
     exit_code, payload = adhoc_runner.run_site_command(args)
@@ -231,6 +251,37 @@ def test_force_regenerate_mcp_assisted_surfaces_write_request_and_resume_command
     assert (
         process_site_pipeline.call_args.kwargs["document_first_on_sor_blocker"] is False
     )
+
+
+def test_result_payload_surfaces_manual_check_warnings() -> None:
+    payload = adhoc_runner._result_payload(
+        PipelineResult(
+            site_title="Alpha Keller",
+            status="report_created",
+            doc_url="https://docs.google.com/document/d/doc123",
+            rhodes_due_diligence_update={
+                "status": "failed",
+                "reason": "readback_failed",
+            },
+            rhodes_report_event={
+                "status": "failed",
+                "severity": "warning",
+                "warning": "Rhodes event note was not verified; manually confirm.",
+            },
+        ),
+        mode="first-publish",
+        notify=False,
+        sor_write_mode="api",
+        mcp_write_completed=False,
+    )
+
+    assert payload["warnings"] == [
+        (
+            "DD Report Google Doc created; Rhodes/LocationOS dueDiligence "
+            "write or readback is pending manual verification."
+        ),
+        "Rhodes event note was not verified; manually confirm.",
+    ]
 
 
 def test_resume_mcp_write_calls_manifest_bound_resume(monkeypatch) -> None:

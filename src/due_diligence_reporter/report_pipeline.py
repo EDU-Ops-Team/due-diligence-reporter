@@ -1142,10 +1142,17 @@ class PipelineResult:
 class _RunRecorder:
     """Collect step results for one pipeline run."""
 
-    def __init__(self, site_title: str, site_id: str | None = None) -> None:
+    def __init__(
+        self,
+        site_title: str,
+        site_id: str | None = None,
+        *,
+        launch_context: dict[str, Any] | None = None,
+    ) -> None:
         self.run_id = make_run_id(site_title)
         self.site_title = site_title
         self.site_id = site_id
+        self.launch_context = launch_context
         self.started_at = utc_now_iso()
         self.steps: list[StepResult] = []
         self.sir_learning_review: dict[str, Any] | None = None
@@ -1192,6 +1199,7 @@ class _RunRecorder:
             ended_at=utc_now_iso(),
             final_status=final_status,
             steps=list(self.steps),
+            launch_context=self.launch_context,
             sir_learning_review=self.sir_learning_review,
             p1_dri_missing=self.p1_dri_missing,
         )
@@ -2273,6 +2281,8 @@ def _record_rhodes_due_diligence_update_step(
                     site_id=site_id,
                     fields=fields,
                     error=str(update_status.get("error") or ""),
+                    document_already_rendered=bool(result.doc_url),
+                    doc_url=result.doc_url or "",
                 ),
             }
     result.rhodes_due_diligence_update = update_status
@@ -2363,10 +2373,24 @@ def _build_locationos_mcp_write_request(
     site_id: str,
     fields: dict[str, Any],
     error: str,
+    document_already_rendered: bool = False,
+    doc_url: str = "",
 ) -> dict[str, Any]:
     arguments: dict[str, Any] = {"siteId": site_id.strip()}
     for key in sorted(fields):
         arguments[key] = fields[key]
+    resume_condition = (
+        "Run updateDueDiligence through the user's OAuth-backed "
+        "locationos MCP, approve the Aerie card if prompted, then rerun "
+        "the emitted manifest-bound resume command."
+    )
+    if document_already_rendered:
+        resume_condition = (
+            "Run updateDueDiligence through the user's OAuth-backed "
+            "locationos MCP, approve the Aerie card if prompted, then verify "
+            "the fields with getSite. No DDR resume is required because the "
+            "DD Report Google Doc already exists."
+        )
     return {
         "status": "pending",
         "server": "locationos",
@@ -2384,12 +2408,9 @@ def _build_locationos_mcp_write_request(
             "verify_fields": sorted(fields),
         },
         "resume": {
-            "condition": (
-                "Run updateDueDiligence through the user's OAuth-backed "
-                "locationos MCP, approve the Aerie card if prompted, then rerun "
-                "the emitted manifest-bound resume command."
-            )
+            "condition": resume_condition
         },
+        "dd_report_doc_url": doc_url.strip() if document_already_rendered else "",
     }
 
 
@@ -2727,31 +2748,6 @@ def _record_rhodes_report_event_step(
         missing_vendor_docs=result.missing_docs,
         due_diligence_update=result.rhodes_due_diligence_update,
     )
-    cap_status = None
-    if not _due_diligence_update_was_written(result.rhodes_due_diligence_update):
-        cap_status = _dd_report_event_frequency_cap(
-            event,
-            site_title=result.site_title,
-            current_run_id=recorder.run_id,
-            now=_parse_iso_datetime(recorder.started_at) or datetime.now(UTC),
-        )
-    if cap_status is not None:
-        result.rhodes_report_event = cap_status
-        artifact = ArtifactRef(
-            kind="rhodes_note",
-            name="DDR report AutomationEvent",
-            metadata=cap_status,
-        )
-        recorder.record(
-            "rhodes.report_event",
-            started_at,
-            started_monotonic,
-            "skipped",
-            skipped_reason=str(cap_status.get("message") or "frequency_cap"),
-            artifacts=[artifact],
-        )
-        return
-
     event_status, body = record_rhodes_automation_event(
         event,
         owner_user_id=owner_user_id,
@@ -2811,17 +2807,25 @@ def _record_rhodes_report_event_step(
     message = str(event_status.get("error") or event_status.get("reason") or "unknown")
     if should_alert_chat and chat_status in {"failed", "skipped"}:
         message = f"{message}; Google Chat fallback {chat_status}"
+    warning = (
+        "Rhodes event note was not verified; manually confirm the DD Report "
+        "Google Doc was produced and LocationOS/Rhodes dueDiligence fields "
+        "were completed."
+    )
+    event_status["severity"] = "warning"
+    event_status["warning"] = warning
+    event_status["manual_check"] = {
+        "dd_report_doc": result.doc_url or "",
+        "due_diligence_update": result.rhodes_due_diligence_update or {},
+        "reason": message,
+    }
+    artifact.metadata = event_status
     recorder.record(
         "rhodes.report_event",
         started_at,
         started_monotonic,
-        "failed",
-        error=_pipeline_error(
-            recorder.run_id,
-            "rhodes.report_event",
-            "rhodes_report_event_failed",
-            message,
-        ),
+        "skipped",
+        skipped_reason=warning,
         artifacts=[artifact],
     )
 
@@ -3472,7 +3476,8 @@ def process_site_pipeline(
     force_regenerate: bool = False,
     due_diligence_write_mode: str = "api",
     locationos_mcp_write_completed: bool = False,
-    document_first_on_sor_blocker: bool = False,
+    document_first_on_sor_blocker: bool = True,
+    launch_context: dict[str, Any] | None = None,
 ) -> PipelineResult:
     """Full single-site pipeline: readiness -> report generation -> completeness -> email gate.
 
@@ -3482,7 +3487,7 @@ def process_site_pipeline(
         raise ValueError(f"Unsupported due diligence write mode: {due_diligence_write_mode}")
     if locationos_mcp_write_completed and due_diligence_write_mode != "mcp_assisted":
         raise ValueError("--mcp-write-completed requires due_diligence_write_mode=mcp_assisted")
-    recorder = _RunRecorder(site_title, site_id=site_id)
+    recorder = _RunRecorder(site_title, site_id=site_id, launch_context=launch_context)
     rhodes_owner_context: dict[str, Any] | None = None
     initial_report_fields: dict[str, Any] = {}
 
@@ -3869,35 +3874,17 @@ def process_site_pipeline(
                 )
             ],
         )
-        _record_rhodes_due_diligence_update_step(
-            recorder,
-            prepared_result,
-            site_id=recorder.site_id or site_id or "",
-            report_data=_report_data_from_trace(trace),
-            due_diligence_write_mode=due_diligence_write_mode,
-            locationos_mcp_write_completed=locationos_mcp_write_completed,
-        )
-        pre_render_due_diligence_update = prepared_result.rhodes_due_diligence_update
-        if _due_diligence_update_failed(prepared_result):
-            if (
-                document_first_on_sor_blocker
-                and _due_diligence_update_is_document_first_blocker(prepared_result)
-            ):
-                if _locationos_mcp_write_request_from_result(prepared_result) is not None:
-                    prepared_result.locationos_mcp_resume = (
-                        _build_locationos_mcp_resume_payload(
-                            recorder=recorder,
-                            result=prepared_result,
-                            agent_result=agent_result,
-                            site_id=recorder.site_id or site_id or "",
-                            drive_folder_url=drive_folder_url,
-                            owner_user_id=_owner_user_id_from_context(rhodes_owner_context),
-                            owner_email=p1_email or "",
-                            p1_name=p1_name,
-                        )
-                    )
-                    pre_render_locationos_mcp_resume = prepared_result.locationos_mcp_resume
-            else:
+        if not document_first_on_sor_blocker:
+            _record_rhodes_due_diligence_update_step(
+                recorder,
+                prepared_result,
+                site_id=recorder.site_id or site_id or "",
+                report_data=_report_data_from_trace(trace),
+                due_diligence_write_mode=due_diligence_write_mode,
+                locationos_mcp_write_completed=locationos_mcp_write_completed,
+            )
+            pre_render_due_diligence_update = prepared_result.rhodes_due_diligence_update
+            if _due_diligence_update_failed(prepared_result):
                 if _locationos_mcp_write_request_from_result(prepared_result) is not None:
                     prepared_result.status = LOCATIONOS_MCP_WRITE_REQUIRED_STATUS
                     prepared_result.locationos_mcp_resume = (
@@ -3927,8 +3914,8 @@ def process_site_pipeline(
                     gc=gc,
                     drive_folder_url=drive_folder_url,
                 )
-        if pre_render_locationos_mcp_resume is None:
-            pre_render_locationos_mcp_resume = prepared_result.locationos_mcp_resume
+            if pre_render_locationos_mcp_resume is None:
+                pre_render_locationos_mcp_resume = prepared_result.locationos_mcp_resume
 
         started_at, started_monotonic = recorder.start()
         render_result, render_error = _render_prepared_dd_report(agent_result)
@@ -4338,10 +4325,29 @@ def _pipeline_observability_lines(result: PipelineResult) -> list[str]:
         lines.append(f"Manifest: {result.manifest_path}")
     if result.sir_review_status:
         lines.append(f"SIR review: {result.sir_review_status}")
+    report_event_warning = _rhodes_report_event_warning(result)
+    if report_event_warning:
+        lines.append(f"Warning: {report_event_warning}")
     action = next_operator_action(result.steps)
     if action:
         lines.append(f"Next action: {action}")
     return lines
+
+
+def _rhodes_report_event_warning(result: PipelineResult) -> str:
+    event_status = result.rhodes_report_event
+    if not isinstance(event_status, dict):
+        return ""
+    if event_status.get("severity") == "warning":
+        return str(event_status.get("warning") or "").strip()
+    status = str(event_status.get("status") or "").strip().lower()
+    if status in {"failed", "error"}:
+        return (
+            "Rhodes event note was not verified; manually confirm the DD Report "
+            "Google Doc was produced and LocationOS/Rhodes dueDiligence fields "
+            "were completed."
+        )
+    return ""
 
 
 def _republish_observability_lines(result: PipelineResult) -> list[str]:

@@ -136,6 +136,7 @@ class PipelineRun:
     ended_at: str | None
     final_status: str
     steps: list[StepResult]
+    launch_context: dict[str, Any] | None = None
     quality: RunQualityReport | None = None
     sir_learning_review: dict[str, Any] | None = None
     source_event: dict[str, Any] | None = None
@@ -158,6 +159,7 @@ class PipelineRun:
             "ended_at": self.ended_at,
             "final_status": self.final_status,
             "steps": [step.to_dict() for step in self.steps],
+            "launch_context": self.launch_context,
             "quality": self.quality.to_dict() if self.quality else None,
             "sir_learning_review": self.sir_learning_review,
             "source_event": self.source_event,

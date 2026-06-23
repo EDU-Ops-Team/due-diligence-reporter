@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 from typing import Any
 
-from .adhoc_runner import add_run_site_parser, run_site_command
+from .adhoc_runner import (
+    add_run_site_parser,
+    run_site_command,
+)
+from .adhoc_runner import (
+    build_parser as build_run_site_parser,
+)
 from .pipeline_manifest import load_run_manifest
 from .portfolio_automation_gaps import build_portfolio_automation_gap_snapshot
 from .review_execution import execute_ddr_review_requests
@@ -34,9 +41,11 @@ def main(argv: list[str] | None = None) -> int:
     trace_parser.add_argument("--run-id", required=True)
     trace_parser.add_argument("--failed-only", action="store_true")
 
-    rerun_parser = subparsers.add_parser("rerun", help="Print the step rerun command")
+    rerun_parser = subparsers.add_parser("rerun", help="Execute a supported step rerun")
     rerun_parser.add_argument("--run-id", required=True)
     rerun_parser.add_argument("--step", required=True)
+    rerun_parser.add_argument("--max-attempts", type=int, default=3)
+    rerun_parser.add_argument("--backoff-seconds", type=int, default=30)
 
     diagnose_parser = subparsers.add_parser("diagnose", help="Print diagnostic command")
     diagnose_parser.add_argument("--site", required=True)
@@ -113,7 +122,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "trace":
         _print_trace(load_run_manifest(args.run_id), failed_only=args.failed_only)
     elif args.command == "rerun":
-        _print_rerun(load_run_manifest(args.run_id), args.step)
+        return _execute_rerun(
+            load_run_manifest(args.run_id),
+            args.step,
+            max_attempts=args.max_attempts,
+            backoff_seconds=args.backoff_seconds,
+        )
     elif args.command == "diagnose":
         print(f"uv run ddr run-site diagnose --site \"{args.site}\"")
     elif args.command == "run-site":
@@ -164,6 +178,167 @@ def _print_rerun(manifest: dict[str, Any], step_name: str) -> None:
             print(step.get("rerun_command") or f"ddr rerun --run-id {manifest.get('run_id')} --step {step_name}")
             return
     print(f"Unknown step: {step_name}")
+
+
+_RETRYABLE_GENERATION_MARKERS = (
+    "529",
+    "overloaded_error",
+    "rate_limit",
+    "rate limit",
+    "429",
+    "timeout",
+    "temporarily",
+    "service unavailable",
+    "server overloaded",
+)
+
+
+def _execute_rerun(
+    manifest: dict[str, Any],
+    step_name: str,
+    *,
+    max_attempts: int,
+    backoff_seconds: int,
+) -> int:
+    if max_attempts < 1:
+        print("--max-attempts must be at least 1")
+        return 2
+    if _manifest_step(manifest, step_name) is None:
+        print(f"Unknown step: {step_name}")
+        return 2
+    if step_name != "report.generate":
+        print(
+            "Executable rerun is currently supported only for report.generate. "
+            f"Use the original workflow to retry {step_name}."
+        )
+        return 2
+
+    launch_context = _launch_context_for_report_generate(manifest)
+    if launch_context is None:
+        print(
+            "Run manifest is missing enough launch context to execute "
+            "report.generate recovery. Rerun the original ddr run-site command."
+        )
+        return 2
+
+    try:
+        run_site_argv = _run_site_argv_from_launch_context(launch_context)
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+
+    last_exit = 1
+    parser = build_run_site_parser()
+    for attempt in range(1, max_attempts + 1):
+        print(f"Rerun attempt {attempt}/{max_attempts}: ddr run-site {' '.join(run_site_argv)}")
+        parsed = parser.parse_args(run_site_argv)
+        exit_code, payload = run_site_command(parsed)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        last_exit = exit_code
+        if exit_code == 0:
+            return 0
+        if attempt == max_attempts or not _is_retryable_generation_payload(payload):
+            return exit_code
+        if backoff_seconds > 0:
+            print(f"Retryable generation failure; waiting {backoff_seconds}s before retry.")
+            time.sleep(backoff_seconds)
+    return last_exit
+
+
+def _manifest_step(manifest: dict[str, Any], step_name: str) -> dict[str, Any] | None:
+    for step in manifest.get("steps", []):
+        if isinstance(step, dict) and step.get("step") == step_name:
+            return step
+    return None
+
+
+def _launch_context_for_report_generate(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    launch_context = manifest.get("launch_context")
+    if isinstance(launch_context, dict):
+        return launch_context
+
+    site = _text(manifest.get("site_title"))
+    if not site:
+        return None
+    return {
+        "schema_version": "ddr_run_site_launch.inferred.v1",
+        "mode": "first-publish",
+        "site": site,
+        "site_id": _text(manifest.get("site_id")),
+        "address": "",
+        "drive_folder_url": "",
+        "notify": False,
+        "sor_write_mode": "api",
+        "mcp_write_completed": False,
+        "document_first_on_sor_blocker": False,
+    }
+
+
+def _run_site_argv_from_launch_context(context: dict[str, Any]) -> list[str]:
+    mode = _text(context.get("mode"))
+    if mode not in {"first-publish", "force-regenerate", "source-republish"}:
+        raise ValueError(f"Unsupported report.generate rerun mode: {mode or '(missing)'}")
+    site = _text(context.get("site") or context.get("site_title"))
+    if not site:
+        raise ValueError("Run manifest launch context is missing site")
+
+    argv = [mode, "--site", site]
+    _extend_optional_arg(argv, "--address", context.get("address") or context.get("site_address"))
+    _extend_optional_arg(argv, "--site-id", context.get("site_id"))
+    _extend_optional_arg(argv, "--slug", context.get("slug"))
+    _extend_optional_arg(argv, "--drive-folder-url", context.get("drive_folder_url"))
+
+    sor_write_mode = _text(context.get("sor_write_mode")) or "api"
+    if sor_write_mode not in {"api", "mcp-assisted"}:
+        raise ValueError(f"Unsupported SOR write mode in launch context: {sor_write_mode}")
+    if sor_write_mode != "api":
+        argv.extend(["--sor-write-mode", sor_write_mode])
+    if bool(context.get("mcp_write_completed")):
+        argv.append("--mcp-write-completed")
+    if bool(context.get("document_first_on_sor_blocker")):
+        argv.append("--document-first-on-sor-blocker")
+    if bool(context.get("notify")):
+        argv.append("--notify")
+
+    if mode == "source-republish":
+        source_event = context.get("source_event")
+        source = source_event if isinstance(source_event, dict) else context
+        source_type = _text(source.get("source_type"))
+        fingerprint = _text(source.get("fingerprint"))
+        if not source_type or not fingerprint:
+            raise ValueError(
+                "source-republish rerun launch context is missing source_type or fingerprint"
+            )
+        argv.extend(["--source-type", source_type, "--fingerprint", fingerprint])
+        for flag, key in (
+            ("--doc-type", "doc_type"),
+            ("--drive-file-id", "drive_file_id"),
+            ("--drive-modified-time", "drive_modified_time"),
+            ("--file-name", "file_name"),
+            ("--drive-url", "drive_url"),
+        ):
+            _extend_optional_arg(argv, flag, source.get(key))
+    return argv
+
+
+def _extend_optional_arg(argv: list[str], flag: str, value: Any) -> None:
+    text = _text(value)
+    if text:
+        argv.extend([flag, text])
+
+
+def _is_retryable_generation_payload(payload: dict[str, Any]) -> bool:
+    if _text(payload.get("status")) != "generation_failed":
+        return False
+    failed_step = _text(payload.get("failed_step"))
+    if failed_step and failed_step != "report.generate":
+        return False
+    error_text = json.dumps(payload.get("error") or payload, sort_keys=True).lower()
+    return any(marker in error_text for marker in _RETRYABLE_GENERATION_MARKERS)
+
+
+def _text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _handle_sir_review(args: argparse.Namespace) -> None:

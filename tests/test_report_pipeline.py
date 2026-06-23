@@ -1332,6 +1332,78 @@ class TestProcessSitePipeline:
         )
         assert update_step.status == "succeeded"
 
+    @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
+    @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.server.check_report_completeness")
+    @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
+    @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
+    def test_report_event_note_failure_is_warning_after_doc_and_sor(
+        self,
+        mock_readiness,
+        mock_agent,
+        mock_completeness,
+        mock_update_due_diligence,
+        mock_rhodes_note,
+    ):
+        mock_readiness.return_value = {
+            "sir_found": True,
+            "isp_found": True,
+            "inspection_found": True,
+            "report_exists": False,
+        }
+        trace = ReportTrace(
+            site_name="Alpha Keller",
+            started_at="2026-06-17T15:00:00+00:00",
+            events=[],
+            final_report_data={"exec.fastest_open_capacity": "36"},
+        )
+        mock_agent.return_value = {
+            "success": True,
+            "doc_id": "doc123",
+            "doc_url": "https://docs.google.com/document/d/doc123",
+            "trace": trace,
+        }
+
+        async def fake_completeness(_doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+        mock_update_due_diligence.return_value = {
+            "status": "updated",
+            "reason": "ok",
+            "updated_fields": ["ddReportLink", "foCapacity", "status"],
+        }
+        mock_rhodes_note.return_value = {
+            "status": "failed",
+            "reason": "elicitation_unsupported",
+            "error": "addNote requires confirmation",
+            "owner_notification": "none",
+        }
+
+        result = process_site_pipeline(
+            MagicMock(),
+            "Alpha Keller",
+            "https://drive.google.com/drive/folders/abc123",
+            ["Alpha Keller"],
+            {},
+            "system prompt",
+            _make_settings(),
+            p1_email="owner@example.com",
+            site_id="SITE1",
+        )
+
+        assert result.status == "report_created"
+        assert result.doc_url == "https://docs.google.com/document/d/doc123"
+        assert result.failed_step is None
+        assert result.rhodes_due_diligence_update is not None
+        assert result.rhodes_due_diligence_update["status"] == "updated"
+        assert result.rhodes_report_event is not None
+        assert result.rhodes_report_event["severity"] == "warning"
+        assert "manually confirm" in result.rhodes_report_event["warning"]
+        note_step = next(step for step in result.steps if step.step == "rhodes.report_event")
+        assert note_step.status == "skipped"
+        assert note_step.error is None
+
     @patch(
         "due_diligence_reporter.report_pipeline.utc_now_iso",
         return_value="2026-06-17T15:00:00+00:00",
@@ -1342,7 +1414,7 @@ class TestProcessSitePipeline:
     @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
-    def test_prepared_data_updates_sor_before_rendering_ddr(
+    def test_prepared_data_renders_ddr_before_updating_sor(
         self,
         mock_readiness,
         mock_agent,
@@ -1432,17 +1504,20 @@ class TestProcessSitePipeline:
         )
 
         assert result.status == "report_created"
-        assert events == ["update", "render", "note"]
+        assert events == ["render", "update", "note"]
         update_kwargs = mock_update_due_diligence.call_args.kwargs
         assert update_kwargs["fields"] == {
             "status": "complete",
             "dateCompleted": "2026-06-17",
+            "ddReportLink": "https://docs.google.com/document/d/doc123",
             "foCapacity": "36",
         }
-        assert "ddReportLink" not in update_kwargs["fields"]
         note_body = mock_rhodes_note.call_args.kwargs["body"]
         assert "DD report: https://docs.google.com/document/d/doc123" in note_body
-        assert "Rhodes due diligence update: updated dateCompleted, foCapacity, status" in note_body
+        assert (
+            "Rhodes due diligence update: updated dateCompleted, ddReportLink, "
+            "foCapacity, status"
+        ) in note_body
         prepare_step = next(step for step in result.steps if step.step == "due_diligence.prepare")
         assert prepare_step.status == "succeeded"
         render_step = next(step for step in result.steps if step.step == "report.render")
@@ -1458,14 +1533,16 @@ class TestProcessSitePipeline:
     )
     @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
     @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
-    def test_prepared_data_sor_failure_stops_before_rendering_ddr(
+    def test_prepared_data_sor_failure_still_renders_ddr_and_warns(
         self,
         mock_readiness,
         mock_agent,
         mock_route_tool_call_sync,
+        mock_completeness,
         mock_update_due_diligence,
         mock_rhodes_note,
         _mock_utc_now,
@@ -1498,8 +1575,21 @@ class TestProcessSitePipeline:
             "status": "failed",
             "reason": "rhodes_error",
             "error": "updateDueDiligence rejected",
-            "updated_fields": ["foCapacity", "status"],
+            "updated_fields": ["dateCompleted", "ddReportLink", "foCapacity", "status"],
         }
+        mock_route_tool_call_sync.return_value = {
+            "status": "success",
+            "document": {
+                "id": "doc123",
+                "url": "https://docs.google.com/document/d/doc123",
+                "role": "active",
+            },
+            "normalized_report_data": {"due_diligence.fastest_open_capacity": "36"},
+        }
+        async def fake_completeness(_doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
         mock_rhodes_note.return_value = {
             "status": "created",
             "reason": "ok",
@@ -1519,12 +1609,24 @@ class TestProcessSitePipeline:
             site_id="SITE1",
         )
 
-        assert result.status == "report_data_prepared"
+        assert result.status == "report_created"
+        assert result.doc_url == "https://docs.google.com/document/d/doc123"
         assert result.failed_step == "rhodes.due_diligence_update"
-        mock_route_tool_call_sync.assert_not_called()
-        assert not any(step.step == "report.render" for step in result.steps)
+        mock_route_tool_call_sync.assert_called_once()
+        assert mock_update_due_diligence.call_args.kwargs["fields"] == {
+            "status": "complete",
+            "dateCompleted": "2026-06-17",
+            "ddReportLink": "https://docs.google.com/document/d/doc123",
+            "foCapacity": "36",
+        }
+        render_step = next(step for step in result.steps if step.step == "report.render")
+        assert render_step.status == "succeeded"
         note_body = mock_rhodes_note.call_args.kwargs["body"]
-        assert "Rhodes due diligence update: failed to update foCapacity, status" in note_body
+        assert "DD report: https://docs.google.com/document/d/doc123" in note_body
+        assert (
+            "Rhodes due diligence update: failed to update dateCompleted, "
+            "ddReportLink, foCapacity, status"
+        ) in note_body
 
     @patch(
         "due_diligence_reporter.report_pipeline.utc_now_iso",
@@ -1574,7 +1676,7 @@ class TestProcessSitePipeline:
             "status": "failed",
             "reason": "readback_failed",
             "error": "LocationOS readback failed: get_site_failed",
-            "updated_fields": ["foCapacity", "status"],
+            "updated_fields": ["dateCompleted", "ddReportLink", "foCapacity", "status"],
             "readback": {
                 "status": "failed",
                 "reason": "get_site_failed",
@@ -1619,6 +1721,12 @@ class TestProcessSitePipeline:
         assert result.doc_url == "https://docs.google.com/document/d/doc123"
         assert result.failed_step == "rhodes.due_diligence_update"
         mock_route_tool_call_sync.assert_called_once()
+        assert mock_update_due_diligence.call_args.kwargs["fields"] == {
+            "status": "complete",
+            "dateCompleted": "2026-06-17",
+            "ddReportLink": "https://docs.google.com/document/d/doc123",
+            "foCapacity": "36",
+        }
         render_step = next(step for step in result.steps if step.step == "report.render")
         assert render_step.status == "succeeded"
         update_step = next(
@@ -1629,9 +1737,10 @@ class TestProcessSitePipeline:
         assert "Action needed: Review the failed Rhodes due diligence write and DD report." in (
             note_body
         )
-        assert "Rhodes due diligence update: failed to update foCapacity, status" in (
-            note_body
-        )
+        assert (
+            "Rhodes due diligence update: failed to update dateCompleted, "
+            "ddReportLink, foCapacity, status"
+        ) in note_body
         assert not any(step.step == "notify.email" for step in result.steps)
 
     def test_document_first_sor_blocker_rejects_field_mismatch(self):
@@ -1659,14 +1768,16 @@ class TestProcessSitePipeline:
     )
     @patch("due_diligence_reporter.report_pipeline.add_rhodes_site_note")
     @patch("due_diligence_reporter.report_pipeline.update_rhodes_due_diligence")
+    @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
-    def test_prepared_data_mcp_assisted_sor_failure_emits_write_request(
+    def test_prepared_data_mcp_assisted_sor_failure_creates_doc_and_emits_write_request(
         self,
         mock_readiness,
         mock_agent,
         mock_route_tool_call_sync,
+        mock_completeness,
         mock_update_due_diligence,
         mock_rhodes_note,
         _mock_utc_now,
@@ -1699,7 +1810,27 @@ class TestProcessSitePipeline:
             "status": "failed",
             "reason": "rhodes_error",
             "error": "Error: elicitation_unsupported",
-            "updated_fields": ["dateCompleted", "foCapacity", "status"],
+            "updated_fields": ["dateCompleted", "ddReportLink", "foCapacity", "status"],
+        }
+        mock_route_tool_call_sync.return_value = {
+            "status": "success",
+            "document": {
+                "id": "doc123",
+                "url": "https://docs.google.com/document/d/doc123",
+                "role": "active",
+            },
+            "normalized_report_data": {"due_diligence.fastest_open_capacity": "36"},
+        }
+
+        async def fake_completeness(_doc_id):
+            return {"ready_to_send": True, "pending_section_count": 0}
+
+        mock_completeness.side_effect = fake_completeness
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
         }
 
         result = process_site_pipeline(
@@ -1715,10 +1846,11 @@ class TestProcessSitePipeline:
             due_diligence_write_mode="mcp_assisted",
         )
 
-        assert result.status == "locationos_mcp_write_required"
+        assert result.status == "report_created"
+        assert result.doc_url == "https://docs.google.com/document/d/doc123"
         assert result.failed_step == "rhodes.due_diligence_update"
-        mock_route_tool_call_sync.assert_not_called()
-        mock_rhodes_note.assert_not_called()
+        mock_route_tool_call_sync.assert_called_once()
+        mock_rhodes_note.assert_called_once()
         assert result.rhodes_due_diligence_update is not None
         request = result.rhodes_due_diligence_update["locationos_mcp_write_request"]
         assert request["server"] == "locationos"
@@ -1726,28 +1858,20 @@ class TestProcessSitePipeline:
         assert request["arguments"] == {
             "siteId": "SITE1",
             "dateCompleted": "2026-06-17",
+            "ddReportLink": "https://docs.google.com/document/d/doc123",
             "foCapacity": "36",
             "status": "complete",
         }
         assert request["readback"]["tool"] == "getSite"
         assert request["readback"]["verify_fields"] == [
             "dateCompleted",
+            "ddReportLink",
             "foCapacity",
             "status",
         ]
-        assert result.locationos_mcp_resume is not None
-        assert result.locationos_mcp_resume["schema_version"] == "locationos_mcp_resume.v1"
-        assert result.locationos_mcp_resume["site_id"] == "SITE1"
-        assert (
-            result.locationos_mcp_resume["locationos_mcp_write_request"]["arguments"]
-            == request["arguments"]
-        )
-        assert result.locationos_mcp_resume["render_input"] == {
-            "site_name": "Alpha Keller",
-            "drive_folder_url": "https://drive.google.com/drive/folders/abc123",
-            "report_data": {"due_diligence.fastest_open_capacity": "36"},
-        }
-        assert result.locationos_mcp_resume["owner_email"] == "owner@example.com"
+        assert request["dd_report_doc_url"] == "https://docs.google.com/document/d/doc123"
+        assert "No DDR resume is required" in request["resume"]["condition"]
+        assert result.locationos_mcp_resume is None
 
     @patch(
         "due_diligence_reporter.report_pipeline.utc_now_iso",
@@ -1760,7 +1884,7 @@ class TestProcessSitePipeline:
     @patch("due_diligence_reporter.report_pipeline.route_tool_call_sync")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
-    def test_prepared_data_mcp_completed_verifies_readback_before_rendering(
+    def test_prepared_data_mcp_completed_verifies_readback_after_rendering(
         self,
         mock_readiness,
         mock_agent,
@@ -1819,7 +1943,12 @@ class TestProcessSitePipeline:
             "reason": "ok",
             "readback": {
                 "status": "verified",
-                "verified_fields": ["dateCompleted", "foCapacity", "status"],
+                "verified_fields": [
+                    "dateCompleted",
+                    "ddReportLink",
+                    "foCapacity",
+                    "status",
+                ],
             },
         }
         mock_route_tool_call_sync.side_effect = render_side_effect
@@ -1852,6 +1981,7 @@ class TestProcessSitePipeline:
             fields={
                 "status": "complete",
                 "dateCompleted": "2026-06-17",
+                "ddReportLink": "https://docs.google.com/document/d/doc123",
                 "foCapacity": "36",
             },
         )
@@ -1861,9 +1991,10 @@ class TestProcessSitePipeline:
             == "locationos_mcp_readback_verified"
         )
         note_body = mock_rhodes_note.call_args.kwargs["body"]
-        assert "Rhodes due diligence update: updated dateCompleted, foCapacity, status" in (
-            note_body
-        )
+        assert (
+            "Rhodes due diligence update: updated dateCompleted, ddReportLink, "
+            "foCapacity, status"
+        ) in note_body
 
     def test_resume_locationos_mcp_write_from_manifest_uses_saved_render_input(
         self,
@@ -2367,7 +2498,7 @@ class TestProcessSitePipeline:
     @patch("due_diligence_reporter.server.check_report_completeness")
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
-    def test_report_created_frequency_cap_skips_owner_and_chat_notifications(
+    def test_report_created_still_attempts_event_note_when_prior_warning_exists(
         self,
         mock_readiness,
         mock_agent,
@@ -2406,6 +2537,12 @@ class TestProcessSitePipeline:
             return {"ready_to_send": True, "pending_section_count": 0}
 
         mock_completeness.side_effect = fake_completeness
+        mock_rhodes_note.return_value = {
+            "status": "created",
+            "reason": "ok",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+        }
         settings = _make_settings()
         settings.google_chat_webhook_url = "https://chat.example/webhook"
 
@@ -2421,13 +2558,12 @@ class TestProcessSitePipeline:
         )
 
         assert result.rhodes_report_event is not None
-        assert result.rhodes_report_event["status"] == "skipped"
-        assert result.rhodes_report_event["reason"] == "frequency_cap"
-        assert result.rhodes_report_event["next_allowed_at"] == "2026-06-02T14:00:00+00:00"
-        mock_rhodes_note.assert_not_called()
+        assert result.rhodes_report_event["status"] == "created"
+        assert result.rhodes_report_event["rhodes_note_id"] == "NOTE1"
+        mock_rhodes_note.assert_called_once()
         mock_chat.assert_not_called()
         step = next(step for step in result.steps if step.step == "rhodes.report_event")
-        assert step.status == "skipped"
+        assert step.status == "succeeded"
 
     @patch("due_diligence_reporter.report_pipeline.run_dd_report_agent")
     @patch("due_diligence_reporter.report_pipeline.check_site_readiness_direct")
