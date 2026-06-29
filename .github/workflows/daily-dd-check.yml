@@ -66,6 +66,8 @@ jobs:
           LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
           RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
           RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
+          AERIE_API_KEY: ${{ secrets.AERIE_API_KEY }}
+          AERIE_API_BASE_URL: ${{ vars.AERIE_API_BASE_URL || 'https://edu-ops.klair.ai/api' }}
 
           SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
           ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
@@ -89,6 +91,8 @@ jobs:
           echo "LOCATIONOS_MCP_API_KEY=${LOCATIONOS_TOKEN}" >> .env
           echo "RHODES_API_KEY=${RHODES_API_KEY:-${LOCATIONOS_TOKEN}}" >> .env
           echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
+          echo "AERIE_API_KEY=${AERIE_API_KEY}" >> .env
+          echo "AERIE_API_BASE_URL=${AERIE_API_BASE_URL}" >> .env
 
           echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
           echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
@@ -151,7 +155,7 @@ jobs:
           if [ -n "${INPUT_SITE:-}" ]; then
             ARGS+=(--site "$INPUT_SITE")
           fi
-          uv run python scripts/daily_dd_check.py "${ARGS[@]}"
+          uv run ddr daily-check "${ARGS[@]}"
 
       - name: Done
         run: echo "Daily DD check completed"

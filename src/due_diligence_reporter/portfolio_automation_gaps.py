@@ -40,9 +40,22 @@ OPEN_TASK_STATUSES = {"new", "inProgress", "delayed", "escalatedBlocked"}
 DDR_EVENT_KINDS = {
     "dd_report_created",
     "dd_report_updated",
+    "dd_report_republish_candidate_created",
     "dd_report_republish_failed",
     "source_review_required",
     "vendor_gate_review_required",
+}
+CONCISE_DDR_NOTE_KINDS = {
+    "DD report candidate review": (
+        "dd_report_republish_candidate_created",
+        "candidate_created",
+    ),
+    "Document filing review": ("document_registration_failed", "registration_failed"),
+    "Document intake review": ("inbox_manual_review_required", "manual_review"),
+    "Source document review": ("source_review_required", "source_read_issue"),
+    "DDR source review": ("vendor_gate_review_required", "vendor_gate_review_required"),
+    "DD report republish review": ("dd_report_republish_failed", "republish_failed"),
+    "RayCon follow-up review": ("raycon_followup_alert", "raycon_followup_alert"),
 }
 ROUTER_EVENT_KINDS = {
     "owner_added_to_thread",
@@ -317,8 +330,10 @@ def _milestone_ref(key: str, *, status: str = "") -> dict[str, str]:
 
 def _parse_automation_event_note(note: dict[str, Any]) -> dict[str, Any] | None:
     body = _first_str(note, "body", "text")
-    if not body.startswith("AutomationEvent v1"):
+    if not body:
         return None
+    if not body.startswith("AutomationEvent v1"):
+        return _parse_concise_ddr_note(note, body)
     values: dict[str, str] = {}
     for line in body.splitlines()[1:]:
         if ":" not in line:
@@ -335,6 +350,67 @@ def _parse_automation_event_note(note: dict[str, Any]) -> dict[str, Any] | None:
         "mutation_status": values.get("mutation_status", ""),
         "created_at": values.get("created_at") or _first_str(note, "createdAt", "created_at"),
     }
+
+
+def _parse_concise_ddr_note(note: dict[str, Any], body: str) -> dict[str, Any] | None:
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if not lines:
+        return None
+    header = lines[0]
+    values = _parse_note_values(lines[1:])
+    note_id = _record_id(note, ("noteId", "_id", "id"))
+    created_at = _first_str(note, "createdAt", "created_at")
+
+    if header == "DD report update":
+        status = values.get("status", "")
+        kind = "dd_report_updated" if "DD report updated" in status else "dd_report_created"
+        mutation_status = (
+            "rhodes_due_diligence_update_failed"
+            if "Did not update" in status
+            else "report_updated"
+            if kind == "dd_report_updated"
+            else "report_created"
+        )
+        return {
+            "note_id": note_id,
+            "kind": kind,
+            "source": "due-diligence-reporter",
+            "source_id": note_id,
+            "decision_required": _action_requires_decision(values.get("action_needed", "")),
+            "requested_decision": values.get("action_needed", ""),
+            "mutation_status": mutation_status,
+            "created_at": created_at,
+        }
+
+    kind_and_status = CONCISE_DDR_NOTE_KINDS.get(header)
+    if kind_and_status is None:
+        return None
+    kind, mutation_status = kind_and_status
+    return {
+        "note_id": note_id,
+        "kind": kind,
+        "source": "due-diligence-reporter",
+        "source_id": note_id,
+        "decision_required": True,
+        "requested_decision": values.get("action_needed", ""),
+        "mutation_status": mutation_status,
+        "created_at": created_at,
+    }
+
+
+def _parse_note_values(lines: list[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in lines:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        values[_normalize_key(key)] = value.strip()
+    return values
+
+
+def _action_requires_decision(action_needed: str) -> bool:
+    cleaned = action_needed.strip().lower()
+    return bool(cleaned and not cleaned.startswith("no operator action needed"))
 
 
 def _open_automation_failures(events: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -390,6 +466,7 @@ def _latest_ddr_status(events: list[dict[str, Any]]) -> dict[str, str]:
     status_by_kind = {
         "dd_report_created": "created",
         "dd_report_updated": "updated",
+        "dd_report_republish_candidate_created": "candidate_created",
         "dd_report_republish_failed": "republish_failed",
         "source_review_required": "source_review_required",
         "vendor_gate_review_required": "vendor_gate_review_required",

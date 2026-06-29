@@ -50,6 +50,7 @@ indent-style = "space"
 
 [tool.mypy]
 mypy_path = "src"
+explicit_package_bases = true
 plugins = ["pydantic.mypy"]
 python_version = "3.13"
 warn_return_any = true
@@ -79,7 +80,19 @@ init_typed = true
 warn_required_dynamic_aliases = true
 
 [tool.pytest.ini_options]
-addopts = "-p no:cacheprovider"
+addopts = "-p no:cacheprovider --basetemp=.pytest-tmp"
+norecursedirs = [
+    ".ddr-runs",
+    ".git",
+    ".mypy_cache",
+    ".pytest-tmp",
+    ".ruff_cache",
+    ".uv-cache",
+    ".venv",
+    "__pycache__",
+    "pytest-cache-files-*",
+    "tests/_tmp",
+]
 
 [dependency-groups]
 dev = [

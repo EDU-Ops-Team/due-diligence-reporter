@@ -403,6 +403,12 @@ class TestPipelineToolDefinitions:
         tool_names = [tool["name"] for tool in TOOL_DEFINITIONS]
         assert "apply_alpha_capacity_analysis_skill" in tool_names
 
+    def test_outdoor_play_space_tool_exists(self) -> None:
+        from due_diligence_reporter.report_pipeline import TOOL_DEFINITIONS
+
+        tool_names = [tool["name"] for tool in TOOL_DEFINITIONS]
+        assert "apply_outdoor_play_space_skill" in tool_names
+
     def test_rhodes_owner_lookup_tool_exists(self) -> None:
         from due_diligence_reporter.report_pipeline import TOOL_DEFINITIONS
 

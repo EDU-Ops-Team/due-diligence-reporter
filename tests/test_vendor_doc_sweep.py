@@ -43,6 +43,18 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
                     "webViewLink": "https://drive/raycon-1",
                 },
                 {
+                    "id": "capacity-1",
+                    "name": "Alpha Capacity Analysis - Alpha Test.json",
+                    "modifiedTime": "2026-05-26T11:10:00Z",
+                    "webViewLink": "https://drive/capacity-1",
+                },
+                {
+                    "id": "outdoor-1",
+                    "name": "Outdoor Play Space Report - Alpha Test.md",
+                    "modifiedTime": "2026-05-26T11:20:00Z",
+                    "webViewLink": "https://drive/outdoor-1",
+                },
+                {
                     "id": "phasing-1",
                     "name": "Alpha Phasing Plan - Alpha Test.xlsx",
                     "modifiedTime": "2026-05-26T11:30:00Z",
@@ -55,7 +67,43 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
                 "name": "Alpha Test School Approval Report.pdf",
                 "modifiedTime": "2026-05-26T12:00:00Z",
                 "webViewLink": "https://drive/school-1",
-            }
+            },
+            {
+                "id": "opening-1",
+                "name": "Opening Plan - Alpha Test.pdf",
+                "modifiedTime": "2026-05-26T12:10:00Z",
+                "webViewLink": "https://drive/opening-1",
+            },
+            {
+                "id": "traffic-1",
+                "name": "KH Traffic Analysis - Alpha Test.pdf",
+                "modifiedTime": "2026-05-26T12:20:00Z",
+                "webViewLink": "https://drive/traffic-1",
+            },
+            {
+                "id": "co-1",
+                "name": "Certificate of Occupancy - Alpha Test.pdf",
+                "modifiedTime": "2026-05-26T12:30:00Z",
+                "webViewLink": "https://drive/co-1",
+            },
+            {
+                "id": "floor-1",
+                "name": "Measured Floor Plan - Alpha Test.pdf",
+                "modifiedTime": "2026-05-26T12:40:00Z",
+                "webViewLink": "https://drive/floor-1",
+            },
+            {
+                "id": "lidar-1",
+                "name": "LiDAR - Alpha Test.zip",
+                "modifiedTime": "2026-05-26T12:50:00Z",
+                "webViewLink": "https://drive/lidar-1",
+            },
+            {
+                "id": "permit-1",
+                "name": "Permit of Record - Alpha Test.pdf",
+                "modifiedTime": "2026-05-26T13:00:00Z",
+                "webViewLink": "https://drive/permit-1",
+            },
         ]
 
     gc.list_files_in_folder.side_effect = list_files
@@ -66,8 +114,16 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
     assert {event["source_type"] for event in events} == {
         "vendor_sir",
         "raycon_scenario",
+        "alpha_capacity_analysis",
+        "outdoor_play_space_report",
         "alpha_phasing_plan_report",
         "school_approval_report",
+        "opening_plan_report",
+        "traffic_analysis",
+        "certificate_of_occupancy",
+        "measured_floor_plan",
+        "lidar",
+        "permit_of_record",
     }
     assert any(event["fingerprint"] == "sir-1:2026-05-26T10:00:00Z" for event in events)
 

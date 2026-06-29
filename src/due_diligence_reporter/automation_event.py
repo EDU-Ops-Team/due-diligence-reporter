@@ -32,6 +32,18 @@ def render_automation_event_note(event: AutomationEvent) -> str:
         return _render_dd_report_event_note(event)
     if event.event_type == "dd_report_republish_candidate_created":
         return _render_dd_report_candidate_note(event)
+    if event.event_type == "document_registration_failed":
+        return _render_document_registration_failed_note(event)
+    if event.event_type == "inbox_manual_review_required":
+        return _render_inbox_manual_review_required_note(event)
+    if event.event_type == "source_review_required":
+        return _render_source_review_required_note(event)
+    if event.event_type == "vendor_gate_review_required":
+        return _render_vendor_gate_review_required_note(event)
+    if event.event_type == "dd_report_republish_failed":
+        return _render_dd_report_republish_failed_note(event)
+    if event.event_type == "raycon_followup_alert":
+        return _render_raycon_followup_alert_note(event)
 
     lines = [
         "AutomationEvent v1",
@@ -57,8 +69,123 @@ def render_automation_event_note(event: AutomationEvent) -> str:
     return "\n".join(lines)
 
 
+def _render_document_registration_failed_note(event: AutomationEvent) -> str:
+    lines = [
+        "Document filing review",
+        "Action needed: Review a document that did not finish filing in Rhodes.",
+        f"Site: {event.site_name}",
+        "Status: Rhodes document registration did not complete.",
+    ]
+    _append_detail_line(lines, "Document", event.details.get("Drive file"))
+    _append_detail_line(lines, "Type", event.details.get("DDR doc type"))
+    _append_detail_line(lines, "Drive link", event.details.get("Drive URL"))
+    lines.append("Next steps:")
+    lines.extend([
+        "- Review the document in Drive.",
+        "- Register or repair the Rhodes document link.",
+    ])
+    return "\n".join(lines)
+
+
+def _render_inbox_manual_review_required_note(event: AutomationEvent) -> str:
+    lines = [
+        "Document intake review",
+        "Action needed: Review an inbound due diligence attachment before filing.",
+        f"Site: {event.site_name}",
+        "Status: Needs manual review.",
+    ]
+    _append_detail_line(lines, "Document", event.details.get("Filename"))
+    _append_detail_line(lines, "Type", event.details.get("DDR doc type"))
+    lines.append("Next steps:")
+    lines.extend([
+        "- Confirm the correct site and document type.",
+        "- File or reroute the attachment.",
+    ])
+    return "\n".join(lines)
+
+
+def _render_source_review_required_note(event: AutomationEvent) -> str:
+    issue_count = _detail_int(event, "Source issue count")
+    issue_text = (
+        f"{issue_count} source document(s) need review."
+        if issue_count
+        else "One or more source documents need review."
+    )
+    lines = [
+        "Source document review",
+        "Action needed: Review source documents DDR could not read.",
+        f"Site: {event.site_name}",
+        f"Status: {issue_text}",
+        "Next steps:",
+        "- Open the source documents in Drive.",
+        "- Replace, repair, or re-upload unreadable files.",
+        "- Rerun DDR when the source files are readable.",
+    ]
+    return "\n".join(lines)
+
+
+def _render_vendor_gate_review_required_note(event: AutomationEvent) -> str:
+    lines = [
+        "DDR source review",
+        "Action needed: Review complete vendor inputs before DDR can finish.",
+        f"Site: {event.site_name}",
+        "Status: DDR could not produce a complete report from the available inputs.",
+    ]
+    _append_detail_line(lines, "Required inputs", event.details.get("Required inputs"))
+    lines.append("Next steps:")
+    lines.extend([
+        "- Review the vendor SIR, Building Inspection, and RayCon Scenario.",
+        "- Repair the source issue.",
+        "- Rerun DDR.",
+    ])
+    return "\n".join(lines)
+
+
+def _render_dd_report_republish_failed_note(event: AutomationEvent) -> str:
+    trigger_source = event.details.get("Trigger source", "").strip()
+    source_file = event.details.get("Source file", "").strip()
+    lines = [
+        "DD report republish review",
+        "Action needed: Review a failed DD report republish.",
+        f"Site: {event.site_name}",
+        "Status: DDR could not republish the report.",
+    ]
+    if trigger_source:
+        lines.append(
+            f"Latest source reviewed: {_format_republish_source(trigger_source, source_file)}"
+        )
+    _append_detail_line(lines, "DD report", event.details.get("DD report URL"))
+    lines.append("Next steps:")
+    lines.extend([
+        "- Review the source update.",
+        "- Repair the report generation issue.",
+        "- Rerun the republish.",
+    ])
+    return "\n".join(lines)
+
+
+def _render_raycon_followup_alert_note(event: AutomationEvent) -> str:
+    lines = [
+        "RayCon follow-up review",
+        "Action needed: Review RayCon scenario generation for this site.",
+        f"Site: {event.site_name}",
+        "Status: RayCon scenario generation needs review.",
+        "Next steps:",
+        "- Check the Block Plan and RayCon Scenario inputs.",
+        "- Repair the source issue.",
+        "- Rerun RayCon follow-up.",
+    ]
+    return "\n".join(lines)
+
+
+def _append_detail_line(lines: list[str], label: str, value: str | None) -> None:
+    cleaned = str(value or "").strip()
+    if _has_real_value(cleaned):
+        lines.append(f"{label}: {cleaned}")
+
+
 def _render_dd_report_event_note(event: AutomationEvent) -> str:
-    """Render DD report activity with the operator ask first."""
+    """Render DD report activity as a concise user-facing site note."""
 
     open_count = _detail_int(event, "Open item count")
     closed_count = _detail_int(event, "Closed item count")
@@ -67,64 +194,35 @@ def _render_dd_report_event_note(event: AutomationEvent) -> str:
     source_file = event.details.get("Source file", "").strip()
     outstanding_docs = event.details.get("Outstanding vendor docs", "").strip()
     rhodes_update = event.details.get("Rhodes due diligence update", "").strip()
+    source_packet_status = event.details.get("M2 source packet", "").strip()
 
     lines = [
-        "AutomationEvent v1",
+        "DD report update",
         f"Action needed: {_dd_report_action_needed(event, open_count)}",
         f"Site: {event.site_name}",
-        f"Open asks: {open_count}",
+        f"Status: {_dd_report_status_line(event, rhodes_update)}",
     ]
-    if rhodes_update:
-        lines.append(f"Rhodes due diligence update: {rhodes_update}")
-    if trigger_source:
-        source_label = _format_republish_source(trigger_source, source_file)
-        lines.append(f"DDR republished due to: {source_label}")
-    if outstanding_docs:
-        lines.append(f"Outstanding vendor docs: {outstanding_docs}")
-    if closed_count:
-        lines.append(f"Resolved this run: {closed_count}")
     if doc_url:
         lines.append(f"DD report: {doc_url}")
-    if trigger_source or source_file:
-        source_parts = [part for part in (trigger_source, source_file) if part]
-        lines.append(f"Latest source reviewed: {' - '.join(source_parts)}")
+    if open_count:
+        lines.append(f"Open verification items: {open_count}")
+    if _has_real_value(outstanding_docs):
+        lines.append(f"Missing vendor docs: {outstanding_docs}")
+    if trigger_source:
+        source_label = _format_republish_source(trigger_source, source_file)
+        lines.append(f"Latest source reviewed: {source_label}")
+    if closed_count:
+        lines.append(f"Resolved this run: {closed_count}")
+    source_packet_lines = _m2_source_packet_lines(event.details)
+    if source_packet_status or source_packet_lines:
+        lines.append(f"M2 source packet: {source_packet_status or 'updated'}")
+        lines.extend(source_packet_lines)
     if open_count > 0:
-        lines.extend(_dd_report_close_instructions())
-
-    ask_lines = _dd_report_ask_lines(event.details)
-    if ask_lines:
-        lines.append("Asks to close:")
-        lines.extend(ask_lines)
-        additional_count = max(0, open_count - len(ask_lines))
-        if additional_count:
-            lines.append(
-                f"Additional asks: {additional_count} more open item(s) are listed in the DD report."
-            )
-
-    resolved_lines = _dd_report_resolved_lines(event.details)
-    if resolved_lines:
-        lines.append("Resolved in this update:")
-        lines.extend(resolved_lines)
-
-    lines.extend([
-        "System details:",
-        f"Source: {event.source_system}",
-        f"Source ID: {event.source_id}",
-        f"Kind: {event.event_type}",
-        f"Site ID: {event.site_id or 'unknown'}",
-        f"Decision required: {'yes' if event.decision_required else 'no'}",
-    ])
-    if event.requested_decision:
-        lines.append(f"Requested decision: {event.requested_decision}")
-    if event.mutation_status:
-        lines.append(f"Mutation status: {event.mutation_status}")
-    if event.retry_state:
-        lines.append(f"Retry state: {_format_retry_state(event.retry_state)}")
-    for label, value in event.artifact_ids.items():
-        lines.append(f"{label}: {value or 'unknown'}")
-    lines.append(f"Open item count: {open_count}")
-    lines.append(f"Closed item count: {closed_count}")
-    lines.append(f"Created at: {event.created_at}")
+        lines.append(
+            "Close open items after the answer is added to the DD report or source record."
+        )
+    lines.append("Next steps:")
+    lines.extend(_dd_report_next_steps(open_count, rhodes_update))
     return "\n".join(lines)
 
 
@@ -134,43 +232,28 @@ def _render_dd_report_candidate_note(event: AutomationEvent) -> str:
     outstanding_docs = event.details.get("Outstanding vendor docs", "").strip()
     active_url = event.details.get("Active DD report URL", "").strip()
     candidate_url = event.details.get("Candidate DD report URL", "").strip()
-    reason = event.details.get("Guard reason", "").strip()
     rhodes_update = event.details.get("Rhodes due diligence update", "").strip()
 
     lines = [
-        "AutomationEvent v1",
+        "DD report candidate review",
         f"Action needed: {_dd_report_candidate_action_needed(event)}",
         f"Site: {event.site_name}",
+        "Status: Candidate DD report created. Active report was not overwritten.",
     ]
     if rhodes_update:
-        lines.append(f"Rhodes due diligence update: {rhodes_update}")
+        lines.append(f"Rhodes fields: {_dd_report_rhodes_fields_line(rhodes_update)}")
     if trigger_source:
         lines.append(
             f"Candidate created due to: {_format_republish_source(trigger_source, source_file)}"
         )
-    if outstanding_docs:
-        lines.append(f"Outstanding vendor docs: {outstanding_docs}")
+    if _has_real_value(outstanding_docs):
+        lines.append(f"Missing vendor docs: {outstanding_docs}")
     if active_url:
         lines.append(f"Active DD report: {active_url}")
     if candidate_url:
         lines.append(f"Candidate DD report: {candidate_url}")
-    if reason:
-        lines.append(f"Guard reason: {reason}")
-    lines.extend([
-        "System details:",
-        f"Source: {event.source_system}",
-        f"Source ID: {event.source_id}",
-        f"Kind: {event.event_type}",
-        f"Site ID: {event.site_id or 'unknown'}",
-        f"Decision required: {'yes' if event.decision_required else 'no'}",
-    ])
-    if event.requested_decision:
-        lines.append(f"Requested decision: {event.requested_decision}")
-    if event.mutation_status:
-        lines.append(f"Mutation status: {event.mutation_status}")
-    for label, value in event.artifact_ids.items():
-        lines.append(f"{label}: {value or 'unknown'}")
-    lines.append(f"Created at: {event.created_at}")
+    lines.append("Next steps:")
+    lines.extend(_dd_report_candidate_next_steps(rhodes_update))
     return "\n".join(lines)
 
 
@@ -178,15 +261,18 @@ def _dd_report_candidate_action_needed(event: AutomationEvent) -> str:
     rhodes_update = event.details.get("Rhodes due diligence update", "").strip()
     if rhodes_update.startswith("failed"):
         return (
-            "Review the failed Rhodes due diligence write and candidate DDR "
-            "before replacing the active report."
+            "Review the candidate DD report before replacing the active report."
         )
     if rhodes_update:
         return (
-            "Review the Rhodes due diligence fields and candidate DDR before "
+            "Review the Rhodes due diligence fields and candidate DD report before "
             "replacing the active report."
         )
-    return "Review the candidate DDR before replacing the active report."
+    return "Review the candidate DD report before replacing the active report."
+
+
+def _has_real_value(value: str) -> bool:
+    return bool(value and value.strip().lower() not in {"none", "n/a", "na"})
 
 
 def _format_republish_source(source_type: str, source_file: str = "") -> str:
@@ -205,10 +291,10 @@ def _dd_report_action_needed(event: AutomationEvent, open_count: int) -> str:
     rhodes_update = event.details.get("Rhodes due diligence update", "").strip()
     if rhodes_update.startswith("failed"):
         if open_count <= 0:
-            return "Review the failed Rhodes due diligence write and DD report."
+            return "Review the DD report and confirm the Rhodes field update."
         item_word = "ask" if open_count == 1 else "asks"
         return (
-            f"Review the failed Rhodes due diligence write, DD report, and close "
+            f"Review the DD report, confirm the Rhodes field update, and close "
             f"{open_count} open verification {item_word}."
         )
     if rhodes_update:
@@ -226,6 +312,49 @@ def _dd_report_action_needed(event: AutomationEvent, open_count: int) -> str:
         f"Review the DD report and close {open_count} open verification {item_word}. "
         "Update the source document, Rhodes record, or DD report evidence when resolved."
     )
+
+
+def _dd_report_status_line(event: AutomationEvent, rhodes_update: str) -> str:
+    report_action = (
+        "DD report updated"
+        if event.event_type == "dd_report_updated"
+        else "DD report created"
+    )
+    fields_status = _dd_report_rhodes_fields_line(rhodes_update)
+    if fields_status:
+        return f"{report_action}. Rhodes fields: {fields_status}"
+    return f"{report_action}."
+
+
+def _dd_report_rhodes_fields_line(rhodes_update: str) -> str:
+    if not rhodes_update:
+        return ""
+    if rhodes_update.startswith("failed"):
+        return "Did not update. Technical details are in the run record."
+    return "Updated."
+
+
+def _dd_report_next_steps(open_count: int, rhodes_update: str) -> list[str]:
+    steps = ["- Review the DD report."]
+    if rhodes_update.startswith("failed"):
+        steps.append("- Confirm the Rhodes field update is repaired.")
+    elif rhodes_update:
+        steps.append("- Confirm the Rhodes fields are correct.")
+    if open_count > 0:
+        steps.append("- Close open verification items after the evidence is added.")
+    return steps
+
+
+def _dd_report_candidate_next_steps(rhodes_update: str) -> list[str]:
+    steps = [
+        "- Review the candidate report.",
+        "- Decide whether it should replace the active report.",
+    ]
+    if rhodes_update.startswith("failed"):
+        steps.append("- Confirm the Rhodes field update is repaired.")
+    elif rhodes_update:
+        steps.append("- Confirm the Rhodes fields are correct.")
+    return steps
 
 
 def _dd_report_close_instructions() -> list[str]:
@@ -254,6 +383,15 @@ def _dd_report_resolved_lines(details: dict[str, str], *, limit: int = 3) -> lis
         text = details.get(f"Closed item {index}", "").strip()
         if text:
             rows.append(f"Resolved {index}: {text}")
+    return rows
+
+
+def _m2_source_packet_lines(details: dict[str, str], *, limit: int = 6) -> list[str]:
+    rows: list[str] = []
+    for index in range(1, limit + 1):
+        text = details.get(f"M2 source line {index}", "").strip()
+        if text:
+            rows.append(f"- {text}")
     return rows
 
 
@@ -411,6 +549,7 @@ def build_dd_report_summary_event(
         details["Rhodes due diligence update"] = _format_due_diligence_update(
             due_diligence_update_data
         )
+        details.update(_source_packet_details(due_diligence_update_data))
     details.update(_indexed_item_details("Open item", open_items))
     details.update(_indexed_item_details("Closed item", closed_items))
 
@@ -499,11 +638,11 @@ def build_dd_report_republish_candidate_event(
         artifact_ids=artifact_ids,
         decision_required=True,
         requested_decision=(
-            "review failed Rhodes due diligence write and candidate DDR"
+            "review failed Rhodes due diligence write and candidate DD report"
             if due_diligence_failed
-            else "review Rhodes due diligence fields and candidate DDR before replacing active report"
+            else "review Rhodes due diligence fields and candidate DD report before replacing active report"
             if due_diligence_written
-            else "review candidate DDR and decide whether to replace the active report"
+            else "review candidate DD report and decide whether to replace the active report"
         ),
         mutation_status="candidate_created",
         details=details,
@@ -526,13 +665,38 @@ def _format_due_diligence_update(update: dict[str, Any]) -> str:
         if clean_fields:
             field_text = ", ".join(clean_fields)
     if status == "failed":
-        error = str(update.get("error") or update.get("reason") or "unknown error").strip()
+        error = str(
+            update.get("error_summary")
+            or update.get("error")
+            or update.get("reason")
+            or "unknown error"
+        ).strip()
         if field_text:
             return f"failed to update {field_text}: {error}"
         return f"failed: {error}"
     if field_text:
         return f"updated {field_text}"
     return "updated"
+
+
+def _source_packet_details(update: dict[str, Any], *, limit: int = 6) -> dict[str, str]:
+    lines = update.get("source_note_lines")
+    if not isinstance(lines, list):
+        return {}
+    details: dict[str, str] = {}
+    status = str(update.get("source_packet_status") or "").strip()
+    complete = update.get("m2_source_packet_complete")
+    if status:
+        details["M2 source packet"] = status
+    elif complete is True:
+        details["M2 source packet"] = "complete"
+    elif complete is False:
+        details["M2 source packet"] = "blocked"
+    for index, line in enumerate(lines[:limit], start=1):
+        clean = str(line or "").strip()
+        if clean:
+            details[f"M2 source line {index}"] = clean
+    return details
 
 
 def build_source_review_required_event(

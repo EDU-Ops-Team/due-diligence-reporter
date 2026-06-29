@@ -18,6 +18,7 @@ from .adhoc_runner import (
 from .pipeline_manifest import load_run_manifest
 from .portfolio_automation_gaps import build_portfolio_automation_gap_snapshot
 from .review_execution import execute_ddr_review_requests
+from .rhodes import add_rhodes_site_note, lookup_rhodes_site_owner
 from .sir_review_queue import QUEUE_STATUSES, READY_STATUS, load_sir_review_queue
 from .sir_trends import (
     DEFAULT_SINCE,
@@ -49,6 +50,35 @@ def main(argv: list[str] | None = None) -> int:
 
     diagnose_parser = subparsers.add_parser("diagnose", help="Print diagnostic command")
     diagnose_parser.add_argument("--site", required=True)
+
+    daily_check_parser = subparsers.add_parser(
+        "daily-check",
+        help="Run the repo-owned daily DD sweep",
+    )
+    daily_check_parser.add_argument("--site", default="", help="Optional site filter")
+
+    source_sweep_parser = subparsers.add_parser(
+        "source-sweep",
+        help="Run the repo-owned M2 source document sweep",
+    )
+    source_sweep_parser.add_argument("--site", default="", help="Optional site filter")
+    source_sweep_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Detect source events without applying republish decisions",
+    )
+
+    notes_smoke_parser = subparsers.add_parser(
+        "notes-smoke-test",
+        help="Write and verify one headless Rhodes P1 review note",
+    )
+    notes_smoke_parser.add_argument("--site", default="")
+    notes_smoke_parser.add_argument("--address", default="")
+    notes_smoke_parser.add_argument("--site-id", default="")
+    notes_smoke_parser.add_argument("--site-slug", default="")
+    notes_smoke_parser.add_argument("--owner-user-id", default="")
+    notes_smoke_parser.add_argument("--owner-email", default="")
+    notes_smoke_parser.add_argument("--body", default="")
 
     add_run_site_parser(subparsers)
 
@@ -130,6 +160,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "diagnose":
         print(f"uv run ddr run-site diagnose --site \"{args.site}\"")
+    elif args.command == "daily-check":
+        return _run_daily_check(args)
+    elif args.command == "source-sweep":
+        return _run_source_sweep(args)
+    elif args.command == "notes-smoke-test":
+        return _run_notes_smoke_test(args)
     elif args.command == "run-site":
         exit_code, payload = run_site_command(args)
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -481,6 +517,155 @@ def _run_review_execution(args: argparse.Namespace) -> None:
         f"blocked={execution['blocked_count']} "
         f"errors={execution['error_count']}"
     )
+
+
+def _run_daily_check(args: argparse.Namespace) -> int:
+    from scripts import daily_dd_check
+
+    daily_dd_check.main(site_filter=str(args.site or "").strip() or None)
+    return 0
+
+
+def _run_source_sweep(args: argparse.Namespace) -> int:
+    from scripts import vendor_doc_republish_sweep
+
+    vendor_doc_republish_sweep.main(
+        dry_run=bool(args.dry_run),
+        site=str(args.site or "").strip(),
+    )
+    return 0
+
+
+def _run_notes_smoke_test(args: argparse.Namespace) -> int:
+    owner_context: dict[str, Any] = {}
+    if not all(
+        [
+            str(args.site_id).strip() or str(args.site_slug).strip(),
+            str(args.owner_user_id).strip(),
+        ]
+    ):
+        owner_context = lookup_rhodes_site_owner(
+            site_name=str(args.site or ""),
+            site_address=str(args.address or ""),
+            site_id=str(args.site_id or ""),
+            slug=str(args.site_slug or ""),
+        )
+
+    site_id = _first_text_arg(args.site_id, owner_context.get("site_id"))
+    site_slug = _first_text_arg(args.site_slug, owner_context.get("site_slug"))
+    owner_user_id = _first_text_arg(
+        args.owner_user_id,
+        owner_context.get("p1_assignee_user_id"),
+        _nested_text(owner_context.get("p1_dri"), "userId", "user_id", "_id", "id"),
+    )
+    owner_email = _first_text_arg(args.owner_email, owner_context.get("p1_assignee_email"))
+    site_name = _first_text_arg(args.site, owner_context.get("site_name"), site_id, site_slug)
+    body = str(args.body or "").strip() or _notes_smoke_body(
+        site_name=site_name,
+        site_id=site_id,
+        site_slug=site_slug,
+        owner_email=owner_email,
+        owner_user_id=owner_user_id,
+    )
+
+    if not (site_id or site_slug):
+        payload = {
+            "status": "error",
+            "reason": "missing_site_identity",
+            "owner_lookup": _notes_smoke_owner_lookup_summary(owner_context),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 2
+    if not owner_user_id:
+        payload = {
+            "status": "error",
+            "reason": "missing_owner_user_id",
+            "site_id": site_id,
+            "site_slug": site_slug,
+            "owner_lookup": _notes_smoke_owner_lookup_summary(owner_context),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 2
+
+    note_result = add_rhodes_site_note(
+        site_id=site_id,
+        site_slug=site_slug,
+        body=body,
+        owner_user_id=owner_user_id,
+        owner_email=owner_email,
+        automation_source="due-diligence-reporter:notes-smoke-test",
+    )
+    success = (
+        note_result.get("status") == "created"
+        and note_result.get("owner_notification") == "mentioned"
+        and bool(str(note_result.get("rhodes_note_id") or "").strip())
+    )
+    payload = {
+        "status": "success" if success else "failed",
+        "site": {
+            "site_id": site_id,
+            "site_slug": site_slug,
+            "site_name": site_name,
+        },
+        "owner": {
+            "user_id": owner_user_id,
+            "email": owner_email,
+        },
+        "note": note_result,
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if success else 1
+
+
+def _notes_smoke_body(
+    *,
+    site_name: str,
+    site_id: str,
+    site_slug: str,
+    owner_email: str,
+    owner_user_id: str,
+) -> str:
+    del site_id, site_slug, owner_email, owner_user_id
+    return "\n".join(
+        [
+            "Rhodes note smoke test",
+            "Action needed: Confirm this test note reached the P1 owner review queue.",
+            f"Site: {site_name or 'unknown'}",
+            "Status: Headless note write test completed.",
+            "Next steps:",
+            "- Confirm the P1 owner mention appears on this note.",
+        ]
+    )
+
+
+def _notes_smoke_owner_lookup_summary(owner_context: dict[str, Any]) -> dict[str, Any]:
+    if not owner_context:
+        return {}
+    return {
+        "status": owner_context.get("status"),
+        "message": owner_context.get("message"),
+        "site_id": owner_context.get("site_id"),
+        "site_slug": owner_context.get("site_slug"),
+        "p1_assignee_email": owner_context.get("p1_assignee_email"),
+        "p1_assignee_user_id": owner_context.get("p1_assignee_user_id"),
+    }
+
+
+def _first_text_arg(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _nested_text(value: Any, *keys: str) -> str:
+    if not isinstance(value, dict):
+        return ""
+    for key in keys:
+        nested = value.get(key)
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    return ""
 
 
 def _print_site_gap_line(site: dict[str, Any]) -> None:

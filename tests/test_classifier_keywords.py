@@ -164,7 +164,21 @@ class TestClassifyByKeywordsCapacityBrainlift:
 
     def test_alpha_capacity_analysis(self):
         assert classify_by_keywords("Alpha Capacity Analysis - Alpha Keller.json") == (
-            "capacity_brainlift_report",
+            "alpha_capacity_analysis",
+            0.95,
+        )
+
+
+class TestClassifyByKeywordsM2SourcePacketDocs:
+    def test_outdoor_play_space_report(self):
+        assert classify_by_keywords("Outdoor Play Space Report - Alpha Keller.md") == (
+            "outdoor_play_space_report",
+            0.95,
+        )
+
+    def test_kh_traffic_analysis(self):
+        assert classify_by_keywords("KH Traffic Analysis - Alpha Keller.pdf") == (
+            "traffic_analysis",
             0.95,
         )
 

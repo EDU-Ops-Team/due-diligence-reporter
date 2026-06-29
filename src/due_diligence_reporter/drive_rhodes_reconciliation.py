@@ -499,15 +499,23 @@ def _action_record(
     review_url: str = "",
 ) -> dict[str, Any]:
     review_required = status in {"queued", "needs_review", "blocked", "error"}
+    action_id = f"{RECONCILIATION_WORKFLOW_ID}:{_action_token(run_id)}:{alert_type}"
     record = {
         "schema_version": "action_record.v1",
-        "action_id": f"{RECONCILIATION_WORKFLOW_ID}:{_action_token(run_id)}:{alert_type}",
+        "action_id": action_id,
         "source_workflow": "ddr",
         "owning_workflow": owning_workflow,
         "workflow_owner": workflow_owner,
+        "dependency_owner": _dependency_owner(
+            owning_workflow=owning_workflow,
+            workflow_owner=workflow_owner,
+            status=status,
+        ),
         "alert_type": alert_type,
         "severity": severity,
         "status": status,
+        "loop_state": _loop_state(status),
+        "decision_status": _decision_status(status, review_required),
         "site_name": "Portfolio",
         "site_id": "",
         "current_milestone": "",
@@ -519,10 +527,95 @@ def _action_record(
         "review_reason": review_reason,
         "error_summary": review_reason if status == "error" else "",
         "retryable": retryable,
+        "idempotency_key": action_id,
+        "autonomy_mode": "approval_required" if review_required else "safe_telemetry",
+        "sor_system": "rhodes",
+        "sor_write_status": _sor_write_status(status),
+        "sor_readback_status": _sor_readback_status(status),
+        "sor_readback_summary": evidence_summary,
+        "operating_note_status": "not_needed",
+        "p1_dri_route_status": "not_needed",
+        "failure_route": _failure_route(
+            status=status,
+            owning_workflow=owning_workflow,
+            workflow_owner=workflow_owner,
+        ),
+        "next_step": _next_step(
+            status=status,
+            action_requested=action_requested,
+            review_reason=review_reason,
+        ),
     }
     if review_url:
         record["review_url"] = review_url
     return record
+
+
+def _loop_state(status: str) -> str:
+    if status in {"completed", "skipped_already_corrected"}:
+        return "completed"
+    if status in {"blocked", "error"}:
+        return "blocked"
+    if status in {"queued", "needs_review"}:
+        return "needs_more_info"
+    return "in_progress"
+
+
+def _decision_status(status: str, review_required: bool) -> str:
+    if status in {"completed", "skipped_already_corrected"}:
+        return "not_required"
+    if review_required:
+        return "needs_more_info"
+    return "not_required"
+
+
+def _sor_write_status(status: str) -> str:
+    if status == "completed":
+        return "completed"
+    if status == "skipped_already_corrected":
+        return "not_needed"
+    if status == "blocked":
+        return "blocked"
+    if status == "error":
+        return "error"
+    if status == "queued":
+        return "not_started"
+    return "attempted"
+
+
+def _sor_readback_status(status: str) -> str:
+    if status in {"completed", "skipped_already_corrected"}:
+        return "verified"
+    if status == "blocked":
+        return "blocked"
+    if status == "error":
+        return "error"
+    return "not_verified"
+
+
+def _failure_route(*, status: str, owning_workflow: str, workflow_owner: str) -> str:
+    if status not in {"queued", "needs_review", "blocked", "error"}:
+        return ""
+    return owning_workflow or workflow_owner or RECONCILIATION_WORKFLOW_ID
+
+
+def _dependency_owner(
+    *,
+    owning_workflow: str,
+    workflow_owner: str,
+    status: str,
+) -> str:
+    if status not in {"needs_review", "blocked", "error"}:
+        return ""
+    if owning_workflow and workflow_owner and owning_workflow != workflow_owner:
+        return owning_workflow
+    return ""
+
+
+def _next_step(*, status: str, action_requested: str, review_reason: str) -> str:
+    if status in {"completed", "skipped_already_corrected"}:
+        return "No operator action needed; DDR Drive/Rhodes readback is captured."
+    return review_reason or action_requested or "Rerun Drive Rhodes Reconciliation after the blocker is resolved."
 
 
 def _public_row(row: dict[str, Any]) -> dict[str, Any]:

@@ -23,7 +23,16 @@ CORE_SWEEP_DOC_TYPES = {
     "raycon_scenario_json",
     "e_occupancy_report",
     "school_approval_report",
+    "opening_plan_report",
+    "alpha_capacity_analysis",
+    "outdoor_play_space_report",
     "alpha_phasing_plan_report",
+    "traffic_analysis",
+    "certificate_of_occupancy",
+    "permit_of_record",
+    "measured_floor_plan",
+    "floor_plan",
+    "lidar",
 }
 
 RepublishCallback = Callable[..., Any]

@@ -86,7 +86,7 @@ def _artifact_integrity(run: PipelineRun, manifest_persisted: bool) -> QualityCh
         details.append("manifest not persisted")
     if any(step.artifacts for step in run.steps):
         points += 6
-    elif run.final_status in {"waiting_on_docs", "report_exists", "yielded_to_pipeline"}:
+    elif run.final_status in {"waiting_on_docs", "report_exists"}:
         points += 6
     else:
         details.append("no artifacts recorded")
@@ -112,7 +112,7 @@ def _source_quality(run: PipelineRun) -> QualityCheck:
 def _report_validity(run: PipelineRun) -> QualityCheck:
     validation = _step(run, "report.validate")
     if not validation:
-        if run.final_status in {"waiting_on_docs", "report_exists", "yielded_to_pipeline"}:
+        if run.final_status in {"waiting_on_docs", "report_exists"}:
             return QualityCheck("report_validity", "not_applicable", 25, 25, "report not expected")
         return QualityCheck("report_validity", "warning", 12, 25, "validation not recorded")
     if validation.status == "succeeded":

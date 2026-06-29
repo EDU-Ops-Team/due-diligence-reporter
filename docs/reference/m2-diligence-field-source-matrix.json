@@ -1,0 +1,155 @@
+{
+  "source": {
+    "spreadsheet_id": "1b7fWdTKrIhR0p5U8fCNaQiOZbUmEA88mob8PhjsRlmU",
+    "sheet": "M2 Diligence",
+    "captured_at": "2026-06-29",
+    "approved_overrides": [
+      "Outdoor Play Space Report is the primary source for play_area_score and play_area_comment.",
+      "Rendered DD reports are optional presentation only and are not M2 closure evidence."
+    ]
+  },
+  "fields": [
+    {
+      "field": "fast_open_capacity",
+      "writer": "alpha_capacity_analysis",
+      "locationos_key": "foCapacity",
+      "required_sources": ["alpha_capacity_analysis"],
+      "rhodes_doc_type": "capacityCalculation"
+    },
+    {
+      "field": "fast_open_date",
+      "writer": "opening_plan",
+      "locationos_key": "foDate",
+      "required_sources": ["opening_plan_report"],
+      "rhodes_doc_type": "other"
+    },
+    {
+      "field": "fast_open_capex",
+      "writer": "alpha_phasing_plan",
+      "locationos_key": "foCapEx",
+      "required_sources": ["alpha_phasing_plan_report"],
+      "rhodes_doc_type": "phasing"
+    },
+    {
+      "field": "max_plan_capacity",
+      "writer": "alpha_capacity_analysis",
+      "locationos_key": "maxCapCapacity",
+      "required_sources": ["alpha_capacity_analysis"],
+      "rhodes_doc_type": "capacityCalculation"
+    },
+    {
+      "field": "max_plan_date",
+      "writer": "opening_plan",
+      "locationos_key": "maxCapProjOpenDate",
+      "required_sources": ["opening_plan_report"],
+      "rhodes_doc_type": "other"
+    },
+    {
+      "field": "max_plan_capex",
+      "writer": "alpha_phasing_plan",
+      "locationos_key": "maxCapCapEx",
+      "required_sources": ["alpha_phasing_plan_report"],
+      "rhodes_doc_type": "phasing"
+    },
+    {
+      "field": "regulatory_score",
+      "writer": "regulatory_resolver",
+      "locationos_key": "regulatoryScore",
+      "required_sources": ["sir", "school_approval_report", "opening_plan_report"]
+    },
+    {
+      "field": "regulatory_comment",
+      "writer": "regulatory_resolver",
+      "locationos_key": "regulatoryComment",
+      "required_sources": ["sir", "school_approval_report", "opening_plan_report"]
+    },
+    {
+      "field": "building_score",
+      "writer": "alpha_phasing_plan",
+      "locationos_key": "buildingScore",
+      "required_sources": ["alpha_phasing_plan_report"],
+      "rhodes_doc_type": "phasing"
+    },
+    {
+      "field": "building_comment",
+      "writer": "alpha_phasing_plan",
+      "locationos_key": "buildingComment",
+      "required_sources": ["alpha_phasing_plan_report"],
+      "rhodes_doc_type": "phasing"
+    },
+    {
+      "field": "play_area_score",
+      "writer": "outdoor_play_space",
+      "locationos_key": "playAreaScore",
+      "required_sources": ["outdoor_play_space_report"],
+      "rhodes_doc_type": "other",
+      "quality_bar": "outdoorRecreation"
+    },
+    {
+      "field": "play_area_comment",
+      "writer": "outdoor_play_space",
+      "locationos_key": "playAreaComment",
+      "required_sources": ["outdoor_play_space_report"],
+      "rhodes_doc_type": "other",
+      "quality_bar": "outdoorRecreation"
+    },
+    {
+      "field": "school_ops_score",
+      "writer": "school_ops_resolver",
+      "locationos_key": "schoolOperationsScore",
+      "required_sources": ["traffic_analysis"],
+      "rhodes_doc_type": "other",
+      "quality_bar": "transportation"
+    },
+    {
+      "field": "school_ops_comment",
+      "writer": "school_ops_resolver",
+      "locationos_key": "schoolOperationsComment",
+      "required_sources": ["traffic_analysis"],
+      "rhodes_doc_type": "other",
+      "quality_bar": "transportation"
+    },
+    {
+      "field": "zoning_status_confirmed",
+      "writer": "regulatory_resolver",
+      "locationos_key": null,
+      "required_sources": ["sir", "school_approval_report", "opening_plan_report"],
+      "hold_reason": "locationos_schema_gap"
+    },
+    {
+      "field": "current_occupancy_confirmed",
+      "writer": "occupancy_resolver",
+      "locationos_key": null,
+      "required_sources": ["certificate_of_occupancy", "permit_of_record"],
+      "hold_reason": "locationos_schema_gap"
+    },
+    {
+      "field": "fast_open_mode_confirmed",
+      "writer": "opening_plan",
+      "locationos_key": null,
+      "required_sources": ["opening_plan_report"],
+      "hold_reason": "locationos_schema_gap"
+    },
+    {
+      "field": "fast_open_occupancy_type_confirmed",
+      "writer": "opening_plan",
+      "locationos_key": null,
+      "required_sources": ["opening_plan_report"],
+      "hold_reason": "locationos_schema_gap"
+    },
+    {
+      "field": "max_plan_occupancy_type_confirmed",
+      "writer": "opening_plan",
+      "locationos_key": null,
+      "required_sources": ["opening_plan_report"],
+      "hold_reason": "locationos_schema_gap"
+    },
+    {
+      "field": "site_square_footage_confirmed",
+      "writer": "space_resolver",
+      "locationos_key": null,
+      "required_sources": ["measured_floor_plan", "floor_plan", "lidar"],
+      "hold_reason": "locationos_schema_gap"
+    }
+  ]
+}

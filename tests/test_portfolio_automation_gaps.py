@@ -81,17 +81,13 @@ class FakeRhodesPortfolioClient:
             "SITE1": [
                 {
                     "_id": "NOTE1",
+                    "createdAt": "2026-05-28T15:00:00+00:00",
                     "body": "\n".join(
                         [
-                            "AutomationEvent v1",
-                            "Source: due-diligence-reporter",
-                            "Source ID: run-1",
-                            "Kind: dd_report_created",
+                            "DD report update",
+                            "Action needed: No operator action needed; DD report event is recorded.",
                             "Site: Alpha Austin 123 Main St",
-                            "Site ID: SITE1",
-                            "Decision required: no",
-                            "Mutation status: created",
-                            "Created at: 2026-05-28T15:00:00+00:00",
+                            "Status: DD report created.",
                         ]
                     ),
                 },
@@ -115,18 +111,13 @@ class FakeRhodesPortfolioClient:
             "SITE2": [
                 {
                     "_id": "NOTE3",
+                    "createdAt": "2026-05-28T16:00:00+00:00",
                     "body": "\n".join(
                         [
-                            "AutomationEvent v1",
-                            "Source: due-diligence-reporter",
-                            "Source ID: raycon-1",
-                            "Kind: raycon_followup_alert",
+                            "RayCon follow-up review",
+                            "Action needed: Review RayCon scenario generation for this site.",
                             "Site: Alpha Tulsa 6940 S Utica Ave",
-                            "Site ID: SITE2",
-                            "Decision required: yes",
-                            "Requested decision: review RayCon follow-up alert",
-                            "Mutation status: failed",
-                            "Created at: 2026-05-28T16:00:00+00:00",
+                            "Status: RayCon scenario generation needs review.",
                         ]
                     ),
                 }

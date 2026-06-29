@@ -26,8 +26,9 @@ from .automation_event import (
 )
 from .classifier import (
     AI_GENERATED_DOC_TYPES,
-    SOURCE_FOLDER_DOC_TYPES,
+    SITE_FOLDER_DOC_TYPES,
     classify_document_type,
+    is_site_folder_scan_candidate,
     match_file_to_site_llm,
 )
 from .completeness import raycon_token_paths
@@ -79,6 +80,10 @@ from .rhodes_events import (
     should_alert_google_chat,
 )
 from .sir_learning import build_sir_learning_review
+from .source_packet import (
+    locationos_fields_allowed_by_source_packet,
+    mark_written_fields_from_update_result,
+)
 from .utils import (
     escape_html_text,
     extract_folder_id_from_url,
@@ -98,6 +103,10 @@ LOCATIONOS_MCP_WRITE_REQUIRED_STATUS = "locationos_mcp_write_required"
 LOCATIONOS_MCP_WRITE_REQUEST_KEY = "locationos_mcp_write_request"
 LOCATIONOS_MCP_RESUME_SCHEMA_VERSION = "locationos_mcp_resume.v1"
 LOCATIONOS_MCP_WRITE_MODES = frozenset({"api", "mcp_assisted"})
+DD_REPORT_CREATED_SOR_PENDING_WARNING = (
+    "DD Report Google Doc created; Rhodes/LocationOS dueDiligence write or "
+    "readback is pending manual verification."
+)
 
 _DUE_DILIGENCE_REPORT_FIELD_MAP: tuple[tuple[str, str], ...] = (
     ("exec.fastest_open_capacity", "foCapacity"),
@@ -127,8 +136,16 @@ _DUE_DILIGENCE_SCORE_FIELD_KEYS: frozenset[str] = frozenset(
 _DUE_DILIGENCE_NUMERIC_FIELD_KEYS: frozenset[str] = frozenset(
     {
         "foCapEx",
+        "foCapacity",
         "maxCapCapEx",
+        "maxCapCapacity",
     }
+)
+_DUE_DILIGENCE_GREEN_SCORE_COMMENT_PAIRS: tuple[tuple[str, str], ...] = (
+    ("regulatoryScore", "regulatoryComment"),
+    ("buildingScore", "buildingComment"),
+    ("playAreaScore", "playAreaComment"),
+    ("schoolOperationsScore", "schoolOperationsComment"),
 )
 _DUE_DILIGENCE_NUMBER_RE = re.compile(r"^\d+(?:\.\d+)?$")
 _DUE_DILIGENCE_SCORE_LABELS: dict[str, int] = {
@@ -209,6 +226,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "no_outdoor_space": {"type": "boolean", "default": False},
                 "shared_parking": {"type": "boolean", "default": False},
                 "incompatible_tenants": {"type": "boolean", "default": False},
+                "site_id": {"type": "string", "default": "", "description": "Rhodes site ID when available; enables Rhodes document registration"},
                 "site_name": {"type": "string", "default": "", "description": "Site name — pass to auto-publish assessment to Drive"},
                 "drive_folder_url": {"type": "string", "default": "", "description": "Site Drive folder URL — pass to auto-publish"},
             },
@@ -223,6 +241,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "properties": {
                 "state": {"type": "string", "description": "Two-letter US state abbreviation"},
                 "address": {"type": "string", "default": "", "description": "Full site address; preferred when available"},
+                "site_id": {"type": "string", "default": "", "description": "Rhodes site ID when available; enables Rhodes document registration"},
                 "site_name": {"type": "string", "default": "", "description": "Site name — pass to auto-publish assessment to Drive"},
                 "drive_folder_url": {"type": "string", "default": "", "description": "Site Drive folder URL — pass to auto-publish"},
             },
@@ -254,6 +273,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "site_name": {"type": "string"},
+                "site_id": {"type": "string", "default": "", "description": "Rhodes site ID when available; enables Rhodes document registration"},
                 "site_address": {"type": "string", "default": ""},
                 "block_plan_content": {"type": "string"},
                 "drive_folder_url": {"type": "string", "default": ""},
@@ -261,6 +281,29 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "total_building_sf": {"type": "integer", "default": 0},
             },
             "required": ["site_name", "block_plan_content"],
+        },
+    },
+    {
+        "name": "apply_outdoor_play_space_skill",
+        "description": "Run Ops-Skills outdoor-play-space after Alpha Capacity Analysis has produced Max Plan capacity. Pass site_name, site_id, address, drive_folder_url, and student_count=max_plan_capacity. The tool runs with --skip-drive-upload, then DDR uploads/registers Markdown, JSON, PNG, and HTML artifacts to the site folder. On success, copy exec.play_area_score and exec.play_area_comment into report_data and include returned supporting_documents in prepare_due_diligence_data.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "site_name": {"type": "string"},
+                "site_id": {"type": "string"},
+                "address": {"type": "string"},
+                "drive_folder_url": {"type": "string"},
+                "student_count": {"type": "integer", "description": "Use max_plan_capacity when available; fast_open_capacity is interim only"},
+                "max_walk_minutes": {"type": "number", "default": 5},
+                "on_site_green_sf": {"type": "number"},
+                "on_site_playscape": {"type": "string", "default": "unknown"},
+                "marked_outdoor_sf": {"type": "number"},
+                "marked_outdoor_source": {"type": "string", "default": ""},
+                "marked_outdoor_note": {"type": "string", "default": ""},
+                "student_count_source": {"type": "string", "default": "max_plan_capacity"},
+                "max_plan_capacity_not_applicable": {"type": "boolean", "default": False},
+            },
+            "required": ["site_name", "site_id", "address", "drive_folder_url", "student_count"],
         },
     },
     {
@@ -309,6 +352,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "site_address": {"type": "string", "description": "Optional full property address used for deterministic REBL site ID resolution"},
                 "report_data": {"type": "object"},
                 "token_evidence": {"type": "object", "description": "Optional dict mapping token names to raw source excerpts for local diagnostics"},
+                "supporting_documents": {"type": "array", "items": {"type": "object"}, "description": "M2 source-packet supporting document refs returned by source-reading and skill tools"},
             },
             "required": ["site_name", "drive_folder_url", "report_data"],
         },
@@ -349,6 +393,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "site_name": {"type": "string", "description": "Site name for the document title"},
                 "drive_folder_url": {"type": "string", "description": "Google Drive folder URL for the site"},
                 "skill_data": {"type": "object", "description": "Full result dict from the skill tool (pass the entire response)"},
+                "site_id": {"type": "string", "default": "", "description": "Rhodes site ID when available; enables Rhodes document registration"},
+                "ddr_doc_type": {"type": "string", "default": "", "description": "DDR doc type to map to Rhodes when registering the generated report"},
             },
             "required": ["skill_name", "site_name", "drive_folder_url", "skill_data"],
         },
@@ -387,6 +433,7 @@ async def route_tool_call(tool_name: str, tool_input: dict[str, Any]) -> Any:
         "apply_school_approval_skill": srv.apply_school_approval_skill,
         "apply_opening_plan_skill": srv.apply_opening_plan_skill,
         "apply_alpha_capacity_analysis_skill": srv.apply_alpha_capacity_analysis_skill,
+        "apply_outdoor_play_space_skill": srv.apply_outdoor_play_space_skill,
         "apply_alpha_phasing_plan_skill": srv.apply_alpha_phasing_plan_skill,
         "prepare_due_diligence_data": srv.prepare_due_diligence_data,
         "create_dd_report": srv.create_dd_report,
@@ -427,6 +474,7 @@ def _canonicalize_site_tool_input(
         "apply_school_approval_skill",
         "apply_opening_plan_skill",
         "apply_alpha_capacity_analysis_skill",
+        "apply_outdoor_play_space_skill",
         "apply_alpha_phasing_plan_skill",
         "prepare_due_diligence_data",
         "create_dd_report",
@@ -436,8 +484,13 @@ def _canonicalize_site_tool_input(
         canonical["site_name"] = site_title
     if site_id and tool_name in {
         "lookup_rhodes_site_owner",
+        "apply_e_occupancy_skill",
+        "apply_school_approval_skill",
         "apply_opening_plan_skill",
+        "apply_alpha_capacity_analysis_skill",
+        "apply_outdoor_play_space_skill",
         "apply_alpha_phasing_plan_skill",
+        "save_skill_report",
     }:
         canonical["site_id"] = site_id
 
@@ -447,6 +500,7 @@ def _canonicalize_site_tool_input(
         "apply_school_approval_skill",
         "apply_opening_plan_skill",
         "apply_alpha_capacity_analysis_skill",
+        "apply_outdoor_play_space_skill",
         "apply_alpha_phasing_plan_skill",
         "prepare_due_diligence_data",
         "create_dd_report",
@@ -460,12 +514,15 @@ def _canonicalize_site_tool_input(
         "apply_school_approval_skill",
         "apply_opening_plan_skill",
         "apply_alpha_capacity_analysis_skill",
+        "apply_outdoor_play_space_skill",
         "apply_alpha_phasing_plan_skill",
         "prepare_due_diligence_data",
         "create_dd_report",
     }:
         canonical["site_address"] = site_address
         if tool_name == "apply_school_approval_skill" and not str(canonical.get("address") or "").strip():
+            canonical["address"] = site_address
+        if tool_name == "apply_outdoor_play_space_skill" and not str(canonical.get("address") or "").strip():
             canonical["address"] = site_address
 
     return canonical
@@ -711,8 +768,9 @@ def check_site_readiness_direct(
     all_site_files = [
         {**f, "doc_type": classify_document_type(f.get("name", ""))}
         for f in gc.list_files_recursive(folder_id, max_depth=2)
+        if is_site_folder_scan_candidate(f)
     ]
-    keep_doc_types = AI_GENERATED_DOC_TYPES | SOURCE_FOLDER_DOC_TYPES
+    keep_doc_types = SITE_FOLDER_DOC_TYPES
     site_folder_files = [
         f for f in all_site_files if f.get("doc_type") in keep_doc_types
     ]
@@ -728,7 +786,15 @@ def check_site_readiness_direct(
         "e_occupancy_report": None,
         "school_approval_report": None,
         "opening_plan_report": None,
+        "alpha_capacity_analysis": None,
+        "outdoor_play_space_report": None,
         "alpha_phasing_plan_report": None,
+        "traffic_analysis": None,
+        "certificate_of_occupancy": None,
+        "permit_of_record": None,
+        "measured_floor_plan": None,
+        "floor_plan": None,
+        "lidar": None,
     }
     for f in site_folder_files:
         dt = f.get("doc_type", "unknown")
@@ -921,6 +987,7 @@ def run_dd_report_agent(
     republish_guard: dict[str, Any] | None = None
     prepared_render_input: dict[str, Any] | None = None
     prepared_report_metadata: dict[str, Any] | None = None
+    prepared_source_packet: dict[str, Any] | None = None
     cached_report_fields: dict[str, Any] = dict(initial_report_fields or {})
     if effective_site_address:
         cached_report_fields.setdefault("site.address", effective_site_address)
@@ -1011,6 +1078,8 @@ def run_dd_report_agent(
                         prepared_render_input["token_evidence"] = dict(token_evidence)
                     metadata = result.get("report_metadata")
                     prepared_report_metadata = metadata if isinstance(metadata, dict) else None
+                    packet = result.get("source_packet")
+                    prepared_source_packet = packet if isinstance(packet, dict) else None
                     logger.info("Prepared DD data for SOR-first publish")
             # Capture doc_id from create_dd_report
             elif tool_use.name == "create_dd_report" and isinstance(result, dict):
@@ -1089,6 +1158,7 @@ def run_dd_report_agent(
             "render_input": prepared_render_input,
             "prepared_report_data": trace.final_report_data,
             "report_metadata": prepared_report_metadata or {},
+            "source_packet": prepared_source_packet or {},
         }
 
     if doc_id:
@@ -1113,7 +1183,7 @@ class PipelineResult:
     """Structured result from a single-site pipeline run."""
 
     site_title: str
-    status: str  # waiting_on_docs | report_exists | report_data_prepared | locationos_mcp_write_required | report_created | republish_candidate_created | report_incomplete | generation_failed | error | yielded_to_pipeline
+    status: str  # waiting_on_docs | report_exists | report_data_prepared | locationos_mcp_write_required | report_created | republish_candidate_created | report_incomplete | generation_failed | error
     missing_docs: list[str] = field(default_factory=list)
     doc_id: str | None = None
     doc_url: str | None = None
@@ -1133,9 +1203,11 @@ class PipelineResult:
     open_questions: list[dict[str, Any]] = field(default_factory=list)
     closed_open_questions: list[dict[str, Any]] = field(default_factory=list)
     republish_summary: dict[str, Any] | None = None
+    source_packet: dict[str, Any] | None = None
     rhodes_due_diligence_update: dict[str, Any] | None = None
     rhodes_report_event: dict[str, Any] | None = None
     locationos_mcp_resume: dict[str, Any] | None = None
+    warnings: list[str] = field(default_factory=list)
     steps: list[StepResult] = field(default_factory=list)
 
 
@@ -1318,9 +1390,11 @@ def _attach_result_metadata(run: PipelineRun, result: PipelineResult) -> None:
     run.open_questions = result.open_questions
     run.closed_open_questions = result.closed_open_questions
     run.republish_summary = result.republish_summary
+    run.source_packet = result.source_packet
     run.rhodes_due_diligence_update = result.rhodes_due_diligence_update
     run.rhodes_report_event = result.rhodes_report_event
     run.locationos_mcp_resume = result.locationos_mcp_resume
+    run.warnings = list(result.warnings)
 
 
 def _get_payload_error(result: dict[str, Any]) -> str | None:
@@ -1535,7 +1609,7 @@ def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
 
 
 def _missing_first_round_docs(readiness: dict[str, Any]) -> list[str]:
-    """Return blocking inputs for first-round DDR publishing.
+    """Return blocking inputs for first-round direct DD publishing.
 
     First-round reports are allowed to publish from the AI SIR / research
     output before all vendor documents come back. Full-report readiness stays
@@ -1789,23 +1863,14 @@ def _run_pipeline_agent(
     rhodes_owner_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, PipelineResult | None]:
     """Run report generation and map failures into a PipelineResult."""
-    # Phase B-PR3 cutover: when DD_REPORT_OWNER=pipeline, the
-    # alpha-dd-pipeline WU-13 is the sole DD-report producer. Short-circuit
-    # before any agent work so reruns and backfills both honor the flag
-    # uniformly. We yield a distinct status ("yielded_to_pipeline") so the
-    # caller can skip the email and validation side effects that the Anthropic
-    # agent would normally feed. Default "reporter" preserves legacy behavior
-    # until soak passes; "pipeline" is the only value that disables the agent run.
+    # M2 DD execution is repo-owned. DD_REPORT_OWNER is retained as a tolerated
+    # legacy env var but no longer delegates this workflow to another pipeline.
     owner = os.environ.get("DD_REPORT_OWNER", "reporter").strip().lower()
     if owner == "pipeline":
         logger.info(
-            "DD_REPORT_OWNER=pipeline; reporter is yielding DD-report "
-            "generation to alpha-dd-pipeline WU-13 for %s",
+            "Ignoring legacy DD_REPORT_OWNER=pipeline for %s; "
+            "M2 execution remains in due-diligence-reporter.",
             site_title,
-        )
-        return None, PipelineResult(
-            site_title=site_title,
-            status="yielded_to_pipeline",
         )
 
     logger.info("'%s' - all docs present, generating report...", site_title)
@@ -1958,12 +2023,14 @@ def _email_pipeline_report(
 def _resolve_rhodes_owner_for_pipeline(
     site_title: str,
     site_address: str | None,
+    site_id: str | None = None,
 ) -> dict[str, Any]:
     """Best-effort Rhodes site lookup for owner and Drive-folder context."""
     try:
         result = lookup_rhodes_site_owner(
             site_name=site_title,
             site_address=site_address or "",
+            site_id=site_id or "",
         )
     except Exception as exc:  # noqa: BLE001 - non-blocking lookup
         logger.warning("Rhodes owner lookup failed for %s: %s", site_title, exc)
@@ -2262,6 +2329,9 @@ def _record_rhodes_due_diligence_update_step(
         result,
         completed_at=recorder.started_at,
     )
+    source_packet = result.source_packet if isinstance(result.source_packet, dict) else None
+    if source_packet is not None:
+        fields = locationos_fields_allowed_by_source_packet(fields, source_packet)
     if due_diligence_write_mode == "mcp_assisted" and locationos_mcp_write_completed:
         update_status = _verify_locationos_mcp_due_diligence_update(
             site_id=site_id,
@@ -2285,6 +2355,19 @@ def _record_rhodes_due_diligence_update_step(
                     doc_url=result.doc_url or "",
                 ),
             }
+    if source_packet is not None:
+        source_packet = mark_written_fields_from_update_result(
+            source_packet=source_packet,
+            update_result=update_status,
+        )
+        result.source_packet = source_packet
+        update_status = {
+            **update_status,
+            "source_packet_status": source_packet.get("status"),
+            "m2_source_packet_complete": source_packet.get("m2_source_packet_complete"),
+            "source_note_lines": source_packet.get("source_note_lines", []),
+            "source_packet_open_items": source_packet.get("open_items", []),
+        }
     result.rhodes_due_diligence_update = update_status
     artifact = ArtifactRef(
         kind="rhodes_due_diligence",
@@ -2313,7 +2396,8 @@ def _record_rhodes_due_diligence_update_step(
         return
 
     message = str(
-        update_status.get("error")
+        update_status.get("error_summary")
+        or update_status.get("error")
         or update_status.get("reason")
         or "Rhodes due diligence update failed"
     )
@@ -2408,10 +2492,25 @@ def _build_locationos_mcp_write_request(
             "verify_fields": sorted(fields),
         },
         "resume": {
-            "condition": resume_condition
+            "required": not document_already_rendered,
+            "condition": resume_condition,
         },
         "dd_report_doc_url": doc_url.strip() if document_already_rendered else "",
     }
+
+
+def _locationos_mcp_resume_condition(resume_required: bool) -> str:
+    if resume_required:
+        return (
+            "Run updateDueDiligence through the user's OAuth-backed locationos MCP, "
+            "approve the Aerie card if prompted, then rerun the emitted "
+            "manifest-bound resume command."
+        )
+    return (
+        "Run updateDueDiligence through the user's OAuth-backed locationos MCP, "
+        "approve the Aerie card if prompted, then verify live getSite readback. "
+        "No DDR resume is required because the DD Report Doc already exists."
+    )
 
 
 def _locationos_mcp_write_request_from_result(
@@ -2555,7 +2654,15 @@ def _build_due_diligence_update_fields(
     if recommendation:
         fields["recommendation"] = recommendation
 
+    _drop_green_due_diligence_comments(fields)
+
     return fields
+
+
+def _drop_green_due_diligence_comments(fields: dict[str, Any]) -> None:
+    for score_key, comment_key in _DUE_DILIGENCE_GREEN_SCORE_COMMENT_PAIRS:
+        if fields.get(score_key) == 1:
+            fields.pop(comment_key, None)
 
 
 def _clean_due_diligence_field_value(rhodes_key: str, value: Any) -> Any:
@@ -2765,6 +2872,13 @@ def _record_rhodes_report_event_step(
             body,
         )
         event_status["google_chat"] = chat_result
+    if _report_event_needs_wtc_review(event_status):
+        _mark_report_event_wtc_review(
+            event_status,
+            body=body,
+            owner_user_id=owner_user_id,
+            owner_email=owner_email,
+        )
     if _report_event_notification_was_sent(event_status):
         event_status["sent_at"] = recorder.started_at
 
@@ -2801,6 +2915,31 @@ def _record_rhodes_report_event_step(
             started_monotonic,
             "skipped",
             skipped_reason=str(event_status.get("reason") or "skipped"),
+        )
+        return
+    if event_status.get("wtc_review_required"):
+        message = str(event_status.get("error") or event_status.get("reason") or "unknown")
+        if should_alert_chat and chat_status in {"failed", "skipped"}:
+            message = f"{message}; Google Chat fallback {chat_status}"
+        warning = (
+            "Rhodes event note was not verified; manually confirm the DD Report "
+            "Google Doc was produced and LocationOS/Rhodes dueDiligence fields "
+            "were completed."
+        )
+        event_status["severity"] = "warning"
+        event_status["warning"] = warning
+        event_status["manual_check"] = {
+            "dd_report_doc": result.doc_url or "",
+            "due_diligence_update": result.rhodes_due_diligence_update or {},
+            "reason": message,
+        }
+        artifact.metadata = event_status
+        recorder.record(
+            "rhodes.report_event",
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[artifact],
         )
         return
 
@@ -2873,6 +3012,13 @@ def _record_republish_candidate_event_step(
             body,
         )
         event_status["google_chat"] = chat_result
+    if _report_event_needs_wtc_review(event_status):
+        _mark_report_event_wtc_review(
+            event_status,
+            body=body,
+            owner_user_id=owner_user_id,
+            owner_email=owner_email,
+        )
     result.rhodes_report_event = event_status
     artifact = ArtifactRef(
         kind="rhodes_note",
@@ -2891,6 +3037,15 @@ def _record_republish_candidate_event_step(
         )
         return
     if note_status == "created" and not should_alert_chat:
+        recorder.record(
+            "rhodes.report_event",
+            started_at,
+            started_monotonic,
+            "succeeded",
+            artifacts=[artifact],
+        )
+        return
+    if event_status.get("wtc_review_required"):
         recorder.record(
             "rhodes.report_event",
             started_at,
@@ -3402,6 +3557,35 @@ def _report_event_notification_was_sent(event_status: dict[str, Any]) -> bool:
     return False
 
 
+def _report_event_needs_wtc_review(event_status: dict[str, Any]) -> bool:
+    if not bool(event_status.get("decision_required", True)):
+        return False
+    if event_status.get("reason") == "frequency_cap":
+        return False
+    note_id = str(event_status.get("rhodes_note_id") or "").strip()
+    owner_mentioned = (
+        event_status.get("status") == "created"
+        and event_status.get("owner_notification") == "mentioned"
+        and bool(note_id)
+    )
+    return not owner_mentioned
+
+
+def _mark_report_event_wtc_review(
+    event_status: dict[str, Any],
+    *,
+    body: str,
+    owner_user_id: str,
+    owner_email: str,
+) -> None:
+    if not str(event_status.get("reason") or event_status.get("error") or "").strip():
+        event_status["reason"] = "p1_owner_review_note_not_verified"
+    event_status["wtc_review_required"] = True
+    event_status["intended_note_body"] = body
+    event_status["intended_owner_user_id"] = owner_user_id.strip()
+    event_status["intended_owner_email"] = owner_email.strip()
+
+
 def _sent_at_from_manifest(
     payload: dict[str, Any],
     event_status: dict[str, Any],
@@ -3466,6 +3650,7 @@ def process_site_pipeline(
     # Optional ISO 8601 source created date.
     site_created_at: str | None = None,
     site_id: str | None = None,
+    rhodes_owner_context: dict[str, Any] | None = None,
     source_event: dict[str, Any] | None = None,
     open_questions_before: list[dict[str, Any]] | None = None,
     # When True, bypass the ``report_exists`` short-circuit so a fresh
@@ -3488,12 +3673,15 @@ def process_site_pipeline(
     if locationos_mcp_write_completed and due_diligence_write_mode != "mcp_assisted":
         raise ValueError("--mcp-write-completed requires due_diligence_write_mode=mcp_assisted")
     recorder = _RunRecorder(site_title, site_id=site_id, launch_context=launch_context)
-    rhodes_owner_context: dict[str, Any] | None = None
     initial_report_fields: dict[str, Any] = {}
 
     if not drive_folder_url.strip():
         started_at, started_monotonic = recorder.start()
-        rhodes_owner_context = _resolve_rhodes_owner_for_pipeline(site_title, site_address)
+        rhodes_owner_context = _resolve_rhodes_owner_for_pipeline(
+            site_title,
+            site_address,
+            site_id,
+        )
         rhodes_status = str(rhodes_owner_context.get("status") or "")
         if rhodes_status == "not_configured":
             recorder.record(
@@ -3697,7 +3885,11 @@ def process_site_pipeline(
 
     if rhodes_owner_context is None and not (p1_name and p1_email):
         started_at, started_monotonic = recorder.start()
-        rhodes_owner_context = _resolve_rhodes_owner_for_pipeline(site_title, site_address)
+        rhodes_owner_context = _resolve_rhodes_owner_for_pipeline(
+            site_title,
+            site_address,
+            site_id,
+        )
         rhodes_status = str(rhodes_owner_context.get("status") or "")
         if rhodes_status == "not_configured":
             recorder.record(
@@ -3749,22 +3941,19 @@ def process_site_pipeline(
         rhodes_owner_context=rhodes_owner_context,
     )
     if generation_result is not None:
-        gen_status = "skipped" if generation_result.status == "yielded_to_pipeline" else "failed"
-        gen_error = None
-        if gen_status == "failed":
-            gen_error = _pipeline_error(
-                recorder.run_id,
-                "report.generate",
-                "report_generation_failed",
-                generation_result.error or generation_result.status,
-            )
+        gen_status = "failed"
+        gen_error = _pipeline_error(
+            recorder.run_id,
+            "report.generate",
+            "report_generation_failed",
+            generation_result.error or generation_result.status,
+        )
         recorder.record(
             "report.generate",
             started_at,
             started_monotonic,
             gen_status,
             error=gen_error,
-            skipped_reason=generation_result.status if gen_status == "skipped" else None,
         )
         generation_result.trace_url = None
         _record_source_alert_step(
@@ -3852,6 +4041,11 @@ def process_site_pipeline(
             missing_docs=missing_full_report_docs,
             trace_url=trace_url,
             trace=trace,
+            source_packet=(
+                agent_result.get("source_packet")
+                if isinstance(agent_result.get("source_packet"), dict)
+                else None
+            ),
         )
         _set_open_question_state(
             prepared_result,
@@ -3986,6 +4180,11 @@ def process_site_pipeline(
             doc_url=doc_url,
             trace_url=trace_url,
             trace=agent_result.get("trace"),
+            source_packet=(
+                agent_result.get("source_packet")
+                if isinstance(agent_result.get("source_packet"), dict)
+                else None
+            ),
         )
         _set_open_question_state(
             candidate_result,
@@ -4013,7 +4212,9 @@ def process_site_pipeline(
             )
         else:
             candidate_result.rhodes_due_diligence_update = pre_render_due_diligence_update
-            candidate_result.locationos_mcp_resume = pre_render_locationos_mcp_resume
+        candidate_result.locationos_mcp_resume = pre_render_locationos_mcp_resume
+        if _due_diligence_update_failed(candidate_result):
+            candidate_result.warnings.append(DD_REPORT_CREATED_SOR_PENDING_WARNING)
         _record_republish_candidate_event_step(
             recorder,
             settings,
@@ -4085,6 +4286,15 @@ def process_site_pipeline(
             open_questions_before=open_questions_before,
             validated=False,
         )
+        completeness_result.rhodes_due_diligence_update = pre_render_due_diligence_update
+        completeness_result.source_packet = (
+            agent_result.get("source_packet")
+            if isinstance(agent_result.get("source_packet"), dict)
+            else None
+        )
+        completeness_result.locationos_mcp_resume = pre_render_locationos_mcp_resume
+        if _due_diligence_update_failed(completeness_result):
+            completeness_result.warnings.append(DD_REPORT_CREATED_SOR_PENDING_WARNING)
         return _finalize_pipeline_result(
             completeness_result,
             recorder,
@@ -4109,6 +4319,11 @@ def process_site_pipeline(
         pending_count=completeness.get("pending_section_count", 0),
         trace_url=trace_url,
         trace=agent_result.get("trace"),
+        source_packet=(
+            agent_result.get("source_packet")
+            if isinstance(agent_result.get("source_packet"), dict)
+            else None
+        ),
     )
     _set_open_question_state(
         final_result,
@@ -4129,7 +4344,7 @@ def process_site_pipeline(
         )
     else:
         final_result.rhodes_due_diligence_update = pre_render_due_diligence_update
-        final_result.locationos_mcp_resume = pre_render_locationos_mcp_resume
+    final_result.locationos_mcp_resume = pre_render_locationos_mcp_resume
     due_diligence_update_failed = _due_diligence_update_failed(final_result)
 
     _record_rhodes_report_event_step(
@@ -4141,6 +4356,7 @@ def process_site_pipeline(
         owner_email=p1_email or "",
     )
     if due_diligence_update_failed:
+        final_result.warnings.append(DD_REPORT_CREATED_SOR_PENDING_WARNING)
         return _finalize_pipeline_result(
             final_result,
             recorder,

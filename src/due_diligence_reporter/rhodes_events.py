@@ -50,7 +50,13 @@ def record_rhodes_automation_event(
         {
             "event_type": event.event_type,
             "source_id": event.source_id,
+            "source_system": event.source_system,
+            "site_id": event.site_id,
             "decision_required": event.decision_required,
+            "requested_decision": event.requested_decision or "",
+            "mutation_status": event.mutation_status,
+            "artifact_ids": dict(event.artifact_ids),
+            "details": {key: value for key, value in event.details.items() if value},
             **note_result,
         },
         rendered_body,

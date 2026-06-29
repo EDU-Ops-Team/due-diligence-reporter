@@ -193,6 +193,12 @@ def test_pipeline_run_emits_completed_actions_for_rhodes_writes() -> None:
             "status": "created",
             "rhodes_note_id": "NOTE1",
             "owner_notification": "mentioned",
+            "event_type": "dd_report_created",
+            "source_id": "run-1",
+            "artifact_ids": {"DD report ID": "doc123"},
+            "details": {
+                "Rhodes due diligence update": "updated status, dateCompleted, ddReportLink"
+            },
         },
     )
 
@@ -205,6 +211,61 @@ def test_pipeline_run_emits_completed_actions_for_rhodes_writes() -> None:
     assert actions["ddr_p1_note_created"]["status"] == "completed"
     assert actions["ddr_p1_note_created"]["review_required"] is False
     assert "note_id=NOTE1" in actions["ddr_p1_note_created"]["evidence_summary"]
+    technical_context = actions["ddr_p1_note_created"]["technical_context"]
+    assert technical_context["run_id"] == "run-1"
+    assert technical_context["event_type"] == "dd_report_created"
+    assert technical_context["artifact_ids"] == {"DD report ID": "doc123"}
+    assert technical_context["rhodes_due_diligence_update"]["updated_fields"] == [
+        "status",
+        "dateCompleted",
+        "ddReportLink",
+    ]
+
+
+def test_pipeline_run_routes_p1_note_delivery_warning_to_wtc() -> None:
+    run = PipelineRun(
+        run_id="run-1",
+        site_title="Alpha Keller",
+        site_id="SITE1",
+        started_at="2026-05-14T00:00:00+00:00",
+        ended_at="2026-05-14T00:00:02+00:00",
+        final_status="report_created",
+        steps=[
+            _step("succeeded", step="report.validate"),
+            _step("succeeded", step="rhodes.report_event"),
+        ],
+        rhodes_report_event={
+            "status": "failed",
+            "reason": "note_api_error",
+            "error": "Aerie notes API returned 500",
+            "event_type": "dd_report_created",
+            "source_id": "run-1",
+            "write_path": "aerie_notes_api",
+            "wtc_review_required": True,
+            "intended_note_body": "DD report update\nAction needed: Review the DD report.",
+            "intended_owner_user_id": "OWNER1",
+            "intended_owner_email": "owner@example.com",
+        },
+    )
+
+    actions = {record["alert_type"]: record for record in run.to_dict()["action_records"]}
+    warning = actions["ddr_p1_note_delivery_warning"]
+
+    assert warning["source_workflow"] == "ddr"
+    assert warning["owning_workflow"] == "wtc"
+    assert warning["workflow_owner"] == "wtc"
+    assert warning["status"] == "needs_review"
+    assert warning["owner"] == {
+        "workflow_owner": "wtc",
+        "human_owner": "owner@example.com",
+        "rhodes_user_id": "OWNER1",
+    }
+    assert warning["review"]["required"] is True
+    assert warning["error"]["retryable"] is True
+    assert "aerie_notes_api" in warning["evidence"]["readback"]
+    assert "DD report update" in warning["evidence"]["intended_note_body"]
+    assert warning["technical_context"]["run_id"] == "run-1"
+    assert warning["technical_context"]["source_id"] == "run-1"
 
 
 def test_pipeline_run_emits_aadp_route_for_missing_p1_dri() -> None:

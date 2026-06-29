@@ -7202,3 +7202,54 @@ Remaining blocker:
   DD Report, so the DDR should not be marked complete until LocationOS accepts
   the `updateDueDiligence` write and the pipeline can proceed to
   `report.render`.
+
+## 2026-06-29 - M2 source packet and repo-owned runner containment
+
+Request: implement the M2 Direct DD Source Packet and repo-owned runner plan.
+
+Outcome:
+
+- Added a repo-tracked M2 field/source matrix snapshot at
+  `docs/reference/m2-diligence-field-source-matrix.json` and wired
+  `source_packet.py` tests to assert the live-sheet field set and approved
+  overrides. The active matrix now removes `ddr_attached`,
+  `max_plan_mode_confirmed`, and `permit_of_record_confirmed`, and uses
+  `fast_open_occupancy_type_confirmed` plus
+  `max_plan_occupancy_type_confirmed` as schema-gap confirmation fields.
+- Hardened the M2 source packet gate so registered-but-unmapped supporting docs
+  block dependent field writes and create explicit open items. Schema-gap holds
+  remain non-blocking once evidence is registered and mapped.
+- Expanded source document coverage across classifier/readiness/source-sweep
+  paths for Alpha Capacity, Outdoor Play Space, Opening Plan, Alpha Phasing,
+  School Approval, KH traffic, CO/permit, measured floor plan, floor plan, and
+  LiDAR source docs.
+- Added repo CLI scheduler surfaces: `uv run ddr daily-check` and
+  `uv run ddr source-sweep`. The scheduled daily and source-sweep workflows now
+  call those CLI commands, while the existing scripts remain compatibility
+  wrappers.
+- Hard-disabled the `DD_REPORT_OWNER=pipeline` escape hatch for M2 execution.
+  The env var is tolerated as legacy input but no longer delegates execution
+  outside this repo.
+- Removed active Braintrust wording from the runtime surfaces covered by tests.
+  Historical references are not treated as active process guidance.
+- Updated pytest config so the exact repo gate `uv run pytest` ignores local
+  cache/temp directories and uses repo-local `.pytest-tmp`, avoiding Windows
+  temp-root permission failures.
+
+Validation:
+
+```powershell
+uv run pytest -q
+uv run ruff check .
+uv run mypy src/
+git diff --check
+```
+
+Results: pytest `1290 passed`; ruff passed; mypy passed for `49 source files`;
+`git diff --check` passed with expected LF-to-CRLF warnings only.
+
+Remaining operational proof:
+
+- Repo inspection cannot prove that external historical Braintrust schedules are
+  disabled. Before declaring the old scheduler fully retired operationally,
+  verify outside the repo that no Braintrust job still invokes M2 DDR execution.

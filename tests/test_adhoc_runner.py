@@ -195,17 +195,17 @@ def test_force_regenerate_mcp_assisted_surfaces_write_request_and_resume_command
             status="locationos_mcp_write_required",
             run_id="run-1",
             manifest_path=".ddr-runs/run-1.json",
-            rhodes_due_diligence_update={
-                "status": "failed",
-                "reason": "rhodes_error",
-                "error": "Error: elicitation_unsupported",
-                "locationos_mcp_write_request": request,
-            },
             locationos_mcp_resume={
                 "schema_version": "locationos_mcp_resume.v1",
                 "source_run_id": "run-1",
                 "site_id": "SITE1",
                 "site_title": "Alpha Keller",
+            },
+            rhodes_due_diligence_update={
+                "status": "failed",
+                "reason": "rhodes_error",
+                "error": "Error: elicitation_unsupported",
+                "locationos_mcp_write_request": request,
             },
         )
     )

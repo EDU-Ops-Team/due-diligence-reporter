@@ -401,15 +401,23 @@ def test_apply_alpha_capacity_analysis_skill_downloads_pdf_for_drive_publish(
     def fake_generate(_gc: Any, **kwargs: Any) -> dict[str, Any]:
         called["gc"] = _gc
         called.update(kwargs)
-        return {"status": "success", "capacity_analysis_file_id": "cap-json"}
+        return {
+            "status": "success",
+            "capacity_analysis_file_id": "cap-json",
+            "capacity_analysis_url": "https://drive/cap-json",
+            "artifact_name": "Alpha Capacity Analysis - Alpha Keller - bp123.json",
+        }
 
     monkeypatch.setattr(server, "_make_google_client", lambda: gc)
     monkeypatch.setattr(server, "_get_or_create_m1_folder", lambda _gc, _folder_id: {"id": "m1-folder"})
     monkeypatch.setattr(server, "generate_alpha_capacity_analysis_artifact", fake_generate)
+    register_rhodes = MagicMock(return_value={"status": "registered"})
+    monkeypatch.setattr(server, "register_rhodes_document_for_upload", register_rhodes)
 
     result = asyncio.run(
         server.apply_alpha_capacity_analysis_skill(
             site_name="Alpha Keller",
+            site_id="SITE1",
             site_address="123 Main St",
             block_plan_content="",
             drive_folder_url="https://drive.google.com/drive/folders/site-folder",
@@ -424,3 +432,9 @@ def test_apply_alpha_capacity_analysis_skill_downloads_pdf_for_drive_publish(
     assert called["m1_folder_id"] == "m1-folder"
     assert called["block_plan_file_bytes"] == b"%PDF-block-plan"
     assert called["block_plan_file_id"] == "bp123"
+    assert result["doc_type"] == "alpha_capacity_analysis"
+    assert result["rhodes_registration"]["status"] == "registered"
+    register_rhodes.assert_called_once()
+    assert register_rhodes.call_args.kwargs["site_id"] == "SITE1"
+    assert register_rhodes.call_args.kwargs["ddr_doc_type"] == "alpha_capacity_analysis"
+    assert register_rhodes.call_args.kwargs["drive_file_id"] == "cap-json"

@@ -23,7 +23,7 @@ def add_run_site_parser(
 ) -> None:
     parser = subparsers.add_parser(
         "run-site",
-        help="Run or diagnose one DDR site without BrainTrust",
+        help="Run or diagnose one DDR site through the repo-owned runner",
     )
     parser.set_defaults(command="run-site")
     _add_mode_parsers(parser)
@@ -271,6 +271,7 @@ def _run_pipeline_mode(
         p1_name=site["p1_name"] or None,
         site_created_at=site["site_created_at"] or None,
         site_id=site["site_id"] or None,
+        rhodes_owner_context=_owner_context_from_site(site),
         source_event=source_event,
         force_regenerate=force_regenerate,
         due_diligence_write_mode=_pipeline_sor_write_mode(args),
@@ -389,6 +390,7 @@ def _run_mcp_resume(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         notify=args.notify,
         sor_write_mode="mcp-assisted",
         mcp_write_completed=True,
+        document_first_on_sor_blocker=True,
     )
     payload["source_run_id"] = args.run_id
     return _exit_code_for_status(str(payload.get("status") or "")), payload
@@ -432,7 +434,7 @@ def _make_google_client() -> Any:
     )
 
 
-def _site_context(args: argparse.Namespace) -> dict[str, str]:
+def _site_context(args: argparse.Namespace) -> dict[str, Any]:
     context = _lookup_context(args)
     site_title = _context_value(context, "site_name") or args.site
     site_address = _context_value(context, "site_address") or args.address
@@ -445,9 +447,11 @@ def _site_context(args: argparse.Namespace) -> dict[str, str]:
         "site_id": site_id,
         "p1_name": _context_value(context, "p1_assignee_name"),
         "p1_email": _context_value(context, "p1_assignee_email"),
+        "p1_user_id": _context_value(context, "p1_assignee_user_id"),
         "site_created_at": _report_field(context, "site_created_at"),
         "rhodes_status": _context_value(context, "status"),
         "rhodes_message": _context_value(context, "message"),
+        "rhodes_owner_context": context,
     }
 
 
@@ -465,6 +469,13 @@ def _lookup_context(args: argparse.Namespace) -> dict[str, Any]:
 def _context_value(context: dict[str, Any], key: str) -> str:
     value = context.get(key)
     return value.strip() if isinstance(value, str) else ""
+
+
+def _owner_context_from_site(site: dict[str, Any]) -> dict[str, Any] | None:
+    context = site.get("rhodes_owner_context")
+    if isinstance(context, dict):
+        return context
+    return None
 
 
 def _report_field(context: dict[str, Any], key: str) -> str:

@@ -52,22 +52,28 @@ def test_document_registration_failed_event_renders_shared_contract_fields() -> 
 
     note = render_automation_event_note(event)
 
-    assert "AutomationEvent v1" in note
-    assert "Source: due-diligence-reporter" in note
-    assert "Source ID: msg-1" in note
-    assert "Kind: document_registration_failed" in note
-    assert "Site ID: SITE1" in note
-    assert "Decision required: yes" in note
+    assert note.splitlines()[0] == "Document filing review"
     assert (
-        "Requested decision: repair or register the Rhodes document link for the Drive file"
+        "Action needed: Review a document that did not finish filing in Rhodes."
         in note
     )
-    assert "Mutation status: failed" in note
-    assert "Retry state: attempts=3/2; exhausted=true" in note
-    assert "Drive file ID: drive-file-1" in note
-    assert "Gmail message ID: msg-1" in note
-    assert "Owner: Owner One <owner@example.com>" in note
-    assert "Created at: 2026-05-27T16:45:00+00:00" in note
+    assert "Site: Alpha Keller" in note
+    assert "Status: Rhodes document registration did not complete." in note
+    assert "Document: May 27 2026 - Alpha Keller ISP.pdf" in note
+    assert "Type: isp" in note
+    assert "Drive link: https://drive.example/file/drive-file-1" in note
+    assert "Next steps:" in note
+    assert "- Register or repair the Rhodes document link." in note
+    assert "AutomationEvent v1" not in note
+    assert "Source ID: msg-1" not in note
+    assert "Kind: document_registration_failed" not in note
+    assert "Site ID: SITE1" not in note
+    assert "Retry state:" not in note
+    assert "Drive file ID:" not in note
+    assert "Gmail message ID:" not in note
+    assert "Owner One <owner@example.com>" not in note
+    assert "timeout" not in note
+    assert "Created at:" not in note
 
 
 def test_document_registration_event_handles_missing_owner() -> None:
@@ -91,7 +97,8 @@ def test_document_registration_event_handles_missing_owner() -> None:
 
     note = render_automation_event_note(event)
 
-    assert "Owner: No owner assigned" in note
+    assert "Document filing review" in note
+    assert "No owner assigned" not in note
 
 
 def test_inbox_manual_review_event_renders_decision_context() -> None:
@@ -115,18 +122,24 @@ def test_inbox_manual_review_event_renders_decision_context() -> None:
 
     note = render_automation_event_note(event)
 
-    assert "Kind: inbox_manual_review_required" in note
-    assert "Site ID: SITE1" in note
+    assert note.splitlines()[0] == "Document intake review"
     assert (
-        "Requested decision: review the inbound DD attachment and repair filing or site routing"
+        "Action needed: Review an inbound due diligence attachment before filing."
         in note
     )
-    assert "Mutation status: missing_drive_folder" in note
-    assert "Gmail message ID: msg-1" in note
-    assert "Gmail thread ID: thread-1" in note
-    assert "Filename: Alpha Keller SIR.pdf" in note
-    assert "Manual review reason: missing_drive_folder" in note
-    assert "Error: Matched site has no Google Drive folder URL" in note
+    assert "Site: Alpha Keller" in note
+    assert "Status: Needs manual review." in note
+    assert "Document: Alpha Keller SIR.pdf" in note
+    assert "Type: sir" in note
+    assert "- Confirm the correct site and document type." in note
+    assert "Kind: inbox_manual_review_required" not in note
+    assert "Site ID: SITE1" not in note
+    assert "Requested decision:" not in note
+    assert "Mutation status:" not in note
+    assert "Gmail message ID:" not in note
+    assert "Gmail thread ID:" not in note
+    assert "missing_drive_folder" not in note
+    assert "Matched site has no Google Drive folder URL" not in note
 
 
 def test_dd_report_summary_event_renders_open_and_closed_items() -> None:
@@ -163,32 +176,30 @@ def test_dd_report_summary_event_renders_open_and_closed_items() -> None:
 
     note = render_automation_event_note(event)
 
-    assert "Kind: dd_report_updated" in note
+    assert note.splitlines()[0] == "DD report update"
     assert (
         "Action needed: Review the DD report and close 1 open verification ask. "
         "Update the source document, Rhodes record, or DD report evidence when resolved."
         in note
     )
-    assert "Asks to close:" in note
-    assert "How to close: These asks come from the DD report Open Items to Verify section." in note
+    assert "Status: DD report updated." in note
+    assert "DD report: https://docs.google.com/document/d/doc-1" in note
+    assert "Open verification items: 1" in note
+    assert "Latest source reviewed: Vendor SIR (Alpha Keller SIR.pdf)" in note
+    assert "Resolved this run: 1" in note
     assert (
-        "Move the answer/evidence into the right DD report section or Rhodes/source record, "
-        "then remove the ask from Open Items to Verify."
+        "Close open items after the answer is added to the DD report or source record."
         in note
     )
-    assert "If an answer is left under the ask, it still counts as open." in note
-    assert "Ask 1: Confirm zoning use from the vendor SIR" in note
-    assert "Resolved in this update:" in note
-    assert "Resolved 1: Resolve construction timeline from RayCon" in note
-    assert "System details:" in note
-    assert "Mutation status: report_created" in note
-    assert "Run ID: run-1" in note
-    assert "DD report ID: doc-1" in note
-    assert "Source Drive file ID: drive-file-1" in note
-    assert "DD report: https://docs.google.com/document/d/doc-1" in note
-    assert "Latest source reviewed: vendor_sir - Alpha Keller SIR.pdf" in note
-    assert "Open item count: 1" in note
-    assert "Closed item count: 1" in note
+    assert "Next steps:" in note
+    assert "- Review the DD report." in note
+    assert "- Close open verification items after the evidence is added." in note
+    assert "System details:" not in note
+    assert "Run ID: run-1" not in note
+    assert "DD report ID: doc-1" not in note
+    assert "Source Drive file ID: drive-file-1" not in note
+    assert "Kind: dd_report_updated" not in note
+    assert "Ask 1: Confirm zoning use from the vendor SIR" not in note
 
 
 def test_dd_report_summary_event_rolls_up_long_open_item_list() -> None:
@@ -208,12 +219,14 @@ def test_dd_report_summary_event_rolls_up_long_open_item_list() -> None:
     note = render_automation_event_note(event)
     lines = note.splitlines()
 
-    assert lines[0] == "AutomationEvent v1"
+    assert lines[0] == "DD report update"
     assert lines[1].startswith("Action needed: Review the DD report and close 7 open")
-    assert "Ask 1: Resolve verification ask 1" in note
-    assert "Ask 5: Resolve verification ask 5" in note
+    assert "Open verification items: 7" in note
+    assert "Next steps:" in note
+    assert "Ask 1: Resolve verification ask 1" not in note
+    assert "Ask 5: Resolve verification ask 5" not in note
     assert "Resolve verification ask 6" not in note
-    assert "Additional asks: 2 more open item(s) are listed in the DD report." in note
+    assert "Additional asks:" not in note
 
 
 def test_dd_report_summary_event_renders_failed_due_diligence_write() -> None:
@@ -239,18 +252,49 @@ def test_dd_report_summary_event_renders_failed_due_diligence_write() -> None:
 
     note = render_automation_event_note(event)
 
+    assert note.splitlines()[0] == "DD report update"
     assert (
-        "Action needed: Review the failed Rhodes due diligence write and DD report."
+        "Action needed: Review the DD report and confirm the Rhodes field update."
         in note
     )
     assert (
-        "Rhodes due diligence update: failed to update foCapacity, status: "
-        "updateDueDiligence rejected"
+        "Status: DD report created. Rhodes fields: Did not update. "
+        "Technical details are in the run record."
     ) in note
-    assert (
-        "Requested decision: review failed Rhodes due diligence write and DD report"
-        in note
+    assert "- Confirm the Rhodes field update is repaired." in note
+    assert "updateDueDiligence rejected" not in note
+    assert "foCapacity" not in note
+    assert "Requested decision:" not in note
+
+
+def test_dd_report_summary_event_renders_m2_source_packet_lines() -> None:
+    event = build_dd_report_summary_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        run_id="run-1",
+        doc_id=None,
+        doc_url=None,
+        due_diligence_update={
+            "status": "updated",
+            "reason": "ok",
+            "updated_fields": ["playAreaScore", "playAreaComment"],
+            "source_packet_status": "complete",
+            "m2_source_packet_complete": True,
+            "source_note_lines": [
+                "play_area_score -> 1 -> Outdoor Play Space Report",
+                "play_area_comment -> Passes with B confidence -> Outdoor Play Space Report",
+            ],
+        },
+        created_at="2026-06-29T13:30:00+00:00",
     )
+
+    note = render_automation_event_note(event)
+
+    assert "M2 source packet: complete" in note
+    assert "play_area_score -> 1 -> Outdoor Play Space Report" in note
+    assert "play_area_comment -> Passes with B confidence -> Outdoor Play Space Report" in note
+    assert "DDR as source" not in note
+    assert "drive-file" not in note
 
 
 def test_dd_report_candidate_event_renders_due_diligence_write() -> None:
@@ -275,22 +319,28 @@ def test_dd_report_candidate_event_renders_due_diligence_write() -> None:
 
     assert event.decision_required is True
     assert event.requested_decision == (
-        "review Rhodes due diligence fields and candidate DDR before replacing active report"
+        "review Rhodes due diligence fields and candidate DD report before replacing active report"
     )
 
     note = render_automation_event_note(event)
 
+    assert note.splitlines()[0] == "DD report candidate review"
     assert (
-        "Action needed: Review the Rhodes due diligence fields and candidate DDR "
+        "Action needed: Review the Rhodes due diligence fields and candidate DD report "
         "before replacing the active report."
     ) in note
-    assert "Rhodes due diligence update: updated foCapacity, status" in note
+    assert (
+        "Status: Candidate DD report created. Active report was not overwritten."
+        in note
+    )
+    assert "Rhodes fields: Updated." in note
     assert "Active DD report: https://docs.google.com/document/d/doc-active" in note
     assert "Candidate DD report: https://docs.google.com/document/d/doc-candidate" in note
-    assert (
-        "Requested decision: review Rhodes due diligence fields and candidate DDR "
-        "before replacing active report"
-    ) in note
+    assert "- Review the candidate report." in note
+    assert "- Decide whether it should replace the active report." in note
+    assert "System details:" not in note
+    assert "Requested decision:" not in note
+    assert "Run ID: run-1" not in note
 
 
 def test_source_review_required_event_renders_source_issues() -> None:
@@ -322,22 +372,19 @@ def test_source_review_required_event_renders_source_issues() -> None:
 
     note = render_automation_event_note(event)
 
-    assert "Kind: source_review_required" in note
-    assert "Decision required: yes" in note
-    assert "Mutation status: source_read_issue" in note
-    assert "Run ID: run-1" in note
-    assert "Source issue count: 2" in note
-    assert (
-        "Source issue 1: SIR | Alpha Keller SIR.pdf | Problem: Failed to read document"
-        in note
-    )
-    assert (
-        "Source issue 2: Building Inspection | Alpha Keller Building Inspection.pdf | "
-        "Problem: Document returned no text"
-        in note
-    )
-    assert "Drive folder: https://drive.google.com/drive/folders/abc123" in note
-    assert "Trace: https://drive.google.com/file/d/trace123" in note
+    assert note.splitlines()[0] == "Source document review"
+    assert "Action needed: Review source documents DDR could not read." in note
+    assert "Status: 2 source document(s) need review." in note
+    assert "- Open the source documents in Drive." in note
+    assert "- Rerun DDR when the source files are readable." in note
+    assert "Kind: source_review_required" not in note
+    assert "Decision required: yes" not in note
+    assert "Mutation status:" not in note
+    assert "Run ID: run-1" not in note
+    assert "Source issue 1:" not in note
+    assert "Failed to read document" not in note
+    assert "Drive folder:" not in note
+    assert "Trace:" not in note
 
 
 def test_vendor_gate_review_required_event_renders_failure_context() -> None:
@@ -362,17 +409,28 @@ def test_vendor_gate_review_required_event_renders_failure_context() -> None:
 
     note = render_automation_event_note(event)
 
-    assert "Kind: vendor_gate_review_required" in note
-    assert "Decision required: yes" in note
-    assert "Mutation status: report_incomplete" in note
-    assert "Run ID: run-1" in note
+    assert note.splitlines()[0] == "DDR source review"
+    assert (
+        "Action needed: Review complete vendor inputs before DDR can finish."
+        in note
+    )
+    assert (
+        "Status: DDR could not produce a complete report from the available inputs."
+        in note
+    )
     assert (
         "Required inputs: vendor SIR, vendor Building Inspection, RayCon Scenario JSON"
         in note
     )
-    assert "Failure reason: Report NOT ready to send. 1 raw template token(s)." in note
-    assert "Drive folder: https://drive.google.com/drive/folders/abc123" in note
-    assert "Trace: https://drive.google.com/file/d/trace123" in note
+    assert "- Rerun DDR." in note
+    assert "Kind: vendor_gate_review_required" not in note
+    assert "Decision required: yes" not in note
+    assert "Mutation status:" not in note
+    assert "Run ID: run-1" not in note
+    assert "Failure reason:" not in note
+    assert "Report NOT ready to send" not in note
+    assert "Drive folder:" not in note
+    assert "Trace:" not in note
 
 
 def test_dd_report_republish_failed_event_renders_failure_context() -> None:
@@ -404,16 +462,20 @@ def test_dd_report_republish_failed_event_renders_failure_context() -> None:
 
     note = render_automation_event_note(event)
 
-    assert "Kind: dd_report_republish_failed" in note
-    assert "Decision required: yes" in note
-    assert "Mutation status: generation_failed" in note
-    assert "Run ID: run-1" in note
-    assert "Content fingerprint: sir-1:2026-05-28T10:00:00Z" in note
-    assert "Source Drive file ID: sir-1" in note
-    assert "Trigger source: vendor_sir" in note
-    assert "Source file: Alpha Keller SIR.pdf" in note
-    assert "Failure reason: Anthropic 500" in note
-    assert "Manifest: .ddr-runs/run-1.json" in note
+    assert note.splitlines()[0] == "DD report republish review"
+    assert "Action needed: Review a failed DD report republish." in note
+    assert "Status: DDR could not republish the report." in note
+    assert "Latest source reviewed: Vendor SIR (Alpha Keller SIR.pdf)" in note
+    assert "- Repair the report generation issue." in note
+    assert "Kind: dd_report_republish_failed" not in note
+    assert "Decision required: yes" not in note
+    assert "Mutation status:" not in note
+    assert "Run ID: run-1" not in note
+    assert "Content fingerprint:" not in note
+    assert "Source Drive file ID:" not in note
+    assert "Failure reason:" not in note
+    assert "Anthropic 500" not in note
+    assert "Manifest:" not in note
 
 
 def test_raycon_followup_alert_event_renders_review_context() -> None:
@@ -439,11 +501,16 @@ def test_raycon_followup_alert_event_renders_review_context() -> None:
 
     note = render_automation_event_note(event)
 
-    assert "Kind: raycon_followup_alert" in note
-    assert "Decision required: yes" in note
-    assert "Mutation status: stuck_site" in note
-    assert "Run ID: raycon-followup-20260527213000" in note
-    assert "Block Plan file ID: block-plan-1" in note
-    assert "RayCon run ID: raycon-run-1" in note
-    assert "Message: no raycon_scenario.json after 1:00:00" in note
-    assert "Drive folder: https://drive.google.com/drive/folders/abc123" in note
+    assert note.splitlines()[0] == "RayCon follow-up review"
+    assert "Action needed: Review RayCon scenario generation for this site." in note
+    assert "Status: RayCon scenario generation needs review." in note
+    assert "- Check the Block Plan and RayCon Scenario inputs." in note
+    assert "- Rerun RayCon follow-up." in note
+    assert "Kind: raycon_followup_alert" not in note
+    assert "Decision required: yes" not in note
+    assert "Mutation status:" not in note
+    assert "Run ID: raycon-followup-20260527213000" not in note
+    assert "Block Plan file ID:" not in note
+    assert "RayCon run ID:" not in note
+    assert "no raycon_scenario.json" not in note
+    assert "Drive folder:" not in note

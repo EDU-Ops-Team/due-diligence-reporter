@@ -63,6 +63,14 @@ on:
         options:
           - 'false'
           - 'true'
+      document_first_on_sor_blocker:
+        description: 'Create/reuse the DD Report Doc before final SOR write'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
       apply_source_sweep:
         description: 'Apply source-sweep republish decisions instead of dry-run'
         required: true
@@ -177,6 +185,8 @@ jobs:
           LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
           RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
           RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
+          AERIE_API_KEY: ${{ secrets.AERIE_API_KEY }}
+          AERIE_API_BASE_URL: ${{ vars.AERIE_API_BASE_URL || 'https://edu-ops.klair.ai/api' }}
           DD_REPUBLISH_STATE_STORE: ${{ vars.DD_REPUBLISH_STATE_STORE }}
           DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID: ${{ vars.DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID }}
           DD_REPUBLISH_STATE_FIRESTORE_DATABASE: ${{ vars.DD_REPUBLISH_STATE_FIRESTORE_DATABASE }}
@@ -200,6 +210,8 @@ jobs:
           echo "LOCATIONOS_MCP_API_KEY=${LOCATIONOS_TOKEN}" >> .env
           echo "RHODES_API_KEY=${RHODES_API_KEY:-${LOCATIONOS_TOKEN}}" >> .env
           echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
+          echo "AERIE_API_KEY=${AERIE_API_KEY}" >> .env
+          echo "AERIE_API_BASE_URL=${AERIE_API_BASE_URL}" >> .env
           echo "DD_REPUBLISH_STATE_STORE=${DD_REPUBLISH_STATE_STORE}" >> .env
           echo "DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID=${DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID}" >> .env
           echo "DD_REPUBLISH_STATE_FIRESTORE_DATABASE=${DD_REPUBLISH_STATE_FIRESTORE_DATABASE}" >> .env
@@ -276,6 +288,7 @@ jobs:
           INPUT_NOTIFY: ${{ inputs.notify }}
           INPUT_SOR_WRITE_MODE: ${{ inputs.sor_write_mode }}
           INPUT_MCP_WRITE_COMPLETED: ${{ inputs.mcp_write_completed }}
+          INPUT_DOCUMENT_FIRST_ON_SOR_BLOCKER: ${{ inputs.document_first_on_sor_blocker }}
           INPUT_APPLY_SOURCE_SWEEP: ${{ inputs.apply_source_sweep }}
           INPUT_SOURCE_TYPE: ${{ inputs.source_type }}
           INPUT_FINGERPRINT: ${{ inputs.fingerprint }}
@@ -322,6 +335,9 @@ jobs:
             fi
             if [ "${INPUT_MCP_WRITE_COMPLETED:-false}" = "true" ]; then
               ARGS+=(--mcp-write-completed)
+            fi
+            if [ "${INPUT_DOCUMENT_FIRST_ON_SOR_BLOCKER:-true}" = "false" ]; then
+              ARGS+=(--no-document-first-on-sor-blocker)
             fi
           fi
           if [ "$INPUT_MODE" = "source-sweep" ]; then

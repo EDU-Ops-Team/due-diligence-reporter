@@ -291,7 +291,7 @@ class TestVendorSIRArrival:
                         "reason": "missing_note_id",
                         "owner_notification": "none",
                     },
-                    "AutomationEvent v1\nKind: dd_report_republish_failed",
+                    "DD report republish review\nAction needed: Review a failed DD report republish.",
                 ),
             ) as record_event,
             patch(
@@ -310,7 +310,7 @@ class TestVendorSIRArrival:
         assert record_event.call_args.kwargs["owner_email"] == "owner@example.com"
         post_chat.assert_called_once_with(
             "https://chat.example/webhook",
-            "AutomationEvent v1\nKind: dd_report_republish_failed",
+            "DD report republish review\nAction needed: Review a failed DD report republish.",
         )
 
     def test_same_fingerprint_skips_even_when_old(self):

@@ -90,6 +90,15 @@ def test_school_approval_uses_address_when_state_is_not_provided() -> None:
     assert result["timeline_days"] == 7
 
 
+def test_school_approval_accepts_site_address_alias() -> None:
+    result = asyncio.run(
+        apply_school_approval_skill(site_address="421 E 11th St, Tulsa, OK 74120")
+    )
+
+    assert result["status"] == "success"
+    assert result["state"] == "OK"
+
+
 def test_school_approval_address_parser_prefers_postal_state_over_words() -> None:
     result = asyncio.run(
         apply_school_approval_skill(address="Can we open in 421 E 11th St, Tulsa, OK 74120?")

@@ -143,9 +143,11 @@ class PipelineRun:
     open_questions: list[dict[str, Any]] = field(default_factory=list)
     closed_open_questions: list[dict[str, Any]] = field(default_factory=list)
     republish_summary: dict[str, Any] | None = None
+    source_packet: dict[str, Any] | None = None
     rhodes_due_diligence_update: dict[str, Any] | None = None
     rhodes_report_event: dict[str, Any] | None = None
     locationos_mcp_resume: dict[str, Any] | None = None
+    warnings: list[str] = field(default_factory=list)
     p1_dri_missing: bool = False
     manifest_path: str | None = None
     manifest_url: str | None = None
@@ -166,9 +168,11 @@ class PipelineRun:
             "open_questions": self.open_questions,
             "closed_open_questions": self.closed_open_questions,
             "republish_summary": self.republish_summary,
+            "source_packet": self.source_packet,
             "rhodes_due_diligence_update": self.rhodes_due_diligence_update,
             "rhodes_report_event": self.rhodes_report_event,
             "locationos_mcp_resume": self.locationos_mcp_resume,
+            "warnings": self.warnings,
             "p1_dri_missing": self.p1_dri_missing,
             "manifest_path": self.manifest_path,
             "manifest_url": self.manifest_url,
@@ -190,6 +194,8 @@ def action_records_for_run(run: PipelineRun) -> list[dict[str, Any]]:
         records.append(_due_diligence_update_action_record(run))
     if _rhodes_report_event_was_created(run.rhodes_report_event):
         records.append(_rhodes_report_event_action_record(run))
+    if _rhodes_report_event_needs_human_validation(run.rhodes_report_event):
+        records.append(_rhodes_report_event_warning_action_record(run))
     if run.p1_dri_missing:
         records.append(_missing_p1_dri_action_record(run))
     for index, item in enumerate(run.open_questions, start=1):
@@ -306,6 +312,18 @@ def _rhodes_report_event_was_created(event_status: dict[str, Any] | None) -> boo
     return isinstance(event_status, dict) and event_status.get("status") == "created"
 
 
+def _rhodes_report_event_needs_human_validation(
+    event_status: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(event_status, dict):
+        return False
+    if event_status.get("status") == "created":
+        return False
+    if event_status.get("reason") == "frequency_cap":
+        return False
+    return bool(event_status.get("wtc_review_required"))
+
+
 def _due_diligence_update_action_record(run: PipelineRun) -> dict[str, Any]:
     update_status = run.rhodes_due_diligence_update or {}
     fields = update_status.get("updated_fields")
@@ -351,6 +369,7 @@ def _rhodes_report_event_action_record(run: PipelineRun) -> dict[str, Any]:
     evidence_parts.append(f"owner_notification={owner_notification}")
     if chat_status:
         evidence_parts.append(f"google_chat={chat_status}")
+    technical_context = _rhodes_report_event_technical_context(run, event_status)
     return {
         "schema_version": "action_record.v1",
         "action_id": f"ddr:{run.run_id}:rhodes_report_event",
@@ -369,11 +388,113 @@ def _rhodes_report_event_action_record(run: PipelineRun) -> dict[str, Any]:
         "action_taken": "DDR created a Rhodes note for the DD update notification path.",
         "as_of": run.ended_at or run.started_at,
         "evidence_summary": "; ".join(evidence_parts) + ".",
+        "evidence": {
+            "readback": "; ".join(evidence_parts) + ".",
+            "technical_context": technical_context,
+        },
+        "technical_context": technical_context,
         "review_required": False,
         "review_reason": "",
         "error_summary": "",
         "retryable": False,
     }
+
+
+def _rhodes_report_event_warning_action_record(run: PipelineRun) -> dict[str, Any]:
+    event_status = run.rhodes_report_event or {}
+    reason = str(event_status.get("error") or event_status.get("reason") or "unknown")
+    owner_user_id = str(event_status.get("intended_owner_user_id") or "").strip()
+    owner_email = str(event_status.get("intended_owner_email") or "").strip()
+    intended_body = str(event_status.get("intended_note_body") or "").strip()
+    body_summary = intended_body if len(intended_body) <= 4000 else f"{intended_body[:3997]}..."
+    evidence_parts = [f"note_status={event_status.get('status') or 'unknown'}"]
+    if event_status.get("write_path"):
+        evidence_parts.append(f"write_path={event_status['write_path']}")
+    if event_status.get("rhodes_note_id"):
+        evidence_parts.append(f"note_id={event_status['rhodes_note_id']}")
+    technical_context = _rhodes_report_event_technical_context(run, event_status)
+    return {
+        "schema_version": "action_record.v1",
+        "action_id": f"ddr:{run.run_id}:rhodes_report_event:note_delivery_warning",
+        "source_workflow": "ddr",
+        "owning_workflow": "wtc",
+        "workflow_owner": "wtc",
+        "alert_type": "ddr_p1_note_delivery_warning",
+        **_flat_site_payload(run),
+        "site": _site_payload(run),
+        "severity": "medium",
+        "status": "needs_review",
+        "action_requested": (
+            "Validate the DDR run output and manually confirm whether the intended "
+            "Rhodes review note should be posted or repaired."
+        ),
+        "action_taken": (
+            "DDR completed the main workflow path but could not verify P1 owner "
+            "review-note delivery."
+        ),
+        "as_of": run.ended_at or run.started_at,
+        "owner": {
+            "workflow_owner": "wtc",
+            "human_owner": owner_email,
+            "rhodes_user_id": owner_user_id,
+        },
+        "evidence": {
+            "readback": "; ".join(evidence_parts) + ".",
+            "intended_note_body": body_summary,
+            "technical_context": technical_context,
+        },
+        "technical_context": technical_context,
+        "evidence_summary": "; ".join(evidence_parts) + ".",
+        "review": {
+            "required": True,
+            "reason": reason,
+            "review_url": "",
+        },
+        "review_required": True,
+        "review_reason": reason,
+        "error": {
+            "summary": reason,
+            "retryable": True,
+        },
+        "error_summary": reason,
+        "retryable": True,
+    }
+
+
+def _rhodes_report_event_technical_context(
+    run: PipelineRun,
+    event_status: dict[str, Any],
+) -> dict[str, Any]:
+    """Return WTC/debug context that should not be rendered into the site note."""
+
+    context: dict[str, Any] = {
+        "run_id": run.run_id,
+        "final_status": run.final_status,
+        "failed_step": failed_step_name(run.steps) or "",
+        "site_id": run.site_id or "",
+        "site_name": run.site_title,
+    }
+    for key in (
+        "source_system",
+        "source_id",
+        "event_type",
+        "decision_required",
+        "requested_decision",
+        "mutation_status",
+        "write_path",
+        "rhodes_note_id",
+        "owner_notification",
+    ):
+        value = event_status.get(key)
+        if value not in (None, "", [], {}):
+            context[key] = value
+    for key in ("artifact_ids", "details", "google_chat", "readback"):
+        value = event_status.get(key)
+        if isinstance(value, dict) and value:
+            context[key] = value
+    if run.rhodes_due_diligence_update:
+        context["rhodes_due_diligence_update"] = run.rhodes_due_diligence_update
+    return context
 
 
 def _missing_p1_dri_action_record(run: PipelineRun) -> dict[str, Any]:

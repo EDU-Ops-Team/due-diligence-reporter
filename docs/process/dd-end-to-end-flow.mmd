@@ -3,7 +3,7 @@ title: Due Diligence Reporter End-to-End Flow
 ---
 flowchart TD
     A1["1. Inbox scan trigger<br/>scripts/scan_inbox.py<br/>Every 15 minutes"]
-    A2["2. Daily sweep trigger<br/>scripts/daily_dd_check.py"]
+    A2["2. Daily sweep trigger<br/>uv run ddr daily-check"]
     A3["3. Manual trigger<br/>MCP usage or scripts/generate_v2_report.py"]
 
     subgraph Intake["A. Inbox intake and document filing"]

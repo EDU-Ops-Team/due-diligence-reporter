@@ -2088,7 +2088,8 @@ class TestRayConFollowupEventNotification:
         mock_add_note.assert_called_once()
         assert mock_add_note.call_args.kwargs["site_id"] == "SITE1"
         assert mock_add_note.call_args.kwargs["owner_user_id"] == "user-1"
-        assert "Kind: raycon_followup_alert" in mock_add_note.call_args.kwargs["body"]
+        assert "RayCon follow-up review" in mock_add_note.call_args.kwargs["body"]
+        assert "Kind: raycon_followup_alert" not in mock_add_note.call_args.kwargs["body"]
         mock_post_chat.assert_not_called()
         assert failures == []
         assert rows[0]["raycon_followup_event"]["rhodes_note_id"] == "note-1"
@@ -2176,9 +2177,10 @@ class TestRayConFollowupEventNotification:
         mock_post_chat.assert_called_once()
         chat_body = mock_post_chat.call_args.args[1]
         assert "RayCon scenario follow-up: errors" in chat_body
-        assert "Kind: raycon_followup_alert" in chat_body
-        assert "Mutation status: error" in chat_body
-        assert "Message: raycon dispatch: RayCon 503" in chat_body
+        assert "RayCon follow-up review" in chat_body
+        assert "Kind: raycon_followup_alert" not in chat_body
+        assert "Mutation status: error" not in chat_body
+        assert "raycon dispatch: RayCon 503" not in chat_body
         assert rows[0]["raycon_followup_event"]["google_chat"] == {
             "status": "posted"
         }

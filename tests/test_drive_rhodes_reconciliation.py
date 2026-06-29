@@ -105,19 +105,19 @@ def test_reconciliation_registers_unlinked_m1_source_docs() -> None:
         rhodes_client=rhodes,  # type: ignore[arg-type]
     )
 
-    assert result["registered"] == 1
-    assert result["registered_verified"] == 1
+    assert result["registered"] == 2
+    assert result["registered_verified"] == 2
     assert result["registered_unverified"] == 0
-    assert result["skipped"] == 1
-    registered = [row for row in result["rows"] if row["status"] == "registered"][0]
-    assert registered["rhodes_readback_status"] == "verified"
+    assert result["skipped"] == 0
+    registered_rows = [row for row in result["rows"] if row["status"] == "registered"]
+    assert {row["rhodes_readback_status"] for row in registered_rows} == {"verified"}
     assert rhodes.registered_documents[0]["docType"] == "siteInvestigationReport"
     assert rhodes.registered_documents[0]["milestone"] == "acquireProperty"
+    assert rhodes.registered_documents[1]["docType"] == "regulatoryApproval"
+    assert rhodes.registered_documents[1]["milestone"] == "acquireProperty"
     assert "Registered by DDR drive_rhodes_reconciliation." in (
         rhodes.registered_documents[0]["notes"]
     )
-    skipped = [row for row in result["rows"] if row["status"] == "skipped"]
-    assert skipped[0]["reason"] == "unmapped_doc_type"
 
 
 def test_reconciliation_skips_already_registered_drive_file() -> None:
@@ -278,12 +278,22 @@ def test_reconciliation_telemetry_emits_sanitized_action_records() -> None:
     assert telemetry["counts"]["registered_verified"] == 1
     assert telemetry["steps"][3]["key"] == "readback_verification"
     assert telemetry["steps"][3]["status"] == "success"
-    assert telemetry["action_records"][0]["schema_version"] == "action_record.v1"
-    assert telemetry["action_records"][0]["source_workflow"] == "ddr"
-    assert telemetry["action_records"][0]["workflow_owner"] == "drive-rhodes-reconciliation"
-    assert telemetry["action_records"][0]["workflow_owner"] == "drive-rhodes-reconciliation"
-    assert telemetry["action_records"][0]["status"] == "completed"
-    assert "Rhodes readback verified 1" in telemetry["action_records"][0]["evidence_summary"]
+    action = telemetry["action_records"][0]
+    assert action["schema_version"] == "action_record.v1"
+    assert action["source_workflow"] == "ddr"
+    assert action["workflow_owner"] == "drive-rhodes-reconciliation"
+    assert action["status"] == "completed"
+    assert action["loop_state"] == "completed"
+    assert action["decision_status"] == "not_required"
+    assert action["idempotency_key"] == action["action_id"]
+    assert action["sor_system"] == "rhodes"
+    assert action["sor_write_status"] == "completed"
+    assert action["sor_readback_status"] == "verified"
+    assert action["operating_note_status"] == "not_needed"
+    assert action["failure_route"] == ""
+    assert action["next_step"].startswith("No operator action needed")
+    assert "Rhodes readback verified 1" in action["evidence_summary"]
+    assert "Rhodes readback verified 1" in action["sor_readback_summary"]
     assert [
         action
         for action in telemetry["action_records"]
@@ -294,3 +304,47 @@ def test_reconciliation_telemetry_emits_sanitized_action_records() -> None:
     assert "https://drive" not in rendered
     assert "sir-1" not in rendered
     assert "Alpha Test SIR.pdf" not in rendered
+
+
+def test_reconciliation_telemetry_emits_structured_noop_readback() -> None:
+    result = {
+        "sites_scanned": 1,
+        "recognized_files": 1,
+        "registered": 0,
+        "registered_verified": 0,
+        "registered_unverified": 0,
+        "already_registered": 1,
+        "would_register": 0,
+        "skipped": 0,
+        "errors": 0,
+        "rows": [
+            {
+                "site_id": "SITE1",
+                "site_title": "Alpha Test",
+                "drive_file_id": "sir-1",
+                "drive_file_name": "Alpha Test SIR.pdf",
+                "status": "already_registered",
+                "rhodes_readback_status": "verified",
+            }
+        ],
+    }
+    telemetry = build_drive_rhodes_reconciliation_telemetry(
+        result,
+        run_id="drive-rhodes-reconciliation-noop",
+        started_at="2026-06-08T21:30:00+00:00",
+        finished_at="2026-06-08T21:31:00+00:00",
+        trigger="schedule",
+    )
+
+    action = telemetry["action_records"][0]
+    assert action["alert_type"] == "document_already_registered"
+    assert action["status"] == "skipped_already_corrected"
+    assert action["loop_state"] == "completed"
+    assert action["decision_status"] == "not_required"
+    assert action["sor_system"] == "rhodes"
+    assert action["sor_write_status"] == "not_needed"
+    assert action["sor_readback_status"] == "verified"
+    assert action["operating_note_status"] == "not_needed"
+    assert action["failure_route"] == ""
+    assert action["retryable"] is False
+    assert "Drive file ID" in action["sor_readback_summary"]

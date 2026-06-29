@@ -1822,8 +1822,11 @@ class TestRhodesDocumentRegistration:
         note_kwargs = mock_add_note.call_args.kwargs
         assert note_kwargs["site_id"] == "SITE1"
         assert note_kwargs["owner_user_id"] == "USER1"
-        assert "Kind: inbox_manual_review_required" in note_kwargs["body"]
-        assert "Manual review reason: missing_drive_folder" in note_kwargs["body"]
+        assert "Document intake review" in note_kwargs["body"]
+        assert "Action needed: Review an inbound due diligence attachment before filing." in note_kwargs["body"]
+        assert "Kind: inbox_manual_review_required" not in note_kwargs["body"]
+        assert "Manual review reason:" not in note_kwargs["body"]
+        assert "missing_drive_folder" not in note_kwargs["body"]
         mock_chat.assert_not_called()
         mock_resolve_m1.assert_not_called()
 
@@ -1885,8 +1888,9 @@ class TestRhodesDocumentRegistration:
         assert event["google_chat"] == {"status": "sent", "posted": 1}
         mock_chat.assert_called_once()
         assert mock_chat.call_args.args[0] == "https://chat.example/hook"
-        assert "Site ID: SITE1" in mock_chat.call_args.args[1]
-        assert "Kind: inbox_manual_review_required" in mock_chat.call_args.args[1]
+        assert "Document intake review" in mock_chat.call_args.args[1]
+        assert "Site ID: SITE1" not in mock_chat.call_args.args[1]
+        assert "Kind: inbox_manual_review_required" not in mock_chat.call_args.args[1]
         mock_resolve_m1.assert_not_called()
 
     @patch("due_diligence_reporter.inbox_scanner._post_google_chat_to_configured_webhooks")
@@ -2264,8 +2268,9 @@ class TestRhodesDocumentRegistration:
         note_kwargs = mock_add_note.call_args.kwargs
         assert note_kwargs["site_id"] == "SITE1"
         assert note_kwargs["owner_user_id"] == "USER1"
-        assert "AutomationEvent v1" in note_kwargs["body"]
-        assert "Kind: document_registration_failed" in note_kwargs["body"]
+        assert "Document filing review" in note_kwargs["body"]
+        assert "AutomationEvent v1" not in note_kwargs["body"]
+        assert "Kind: document_registration_failed" not in note_kwargs["body"]
         mock_chat.assert_not_called()
 
     @patch("due_diligence_reporter.inbox_scanner._post_google_chat_to_configured_webhooks")
@@ -2316,7 +2321,8 @@ class TestRhodesDocumentRegistration:
         assert mock_add_note.call_args.kwargs["owner_email"] == ""
         mock_chat.assert_called_once()
         assert mock_chat.call_args.args[0] == "https://chat.example/hook"
-        assert "Owner: No owner assigned" in mock_chat.call_args.args[1]
+        assert "Document filing review" in mock_chat.call_args.args[1]
+        assert "Owner: No owner assigned" not in mock_chat.call_args.args[1]
         assert retry_state["SITE1|isp|Alpha Keller ISP.pdf"]["rhodes_failure_note_id"] == "NOTE1"
         assert retry_state["SITE1|isp|Alpha Keller ISP.pdf"]["rhodes_failure_chat_status"] == "sent"
 

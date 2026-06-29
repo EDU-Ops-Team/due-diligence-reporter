@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .classifier import classify_document
+from .classifier import classify_document, is_site_folder_scan_candidate
 from .google_client import GoogleClient
 from .utils import extract_folder_id_from_url
 
@@ -38,7 +38,15 @@ M1_RECOGNIZED_DOC_TYPES = {
     "e_occupancy_report",
     "school_approval_report",
     "opening_plan_report",
+    "alpha_capacity_analysis",
+    "outdoor_play_space_report",
     "alpha_phasing_plan_report",
+    "traffic_analysis",
+    "certificate_of_occupancy",
+    "permit_of_record",
+    "measured_floor_plan",
+    "floor_plan",
+    "lidar",
 }
 
 
@@ -120,6 +128,8 @@ def _list_m1_documents_by_type(
     """
     files_by_type: dict[str, dict[str, Any]] = {}
     for file_info in gc.list_files_in_folder(folder_id):
+        if not is_site_folder_scan_candidate(file_info):
+            continue
         name = str(file_info.get("name", "")).strip()
         if not name:
             continue

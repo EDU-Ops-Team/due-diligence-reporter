@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import re
+import subprocess
+import tempfile
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +36,7 @@ from .assignment import assign_p1
 from .classifier import (
     AI_GENERATED_DOC_TYPES,
     SITE_FOLDER_DOC_TYPES,
+    is_site_folder_scan_candidate,
     match_file_to_site_llm,
 )
 from .classifier import (
@@ -64,6 +67,7 @@ from .m1_lookup import (
     _list_m1_documents_by_type,
     _resolve_m1_folder,
 )
+from .ops_skill_loader import OpsSkillLoadError, load_ops_skill_file
 from .portfolio_automation_gaps import build_portfolio_automation_gap_snapshot
 from .raycon_client import RAYCON_BREAKDOWN_ROWS, RAYCON_FAILED_STATUSES
 from .rebl import ReblResolution, resolve_address
@@ -83,6 +87,13 @@ from .school_approval_skill import (
     SchoolApprovalSkillError,
     load_school_approval_skill,
     normalize_school_approval_state,
+)
+from .source_packet import (
+    SourceDocumentRef,
+    build_dd_field_updates,
+    build_m2_source_packet,
+    source_packet_note_lines,
+    translate_outdoor_play_score,
 )
 from .utils import (
     build_hyperlink_requests,
@@ -949,6 +960,8 @@ def _list_ai_generated_site_reports(site_files: list[dict[str, Any]]) -> list[di
     """Return report-relevant artifacts from a recursive site-folder listing."""
     reports: list[dict[str, Any]] = []
     for file_info in site_files:
+        if not is_site_folder_scan_candidate(file_info):
+            continue
         annotated = {**file_info, "doc_type": _classify_document_type(file_info.get("name", ""))}
         if annotated["doc_type"] == "dd_report":
             continue
@@ -1554,6 +1567,7 @@ async def apply_e_occupancy_skill(
     existing_exit_count: int = 0,
     projected_occupant_load: int = 0,
     site_name: str = "",
+    site_id: str = "",
     drive_folder_url: str = "",
 ) -> dict[str, Any]:
     """Apply the E-Occupancy Skill to score a building for educational use conversion.
@@ -1759,12 +1773,15 @@ async def apply_e_occupancy_skill(
             pub = await save_skill_report(
                 skill_name="E-Occupancy",
                 site_name=site_name,
+                site_id=site_id,
                 drive_folder_url=drive_folder_url,
+                ddr_doc_type="e_occupancy_report",
                 skill_data=result,
             )
             if pub.get("status") == "success":
                 result["doc_url"] = pub["doc_url"]
                 result["doc_id"] = pub["doc_id"]
+                result["rhodes_registration"] = pub.get("rhodes_registration")
                 logger.info("Auto-published E-Occupancy assessment: %s", pub["doc_url"])
         except Exception as e:
             logger.warning("Failed to auto-publish E-Occupancy assessment: %s", e)
@@ -1777,7 +1794,9 @@ async def apply_e_occupancy_skill(
 async def apply_school_approval_skill(
     state: str = "",
     address: str = "",
+    site_address: str = "",
     site_name: str = "",
+    site_id: str = "",
     drive_folder_url: str = "",
 ) -> dict[str, Any]:
     """Apply the School Approval Skill to determine registration requirements for a state.
@@ -1800,6 +1819,9 @@ async def apply_school_approval_skill(
         Dict with approval_type, gating, timeline, steps, summary, doc_url (if
         auto-published), and ready-to-use report_data_fields.
     """
+    if not address.strip() and site_address.strip():
+        address = site_address
+
     logger.info("Tool called: apply_school_approval_skill — state=%s address=%s", state, address)
 
     state_upper = normalize_school_approval_state(state=state, address=address)
@@ -1919,12 +1941,15 @@ async def apply_school_approval_skill(
             pub = await save_skill_report(
                 skill_name="School Approval",
                 site_name=site_name,
+                site_id=site_id,
                 drive_folder_url=drive_folder_url,
+                ddr_doc_type="school_approval_report",
                 skill_data=result,
             )
             if pub.get("status") == "success":
                 result["doc_url"] = pub["doc_url"]
                 result["doc_id"] = pub["doc_id"]
+                result["rhodes_registration"] = pub.get("rhodes_registration")
                 logger.info("Auto-published School Approval assessment: %s", pub["doc_url"])
         except Exception as e:
             logger.warning("Failed to auto-publish School Approval assessment: %s", e)
@@ -1938,6 +1963,7 @@ async def apply_alpha_capacity_analysis_skill(
     site_name: str,
     site_address: str,
     block_plan_content: str,
+    site_id: str = "",
     drive_folder_url: str = "",
     block_plan_file_id: str = "",
     total_building_sf: int = 0,
@@ -2009,7 +2035,7 @@ async def apply_alpha_capacity_analysis_skill(
                     exc,
                 )
 
-        return generate_alpha_capacity_analysis_artifact(
+        result = generate_alpha_capacity_analysis_artifact(
             gc,
             m1_folder_id=target_folder_id,
             site_name=site_name,
@@ -2020,8 +2046,373 @@ async def apply_alpha_capacity_analysis_skill(
             block_plan_file_bytes=block_plan_file_bytes,
             block_plan_file_name=block_plan_file_name,
         )
+        if result.get("status") == "success":
+            artifact_id = str(result.get("capacity_analysis_file_id") or "").strip()
+            artifact_url = str(result.get("capacity_analysis_url") or "").strip()
+            artifact_name = str(result.get("artifact_name") or "").strip()
+            result["doc_type"] = "alpha_capacity_analysis"
+            result["source_type"] = "alpha_capacity_analysis"
+            if artifact_id:
+                result["rhodes_registration"] = register_rhodes_document_for_upload(
+                    site_id=site_id,
+                    ddr_doc_type="alpha_capacity_analysis",
+                    title=artifact_name or f"Alpha Capacity Analysis - {site_name}.json",
+                    drive_file_id=artifact_id,
+                    drive_url=artifact_url,
+                    mime_type="application/json",
+                    original_filename=artifact_name,
+                    source="apply_alpha_capacity_analysis_skill",
+                )
+        return result
 
     return await asyncio.to_thread(_work)
+
+
+@mcp.tool()
+async def apply_outdoor_play_space_skill(
+    site_name: str,
+    site_id: str,
+    address: str,
+    drive_folder_url: str,
+    student_count: int,
+    max_walk_minutes: float = 5,
+    on_site_green_sf: float | None = None,
+    on_site_playscape: str = "unknown",
+    marked_outdoor_sf: float | None = None,
+    marked_outdoor_source: str = "",
+    marked_outdoor_note: str = "",
+    student_count_source: str = "max_plan_capacity",
+    max_plan_capacity_not_applicable: bool = False,
+) -> dict[str, Any]:
+    """Run Ops-Skills outdoor-play-space and register its artifacts for M2.
+
+    DDR intentionally runs the skill with ``--skip-drive-upload`` so the source
+    packet uses the site folder already resolved by Rhodes rather than the
+    skill's address-prefix Drive matching.
+    """
+
+    logger.info("Tool called: apply_outdoor_play_space_skill - site=%s", site_name)
+    if not site_name.strip() or not site_id.strip() or not address.strip():
+        return {
+            "status": "error",
+            "error": "Missing parameters",
+            "message": "site_name, site_id, and address are required",
+        }
+    if student_count <= 0:
+        return {
+            "status": "error",
+            "error": "Invalid student count",
+            "message": "student_count must be a positive integer",
+        }
+    folder_id = extract_folder_id_from_url(drive_folder_url)
+    if not folder_id:
+        return {
+            "status": "error",
+            "error": "Invalid Drive folder URL",
+            "message": f"Could not extract folder ID from: {drive_folder_url}",
+        }
+
+    def _work() -> dict[str, Any]:
+        skill_dir = _resolve_outdoor_play_space_skill_dir()
+        if skill_dir is None:
+            return {
+                "status": "error",
+                "error": "Ops-Skills outdoor-play-space unavailable",
+                "message": (
+                    "Could not resolve a runtime-visible outdoor-play-space skill "
+                    "directory."
+                ),
+            }
+        with tempfile.TemporaryDirectory(prefix="ddr-outdoor-play-") as output_root:
+            command = _outdoor_play_space_command(
+                address=address,
+                student_count=student_count,
+                max_walk_minutes=max_walk_minutes,
+                output_dir=Path(output_root),
+                on_site_green_sf=on_site_green_sf,
+                on_site_playscape=on_site_playscape,
+                marked_outdoor_sf=marked_outdoor_sf,
+                marked_outdoor_source=marked_outdoor_source,
+                marked_outdoor_note=marked_outdoor_note,
+            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=skill_dir,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=600,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return {
+                    "status": "error",
+                    "error": "Outdoor Play Space skill failed to start",
+                    "message": str(exc),
+                }
+            if completed.returncode != 0:
+                return {
+                    "status": "error",
+                    "error": "Outdoor Play Space skill failed",
+                    "message": (completed.stderr or completed.stdout or "").strip(),
+                    "returncode": completed.returncode,
+                }
+            try:
+                manifest = json.loads((completed.stdout or "").strip())
+            except json.JSONDecodeError as exc:
+                return {
+                    "status": "error",
+                    "error": "Outdoor Play Space skill returned invalid JSON",
+                    "message": str(exc),
+                    "stdout_preview": (completed.stdout or "")[:500],
+                }
+            artifacts = _outdoor_play_artifact_paths(manifest)
+            missing_required = [
+                label
+                for label, path in artifacts.items()
+                if label != "drive_manifest" and not path.exists()
+            ]
+            if "open_space_map_png" in missing_required:
+                return {
+                    "status": "error",
+                    "error": "Outdoor Play Space PNG missing",
+                    "message": "The generated open-space PNG is required for the source packet.",
+                }
+            if missing_required:
+                return {
+                    "status": "error",
+                    "error": "Outdoor Play Space artifact missing",
+                    "missing_artifacts": missing_required,
+                }
+            try:
+                play_data = json.loads(artifacts["json"].read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                return {
+                    "status": "error",
+                    "error": "Outdoor Play Space JSON unreadable",
+                    "message": str(exc),
+                }
+
+            score = translate_outdoor_play_score(play_data)
+            final_student_count = (
+                student_count_source.strip().lower() == "max_plan_capacity"
+                or max_plan_capacity_not_applicable
+            )
+
+            try:
+                gc = _make_google_client()
+                target_folder = _get_or_create_m1_folder(gc, folder_id)
+                target_folder_id = str(target_folder["id"])
+            except Exception as exc:
+                logger.error("Failed to resolve M1 subfolder for '%s': %s", site_name, exc)
+                return {
+                    "status": "error",
+                    "error": "Failed to resolve M1 folder",
+                    "message": str(exc),
+                }
+
+            supporting_documents: list[SourceDocumentRef] = []
+            artifact_results: dict[str, dict[str, Any]] = {}
+            for label, path in artifacts.items():
+                if label == "drive_manifest":
+                    continue
+                upload = gc.upload_file_to_folder(
+                    target_folder_id,
+                    path.name,
+                    path.read_bytes(),
+                    mime_type=_outdoor_play_mime_type(label),
+                )
+                drive_file_id = str(upload.get("id") or "").strip()
+                drive_url = str(upload.get("webViewLink") or "").strip()
+                title = _outdoor_play_artifact_title(site_name, label)
+                registration = register_rhodes_document_for_upload(
+                    site_id=site_id,
+                    ddr_doc_type="outdoor_play_space_report",
+                    title=title,
+                    drive_file_id=drive_file_id,
+                    drive_url=drive_url,
+                    mime_type=_outdoor_play_mime_type(label),
+                    original_filename=path.name,
+                    source="apply_outdoor_play_space_skill",
+                )
+                artifact_results[label] = {
+                    "drive_file_id": drive_file_id,
+                    "drive_url": drive_url,
+                    "title": title,
+                    "rhodes_registration": registration,
+                }
+                supporting_documents.append(
+                    SourceDocumentRef(
+                        source_type="outdoor_play_space_report",
+                        title=title,
+                        drive_url=drive_url,
+                        drive_file_id=drive_file_id,
+                        rhodes_doc_type=str(registration.get("rhodes_doc_type") or "other"),
+                        quality_bar=str(
+                            registration.get("rhodes_quality_bar") or "outdoorRecreation"
+                        ),
+                        registration_status=str(registration.get("status") or ""),
+                        fields_supported=("play_area_score", "play_area_comment"),
+                    )
+                )
+
+            values: dict[str, Any] = {}
+            report_data_fields: dict[str, str] = {}
+            if final_student_count:
+                values = {
+                    "exec.play_area_score": str(score["score"]),
+                    "exec.play_area_comment": score["comment"],
+                }
+                report_data_fields = dict(values)
+            else:
+                values = {
+                    "exec.play_area_comment": (
+                        "Interim Outdoor Play Space screening only. Final score is held "
+                        "until Max Plan capacity is available or marked not applicable."
+                    )
+                }
+            dd_field_updates = build_dd_field_updates(
+                values=values,
+                supporting_documents=supporting_documents,
+            )
+            source_note_lines = source_packet_note_lines(
+                supporting_documents=supporting_documents,
+                dd_field_updates=[
+                    update
+                    for update in dd_field_updates
+                    if update.field in {"play_area_score", "play_area_comment"}
+                ],
+            )
+            result: dict[str, Any] = {
+                "status": "success",
+                "source_usable": True,
+                "doc_type": "outdoor_play_space_report",
+                "source_type": "outdoor_play_space_report",
+                "student_count": student_count,
+                "student_count_source": student_count_source,
+                "final_student_count": final_student_count,
+                "artifacts": artifact_results,
+                "supporting_documents": [doc.to_dict() for doc in supporting_documents],
+                "dd_field_updates": [
+                    update.to_dict()
+                    for update in dd_field_updates
+                    if update.field in {"play_area_score", "play_area_comment"}
+                ],
+                "source_note_lines": source_note_lines,
+                "exec": {
+                    "play_area_score": score["score"] if final_student_count else None,
+                    "play_area_comment": score["comment"],
+                },
+                "report_data_fields": report_data_fields,
+                "play_space_result": play_data,
+                "message": "Outdoor Play Space source packet artifacts uploaded and registered.",
+            }
+            if not final_student_count:
+                result["open_items"] = [
+                    (
+                        "Outdoor Play Space was run for interim screening, but final "
+                        "play_area_score is held until Max Plan capacity is available "
+                        "or explicitly not applicable."
+                    )
+                ]
+            return result
+
+    return await asyncio.to_thread(_work)
+
+
+def _resolve_outdoor_play_space_skill_dir() -> Path | None:
+    try:
+        loaded = load_ops_skill_file("outdoor-play-space")
+    except OpsSkillLoadError:
+        loaded = None
+    if loaded is not None and " origin/main:" not in loaded.source:
+        skill_file = Path(loaded.source)
+        if skill_file.exists():
+            return skill_file.parent
+    fallback = (
+        Path.home()
+        / ".codex"
+        / "plugins"
+        / "cache"
+        / "ops-skills"
+        / "ops-skills"
+        / "0.1.0"
+        / "skills"
+        / "outdoor-play-space"
+    )
+    if (fallback / "scripts" / "play_space_review.py").exists():
+        return fallback
+    return None
+
+
+def _outdoor_play_space_command(
+    *,
+    address: str,
+    student_count: int,
+    max_walk_minutes: float,
+    output_dir: Path,
+    on_site_green_sf: float | None,
+    on_site_playscape: str,
+    marked_outdoor_sf: float | None,
+    marked_outdoor_source: str,
+    marked_outdoor_note: str,
+) -> list[str]:
+    command = [
+        "uv",
+        "run",
+        "python",
+        "scripts/play_space_review.py",
+        "--address",
+        address,
+        "--student-count",
+        str(student_count),
+        "--max-walk-minutes",
+        str(max_walk_minutes),
+        "--output-dir",
+        str(output_dir),
+        "--skip-drive-upload",
+    ]
+    if on_site_green_sf is not None:
+        command.extend(["--on-site-green-sf", str(on_site_green_sf)])
+    playscape = on_site_playscape.strip().lower()
+    if playscape in {"yes", "no", "unknown"}:
+        command.extend(["--on-site-playscape", playscape])
+    if marked_outdoor_sf is not None:
+        command.extend(["--marked-outdoor-sf", str(marked_outdoor_sf)])
+        if marked_outdoor_source.strip():
+            command.extend(["--marked-outdoor-source", marked_outdoor_source.strip()])
+        if marked_outdoor_note.strip():
+            command.extend(["--marked-outdoor-note", marked_outdoor_note.strip()])
+    return command
+
+
+def _outdoor_play_artifact_paths(manifest: dict[str, Any]) -> dict[str, Path]:
+    return {
+        "markdown": Path(str(manifest.get("markdown") or "")),
+        "json": Path(str(manifest.get("json") or "")),
+        "open_space_map_png": Path(str(manifest.get("open_space_map_png") or "")),
+        "open_space_map_html": Path(str(manifest.get("open_space_map_html") or "")),
+        "drive_manifest": Path(str(manifest.get("drive_manifest") or "")),
+    }
+
+
+def _outdoor_play_mime_type(label: str) -> str:
+    return {
+        "markdown": "text/markdown",
+        "json": "application/json",
+        "open_space_map_png": "image/png",
+        "open_space_map_html": "text/html",
+    }.get(label, "application/octet-stream")
+
+
+def _outdoor_play_artifact_title(site_name: str, label: str) -> str:
+    labels = {
+        "markdown": "Markdown",
+        "json": "JSON",
+        "open_space_map_png": "PNG",
+        "open_space_map_html": "HTML",
+    }
+    return f"Outdoor Play Space Report - {site_name} ({labels.get(label, label)})"
 
 
 def _get_or_create_m1_folder(
@@ -3240,6 +3631,7 @@ async def prepare_due_diligence_data(
     report_data: dict[str, Any],
     site_address: str = "",
     token_evidence: dict[str, str] | None = None,
+    supporting_documents: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Normalize DD report data without rendering a Google Doc.
 
@@ -3293,7 +3685,15 @@ async def prepare_due_diligence_data(
             replacements,
             raycon_failure_reason=raycon_failure_reason,
         )
-        return {
+        source_packet: dict[str, Any] | None = None
+        if supporting_documents is not None:
+            packet_values = dict(flatten_report_data_for_replacement(report_data))
+            packet_values.update(replacements)
+            source_packet = build_m2_source_packet(
+                values=packet_values,
+                supporting_documents=supporting_documents,
+            )
+        result: dict[str, Any] = {
             "status": "success",
             "message": "DD data normalized for SOR publish",
             "site_name": site_name.strip(),
@@ -3306,6 +3706,9 @@ async def prepare_due_diligence_data(
             "report_metadata": {"completeness": completeness},
             "token_evidence_count": len(token_evidence or {}),
         }
+        if source_packet is not None:
+            result["source_packet"] = source_packet
+        return result
     except Exception as e:  # noqa: BLE001 - tool returns structured failure
         logger.error("Failed to prepare DD data: %s", e)
         return {
@@ -4554,6 +4957,8 @@ async def save_skill_report(
     site_name: str,
     drive_folder_url: str,
     skill_data: dict[str, Any],
+    site_id: str = "",
+    ddr_doc_type: str = "",
 ) -> dict[str, Any]:
     """Save a skill assessment as a standalone Google Doc in the site's M1 subfolder.
 
@@ -4567,6 +4972,8 @@ async def save_skill_report(
         drive_folder_url: Google Drive folder URL for the site.
         skill_data: Full result dict from apply_e_occupancy_skill or
             apply_school_approval_skill.
+        site_id: Optional Rhodes site ID used to register the generated support doc.
+        ddr_doc_type: Optional DDR doc type mapped to Rhodes document metadata.
 
     Returns:
         Dict with status, doc_url, and doc_id.
@@ -4611,13 +5018,30 @@ async def save_skill_report(
                 folder_id=target_folder_id,
                 text_content=content,
             )
-            return {
+            doc_id = str(doc.get("id") or "").strip()
+            doc_url = str(doc.get("webViewLink") or "").strip()
+            rhodes_registration: dict[str, Any] | None = None
+            if site_id.strip() and ddr_doc_type.strip() and doc_id:
+                rhodes_registration = register_rhodes_document_for_upload(
+                    site_id=site_id,
+                    ddr_doc_type=ddr_doc_type,
+                    title=doc_name,
+                    drive_file_id=doc_id,
+                    drive_url=doc_url,
+                    mime_type=GOOGLE_DOCS_MIME,
+                    original_filename=doc_name,
+                    source="save_skill_report",
+                )
+            result: dict[str, Any] = {
                 "status": "success",
-                "doc_id": doc.get("id", ""),
-                "doc_url": doc.get("webViewLink", ""),
+                "doc_id": doc_id,
+                "doc_url": doc_url,
                 "doc_name": doc_name,
                 "message": f"Created '{doc_name}' in Drive",
             }
+            if rhodes_registration is not None:
+                result["rhodes_registration"] = rhodes_registration
+            return result
         except Exception as e:
             logger.error("save_skill_report failed: %s", e)
             return {

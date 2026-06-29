@@ -40,14 +40,16 @@ def test_record_rhodes_automation_event_writes_note_with_owner_context() -> None
         add_note=add_note,
     )
 
-    assert result == {
-        "event_type": "test_event",
-        "source_id": "run-1",
-        "decision_required": True,
-        "status": "created",
-        "rhodes_note_id": "NOTE1",
-        "owner_notification": "mentioned",
-    }
+    assert result["event_type"] == "test_event"
+    assert result["source_id"] == "run-1"
+    assert result["source_system"] == "due-diligence-reporter"
+    assert result["site_id"] == "SITE1"
+    assert result["decision_required"] is True
+    assert result["artifact_ids"] == {}
+    assert result["details"] == {}
+    assert result["status"] == "created"
+    assert result["rhodes_note_id"] == "NOTE1"
+    assert result["owner_notification"] == "mentioned"
     assert calls == [
         {
             "site_id": "SITE1",

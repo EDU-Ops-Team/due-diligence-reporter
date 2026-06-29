@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Standalone daily cron script for DD report readiness checking.
+"""Compatibility wrapper for the repo-owned daily DD check CLI.
 
 Loads active Rhodes site records, checks each linked Drive folder for
 first-round DDR readiness, and triggers report generation when a SIR is present
 and no report exists yet.
 
 Run:
-    uv run python scripts/daily_dd_check.py
+    uv run ddr daily-check
 
 Environment:
     GOOGLE_CLIENT_CONFIG, GOOGLE_TOKEN_FILE, ANTHROPIC_API_KEY,

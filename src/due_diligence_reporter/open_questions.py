@@ -16,7 +16,16 @@ SourceType = Literal[
     "raycon_scenario",
     "e_occupancy_report",
     "school_approval_report",
+    "opening_plan_report",
+    "alpha_capacity_analysis",
+    "outdoor_play_space_report",
     "alpha_phasing_plan_report",
+    "traffic_analysis",
+    "certificate_of_occupancy",
+    "permit_of_record",
+    "measured_floor_plan",
+    "floor_plan",
+    "lidar",
 ]
 
 OpenQuestionStatus = Literal["open", "closed"]
@@ -26,7 +35,16 @@ SOURCE_TYPE_BUILDING_INSPECTION: SourceType = "building_inspection"
 SOURCE_TYPE_RAYCON_SCENARIO: SourceType = "raycon_scenario"
 SOURCE_TYPE_E_OCCUPANCY: SourceType = "e_occupancy_report"
 SOURCE_TYPE_SCHOOL_APPROVAL: SourceType = "school_approval_report"
+SOURCE_TYPE_OPENING_PLAN: SourceType = "opening_plan_report"
+SOURCE_TYPE_ALPHA_CAPACITY_ANALYSIS: SourceType = "alpha_capacity_analysis"
+SOURCE_TYPE_OUTDOOR_PLAY_SPACE: SourceType = "outdoor_play_space_report"
 SOURCE_TYPE_ALPHA_PHASING_PLAN: SourceType = "alpha_phasing_plan_report"
+SOURCE_TYPE_TRAFFIC_ANALYSIS: SourceType = "traffic_analysis"
+SOURCE_TYPE_CERTIFICATE_OF_OCCUPANCY: SourceType = "certificate_of_occupancy"
+SOURCE_TYPE_PERMIT_OF_RECORD: SourceType = "permit_of_record"
+SOURCE_TYPE_MEASURED_FLOOR_PLAN: SourceType = "measured_floor_plan"
+SOURCE_TYPE_FLOOR_PLAN: SourceType = "floor_plan"
+SOURCE_TYPE_LIDAR: SourceType = "lidar"
 
 CORE_SOURCE_TYPES: frozenset[SourceType] = frozenset(
     {
@@ -35,7 +53,16 @@ CORE_SOURCE_TYPES: frozenset[SourceType] = frozenset(
         SOURCE_TYPE_RAYCON_SCENARIO,
         SOURCE_TYPE_E_OCCUPANCY,
         SOURCE_TYPE_SCHOOL_APPROVAL,
+        SOURCE_TYPE_OPENING_PLAN,
+        SOURCE_TYPE_ALPHA_CAPACITY_ANALYSIS,
+        SOURCE_TYPE_OUTDOOR_PLAY_SPACE,
         SOURCE_TYPE_ALPHA_PHASING_PLAN,
+        SOURCE_TYPE_TRAFFIC_ANALYSIS,
+        SOURCE_TYPE_CERTIFICATE_OF_OCCUPANCY,
+        SOURCE_TYPE_PERMIT_OF_RECORD,
+        SOURCE_TYPE_MEASURED_FLOOR_PLAN,
+        SOURCE_TYPE_FLOOR_PLAN,
+        SOURCE_TYPE_LIDAR,
     }
 )
 
@@ -46,7 +73,16 @@ DOC_TYPE_TO_SOURCE_TYPE: dict[str, SourceType] = {
     "raycon_scenario_report": SOURCE_TYPE_RAYCON_SCENARIO,
     "e_occupancy_report": SOURCE_TYPE_E_OCCUPANCY,
     "school_approval_report": SOURCE_TYPE_SCHOOL_APPROVAL,
+    "opening_plan_report": SOURCE_TYPE_OPENING_PLAN,
+    "alpha_capacity_analysis": SOURCE_TYPE_ALPHA_CAPACITY_ANALYSIS,
+    "outdoor_play_space_report": SOURCE_TYPE_OUTDOOR_PLAY_SPACE,
     "alpha_phasing_plan_report": SOURCE_TYPE_ALPHA_PHASING_PLAN,
+    "traffic_analysis": SOURCE_TYPE_TRAFFIC_ANALYSIS,
+    "certificate_of_occupancy": SOURCE_TYPE_CERTIFICATE_OF_OCCUPANCY,
+    "permit_of_record": SOURCE_TYPE_PERMIT_OF_RECORD,
+    "measured_floor_plan": SOURCE_TYPE_MEASURED_FLOOR_PLAN,
+    "floor_plan": SOURCE_TYPE_FLOOR_PLAN,
+    "lidar": SOURCE_TYPE_LIDAR,
 }
 
 REPORT_OPEN_ITEM_KEYS = (

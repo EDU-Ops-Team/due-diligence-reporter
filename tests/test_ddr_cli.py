@@ -34,6 +34,118 @@ def test_ddr_run_site_prints_runner_payload(monkeypatch, capsys) -> None:
     }
 
 
+def test_ddr_daily_check_dispatches_repo_cli_surface(monkeypatch) -> None:
+    calls = []
+
+    def fake_daily_check(args):
+        calls.append(args.site)
+        return 0
+
+    monkeypatch.setattr(ddr_cli, "_run_daily_check", fake_daily_check)
+
+    exit_code = ddr_cli.main(["daily-check", "--site", "Alpha Keller"])
+
+    assert exit_code == 0
+    assert calls == ["Alpha Keller"]
+
+
+def test_ddr_source_sweep_dispatches_repo_cli_surface(monkeypatch) -> None:
+    calls = []
+
+    def fake_source_sweep(args):
+        calls.append({"site": args.site, "dry_run": args.dry_run})
+        return 0
+
+    monkeypatch.setattr(ddr_cli, "_run_source_sweep", fake_source_sweep)
+
+    exit_code = ddr_cli.main(["source-sweep", "--site", "Alpha Keller", "--dry-run"])
+
+    assert exit_code == 0
+    assert calls == [{"site": "Alpha Keller", "dry_run": True}]
+
+
+def test_ddr_notes_smoke_test_resolves_owner_and_writes_headless_note(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        ddr_cli,
+        "lookup_rhodes_site_owner",
+        lambda **kwargs: {
+            "status": "found",
+            "site_id": "SITE1",
+            "site_name": "Alpha Keller",
+            "site_slug": "alpha-keller",
+            "p1_assignee_email": "owner@example.com",
+            "p1_assignee_user_id": "OWNER1",
+            "p1_dri": {"userId": "OWNER1"},
+        },
+    )
+    calls = []
+
+    def fake_add_note(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "created",
+            "rhodes_note_id": "NOTE1",
+            "owner_notification": "mentioned",
+            "mentioned_user_ids": ["OWNER1"],
+        }
+
+    monkeypatch.setattr(ddr_cli, "add_rhodes_site_note", fake_add_note)
+
+    exit_code = ddr_cli.main(["notes-smoke-test", "--site", "Alpha Keller"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["status"] == "success"
+    assert payload["site"]["site_id"] == "SITE1"
+    assert payload["owner"]["user_id"] == "OWNER1"
+    assert calls[0]["site_id"] == "SITE1"
+    assert calls[0]["site_slug"] == "alpha-keller"
+    assert calls[0]["owner_user_id"] == "OWNER1"
+    assert calls[0]["owner_email"] == "owner@example.com"
+    assert calls[0]["automation_source"] == "due-diligence-reporter:notes-smoke-test"
+    assert "Rhodes note smoke test" in calls[0]["body"]
+    assert "Headless note write test completed." in calls[0]["body"]
+    assert "Kind: headless_add_note_smoke_test" not in calls[0]["body"]
+    assert "P1 owner review:" not in calls[0]["body"]
+    assert "owner@example.com" not in calls[0]["body"]
+    assert "SITE1" not in calls[0]["body"]
+
+
+def test_ddr_notes_smoke_test_fails_before_write_without_owner_user_id(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        ddr_cli,
+        "lookup_rhodes_site_owner",
+        lambda **kwargs: {
+            "status": "owner_missing",
+            "site_id": "SITE1",
+            "site_name": "Alpha Keller",
+            "site_slug": "alpha-keller",
+            "p1_assignee_email": "",
+            "p1_assignee_user_id": "",
+            "message": "Rhodes site exists, but p1Dri is not assigned.",
+        },
+    )
+
+    def fake_add_note(**kwargs):
+        raise AssertionError("smoke test should not write without owner user ID")
+
+    monkeypatch.setattr(ddr_cli, "add_rhodes_site_note", fake_add_note)
+
+    exit_code = ddr_cli.main(["notes-smoke-test", "--site", "Alpha Keller"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 2
+    assert payload["status"] == "error"
+    assert payload["reason"] == "missing_owner_user_id"
+    assert payload["site_id"] == "SITE1"
+
+
 def test_ddr_status_reads_manifest(monkeypatch, tmp_path, capsys) -> None:
     manifest = {
         "run_id": "run-1",

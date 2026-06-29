@@ -383,6 +383,16 @@ class TestListDriveDocumentsFiltering:
         gc = MagicMock()
         gc.list_files_recursive.return_value = [
             {"id": "site-sir", "name": "Alpha Keller SIR.pdf"},
+            {
+                "id": "working-sir",
+                "name": "Alpha Keller stale SIR.pdf",
+                "folder_path": "/Working",
+            },
+            {
+                "id": "prov-cache",
+                "name": "provenance.json",
+                "folder_path": "/M1 - Acquire Property",
+            },
             {"id": "opening-plan", "name": "Opening Plan - Alpha Keller"},
             {"id": "eocc", "name": "E-Occupancy Assessment - Alpha Keller"},
             {"id": "trace", "name": "Alpha Keller DD Report Trace - 2026-04-20.json"},
@@ -410,6 +420,8 @@ class TestListDriveDocumentsFiltering:
         assert result["status"] == "success"
         site_files = {file_info["name"]: file_info for file_info in result["site_folder_files"]}
         assert "Lease Draft.pdf" not in site_files
+        assert "Alpha Keller stale SIR.pdf" not in site_files
+        assert "provenance.json" not in site_files
         assert "Alpha Keller DD Report - 2026-04-20" not in site_files
         assert "Alpha Keller DD Report Trace - 2026-04-20.json" not in site_files
         assert site_files["Alpha Keller SIR.pdf"]["doc_type"] == "sir"

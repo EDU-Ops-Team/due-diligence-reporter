@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from due_diligence_reporter.rhodes import (
+    AerieApiConfig,
+    AerieNotesClient,
     RhodesClient,
     RhodesError,
     add_rhodes_site_note,
@@ -39,6 +42,7 @@ class FakeRhodesClient:
         note_response: dict[str, Any] | None = None,
         note_responses: list[dict[str, Any] | None] | None = None,
         due_diligence_response: dict[str, Any] | None = None,
+        due_diligence_exception: Exception | None = None,
     ) -> None:
         self.site = site or {}
         self.resolved_site = resolved_site
@@ -47,6 +51,7 @@ class FakeRhodesClient:
         self.note_response = note_response
         self.note_responses = list(note_responses or [])
         self.due_diligence_response = due_diligence_response
+        self.due_diligence_exception = due_diligence_exception
         self.documents: list[dict[str, Any]] = []
         self.registered_documents: list[dict[str, Any]] = []
         self.notes: list[dict[str, Any]] = []
@@ -164,6 +169,8 @@ class FakeRhodesClient:
                 },
             )
         )
+        if self.due_diligence_exception is not None:
+            raise self.due_diligence_exception
         if self.due_diligence_response is None:
             due_diligence = self.site.setdefault("dueDiligence", {})
             if isinstance(due_diligence, dict):
@@ -294,6 +301,30 @@ class FakeRhodesClient:
             if str(note.get("body") or "").strip() == body.strip():
                 return note
         return None
+
+
+class FakeAerieResponse:
+    def __init__(self, payload: dict[str, Any], *, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.ok = 200 <= status_code < 300
+        self.headers: dict[str, str] = {}
+        self.text = json.dumps(payload)
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+class FakeAerieSession:
+    def __init__(self, responses: list[FakeAerieResponse]) -> None:
+        self.responses = list(responses)
+        self.requests: list[dict[str, Any]] = []
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeAerieResponse:
+        self.requests.append({"method": method, "url": url, **kwargs})
+        if not self.responses:
+            raise AssertionError(f"No fake Aerie response queued for {method} {url}")
+        return self.responses.pop(0)
 
 
 class RecordingRhodesClient(RhodesClient):
@@ -750,8 +781,29 @@ def test_ddr_doc_type_mapping_covers_inbox_supported_docs() -> None:
     assert opening_plan_mapping.milestone == "acquireProperty"
     alpha_phasing_mapping = map_ddr_doc_type_to_rhodes("alpha_phasing_plan_report")
     assert alpha_phasing_mapping is not None
-    assert alpha_phasing_mapping.doc_type == "other"
+    assert alpha_phasing_mapping.doc_type == "phasing"
     assert alpha_phasing_mapping.milestone == "acquireProperty"
+    alpha_capacity_mapping = map_ddr_doc_type_to_rhodes("alpha_capacity_analysis")
+    assert alpha_capacity_mapping is not None
+    assert alpha_capacity_mapping.doc_type == "capacityCalculation"
+    outdoor_mapping = map_ddr_doc_type_to_rhodes("outdoor_play_space_report")
+    assert outdoor_mapping is not None
+    assert outdoor_mapping.doc_type == "other"
+    assert outdoor_mapping.quality_bar == "outdoorRecreation"
+    school_mapping = map_ddr_doc_type_to_rhodes("school_approval_report")
+    assert school_mapping is not None
+    assert school_mapping.doc_type == "regulatoryApproval"
+    traffic_mapping = map_ddr_doc_type_to_rhodes("traffic_analysis")
+    assert traffic_mapping is not None
+    assert traffic_mapping.doc_type == "other"
+    assert traffic_mapping.quality_bar == "transportation"
+    assert (
+        map_ddr_doc_type_to_rhodes("certificate_of_occupancy").doc_type
+        == "certificateOfOccupancy"
+    )
+    assert map_ddr_doc_type_to_rhodes("permit_of_record").doc_type == "permit"
+    assert map_ddr_doc_type_to_rhodes("measured_floor_plan").doc_type == "floorPlan"
+    assert map_ddr_doc_type_to_rhodes("lidar").doc_type == "lidar"
 
 
 def test_register_rhodes_document_for_upload_registers_mapped_drive_file() -> None:
@@ -881,6 +933,69 @@ def test_update_rhodes_due_diligence_reports_rejected_response() -> None:
     assert result["status"] == "failed"
     assert result["reason"] == "write_rejected"
     assert "Action requires confirmation" in result["error"]
+    assert result["write_request"] == {
+        "server": "locationos",
+        "tool": "updateDueDiligence",
+        "arguments": {"siteId": "SITE1", "status": "complete"},
+    }
+    assert result["readback_request"] == {
+        "server": "locationos",
+        "tool": "getSite",
+        "arguments": {"siteId": "SITE1"},
+        "verify_fields": ["status"],
+    }
+
+
+def test_update_rhodes_due_diligence_preserves_failed_write_request_and_readback() -> None:
+    client = FakeRhodesClient(
+        site={"_id": "SITE1", "dueDiligence": {"status": "data-gathering"}},
+        due_diligence_exception=RhodesError(
+            "Rhodes tool returned error: {'content': [{'type': 'text', "
+            "'text': 'Error: [Request ID: 9ec066c68ad1bdb6] Server Error\\n"
+            "Request ID: 93946545-f2fb-43ea-a2ab-705c4aa4f61d'}], "
+            "'isError': True}"
+        ),
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"status": "complete", "foCapacity": 36},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "rhodes_error"
+    assert result["error_summary"] == (
+        "LocationOS updateDueDiligence returned a server error. Request IDs: "
+        "9ec066c68ad1bdb6, 93946545-f2fb-43ea-a2ab-705c4aa4f61d"
+    )
+    assert result["write_request"] == {
+        "server": "locationos",
+        "tool": "updateDueDiligence",
+        "arguments": {"siteId": "SITE1", "status": "complete", "foCapacity": 36},
+    }
+    assert result["readback_request"] == {
+        "server": "locationos",
+        "tool": "getSite",
+        "arguments": {"siteId": "SITE1"},
+        "verify_fields": ["foCapacity", "status"],
+    }
+    assert result["readback"]["status"] == "failed"
+    assert result["readback"]["reason"] == "field_mismatch"
+    assert result["readback"]["mismatches"] == [
+        {"field": "status", "expected": "complete", "actual": "data-gathering"},
+        {"field": "foCapacity", "expected": "36", "actual": "None"},
+    ]
+    assert client.calls == [
+        (
+            "update_due_diligence",
+            {
+                "site_id": "SITE1",
+                "fields": "foCapacity,status",
+            },
+        ),
+        ("get_site", {"site_id": "SITE1", "slug": ""}),
+    ]
 
 
 def test_update_rhodes_due_diligence_verifies_readback() -> None:
@@ -970,6 +1085,7 @@ def test_add_rhodes_site_note_mentions_owner_user_id() -> None:
         "status": "verified",
         "rhodes_note_id": "NOTE1",
         "matched_by": "note_id",
+        "mentioned_user_ids": ["USER1"],
     }
 
 
@@ -1007,6 +1123,7 @@ def test_add_rhodes_site_note_accepts_nested_note_id_response() -> None:
         "status": "verified",
         "rhodes_note_id": "NOTE-NESTED",
         "matched_by": "note_id",
+        "mentioned_user_ids": ["OWNER1"],
     }
     assert client.calls == [
         (
@@ -1104,7 +1221,9 @@ def test_add_rhodes_site_note_fails_when_readback_missing() -> None:
 def test_add_rhodes_site_note_recovers_note_id_from_readback() -> None:
     body = "AutomationEvent v1\nKind: raycon_followup_alert"
     client = FakeRhodesClient(note_response={"text": "created"})
-    client.notes = [{"_id": "NOTE-READBACK", "siteId": "SITE1", "body": body}]
+    client.notes = [
+        {"_id": "NOTE-READBACK", "siteId": "SITE1", "body": body, "mentions": ["OWNER1"]}
+    ]
 
     result = add_rhodes_site_note(
         site_id="SITE1",
@@ -1197,3 +1316,160 @@ def test_add_rhodes_site_note_resolves_nested_owner_user_id() -> None:
     assert result["owner_user_id"] == "USER-NESTED"
     assert result["owner_resolution"] == "resolved_from_email"
     assert client.notes[0]["mentions"] == ["USER-NESTED"]
+
+
+def _aerie_client(responses: list[FakeAerieResponse]) -> tuple[AerieNotesClient, FakeAerieSession]:
+    session = FakeAerieSession(responses)
+    return (
+        AerieNotesClient(
+            cfg=AerieApiConfig(base_url="https://aerie.example/api", api_key="test-key"),
+            session=session,  # type: ignore[arg-type]
+        ),
+        session,
+    )
+
+
+def test_add_rhodes_site_note_uses_headless_aerie_api_with_owner_mention() -> None:
+    body = "AutomationEvent v1\nKind: dd_report_created"
+    notes_client, session = _aerie_client(
+        [
+            FakeAerieResponse({"data": []}),
+            FakeAerieResponse(
+                {
+                    "data": {
+                        "noteId": "NOTE1",
+                        "siteId": "SITE1",
+                        "body": body,
+                        "mentionedUserIds": ["OWNER1"],
+                    }
+                },
+                status_code=201,
+            ),
+            FakeAerieResponse(
+                {
+                    "data": [
+                        {
+                            "noteId": "NOTE1",
+                            "siteId": "SITE1",
+                            "body": body,
+                            "mentionedUserIds": ["OWNER1"],
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body=body,
+        owner_user_id="OWNER1",
+        owner_email="owner@example.com",
+        notes_client=notes_client,
+        automation_source="ddr-test",
+    )
+
+    assert result["status"] == "created"
+    assert result["rhodes_note_id"] == "NOTE1"
+    assert result["owner_notification"] == "mentioned"
+    assert result["mentioned_user_ids"] == ["OWNER1"]
+    assert result["write_path"] == "aerie_notes_api"
+    post_request = session.requests[1]
+    assert post_request["method"] == "POST"
+    assert post_request["json"] == {
+        "anchorType": "site",
+        "body": body,
+        "siteId": "SITE1",
+        "anchorId": "SITE1",
+        "mentions": ["OWNER1"],
+        "automationSource": "ddr-test",
+        "decisionmakerUserId": "OWNER1",
+    }
+
+
+def test_add_rhodes_site_note_requires_owner_user_id_for_headless_path() -> None:
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body="AutomationEvent v1\nKind: dd_report_created",
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "missing_owner_user_id"
+    assert result["write_path"] == "aerie_notes_api"
+
+
+def test_add_rhodes_site_note_dedupes_existing_aerie_note_with_owner_mention() -> None:
+    body = "AutomationEvent v1\nKind: dd_report_created"
+    notes_client, session = _aerie_client(
+        [
+            FakeAerieResponse(
+                {
+                    "data": [
+                        {
+                            "noteId": "NOTE-EXISTING",
+                            "siteId": "SITE1",
+                            "body": body,
+                            "mentionedUserIds": ["OWNER1"],
+                        }
+                    ]
+                }
+            )
+        ]
+    )
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body=body,
+        owner_user_id="OWNER1",
+        notes_client=notes_client,
+    )
+
+    assert result["status"] == "created"
+    assert result["reason"] == "already_exists"
+    assert result["rhodes_note_id"] == "NOTE-EXISTING"
+    assert result["idempotency_status"] == "matched_existing"
+    assert [request["method"] for request in session.requests] == ["GET"]
+
+
+def test_add_rhodes_site_note_fails_when_aerie_readback_lacks_owner_mention() -> None:
+    body = "AutomationEvent v1\nKind: dd_report_created"
+    notes_client, _session = _aerie_client(
+        [
+            FakeAerieResponse({"data": []}),
+            FakeAerieResponse(
+                {
+                    "data": {
+                        "noteId": "NOTE1",
+                        "siteId": "SITE1",
+                        "body": body,
+                        "mentionedUserIds": [],
+                    }
+                },
+                status_code=201,
+            ),
+            FakeAerieResponse(
+                {
+                    "data": [
+                        {
+                            "noteId": "NOTE1",
+                            "siteId": "SITE1",
+                            "body": body,
+                            "mentionedUserIds": [],
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+
+    result = add_rhodes_site_note(
+        site_id="SITE1",
+        body=body,
+        owner_user_id="OWNER1",
+        notes_client=notes_client,
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "note_readback_failed"
+    assert result["readback"]["reason"] == "note_mentions_missing"
+    assert result["readback"]["missing_user_ids"] == ["OWNER1"]

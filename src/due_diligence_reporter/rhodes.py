@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -11,10 +12,13 @@ from typing import Any
 import requests
 
 DEFAULT_RHODES_MCP_URL = "https://location-os-mcp.ephor.workers.dev/mcp"
+DEFAULT_AERIE_API_BASE_URL = "https://edu-ops.klair.ai/api"
 MCP_PROTOCOL_VERSION = "2025-03-26"
 RHODES_TIMEOUT_SECONDS = 20.0
 DRIVE_FOLDER_URL_PREFIX = "https://drive.google.com/drive/folders/"
 LOCATIONOS_NOT_CONFIGURED_REASON = "locationos_mcp_not_configured"
+NOTES_API_NOT_CONFIGURED_REASON = "aerie_notes_api_not_configured"
+REQUEST_ID_RE = re.compile(r"Request ID:\s*([A-Za-z0-9-]+)")
 
 
 class RhodesError(RuntimeError):
@@ -26,6 +30,14 @@ class RhodesConfig:
     """Rhodes MCP configuration."""
 
     mcp_url: str
+    api_key: str
+
+
+@dataclass(frozen=True)
+class AerieApiConfig:
+    """Aerie API configuration for headless Rhodes note writes."""
+
+    base_url: str
     api_key: str
 
 
@@ -47,6 +59,17 @@ def load_rhodes_config() -> RhodesConfig:
     )
 
 
+def load_aerie_api_config() -> AerieApiConfig:
+    """Load Aerie API configuration from environment variables."""
+    api_key = os.getenv("AERIE_API_KEY", "").strip()
+    if not api_key:
+        raise RhodesError("Missing Aerie API bearer token env var (AERIE_API_KEY)")
+    return AerieApiConfig(
+        base_url=(os.getenv("AERIE_API_BASE_URL") or DEFAULT_AERIE_API_BASE_URL).strip(),
+        api_key=api_key,
+    )
+
+
 def _rhodes_headers(api_key: str, *, session_id: str | None = None) -> dict[str, str]:
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -56,6 +79,14 @@ def _rhodes_headers(api_key: str, *, session_id: str | None = None) -> dict[str,
     if session_id:
         headers["Mcp-Session-Id"] = session_id
     return headers
+
+
+def _aerie_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
 
 
 def _parse_json_rpc_response(resp: requests.Response) -> dict[str, Any]:
@@ -278,8 +309,42 @@ DDR_DOC_TYPE_TO_RHODES: dict[str, RhodesDocumentMapping] = {
         milestone="acquireProperty",
     ),
     "alpha_phasing_plan_report": RhodesDocumentMapping(
+        "phasing",
+        milestone="acquireProperty",
+    ),
+    "alpha_capacity_analysis": RhodesDocumentMapping(
+        "capacityCalculation",
+        milestone="acquireProperty",
+    ),
+    "capacity_brainlift_report": RhodesDocumentMapping(
+        "capacityCalculation",
+        milestone="acquireProperty",
+    ),
+    "e_occupancy_report": RhodesDocumentMapping(
         "other",
         milestone="acquireProperty",
+    ),
+    "outdoor_play_space_report": RhodesDocumentMapping(
+        "other",
+        milestone="acquireProperty",
+        quality_bar="outdoorRecreation",
+    ),
+    "school_approval_report": RhodesDocumentMapping(
+        "regulatoryApproval",
+        milestone="acquireProperty",
+    ),
+    "certificate_of_occupancy": RhodesDocumentMapping(
+        "certificateOfOccupancy",
+        milestone="acquireProperty",
+    ),
+    "permit_of_record": RhodesDocumentMapping("permit", milestone="acquireProperty"),
+    "measured_floor_plan": RhodesDocumentMapping("floorPlan", milestone="acquireProperty"),
+    "floor_plan": RhodesDocumentMapping("floorPlan", milestone="acquireProperty"),
+    "lidar": RhodesDocumentMapping("lidar", milestone="acquireProperty"),
+    "traffic_analysis": RhodesDocumentMapping(
+        "other",
+        milestone="acquireProperty",
+        quality_bar="transportation",
     ),
 }
 
@@ -916,6 +981,159 @@ class RhodesClient:
         return None
 
 
+class AerieNotesClient:
+    """Headless Aerie API client for Rhodes site-note writes and readback."""
+
+    def __init__(
+        self,
+        cfg: AerieApiConfig | None = None,
+        *,
+        session: requests.Session | None = None,
+    ) -> None:
+        self.cfg = cfg or load_aerie_api_config()
+        self.session = session or requests.Session()
+
+    def _url(self, path: str) -> str:
+        return f"{self.cfg.base_url.rstrip('/')}/{path.lstrip('/')}"
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            response = self.session.request(
+                method,
+                self._url(path),
+                headers=_aerie_headers(self.cfg.api_key),
+                json=json_body,
+                params=params,
+                timeout=RHODES_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise RhodesError(f"Aerie notes API request failed: {exc}") from exc
+
+        if not response.ok:
+            request_id = response.headers.get("X-Request-Id", "")
+            detail = _aerie_error_detail(response)
+            suffix = f" request_id={request_id}" if request_id else ""
+            raise RhodesError(
+                f"Aerie notes API {method} {path} returned {response.status_code}: "
+                f"{detail}{suffix}"
+            )
+
+        try:
+            payload = response.json() if response.text else {}
+        except ValueError as exc:
+            raise RhodesError(
+                f"Aerie notes API returned non-JSON response: {response.text[:200]}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RhodesError("Aerie notes API returned a non-object JSON response")
+        return payload
+
+    def create_site_note(
+        self,
+        *,
+        site_id: str = "",
+        site_slug: str = "",
+        body: str,
+        mentions: Iterable[str] | None = None,
+        automation_source: str = "due-diligence-reporter",
+        decisionmaker_user_id: str = "",
+    ) -> dict[str, Any]:
+        clean_site_id = site_id.strip()
+        clean_site_slug = site_slug.strip()
+        if not clean_site_id and not clean_site_slug:
+            raise RhodesError("site_id or site_slug is required")
+        if not body.strip():
+            raise RhodesError("body is required")
+
+        payload: dict[str, Any] = {
+            "anchorType": "site",
+            "body": body.strip(),
+        }
+        if clean_site_id:
+            payload["siteId"] = clean_site_id
+            payload["anchorId"] = clean_site_id
+        else:
+            payload["siteSlug"] = clean_site_slug
+        clean_mentions = [m.strip() for m in (mentions or []) if m.strip()]
+        if clean_mentions:
+            payload["mentions"] = clean_mentions
+        if automation_source.strip():
+            payload["automationSource"] = automation_source.strip()[:120]
+        if decisionmaker_user_id.strip():
+            payload["decisionmakerUserId"] = decisionmaker_user_id.strip()
+
+        response = self._request(
+            "POST",
+            "/v1/operations/rhodes/notes",
+            json_body=payload,
+        )
+        data = response.get("data")
+        return data if isinstance(data, dict) else {}
+
+    def list_notes(
+        self,
+        *,
+        site_id: str = "",
+        site_slug: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        clean_site_id = site_id.strip()
+        clean_site_slug = site_slug.strip()
+        if not clean_site_id and not clean_site_slug:
+            raise RhodesError("site_id or site_slug is required")
+        params: dict[str, Any] = {"limit": limit}
+        if clean_site_id:
+            params["siteId"] = clean_site_id
+        else:
+            params["siteSlug"] = clean_site_slug
+        response = self._request("GET", "/v1/operations/rhodes/notes", params=params)
+        return _coerce_note_list(response)
+
+    def find_site_note_by_body(
+        self,
+        *,
+        site_id: str = "",
+        site_slug: str = "",
+        body: str,
+    ) -> dict[str, Any] | None:
+        clean_body = body.strip()
+        if not clean_body:
+            return None
+        for note in self.list_notes(site_id=site_id, site_slug=site_slug, limit=50):
+            if str(note.get("body") or "").strip() == clean_body:
+                return note
+        return None
+
+
+def _aerie_error_detail(response: requests.Response) -> str:
+    if not response.text:
+        return ""
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text[:500]
+    if not isinstance(payload, dict):
+        return response.text[:500]
+    for key in ("message", "error", "detail"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:500]
+    error = payload.get("error")
+    if isinstance(error, dict):
+        for key in ("message", "code"):
+            value = error.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:500]
+    return response.text[:500]
+
+
 def _clean_due_diligence_fields(fields: dict[str, Any]) -> dict[str, Any]:
     clean: dict[str, Any] = {}
     for key, value in fields.items():
@@ -944,9 +1162,12 @@ def update_rhodes_due_diligence(
 
     clean_site_id = site_id.strip()
     clean_fields = _clean_due_diligence_fields(fields)
+    write_request = _due_diligence_write_request(clean_site_id, clean_fields)
     base = {
         "rhodes_site_id": clean_site_id,
         "updated_fields": sorted(clean_fields),
+        "write_request": write_request,
+        "readback_request": _due_diligence_readback_request(clean_site_id, clean_fields),
     }
     if not clean_site_id:
         return {**base, "status": "skipped", "reason": "missing_site_id"}
@@ -967,18 +1188,43 @@ def update_rhodes_due_diligence(
     try:
         response = rhodes.update_due_diligence(site_id=clean_site_id, fields=clean_fields)
     except RhodesError as exc:
-        return {**base, "status": "failed", "reason": "rhodes_error", "error": str(exc)}
+        readback = _verify_due_diligence_readback(
+            rhodes,
+            site_id=clean_site_id,
+            fields=clean_fields,
+        )
+        return {
+            **base,
+            "status": "failed",
+            "reason": "rhodes_error",
+            "error": str(exc),
+            "error_summary": _summarize_locationos_write_error(str(exc)),
+            "readback": readback,
+        }
     except Exception as exc:  # noqa: BLE001 - workflow side effect should report cleanly
-        return {**base, "status": "failed", "reason": "unexpected_error", "error": str(exc)}
+        return {
+            **base,
+            "status": "failed",
+            "reason": "unexpected_error",
+            "error": str(exc),
+            "error_summary": _summarize_locationos_write_error(str(exc)),
+        }
 
     response_error = _due_diligence_response_error(response)
     if response_error:
+        readback = _verify_due_diligence_readback(
+            rhodes,
+            site_id=clean_site_id,
+            fields=clean_fields,
+        )
         return {
             **base,
             "status": "failed",
             "reason": "write_rejected",
             "error": response_error,
+            "error_summary": _summarize_locationos_write_error(response_error),
             "response": _summarize_due_diligence_response(response),
+            "readback": readback,
         }
 
     readback = _verify_due_diligence_readback(
@@ -1141,6 +1387,45 @@ def _due_diligence_readback_error(readback: dict[str, Any]) -> str:
     return f"LocationOS readback failed: {error or reason}"
 
 
+def _due_diligence_write_request(site_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    arguments: dict[str, Any] = {"siteId": site_id}
+    arguments.update(fields)
+    return {
+        "server": "locationos",
+        "tool": "updateDueDiligence",
+        "arguments": arguments,
+    }
+
+
+def _due_diligence_readback_request(site_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "server": "locationos",
+        "tool": "getSite",
+        "arguments": {"siteId": site_id},
+        "verify_fields": sorted(fields),
+    }
+
+
+def _summarize_locationos_write_error(error: str) -> str:
+    clean_error = str(error or "").strip()
+    request_ids = REQUEST_ID_RE.findall(clean_error)
+    unique_request_ids = list(dict.fromkeys(request_ids))
+    lowered = clean_error.lower()
+    if "server error" in lowered:
+        summary = "LocationOS updateDueDiligence returned a server error"
+    elif "elicitation_unsupported" in lowered:
+        summary = "LocationOS updateDueDiligence requires OAuth-backed approval"
+    elif "confirmation" in lowered or "requires approval" in lowered:
+        summary = "LocationOS updateDueDiligence requires approval"
+    elif clean_error:
+        summary = clean_error
+    else:
+        summary = "LocationOS updateDueDiligence failed"
+    if unique_request_ids:
+        summary = f"{summary}. Request IDs: {', '.join(unique_request_ids)}"
+    return summary
+
+
 def _due_diligence_response_error(response: dict[str, Any]) -> str:
     status = str(response.get("status") or "").strip().lower()
     if status in {"error", "failed", "rejected"}:
@@ -1267,6 +1552,7 @@ def lookup_rhodes_site_owner(
         "drive_folder_url": drive_folder_url,
         "p1_assignee_name": owner_name,
         "p1_assignee_email": owner_email,
+        "p1_assignee_user_id": owner.get("userId", ""),
         "p1_dri": owner,
         "report_data_fields": report_fields,
     }
@@ -1286,8 +1572,10 @@ def add_rhodes_site_note(
     owner_email: str = "",
     extra_mention_user_ids: Iterable[str] | None = None,
     client: RhodesClient | None = None,
+    notes_client: AerieNotesClient | None = None,
+    automation_source: str = "due-diligence-reporter",
 ) -> dict[str, Any]:
-    """Create a Rhodes site note and mention the owner when possible."""
+    """Create a headless Rhodes site note and mention the P1 owner."""
     clean_site_id = site_id.strip()
     clean_site_slug = site_slug.strip()
     clean_body = body.strip()
@@ -1304,14 +1592,205 @@ def add_rhodes_site_note(
         return {**base, "status": "skipped", "reason": "missing_site_identity"}
     if not clean_body:
         return {**base, "status": "skipped", "reason": "missing_body"}
+    if client is not None:
+        return _add_rhodes_site_note_with_mcp_client(
+            site_id=clean_site_id,
+            site_slug=clean_site_slug,
+            body=clean_body,
+            owner_user_id=clean_owner_user_id,
+            owner_email=clean_owner_email,
+            extra_mention_user_ids=extra_mention_user_ids,
+            client=client,
+            base=base,
+        )
+
+    if not clean_owner_user_id:
+        return {
+            **base,
+            "status": "failed",
+            "reason": "missing_owner_user_id",
+            "error": "P1 owner user ID is required for headless review-queue note delivery",
+            "rhodes_note_id": "",
+            "owner_resolution": "missing_user_id",
+            "mentioned_user_ids": _unique_nonempty(extra_mention_user_ids or []),
+            "write_path": "aerie_notes_api",
+        }
+
+    mention_user_ids = _unique_nonempty(
+        [
+            clean_owner_user_id,
+            *(extra_mention_user_ids or []),
+        ]
+    )
 
     try:
-        rhodes = client or RhodesClient()
-        resolved_owner_user_id = clean_owner_user_id
+        notes = notes_client or AerieNotesClient()
+    except RhodesError as exc:
+        return {
+            **base,
+            "status": "failed",
+            "reason": NOTES_API_NOT_CONFIGURED_REASON,
+            "error": str(exc),
+            "rhodes_note_id": "",
+            "owner_resolution": "provided",
+            "mentioned_user_ids": mention_user_ids,
+            "write_path": "aerie_notes_api",
+        }
+
+    try:
+        existing = notes.find_site_note_by_body(
+            site_id=clean_site_id,
+            site_slug=clean_site_slug,
+            body=clean_body,
+        )
+        if existing is not None and _note_mentions_cover(existing, mention_user_ids):
+            note_id = _note_id(existing)
+            return {
+                **base,
+                "status": "created",
+                "reason": "already_exists",
+                "rhodes_note_id": note_id,
+                "owner_user_id": clean_owner_user_id,
+                "owner_resolution": "provided",
+                "owner_notification": "mentioned",
+                "mentioned_user_ids": _note_mentioned_user_ids(existing),
+                "readback": {
+                    "status": "verified",
+                    "rhodes_note_id": note_id,
+                    "matched_by": "body",
+                    "mentioned_user_ids": _note_mentioned_user_ids(existing),
+                },
+                "write_path": "aerie_notes_api",
+                "idempotency_status": "matched_existing",
+            }
+
+        note = notes.create_site_note(
+            site_id=clean_site_id,
+            site_slug=clean_site_slug,
+            body=clean_body,
+            mentions=mention_user_ids,
+            automation_source=automation_source,
+            decisionmaker_user_id=clean_owner_user_id,
+        )
+        note_id = _note_id(note)
+    except RhodesError as exc:
+        return {
+            **base,
+            "status": "failed",
+            "reason": "note_api_error",
+            "error": str(exc),
+            "rhodes_note_id": "",
+            "owner_user_id": clean_owner_user_id,
+            "owner_resolution": "provided",
+            "mentioned_user_ids": mention_user_ids,
+            "write_path": "aerie_notes_api",
+        }
+    except Exception as exc:  # noqa: BLE001 - non-fatal scanner side effect
+        return {
+            **base,
+            "status": "failed",
+            "reason": "unexpected_error",
+            "error": str(exc),
+            "rhodes_note_id": "",
+            "owner_user_id": clean_owner_user_id,
+            "owner_resolution": "provided",
+            "mentioned_user_ids": mention_user_ids,
+            "write_path": "aerie_notes_api",
+        }
+
+    note_response_summaries = [
+        _summarize_note_response(note, attempt="aerie_notes_api")
+    ]
+    if not note_id:
+        try:
+            recovered = notes.find_site_note_by_body(
+                site_id=clean_site_id,
+                site_slug=clean_site_slug,
+                body=clean_body,
+            )
+        except RhodesError:
+            recovered = None
+        if recovered is not None and _note_mentions_cover(recovered, mention_user_ids):
+            note = recovered
+            note_id = _note_id(recovered)
+
+    if not note_id:
+        return {
+            **base,
+            "status": "failed",
+            "reason": "missing_note_id",
+            "error": "Aerie notes API returned no note ID; delivery could not be verified",
+            "rhodes_note_id": "",
+            "owner_user_id": clean_owner_user_id,
+            "owner_resolution": "provided",
+            "mentioned_user_ids": mention_user_ids,
+            "note_response_summaries": note_response_summaries,
+            "write_path": "aerie_notes_api",
+        }
+
+    readback = _verify_note_readback(
+        notes,
+        site_id=clean_site_id,
+        site_slug=clean_site_slug,
+        body=clean_body,
+        note_id=note_id,
+        expected_mention_user_ids=mention_user_ids,
+    )
+    if readback["status"] != "verified":
+        return {
+            **base,
+            "status": "failed",
+            "reason": "note_readback_failed",
+            "error": _note_readback_error(readback),
+            "rhodes_note_id": note_id,
+            "owner_user_id": clean_owner_user_id,
+            "owner_resolution": "provided",
+            "mentioned_user_ids": mention_user_ids,
+            "readback": readback,
+            "note_response_summaries": note_response_summaries,
+            "write_path": "aerie_notes_api",
+        }
+
+    verified_note_id = str(readback.get("rhodes_note_id") or note_id).strip() or note_id
+    verified_mentions = _unique_nonempty(
+        _note_mentioned_user_ids(note) or readback.get("mentioned_user_ids") or mention_user_ids
+    )
+
+    return {
+        **base,
+        "status": "created",
+        "reason": "ok",
+        "rhodes_note_id": verified_note_id,
+        "owner_user_id": clean_owner_user_id,
+        "owner_resolution": "provided",
+        "owner_notification": "mentioned",
+        "mentioned_user_ids": verified_mentions,
+        "readback": readback,
+        "write_path": "aerie_notes_api",
+        "idempotency_status": "created",
+    }
+
+
+def _add_rhodes_site_note_with_mcp_client(
+    *,
+    site_id: str,
+    site_slug: str,
+    body: str,
+    owner_user_id: str,
+    owner_email: str,
+    extra_mention_user_ids: Iterable[str] | None,
+    client: RhodesClient,
+    base: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a note through an injected MCP-compatible client for tests/fallbacks."""
+
+    try:
+        rhodes = client
+        resolved_owner_user_id = owner_user_id
         owner_resolution = "provided" if resolved_owner_user_id else "none"
-        if not resolved_owner_user_id and clean_owner_email:
+        if not resolved_owner_user_id and owner_email:
             try:
-                user = rhodes.get_user(email=clean_owner_email)
+                user = rhodes.get_user(email=owner_email)
             except RhodesError:
                 user = None
                 owner_resolution = "lookup_failed"
@@ -1326,24 +1805,24 @@ def add_rhodes_site_note(
         )
         note_response_summaries: list[dict[str, Any]] = []
         note = rhodes.add_site_note(
-            site_id=clean_site_id,
-            site_slug=clean_site_slug,
-            body=clean_body,
+            site_id=site_id,
+            site_slug=site_slug,
+            body=body,
             mentions=mention_user_ids,
         )
         note_response_summaries.append(
             _summarize_note_response(
                 note,
-                attempt="site_id" if clean_site_id else "site_slug",
+                attempt="site_id" if site_id else "site_slug",
             )
         )
         note_id = _note_id(note)
         if not note_id:
             note = _recover_note_without_id(
                 rhodes,
-                site_id=clean_site_id,
-                site_slug=clean_site_slug,
-                body=clean_body,
+                site_id=site_id,
+                site_slug=site_slug,
+                body=body,
                 mentions=mention_user_ids,
                 response_summaries=note_response_summaries,
             )
@@ -1368,10 +1847,11 @@ def add_rhodes_site_note(
 
     readback = _verify_note_readback(
         rhodes,
-        site_id=clean_site_id,
-        site_slug=clean_site_slug,
-        body=clean_body,
+        site_id=site_id,
+        site_slug=site_slug,
+        body=body,
         note_id=note_id,
+        expected_mention_user_ids=mention_user_ids,
     )
     if readback["status"] != "verified":
         return {
@@ -1402,12 +1882,13 @@ def add_rhodes_site_note(
 
 
 def _verify_note_readback(
-    rhodes: RhodesClient,
+    rhodes: Any,
     *,
     site_id: str,
     site_slug: str,
     body: str,
     note_id: str,
+    expected_mention_user_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     try:
         notes = rhodes.list_notes(site_id=site_id, site_slug=site_slug, limit=50)
@@ -1415,7 +1896,9 @@ def _verify_note_readback(
         return {"status": "failed", "reason": "list_notes_failed", "error": str(exc)}
 
     clean_body = body.strip()
+    expected_mentions = _unique_nonempty(expected_mention_user_ids or [])
     body_match_id = ""
+    body_match_mentions: list[str] = []
     for note in notes:
         current_id = _note_id(note)
         current_body = str(note.get("body") or "").strip()
@@ -1426,19 +1909,49 @@ def _verify_note_readback(
                     "reason": "note_body_mismatch",
                     "rhodes_note_id": note_id,
                 }
+            mentioned_user_ids = _note_mentioned_user_ids(note)
+            missing_mentions = [
+                user_id
+                for user_id in expected_mentions
+                if user_id not in set(mentioned_user_ids)
+            ]
+            if missing_mentions:
+                return {
+                    "status": "failed",
+                    "reason": "note_mentions_missing",
+                    "rhodes_note_id": note_id,
+                    "missing_user_ids": missing_mentions,
+                    "mentioned_user_ids": mentioned_user_ids,
+                }
             return {
                 "status": "verified",
                 "rhodes_note_id": note_id,
                 "matched_by": "note_id",
+                "mentioned_user_ids": mentioned_user_ids,
             }
         if current_body == clean_body and current_id:
             body_match_id = current_id
+            body_match_mentions = _note_mentioned_user_ids(note)
 
     if body_match_id:
+        missing_mentions = [
+            user_id
+            for user_id in expected_mentions
+            if user_id not in set(body_match_mentions)
+        ]
+        if missing_mentions:
+            return {
+                "status": "failed",
+                "reason": "note_mentions_missing",
+                "rhodes_note_id": body_match_id,
+                "missing_user_ids": missing_mentions,
+                "mentioned_user_ids": body_match_mentions,
+            }
         return {
             "status": "verified",
             "rhodes_note_id": body_match_id,
             "matched_by": "body",
+            "mentioned_user_ids": body_match_mentions,
         }
     return {
         "status": "failed",
@@ -1450,7 +1963,39 @@ def _verify_note_readback(
 def _note_readback_error(readback: dict[str, Any]) -> str:
     reason = str(readback.get("reason") or "note_readback_failed")
     error = str(readback.get("error") or "").strip()
+    if reason == "note_mentions_missing":
+        missing = readback.get("missing_user_ids")
+        if isinstance(missing, list) and missing:
+            return "LocationOS note readback missing mentions for " + ", ".join(
+                str(user_id) for user_id in missing
+            )
     return f"LocationOS note readback failed: {error or reason}"
+
+
+def _note_mentioned_user_ids(note: dict[str, Any]) -> list[str]:
+    user_ids: list[str] = []
+    mentioned_user_ids = note.get("mentionedUserIds")
+    if isinstance(mentioned_user_ids, list):
+        user_ids.extend(str(value) for value in mentioned_user_ids)
+    mentions = note.get("mentions")
+    if isinstance(mentions, list):
+        for mention in mentions:
+            if isinstance(mention, str):
+                user_ids.append(mention)
+            elif isinstance(mention, dict):
+                user_ids.append(_user_id(mention))
+    nested_note = note.get("note")
+    if isinstance(nested_note, dict):
+        user_ids.extend(_note_mentioned_user_ids(nested_note))
+    return _unique_nonempty(user_ids)
+
+
+def _note_mentions_cover(note: dict[str, Any], expected_user_ids: Iterable[str]) -> bool:
+    expected = _unique_nonempty(expected_user_ids)
+    if not expected:
+        return True
+    mentioned = set(_note_mentioned_user_ids(note))
+    return all(user_id in mentioned for user_id in expected)
 
 
 def _recover_note_without_id(
@@ -1590,6 +2135,7 @@ def register_rhodes_document_for_upload(
         "ddr_doc_type": ddr_doc_type,
         "rhodes_doc_type": mapping.doc_type if mapping else "",
         "rhodes_milestone": mapping.milestone if mapping else "",
+        "rhodes_quality_bar": mapping.quality_bar if mapping else "",
     }
 
     if not clean_site_id:

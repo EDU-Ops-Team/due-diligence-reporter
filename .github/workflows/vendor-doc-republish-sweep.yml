@@ -77,6 +77,8 @@ jobs:
           LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
           RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
           RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
+          AERIE_API_KEY: ${{ secrets.AERIE_API_KEY }}
+          AERIE_API_BASE_URL: ${{ vars.AERIE_API_BASE_URL || 'https://edu-ops.klair.ai/api' }}
           DD_REPUBLISH_STATE_STORE: ${{ vars.DD_REPUBLISH_STATE_STORE }}
           DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID: ${{ vars.DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID }}
           DD_REPUBLISH_STATE_FIRESTORE_DATABASE: ${{ vars.DD_REPUBLISH_STATE_FIRESTORE_DATABASE }}
@@ -96,6 +98,8 @@ jobs:
           echo "LOCATIONOS_MCP_API_KEY=${LOCATIONOS_TOKEN}" >> .env
           echo "RHODES_API_KEY=${RHODES_API_KEY:-${LOCATIONOS_TOKEN}}" >> .env
           echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
+          echo "AERIE_API_KEY=${AERIE_API_KEY}" >> .env
+          echo "AERIE_API_BASE_URL=${AERIE_API_BASE_URL}" >> .env
           echo "DD_REPUBLISH_STATE_STORE=${DD_REPUBLISH_STATE_STORE}" >> .env
           echo "DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID=${DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID}" >> .env
           echo "DD_REPUBLISH_STATE_FIRESTORE_DATABASE=${DD_REPUBLISH_STATE_FIRESTORE_DATABASE}" >> .env
@@ -168,7 +172,7 @@ jobs:
           args=()
           if [ "${INPUT_DRY_RUN:-}" = "true" ]; then args+=(--dry-run); fi
           if [ -n "${INPUT_SITE:-}" ]; then args+=(--site "$INPUT_SITE"); fi
-          uv run python scripts/vendor_doc_republish_sweep.py "${args[@]}"
+          uv run ddr source-sweep "${args[@]}"
 
       - name: Save DD republish dedup state
         if: always()

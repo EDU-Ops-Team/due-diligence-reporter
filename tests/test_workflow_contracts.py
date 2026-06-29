@@ -59,6 +59,7 @@ def test_workflow_dispatch_site_inputs_are_not_interpolated_in_shell() -> None:
         assert "${{ inputs.notify }}" not in shell
         assert "${{ inputs.sor_write_mode }}" not in shell
         assert "${{ inputs.mcp_write_completed }}" not in shell
+        assert "${{ inputs.document_first_on_sor_blocker }}" not in shell
         assert "${{ inputs.apply_source_sweep }}" not in shell
         assert "${{ inputs.source_type }}" not in shell
         assert "${{ inputs.fingerprint }}" not in shell
@@ -132,6 +133,10 @@ def test_ad_hoc_ddr_workflow_dispatch_uses_runner_and_opt_in_notifications() -> 
     assert "INPUT_RUN_ID: ${{ inputs.run_id }}" in text
     assert "INPUT_SOR_WRITE_MODE: ${{ inputs.sor_write_mode }}" in text
     assert "INPUT_MCP_WRITE_COMPLETED: ${{ inputs.mcp_write_completed }}" in text
+    assert (
+        "INPUT_DOCUMENT_FIRST_ON_SOR_BLOCKER: ${{ inputs.document_first_on_sor_blocker }}"
+        in text
+    )
     assert "INPUT_APPLY_SOURCE_SWEEP: ${{ inputs.apply_source_sweep }}" in text
     assert "Generation secrets not required for this ad-hoc DDR mode" in text
     assert 'if [ "$INPUT_MODE" = "resume-mcp-write" ]; then' in shell
@@ -145,6 +150,8 @@ def test_ad_hoc_ddr_workflow_dispatch_uses_runner_and_opt_in_notifications() -> 
     assert 'ARGS+=(--sor-write-mode "$INPUT_SOR_WRITE_MODE")' in shell
     assert 'if [ "${INPUT_MCP_WRITE_COMPLETED:-false}" = "true" ]; then' in shell
     assert "ARGS+=(--mcp-write-completed)" in shell
+    assert 'if [ "${INPUT_DOCUMENT_FIRST_ON_SOR_BLOCKER:-true}" = "false" ]; then' in shell
+    assert "ARGS+=(--no-document-first-on-sor-blocker)" in shell
     assert 'if [ "${INPUT_APPLY_SOURCE_SWEEP:-false}" = "true" ]; then' in shell
     assert "ARGS+=(--apply)" in shell
     assert "ARGS+=(--dry-run)" in shell
@@ -171,6 +178,29 @@ def test_vendor_doc_republish_scheduled_runs_are_gated_by_repo_variable() -> Non
         "if: ${{ github.event_name != 'schedule' || "
         "vars.VENDOR_DOC_REPUBLISH_SWEEP_ENABLED == 'true' }}"
     ) in text
+
+
+def test_scheduled_dd_workflows_use_repo_cli_surfaces() -> None:
+    daily_text = _workflow_text("daily-dd-check.yml")
+    daily_shell = "\n".join(_run_blocks(daily_text))
+    vendor_text = _workflow_text("vendor-doc-republish-sweep.yml")
+    vendor_shell = "\n".join(_run_blocks(vendor_text))
+
+    assert 'uv run ddr daily-check "${ARGS[@]}"' in daily_shell
+    assert "scripts/daily_dd_check.py" not in daily_shell
+    assert 'uv run ddr source-sweep "${args[@]}"' in vendor_shell
+    assert "scripts/vendor_doc_republish_sweep.py" not in vendor_shell
+
+
+def test_active_runtime_surfaces_do_not_mention_braintrust() -> None:
+    for path in (
+        ROOT / "src" / "due_diligence_reporter" / "adhoc_runner.py",
+        ROOT / ".github" / "workflows" / "daily-dd-check.yml",
+        ROOT / ".github" / "workflows" / "vendor-doc-republish-sweep.yml",
+        ROOT / ".github" / "workflows" / "ad-hoc-ddr-run.yml",
+        ROOT / "docs" / "prompts" / "prompt_v4.md",
+    ):
+        assert "braintrust" not in path.read_text(encoding="utf-8").lower(), path
 
 
 def test_portfolio_gap_snapshot_triggers_aadp_remediation_without_oauth() -> None:

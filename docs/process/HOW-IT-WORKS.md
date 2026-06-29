@@ -1,28 +1,30 @@
 # Due Diligence Reporter â€” How It Works
 
-**Version:** 4.3.0
+**Version:** 4.4.0
 **Team:** EDU Ops Intelligence
-**Last Updated:** 2026-06-08
+**Last Updated:** 2026-06-29
 
 ---
 
 ## Overview
 
-The Due Diligence Reporter is an AI agent powered by Claude that generates Site Due Diligence (DD) Reports for potential Alpha School locations. It operates in interactive and automated modes.
+The Due Diligence Reporter is an AI agent powered by Claude that prepares direct Site Due Diligence (DD) fields and optional report views for potential Alpha School locations. It operates in interactive and automated modes.
 
-Current V4.2 behavior:
+Current V4.4 behavior:
 
-- First-round readiness is `SIR found AND no existing DDR`. Missing vendor docs do not block the first publish.
+- First-round readiness is `SIR found AND no existing DD source packet`. Missing vendor docs do not block the first direct-field publish.
 - Rhodes / LocationOS is the source of truth for site ID, Drive folder URL, P1 DRI / site owner, and registered document links.
+- M2 closure uses registered supporting documents plus per-field DD writes. A rendered DDR is optional presentation, not the source of truth.
+- The M2 source packet is complete only when required source docs are registered, writable DD fields are readback-verified, LocationOS schema gaps are explicitly held, and no required source gaps remain.
 - Open verification items are stored as structured run state and rendered only as `Open Items to Verify` in the DDR body.
-- Existing DDRs are republished in place when one of the six core source types changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, School Approval report, or Alpha Phasing Plan.
-- The active source sweep entrypoint is `scripts/vendor_doc_republish_sweep.py`; it scans active Rhodes sites with linked Drive folders and calls the shared `dd_republish` path.
+- Existing DD data can be refreshed when a core source type changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, School Approval report, Opening Plan, Alpha Capacity Analysis, Outdoor Play Space Report, Alpha Phasing Plan, KH traffic analysis, CO/permit of record, measured floor plan, or LiDAR.
+- The active source sweep entrypoint is `uv run ddr source-sweep`; it scans active Rhodes sites with linked Drive folders and calls the shared `dd_republish` path. `scripts/vendor_doc_republish_sweep.py` remains a compatibility wrapper.
 
 Legacy mode summary:
 
 1. **Interactive** â€” A human gives it a site name in chat via MCP Hive. The agent gathers data, runs analytical skills, and produces an executive-ready Google Doc.
 2. **Event-Driven (Inbox Scan)** -- A scheduled script scans the `edu.ops@trilogy.com` inbox for new site documents, matches them to Rhodes site records, uploads them to the matched site's M1 folder, and registers the Drive file on the Rhodes site record.
-3. **Daily Sweep (Safety Net - 9 AM)** - A scheduled script scans all site folders in active DD stages. When a site has an SIR / AI SIR and no existing report, it triggers first-round report generation. Vendor SIR, Building Inspection, RayCon, E-Occupancy, School Approval, and Alpha Phasing documents upgrade the report through republish paths as they land.
+3. **Daily Sweep (Safety Net - 9 AM)** - The scheduled repo CLI command scans all site folders in active DD stages. When a site has an SIR / AI SIR and no existing DD source packet, it triggers first-round DD data preparation. M2 source packet documents upgrade the DD field/source packet path as they land.
 
 The agent gathers facts. It does not make recommendations. The decision belongs to the leadership team.
 
@@ -30,7 +32,7 @@ The agent gathers facts. It does not make recommendations. The decision belongs 
 
 ## The V4 Report
 
-The V4 DD Report is a **structured executive one-pager** -- not the multi-page narrative of the original report. It uses structured checklists, pick-menu dimensions, and bare values instead of prose paragraphs.
+The V4 DD view is a **structured executive one-pager** -- not the multi-page narrative of the original report. It uses structured checklists, pick-menu dimensions, and bare values instead of prose paragraphs. It is optional presentation; the registered source packet and LocationOS DD fields are the operating record.
 
 **61 template tokens** across three sections:
 
@@ -44,7 +46,7 @@ The V4 DD Report is a **structured executive one-pager** -- not the multi-page n
 
 Run `apply_alpha_phasing_plan_skill` after the source reads and the E-Occupancy, School Approval, and RayCon context are available, but before `prepare_due_diligence_data`. This is an enrichment step, not a first-round publish blocker and not part of the final vendor-readiness gate.
 
-The tool publishes an Excel workbook in the site's M1 folder, auto-registers the workbook on the Rhodes site record as an `other` support document for the `acquireProperty` milestone when `site_id` is available, and returns a DDR source link plus a compact Buildout Analysis summary:
+The tool publishes an Excel workbook in the site's M1 folder, auto-registers the workbook on the Rhodes site record as a `phasing` support document for the `acquireProperty` milestone when `site_id` is available, and returns a source link plus a compact Buildout Analysis summary:
 
 - `sources.alpha_phasing_plan_link`
 - `exec.alpha_phasing_phase_i_scope`
@@ -132,7 +134,7 @@ Both require clean source notes. `risk_notes` must tie back to a specific docume
                               â”‚  three-tier classifier    â”‚
     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”   â”‚  (regex â†’ GPT-4o-mini)    â”‚
     â”‚  Daily Sweep (9 AM) â”‚   â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-    â”‚  daily_dd_check.py  â”‚                â”‚
+    â”‚  ddr daily-check   â”‚                â”‚
     â”‚  (active stages only)â”‚                â”‚
     â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜                â”‚
                â”‚                           â”‚
@@ -153,10 +155,10 @@ Claude AI Agent â—„â”€â”€â”€â”€â”€â”€â”€
 â”‚  â”œâ”€ lookup_rhodes_site_owner (Rhodes P1 DRI lookup)       â”‚
 â”‚  â”œâ”€ list_drive_documents     (Drive + shared folders)    â”‚
 â”‚  â”œâ”€ read_drive_document      (Drive file reader)         â”‚
-â”‚  â”œâ”€ apply_e_occupancy_skill  (E-Occ scoring)             â”‚
-â”‚  â”œâ”€ apply_school_approval_skill (State registration)     â”‚
-â”‚  â”œâ”€ apply_alpha_phasing_plan_skill (Phasing workbook)    â”‚
-â”‚  â”œâ”€ create_dd_report         (Template copy + fill)      â”‚
+â”‚  â”œâ”€ apply_alpha_capacity_analysis_skill (Capacity source)â”‚
+â”‚  â”œâ”€ apply_outdoor_play_space_skill (Outdoor source)      â”‚
+â”‚  â”œâ”€ apply_e_occupancy_skill / school_approval_skill      â”‚
+â”‚  â”œâ”€ create_dd_report         (Optional report view)      â”‚
 â”‚  â”œâ”€ check_site_readiness     (Doc presence gate)         â”‚
 â”‚  â”œâ”€ check_report_completeness (Token scan)               â”‚
 â”‚  â”œâ”€ check_site_readiness     (Doc presence gate)         â”‚
@@ -217,11 +219,19 @@ For each unprocessed email with PDF attachments:
 | `block_plan` | `floorPlan` | `acquireProperty` |
 | `isp` | `other` | `acquireProperty` |
 | `opening_plan_report` | `other` | `acquireProperty` |
-| `alpha_phasing_plan_report` | `other` | `acquireProperty` |
+| `alpha_phasing_plan_report` | `phasing` | `acquireProperty` |
+| `alpha_capacity_analysis` | `capacityCalculation` | `acquireProperty` |
+| `outdoor_play_space_report` | `other` / quality bar `outdoorRecreation` | `acquireProperty` |
+| `school_approval_report` | `regulatoryApproval` | `acquireProperty` |
+| `certificate_of_occupancy` | `certificateOfOccupancy` | `acquireProperty` |
+| `permit_of_record` | `permit` | `acquireProperty` |
+| `measured_floor_plan` | `floorPlan` | `acquireProperty` |
+| `lidar` | `lidar` | `acquireProperty` |
+| `traffic_analysis` | `other` / quality bar `transportation` | `acquireProperty` |
 
 Current Phase 2 behavior uses the matched Rhodes site record from Phase 1 (`site_title`, `matched_site_id`, address, and Drive folder URL). Older references below to site matching being inactive are stale and retained only until this process doc is fully cleaned up.
 
-Rhodes registration is a non-blocking post-upload side effect. If registration fails or Rhodes is unavailable, the Drive upload remains successful and the scan summary records the Rhodes registration failure for operator follow-up. The scanner retries Rhodes registration on later runs; after the original attempt plus two retries, it writes an `AutomationEvent v1` note to the Rhodes site. The note mentions the P1 DRI when a Rhodes user ID can be resolved. If no owner can be notified in Rhodes, or the note write fails, the same event is posted to the configured Google Chat webhook.
+Rhodes registration is a non-blocking post-upload side effect. If registration fails or Rhodes is unavailable, the Drive upload remains successful and the scan summary records the Rhodes registration failure for operator follow-up. The scanner retries Rhodes registration on later runs; after the original attempt plus two retries, it writes a concise `Document filing review` note to the Rhodes site. The note mentions the P1 DRI when a Rhodes user ID can be resolved. If no owner can be notified in Rhodes, or the note write fails, the same concise event body is posted to the configured Google Chat webhook.
 
 Registration retry state is persisted through a store boundary. Local development defaults to `.rhodes_registration_retry_state.json`; scheduled/production runs should set `RHODES_RETRY_STATE_STORE=firestore` and `RHODES_RETRY_STATE_FIRESTORE_PROJECT_ID=<project>` so retry attempts, Rhodes note IDs, and Google Chat fallback metadata survive runner changes. GitHub Actions can provide those values through repository variables plus the optional `GCP_FIRESTORE_SERVICE_ACCOUNT_JSON` secret, which is written to `GOOGLE_APPLICATION_CREDENTIALS` for the scan step. If Firestore is unconfigured or unavailable, the scanner falls back to the local JSON file and keeps filing documents.
 
@@ -229,17 +239,17 @@ DD Report republish dedupe state uses the same store pattern. Local development 
 
 RayCon follow-up runtime state is also behind a store boundary. Local development defaults to `.raycon_dispatch_state.json` and `.raycon_followup_alerts.json`; scheduled/production runs should set `RAYCON_RUNTIME_STATE_STORE=firestore` and `RAYCON_RUNTIME_STATE_FIRESTORE_PROJECT_ID=<project>` so RayCon dispatch dedupe and stuck-site owner/Chat notification suppression survive runner changes. Successful Firestore saves refresh the local JSON files so the existing GitHub Actions cache remains a current fallback.
 
-Material automation outcomes render through `src/due_diligence_reporter/automation_event.py`. The shared `AutomationEvent v1` note body includes source system, source ID, event kind, site ID, decision-required status, mutation status, retry state, and artifact IDs before adding DDR-specific details. This keeps Rhodes notes and Google Chat fallback alerts aligned with the cross-repo automation-event contract. Inbox manual-review items for matched Rhodes sites write an `inbox_manual_review_required` note before the email is labeled for review. Source-read issues now write a Rhodes `source_review_required` note when a site ID is known. Complete-input vendor-gate failures write a Rhodes `vendor_gate_review_required` note. RayCon follow-up stuck-site and error alerts write a Rhodes `raycon_followup_alert` note. Report generation first updates the Rhodes due-diligence fields through `updateDueDiligence` when a site ID is available, then writes a Rhodes `dd_report_created` or `dd_report_updated` note that asks the P1 DRI to review the Rhodes fields and DD report. Failed event-driven republish attempts write a `dd_report_republish_failed` note. Those notes carry the report URL, source issue context, vendor-gate failure reason, RayCon alert message, republish failure reason, run ID, still-open verification items, newly closed verification items, and Rhodes due-diligence update status where applicable. If a decision is required and the P1 DRI cannot be mentioned in Rhodes, the same event is posted to the configured Google Chat webhook.
+Material automation outcomes render through `src/due_diligence_reporter/automation_event.py`. DDR-owned site notes use concise user-facing headers such as `DD report update`, `DD report candidate review`, `Document intake review`, `Document filing review`, `Source document review`, `DDR source review`, `DD report republish review`, and `RayCon follow-up review`. The visible note body does not include raw Rhodes errors, request IDs, run IDs, document IDs, internal guard reasons, long field lists, Gmail IDs, trace links, or source file IDs. Those technical details stay in the run manifest, returned event status, and structured `action_record.v1` telemetry. Legacy non-DDR automation notes may still use the generic `AutomationEvent v1` body. If a decision is required and the P1 DRI cannot be mentioned in Rhodes, the same concise event body is posted to the configured Google Chat webhook.
 
-The read-only `portfolio_automation_gap_snapshot` MCP tool rolls those Rhodes records up across active sites. It reads Rhodes-linked Drive folder status, the site's current P1 milestone, Rhodes' milestone-specific missing-document breakdown, `AutomationEvent v1` notes, pending automation review tasks, and P1 DRI assignment status, then returns per-site gap reasons plus portfolio totals. Missing source documents remain available as site context in the raw snapshot, but they are not treated as Portfolio Gaps because incomplete document coverage is normal DDR operating work. It does not write to Rhodes, Drive, Gmail, or Chat. Operators can run the same check with `uv run ddr portfolio-gaps`; the `Portfolio Automation Gaps` workflow runs the check on weekdays, stores both a text summary and JSON artifact, and posts a compact Google Chat summary when the Rhodes-backed snapshot contains non-document gaps.
+The read-only `portfolio_automation_gap_snapshot` MCP tool rolls those Rhodes records up across active sites. It reads Rhodes-linked Drive folder status, the site's current P1 milestone, Rhodes' milestone-specific missing-document breakdown, automation-review note headers, pending automation review tasks, and P1 DRI assignment status, then returns per-site gap reasons plus portfolio totals. Missing source documents remain available as site context in the raw snapshot, but they are not treated as Portfolio Gaps because incomplete document coverage is normal DDR operating work. It does not write to Rhodes, Drive, Gmail, or Chat. Operators can run the same check with `uv run ddr portfolio-gaps`; the `Portfolio Automation Gaps` workflow runs the check on weekdays, stores both a text summary and JSON artifact, and posts a compact Google Chat summary when the Rhodes-backed snapshot contains non-document gaps.
 
 Portfolio Gaps emits ActionRecord telemetry for non-document gaps such as missing P1 DRI, missing Drive folder, open automation failures, pending review tasks, and Rhodes snapshot read errors. DDR document registration and readback health remain under Drive-to-Rhodes reconciliation telemetry rather than Portfolio Gaps.
 
-**Drive-to-Rhodes reconciliation:** `scripts/drive_rhodes_reconciliation.py` is the safety sweep for files that already exist in a site's `M1 - Acquire Property` folder. It loads Rhodes-linked sites, scans each M1 folder, classifies recognized DDR source files, and idempotently registers missing Rhodes document records by Drive file ID. The scheduled `Drive Rhodes Reconciliation` workflow runs this backfill on weekdays; manual runs can pass `--dry-run` / workflow `dry_run=true` to report what would be registered without writing to Rhodes. Generated support documents are registered when they have an explicit mapping, such as Alpha Phasing Plan -> `other` / `acquireProperty`; unmapped reports are surfaced as skipped rows instead of being forced into unsafe Rhodes document types.
+**Drive-to-Rhodes reconciliation:** `scripts/drive_rhodes_reconciliation.py` is the safety sweep for files that already exist in a site's `M1 - Acquire Property` folder. It loads Rhodes-linked sites, scans each M1 folder, classifies recognized source files, and idempotently registers missing Rhodes document records by Drive file ID. The scheduled `Drive Rhodes Reconciliation` workflow runs this backfill on weekdays; manual runs can pass `--dry-run` / workflow `dry_run=true` to report what would be registered without writing to Rhodes. Generated support documents are registered when they have an explicit mapping, such as Alpha Phasing Plan -> `phasing` / `acquireProperty`; unmapped reports are surfaced as skipped rows instead of being forced into unsafe Rhodes document types.
 
 ### Phase 2 â€” Per-Site Pipeline
 
-After all uploads complete, the scanner attempts to run the report pipeline for each site that received a new document. Phase 2 requires a `site_title` to look up the site context. The current classifier routes by `doc_type` only and does not match files to sites, so `site_title` is `None` in all uploads â€” **Phase 2 is currently inactive** and report generation falls to the daily sweep.
+After all uploads complete, the scanner attempts to run the DD field/source-packet pipeline for each site that received a new document. Phase 2 requires a `site_title` to look up the site context. The current classifier routes by `doc_type` only and does not match files to sites, so `site_title` is `None` in all uploads - **Phase 2 is currently inactive** and first-round source-packet preparation falls to the daily sweep.
 
 When site matching is re-enabled (e.g., via a future `matched_site_id` returned from classification), Phase 2 will run:
 
@@ -250,8 +260,8 @@ For each unique site that received an upload:
   3. Run process_site_pipeline():
      a. Check readiness (SIR + Inspection present? ISP is informational only)
      b. If missing docs â†’ post Google Chat alert with checklist
-     c. If report exists â†’ skip
-     d. If ready â†’ trigger Claude agent loop â†’ check completeness â†’ email
+     c. If an M2 source packet exists and no source changed -> skip
+     d. If ready -> trigger Claude agent loop -> register supporting docs -> prepare DD fields -> optional report view
   4. Post result to Google Chat
 ```
 
@@ -332,7 +342,7 @@ team can run the review process in `docs/process/sir-learning-loop.md`.
 
 **Inbox scan mode:** `scan_inbox.py` detects a new upload and triggers the pipeline for that specific site.
 
-**Daily sweep mode:** `daily_dd_check.py` fetches all site folders, filters to active DD stages only ("1. Looking for Sites" and "2. Evaluating Potential Sites (LOI)"), pre-fetches the three shared Drive folders once, then checks each site's readiness.
+**Daily sweep mode:** `uv run ddr daily-check` fetches all site folders, filters to active DD stages only ("1. Looking for Sites" and "2. Evaluating Potential Sites (LOI)"), pre-fetches the three shared Drive folders once, then checks each site's readiness.
 
 ---
 
@@ -399,7 +409,7 @@ team can run the review process in `docs/process/sir-learning-loop.md`.
 
 ### Step 5 â€” Run Skill Tools
 
-Five skill tools analyze the source data and produce structured outputs. E-Occupancy, School Approval, and Opening Plan publish Google Docs; Alpha Capacity Analysis publishes a machine-readable JSON artifact; Alpha Phasing publishes an Excel workbook. These enrichment tools should run after source reads and before `prepare_due_diligence_data`.
+Six skill tools analyze the source data and produce structured outputs. E-Occupancy, School Approval, Opening Plan, Outdoor Play Space, Alpha Capacity Analysis, and Alpha Phasing each produce or identify source artifacts that must be registered before related DD fields write. These enrichment tools should run after source reads and before `prepare_due_diligence_data`.
 
 **E-Occupancy Skill** â€” `apply_e_occupancy_skill(building_type_description, stories, ..., ibc_occupancy_group, fire_area_sqft, has_below_grade_space, already_sprinklered, construction_type, max_travel_distance_ft, existing_exit_count, projected_occupant_load, site_name, drive_folder_url)`
 1. Loads the hosted `ease-of-conversion` skill and rating-band reference from Ops-Skills (`OPS_SKILLS_REPO_PATH`, the sibling Ops-Skills checkout, or the installed Ops Skills plugin cache)
@@ -426,60 +436,66 @@ Five skill tools analyze the source data and produce structured outputs. E-Occup
 1. Loads hosted `alpha-capacity-analysis` skill instructions and Microschool / 250+ rulesets from Ops-Skills.
 2. Uses the full extracted Block Plan text plus the Block Plan PDF itself when Drive file context is available, so image-only PDFs do not silently skip the capacity source of truth.
 3. Requires both capacity counts to mark the result successful; otherwise it returns `insufficient_evidence` with concrete open items.
-4. Publishes `Alpha Capacity Analysis - <site> - <block_plan_file_id>.json` in M1 when Drive context is available.
+4. Publishes `Alpha Capacity Analysis - <site> - <block_plan_file_id>.json` in M1 when Drive context is available and registers it as `capacityCalculation` when `site_id` is available.
 5. RayCon consumes this JSON artifact for published capacity and student-scaled pricing; RayCon remains responsible for construction cost, schedule, and calculator audit evidence.
 6. If neither an existing artifact nor a newly generated artifact has both counts, DDR records `dispatch_skipped=capacity_analysis_not_available` and does not dispatch a no-capacity RayCon job from the automated Block Plan path.
+
+**Outdoor Play Space** - `apply_outdoor_play_space_skill(site_name, site_id, address, drive_folder_url, student_count, ...)`
+1. Runs `ops-skills:outdoor-play-space` with `--skip-drive-upload`.
+2. Uses Max Plan capacity for final scoring. Fast Open capacity is interim screening only unless Max Plan capacity is explicitly not applicable.
+3. Uploads the generated Markdown, JSON, PNG, and HTML artifacts to the site's M1 folder through DDR's Drive client.
+4. Registers those artifacts on Rhodes as `other` under quality bar `outdoorRecreation`.
+5. Returns `exec.play_area_score`, `exec.play_area_comment`, `supporting_documents`, and field-source metadata.
 
 **Alpha Phasing Plan** - `apply_alpha_phasing_plan_skill(site_name, site_address, drive_folder_url, source_of_truth, quality_bar_target, opening_target_date, must_complete_before_opening, deferred_scopes, ...)`
 1. Loads the hosted `alpha-phasing-plan` skill from Ops-Skills.
 2. Requires confirmed Phase I opening scope and confirmed Phase II deferred scope.
 3. Publishes a workbook with Executive Summary, Quality Bar Matrix, Phase I Budget Schedule, Phase II Budget Schedule, Render Deck Inputs, and Source Notes tabs.
-4. Registers the workbook on Rhodes as `other` / `acquireProperty` when the pipeline has a `site_id`.
+4. Registers the workbook on Rhodes as `phasing` / `acquireProperty` when the pipeline has a `site_id`.
 5. Returns `sources.alpha_phasing_plan_link` and compact `exec.alpha_phasing_*` summary fields.
 6. If minimum inputs are missing, returns concrete `verification.open_items` and does not publish generic Phase II scope.
 
 ---
 
-### Step 6 â€” Compile and Write the DD Report
+### Step 6 - Prepare Direct DD Fields and M2 Source Packet
 
-**Tool:** `create_dd_report(site_name, drive_folder_url, report_data, token_evidence=evidence)`
+**Tool:** `prepare_due_diligence_data(site_name, drive_folder_url, report_data, token_evidence=evidence, supporting_documents=supporting_documents)`
 
 **Activity:**
 
-1. **Copy template** â€” Copies the master Google Doc template (`DD_TEMPLATE_GOOGLE_DOC_ID`) into the site's Drive folder
-
-2. **Normalize report_data** â€” `normalize_report_data()` from `report_schema.py`:
+1. **Normalize report_data** - `normalize_report_data()` from `report_schema.py`:
    - Flattens nested dicts to dot-separated keys
    - Injects defaults for `meta.site_name` and `meta.report_date`
    - Applies the alias map to translate known agent key variations to canonical token names
    - Filters to only keys matching the 34 canonical template tokens
    - Returns diagnostics: replacements applied, unmatched keys, unfilled tokens, token sources
 
-3. **Compute deltas** â€” Server-side computation of the Max Capacity and Max Value delta columns against Fastest Open
+2. **Compute deltas** - Server-side computation of the Max Capacity and Max Value delta columns against Fastest Open.
 
-4. **Fill template** â€” `batchUpdate` to Docs API with `replaceAllText` per token. Link tokens (`sources.*`, `meta.drive_folder_url`) are inserted as clickable hyperlinks with display labels.
+3. **Build source packet** - Combines `supporting_documents[]` with normalized values to produce `dd_field_updates[]`, source holds, and concise source-note lines.
 
-5. **Return diagnostics** â€” Returns applied replacement counts, unmatched keys, unfilled tokens, and normalized report data to the pipeline.
+4. **Return diagnostics** - Returns applied replacement counts, unmatched keys, unfilled tokens, normalized report data, and the M2 source packet to the pipeline.
 
 **Token evidence:** As the agent reads each source document, it builds a parallel `evidence` dict recording the raw excerpt supporting each token value. Evidence is kept in the local run manifest instead of publishing a companion trace file.
 
-**Output:** Google Doc URL + diagnostics.
+**Output:** Normalized DD data + diagnostics + M2 source packet.
 
-**SOR-first split:** The current agent contract now calls
+**Direct-field split:** The current agent contract calls
 `prepare_due_diligence_data(site_name, drive_folder_url, report_data,
-token_evidence=evidence)` before any Google Doc is rendered. That tool performs
-the deterministic normalization and returns SOR-ready DD data to the pipeline
-without creating a document. The pipeline writes those structured fields to
-Rhodes first, then calls `create_dd_report` internally to render the DDR as a
-supporting view of the SOR data.
+token_evidence=evidence, supporting_documents=supporting_documents)` before any
+Google Doc is rendered. That tool performs deterministic normalization and
+builds the M2 source packet without creating a document. The pipeline writes
+only fields whose required source docs are registered and readback-capable. It
+holds LocationOS schema-gap fields explicitly. `create_dd_report` remains a
+legacy/optional render path for a human-readable view.
 
 ---
 
-### Step 7 â€” Check Completeness
+### Step 7 - Optional Report View Completeness
 
 **Tool:** `check_report_completeness(doc_id)`
 
-**Activity:**
+**Activity:** This step runs only when `create_dd_report` is used to render a human-readable view.
 1. Exports the generated Google Doc as plain text
 2. Scans for two patterns:
    - `{{token}}` â€” a template placeholder that was never filled (hard block â€” do not send)
@@ -493,25 +509,28 @@ supporting view of the SOR data.
 
 **Tool:** `addNote` through the Rhodes MCP client
 
-**Source-read activity:** When the agent trace shows an unreadable SIR or Building Inspection, the `source.alert` step records a `source_review_required` `AutomationEvent v1` note on the Rhodes site before failing the step for operator follow-up. The note includes the run ID, Drive folder, trace link when available, and up to five source-read issues.
+**Source-read activity:** When the agent trace shows an unreadable SIR or Building Inspection, the `source.alert` step records a concise `Source document review` note on the Rhodes site before failing the step for operator follow-up. The note asks the owner to review unreadable source documents, repair or re-upload them, and rerun DDR. Run IDs, Drive folders, trace links, and detailed source-read issue rows stay in the run manifest and structured event status.
 
 **Source-read fallback:** If the pipeline does not know the Rhodes site ID, Rhodes cannot create the note, or the P1 DRI cannot be mentioned, the same `source_review_required` event body is posted to the configured Google Chat webhook.
 
-**Vendor-gate activity:** When the full vendor input set is present (vendor SIR, vendor Building Inspection, and a usable RayCon Scenario JSON) but report generation still fails or the generated report remains incomplete, the pipeline records a `vendor_gate_review_required` `AutomationEvent v1` site note in Rhodes. The note includes the run ID, required input set, failure reason, Drive folder, and trace link when available.
+**Vendor-gate activity:** When the full vendor input set is present (vendor SIR, vendor Building Inspection, and a usable RayCon Scenario JSON) but report generation still fails or the generated report remains incomplete, the pipeline records a concise `DDR source review` site note in Rhodes. The note names the required input set and asks the owner to repair the source issue and rerun DDR. Run IDs, raw failure reasons, Drive folders, and trace links stay in the run manifest and structured event status.
 
 **Vendor-gate fallback:** If the pipeline does not know the Rhodes site ID, Rhodes cannot create the note, or the P1 DRI cannot be mentioned, the same `vendor_gate_review_required` event body is posted to the configured Google Chat webhook.
 
 **RayCon failed-validation activity:** When RayCon follow-up sees a failed
 `raycon_scenario.json`, it records a `raycon_followup_alert` note in Rhodes
-even if it also starts an automatic retry. The note carries the RayCon failure
-reason and run ID. If no site owner can be mentioned, the same event body goes
-to the configured Google Chat webhook.
+even if it also starts an automatic retry. The note asks the owner to review
+RayCon scenario generation and rerun follow-up after the source issue is fixed.
+RayCon failure messages, run IDs, Block Plan file IDs, and Drive folders stay
+in the state file and structured event status. If no site owner can be
+mentioned, the same concise event body goes to the configured Google Chat
+webhook.
 
-**Activity:** When the pipeline has normalized due-diligence data from `prepare_due_diligence_data`, a generated active report, or a protected DDR candidate, it first calls the Rhodes / LocationOS `updateDueDiligence` writer with the status badge, Fastest Open fields, Maximum Capacity fields, and score/comment fields that were present in the normalized report data. Interim writes use `status=data-gathering` and intentionally leave `dateCompleted` and `ddReportLink` blank. Source-triggered updates with the full vendor set present but open verification items still unresolved use `status=follow-up`. The workflow writes `status=complete` and `dateCompleted` when the full vendor-readiness document set is present and no open verification items remain; it writes `ddReportLink` only when a DDR URL already exists. Whether the write succeeds or fails, the next Rhodes note tags the P1 DRI with what was written or what failed. If the due-diligence write fails, the workflow records `rhodes.due_diligence_update` as failed and suppresses the success email, but it still records a decision-required `rhodes.report_event` note/fallback alert so the P1 DRI can repair the SOR write.
+**Activity:** When the pipeline has normalized due-diligence data from `prepare_due_diligence_data`, it calls the Rhodes / LocationOS `updateDueDiligence` writer with only the fields allowed by the M2 source packet. Interim writes use `status=data-gathering` and intentionally leave `dateCompleted` and `ddReportLink` blank. Source-triggered updates with open verification items still unresolved use `status=follow-up`. The workflow writes `status=complete` and `dateCompleted` only when the M2 source packet is complete and no open verification items remain. Whether the write succeeds or fails, the next Rhodes note tags the P1 DRI with what was written or what failed and includes concise field -> value -> source document lines from the source packet. If the due-diligence write fails, the workflow records `rhodes.due_diligence_update` as failed, suppresses the success email, and records a decision-required `rhodes.report_event` note/fallback alert so the P1 DRI can repair the SOR write.
 
-After the due-diligence write attempt, the pipeline records an `AutomationEvent v1` site note in Rhodes. Report-created, report-updated, and protected-candidate notes put the operator ask first: review the Rhodes due-diligence fields and DD report/candidate when the write succeeded, or review the failed Rhodes due-diligence write and DD report/candidate when the write failed. The note includes the DD report or candidate link, the fields written or attempted, the failure reason when present, the number of open asks, up to five asks to close, how to close those asks, and any items resolved by the latest source. The close instruction tells operators that asks come from the DD report Open Items to Verify section; to close one, move the answer/evidence into the right report section or Rhodes/source record and remove the ask from Open Items to Verify. System metadata such as run ID, trigger source, document IDs, updated Rhodes fields, and counts remains below the action section for audit/debugging. It mentions the P1 DRI when a Rhodes user can be resolved from the owner context. To avoid repeating the same open-ask notification while operators wait on outside answers, decision-required report-created/report-updated notifications without a new Rhodes due-diligence write are capped at once per site every two business days. Capped runs keep the DD report work intact, record `rhodes.report_event` as `skipped` with `reason=frequency_cap` in the run manifest, and do not send a Rhodes or Google Chat notification until the next allowed time.
+After the due-diligence write attempt, the pipeline records a site note in Rhodes. Source-packet notes are user-facing: they put the operator ask first, state whether DD fields were written or held, include concise field -> value -> source document lines, show only the open-item count and missing vendor docs, and give short next steps. They do not render raw Rhodes errors, request IDs, run IDs, document IDs, internal guard reasons, or long field lists into the site note. Technical context such as run ID, trigger source, document IDs, attempted Rhodes fields, raw request errors, and note readback stays in the run manifest and structured `action_record.v1` telemetry. It mentions the P1 DRI when a Rhodes user can be resolved from the owner context. To avoid repeating the same open-ask notification while operators wait on outside answers, decision-required notifications without a new Rhodes due-diligence write are capped at once per site every two business days.
 
-DDR run manifests emit WTC-compatible `action_record.v1` facts for the successful SOR write (`ddr_sor_updated`), successful Rhodes note (`ddr_p1_note_created` or `ddr_rhodes_note_created`), failed or blocked steps, and open verification items. If Rhodes owner lookup finds the site but no P1 DRI, DDR emits a queued `missing_p1_dri` action record with `owning_workflow=aadp` and does not attempt a direct AADP assignment from DDR.
+Run manifests emit structured `action_record.v1` facts for the successful SOR write (`ddr_sor_updated`), successful Rhodes note (`ddr_p1_note_created` or `ddr_rhodes_note_created`), failed or blocked steps, and open verification items. Successful and failed Rhodes-note records include a structured `technical_context` block for debugging, so the user-facing note can stay concise without losing run IDs, request IDs, document IDs, or raw Rhodes error detail. If Rhodes owner lookup finds the site but no P1 DRI, the workflow emits a queued `missing_p1_dri` action record with `owning_workflow=aadp` and does not attempt a direct AADP assignment.
 
 **Fallback:** If open verification items require a decision and the P1 DRI cannot be mentioned in Rhodes, the pipeline posts the same event body to the configured Google Chat webhook. If Rhodes cannot be written at all, the run records a failed `rhodes.report_event` step so the manifest shows that the system of record was not updated.
 
@@ -521,7 +540,7 @@ DDR run manifests emit WTC-compatible `action_record.v1` facts for the successfu
 
 **Tool:** `send_dd_report_email(site_name, report_url, key_findings, additional_recipients)`
 
-**Activity:** Sends an HTML email to configured recipients (base list + Rhodes P1 DRI when found) with the site name, key findings summary, and a link to the Google Doc report. The shared pipeline emails the first successful DDR publish, then suppresses interim source-triggered updates while vendor inputs or open verification items remain. It emails an update again only when the full vendor input set is present and the regenerated DDR has no open verification items. Skipped interim emails are recorded as `notify.email` skipped steps in the run manifest.
+**Activity:** Sends an HTML email to configured recipients (base list + Rhodes P1 DRI when found) with the site name, key findings summary, and a link when an optional DD report view exists. The shared pipeline suppresses interim source-triggered emails while vendor inputs or open verification items remain. Skipped interim emails are recorded as `notify.email` skipped steps in the run manifest.
 
 ---
 
@@ -533,23 +552,24 @@ The report pipeline module contains all shared logic used by both the inbox scan
 
 | Function | Purpose |
 |----------|---------|
-| `TOOL_DEFINITIONS` | 11-tool schema list for Claude API calls |
+| `TOOL_DEFINITIONS` | Tool schema list for Claude API calls |
 | `route_tool_call()` / `route_tool_call_sync()` | Async/sync tool router mapping to server.py functions |
 | `list_shared_folders_once(gc)` | Pre-fetch SIR/ISP/Inspection shared folder files |
 | `match_site_in_shared_cache(terms, cache)` | Find docs for a site in pre-fetched cache |
 | `check_site_readiness_direct(gc, url, terms, cache)` | Readiness check bypassing MCP layer |
 | `run_dd_report_agent(site_title, prompt)` | Claude agentic loop (up to 40 iterations) |
-| `process_site_pipeline(gc, title, url, terms, cache, prompt, settings)` | Full pipeline: readiness -> report -> completeness -> first/final email gate |
+| `process_site_pipeline(gc, title, url, terms, cache, prompt, settings)` | Full pipeline: readiness -> source packet -> direct DD write -> optional report view/email gate |
 | `post_pipeline_result(webhook_url, result, url)` | Google Chat notification per result |
 | `PipelineResult` | Dataclass with status, missing_docs, doc_id, doc_url, etc. |
 
-**Pipeline statuses:** `waiting_on_docs`, `report_exists`, `report_created`, `report_incomplete`, `generation_failed`, `error`
+**Pipeline statuses:** `waiting_on_docs`, `report_data_prepared`, `report_exists`, `report_created`, `report_incomplete`, `generation_failed`, `error`
 
 ---
 
 ## Daily Sweep (Safety Net)
 
-**Script:** `scripts/daily_dd_check.py`
+**CLI:** `uv run ddr daily-check`
+**Compatibility wrapper:** `scripts/daily_dd_check.py`
 **Schedule:** 9 AM Central, Monday-Friday (GitHub Actions cron: `0 14 * * 1-5` UTC)
 **Workflow:** `.github/workflows/daily-dd-check.yml`
 **Agent model:** `claude-sonnet-4-6`
@@ -564,17 +584,18 @@ Sites in later stages (FTO in progress, FTO signed, operational) are skipped.
 
 ```
 For each site folder in the Drive root:
-  1. Check readiness (SIR found and no existing DDR; missing vendor docs become open verification items)
-  2. If missing docs -> post Google Chat alert listing what's missing
-  3. If report exists -> skip
+  1. Check readiness (SIR found and no existing DD source packet; missing vendor docs become open verification items)
+  2. If missing first-round docs -> post Google Chat alert listing what's missing
+  3. If an M2 source packet exists and no source changed -> skip
   4. If ready -> run Claude agent loop:
      a. check_site_readiness -> list_drive_documents -> read available first-round sources
-     b. apply_e_occupancy_skill + apply_school_approval_skill + apply_opening_plan_skill + apply_alpha_phasing_plan_skill (Opening Plan reuses existing docs; Alpha Phasing returns open items instead of a workbook when phasing inputs are incomplete)
-     c. prepare_due_diligence_data (normalize SOR-ready DD data)
-     d. create_dd_report (render DDR view with normalize_report_data + compute_deltas)
-     d. check_report_completeness
-     e. If complete -> send first/final email only when the email gate passes
-     f. If incomplete -> post Google Chat alert with unfilled tokens
+     b. apply_alpha_capacity_analysis_skill -> apply_outdoor_play_space_skill -> apply_e_occupancy_skill + apply_school_approval_skill -> apply_opening_plan_skill -> apply_alpha_phasing_plan_skill
+     c. prepare_due_diligence_data with supporting_documents (normalize DD data and build M2 source packet)
+     d. create_dd_report only when an optional DD report view is needed
+     e. check_report_completeness only for optional report views
+     f. Write allowed LocationOS DD fields and append the source-packet site note
+     g. Send email only when the email gate passes
+     h. If blocked -> post Google Chat alert with source-packet open items
 ```
 
 **Optimization:** Shared folder file lists are fetched once at the start and reused for all sites, avoiding redundant API calls.
@@ -658,9 +679,9 @@ Fire-and-forget call to MatterBot rendering service. Generates marketing pack im
 | `src/due_diligence_reporter/google_client.py` | Google Drive v3 + Docs v1 + Gmail API client (OAuth), `list_files_recursive()` |
 | `src/due_diligence_reporter/config.py` | Pydantic settings loader |
 | `src/due_diligence_reporter/utils.py` | PDF extraction, placeholder builder, email, Google Chat |
-| `scripts/daily_dd_check.py` | Daily sweep â€” stage-filtered readiness check + report pipeline |
+| `uv run ddr daily-check` | Daily sweep â€” stage-filtered readiness check + report pipeline |
 | `scripts/scan_inbox.py` | Inbox scan + per-site report pipeline trigger |
-| `scripts/vendor_doc_republish_sweep.py` | Active source sweep for vendor/RayCon/E-Occupancy/School Approval/Alpha Phasing updates |
+| `uv run ddr source-sweep` | Active source sweep for M2 source packet document updates |
 | `tests/test_report_schema.py` | Schema integrity + normalization + delta tests (24 tests) |
 | `tests/test_report_pipeline.py` | Pipeline tool routing + readiness tests (13 tests) |
 | `tests/test_inbox_scanner.py` | Inbox scanner tests (19 tests) |

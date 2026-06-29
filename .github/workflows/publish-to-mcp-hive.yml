@@ -92,6 +92,8 @@ jobs:
           LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
           RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
           RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
+          AERIE_API_KEY: ${{ secrets.AERIE_API_KEY }}
+          AERIE_API_BASE_URL: ${{ vars.AERIE_API_BASE_URL || 'https://edu-ops.klair.ai/api' }}
           RAYCON_WEBHOOK_SECRET: ${{ secrets.RAYCON_WEBHOOK_SECRET }}
           RAYCON_API_KEY: ${{ secrets.RAYCON_API_KEY }}
         run: |
@@ -121,6 +123,8 @@ jobs:
           echo "LOCATIONOS_MCP_API_KEY=${LOCATIONOS_TOKEN}" >> .env
           echo "RHODES_API_KEY=${RHODES_API_KEY:-${LOCATIONOS_TOKEN}}" >> .env
           echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
+          echo "AERIE_API_KEY=${AERIE_API_KEY}" >> .env
+          echo "AERIE_API_BASE_URL=${AERIE_API_BASE_URL}" >> .env
           echo "RAYCON_WEBHOOK_SECRET=${RAYCON_WEBHOOK_SECRET}" >> .env
           echo "RAYCON_API_KEY=${RAYCON_API_KEY}" >> .env
           echo "Created .env file with secrets"
@@ -155,6 +159,8 @@ jobs:
               "LOCATIONOS_MCP_API_KEY",
               "RHODES_API_KEY",
               "RHODES_MCP_URL",
+              "AERIE_API_KEY",
+              "AERIE_API_BASE_URL",
               "RAYCON_WEBHOOK_SECRET",
               "RAYCON_API_KEY"
             ],

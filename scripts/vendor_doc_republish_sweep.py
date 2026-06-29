@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sweep Rhodes sites for core DDR source docs and republish existing DDRs."""
+"""Compatibility wrapper for the repo-owned M2 source document sweep CLI."""
 # ruff: noqa: E402, I001
 
 from __future__ import annotations
