@@ -591,6 +591,9 @@ def _result_payload(
             "site_id": resume_payload.get("site_id"),
             "site_title": resume_payload.get("site_title"),
         }
+    source_packet = getattr(result, "source_packet", None)
+    if isinstance(source_packet, dict):
+        payload["source_packet"] = source_packet
     mcp_request = _locationos_mcp_write_request(result)
     if mcp_request is not None:
         payload["locationos_mcp_write_request"] = mcp_request

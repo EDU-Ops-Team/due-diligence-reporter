@@ -83,6 +83,7 @@ from .sir_learning import build_sir_learning_review
 from .source_packet import (
     locationos_fields_allowed_by_source_packet,
     mark_written_fields_from_update_result,
+    source_packet_is_complete,
 )
 from .utils import (
     escape_html_text,
@@ -2693,7 +2694,18 @@ def _due_diligence_status_for_result(result: PipelineResult) -> str:
 
 
 def _due_diligence_result_is_final_ready(result: PipelineResult) -> bool:
-    return not result.open_questions and not result.missing_docs
+    return (
+        not result.open_questions
+        and not result.missing_docs
+        and _source_packet_allows_completion(result)
+    )
+
+
+def _source_packet_allows_completion(result: PipelineResult) -> bool:
+    packet = result.source_packet if isinstance(result.source_packet, dict) else None
+    if not packet:
+        return True
+    return source_packet_is_complete(packet)
 
 
 def _due_diligence_result_is_follow_up(result: PipelineResult) -> bool:

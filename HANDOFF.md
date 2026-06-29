@@ -1,5 +1,53 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-29 - Ad-hoc runner aligned to M2 source-packet closure
+
+- Branch/worktree: `codex/ddr-adhoc-locationos-runner` at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-zzy`.
+- Feedback addressed: Greg approved the review findings that the ad-hoc runner
+  and `ddr-adhoc-runner` skill still let operators treat DD Report / SOR link
+  success as closure even when the M2 source packet was blocked.
+- DDR runtime changes:
+  - `_due_diligence_result_is_final_ready(...)` now requires a present source
+    packet to be explicitly complete before writing `status=complete`,
+    `dateCompleted`, or `ddReportLink`.
+  - `locationos_fields_allowed_by_source_packet(...)` now withholds
+    `dateCompleted` / `ddReportLink` until the packet is complete and coerces a
+    stale `status=complete` to `data-gathering` for blocked or non-explicit
+    packets. Packet completion requires `m2_source_packet_complete: true`,
+    `status: complete`, and no open items.
+  - `uv run ddr run-site ...` payloads now include `source_packet` when the
+    pipeline result has one, so operators can see `supporting_documents`,
+    `dd_field_updates`, source note lines, and open items without opening the
+    manifest.
+- Ops-Skills guidance changes are staged in a clean temp worktree:
+  `C:\tmp\ops-skills-ddr-source-packet-runner-head`, branch
+  `codex/ddr-source-packet-runner-skill-head`. The main Ops-Skills checkout was
+  dirty on `codex/skill-telemetry-audit-hardening`, so it was intentionally not
+  edited in place. The temp skill patch updates
+  `skills/ddr-adhoc-runner/SKILL.md` and
+  `skills/ddr-adhoc-runner/references/self-service-runtime.md` to make M2
+  closure source-packet based, require Outdoor Play / source-doc readback, use
+  `uv run ddr source-sweep` as the current sweep surface, and remove the active
+  BrainTrust reference.
+- Validation:
+
+```powershell
+uv run pytest tests\test_source_packet.py tests\test_report_pipeline.py::test_blocked_source_packet_prevents_completion_status_and_report_link tests\test_report_pipeline.py::test_source_packet_without_completion_flag_prevents_final_status tests\test_report_pipeline.py::test_record_due_diligence_update_respects_source_packet tests\test_adhoc_runner.py::test_result_payload_surfaces_source_packet tests\test_automation_event.py::test_dd_report_summary_event_renders_m2_source_packet_lines tests\test_workflow_contracts.py::test_scheduled_dd_workflows_use_repo_cli_surfaces -q
+uv run pytest
+uv run ruff check .
+uv run mypy src/
+git diff --check
+node scripts/skill-lint.mjs
+node scripts/skill-lint.test.mjs
+```
+
+Results: DDR focused tests passed (`14 passed`); full DDR suite passed
+(`1302 passed`); Ruff passed; mypy passed; `git diff --check` passed with only
+normal LF-to-CRLF warnings; Ops-Skills skill lint and skill-lint tests passed
+from the temp worktree. Beads issue `ddr-zzy` is closed.
+
 ## 2026-06-23 - DDR Doc/SOR/event-note sequencing
 
 - Branch/worktree: `codex/ddr-document-first-on-readback` at

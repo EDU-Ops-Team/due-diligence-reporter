@@ -346,6 +346,49 @@ def test_final_due_diligence_fields_include_completed_date_and_report_link() -> 
     }
 
 
+def test_blocked_source_packet_prevents_completion_status_and_report_link() -> None:
+    fields = _build_due_diligence_update_fields(
+        {"exec.fastest_open_capacity": "36"},
+        PipelineResult(
+            site_title="Alpha Keller",
+            status="report_created",
+            doc_url="https://docs.google.com/document/d/doc123",
+            source_packet={
+                "status": "blocked",
+                "m2_source_packet_complete": False,
+                "open_items": ["play_area_score: write not completed"],
+            },
+        ),
+        completed_at="2026-06-17T15:00:00+00:00",
+    )
+
+    assert fields == {
+        "status": "data-gathering",
+        "foCapacity": 36,
+    }
+
+
+def test_source_packet_without_completion_flag_prevents_final_status() -> None:
+    fields = _build_due_diligence_update_fields(
+        {"exec.fastest_open_capacity": "36"},
+        PipelineResult(
+            site_title="Alpha Keller",
+            status="report_created",
+            doc_url="https://docs.google.com/document/d/doc123",
+            source_packet={
+                "status": "complete",
+                "open_items": [],
+            },
+        ),
+        completed_at="2026-06-17T15:00:00+00:00",
+    )
+
+    assert fields == {
+        "status": "data-gathering",
+        "foCapacity": 36,
+    }
+
+
 def test_source_triggered_open_item_due_diligence_status_is_follow_up() -> None:
     fields = _build_due_diligence_update_fields(
         {"exec.fastest_open_capacity": "36"},

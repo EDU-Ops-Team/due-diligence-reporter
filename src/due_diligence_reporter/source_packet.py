@@ -527,18 +527,34 @@ def locationos_fields_allowed_by_source_packet(
     if not source_packet:
         return dict(fields)
     raw_updates = source_packet.get("dd_field_updates")
-    if not isinstance(raw_updates, list):
-        return dict(fields)
+    field_updates = raw_updates if isinstance(raw_updates, list) else []
     allowed = {
         update.locationos_key
-        for update in (_coerce_field_update(raw) for raw in raw_updates)
+        for update in (_coerce_field_update(raw) for raw in field_updates)
         if update.locationos_key and update.write_status == "pending"
     }
-    return {
+    system_fields = {"status", "recommendation"}
+    if source_packet_is_complete(source_packet):
+        system_fields.update({"dateCompleted", "ddReportLink"})
+    filtered = {
         key: value
         for key, value in fields.items()
-        if key in allowed or key in {"status", "dateCompleted", "ddReportLink", "recommendation"}
+        if key in allowed or key in system_fields
     }
+    if not source_packet_is_complete(source_packet) and filtered.get("status") == "complete":
+        filtered["status"] = "data-gathering"
+    return filtered
+
+
+def source_packet_is_complete(source_packet: dict[str, Any]) -> bool:
+    """Return True only for an explicitly complete M2 source packet."""
+
+    if source_packet.get("m2_source_packet_complete") is not True:
+        return False
+    if str(source_packet.get("status") or "").strip().lower() != "complete":
+        return False
+    open_items = source_packet.get("open_items")
+    return not (isinstance(open_items, list) and open_items)
 
 
 def _field_value(spec: M2FieldSpec, values: dict[str, Any]) -> Any:

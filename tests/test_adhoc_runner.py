@@ -284,6 +284,47 @@ def test_result_payload_surfaces_manual_check_warnings() -> None:
     ]
 
 
+def test_result_payload_surfaces_source_packet() -> None:
+    source_packet = {
+        "status": "blocked",
+        "m2_source_packet_complete": False,
+        "supporting_documents": [
+            {
+                "source_type": "outdoor_play_space_report",
+                "title": "Outdoor Play Space Report",
+                "registration_status": "registered",
+            }
+        ],
+        "dd_field_updates": [
+            {
+                "field": "play_area_score",
+                "locationos_key": "playAreaScore",
+                "write_status": "pending",
+                "readback_status": "pending",
+                "source_titles": ["Outdoor Play Space Report"],
+            }
+        ],
+        "source_note_lines": [
+            "play_area_score -> 1 -> Outdoor Play Space Report",
+        ],
+        "open_items": ["play_area_score: write not completed"],
+    }
+
+    payload = adhoc_runner._result_payload(
+        PipelineResult(
+            site_title="Alpha Keller",
+            status="report_created",
+            source_packet=source_packet,
+        ),
+        mode="first-publish",
+        notify=False,
+        sor_write_mode="api",
+        mcp_write_completed=False,
+    )
+
+    assert payload["source_packet"] == source_packet
+
+
 def test_resume_mcp_write_calls_manifest_bound_resume(monkeypatch) -> None:
     settings = _settings()
     monkeypatch.setattr(

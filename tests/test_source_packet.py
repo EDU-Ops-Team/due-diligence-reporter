@@ -8,8 +8,10 @@ from due_diligence_reporter.source_packet import (
     SourceDocumentRef,
     build_dd_field_updates,
     build_m2_source_packet,
+    locationos_fields_allowed_by_source_packet,
     m2_field_matrix,
     source_packet_completion,
+    source_packet_is_complete,
     source_packet_note_lines,
     translate_outdoor_play_score,
 )
@@ -194,6 +196,60 @@ def test_source_packet_note_lines_are_concise_and_do_not_use_ddr_as_source() -> 
     ]
     assert "DDR" not in "\n".join(lines)
     assert "drive.example" not in "\n".join(lines)
+
+
+def test_locationos_filter_holds_completion_fields_until_packet_complete() -> None:
+    filtered = locationos_fields_allowed_by_source_packet(
+        {
+            "status": "complete",
+            "dateCompleted": "2026-06-17",
+            "ddReportLink": "https://docs.google.com/document/d/doc123",
+            "playAreaScore": 1,
+        },
+        {
+            "status": "blocked",
+            "m2_source_packet_complete": False,
+            "open_items": ["play_area_score: readback not verified"],
+            "dd_field_updates": [
+                {
+                    "field": "play_area_score",
+                    "locationos_key": "playAreaScore",
+                    "value": "1",
+                    "writer": "outdoor_play_space",
+                    "required_source_docs": ["Outdoor Play Space Report"],
+                    "write_status": "pending",
+                    "readback_status": "pending",
+                    "source_titles": ["Outdoor Play Space Report"],
+                }
+            ],
+        },
+    )
+
+    assert filtered == {
+        "status": "data-gathering",
+        "playAreaScore": 1,
+    }
+
+
+def test_source_packet_completion_requires_explicit_complete_flag() -> None:
+    packet = {
+        "status": "complete",
+        "open_items": [],
+        "dd_field_updates": [],
+    }
+
+    assert source_packet_is_complete(packet) is False
+
+    filtered = locationos_fields_allowed_by_source_packet(
+        {
+            "status": "complete",
+            "dateCompleted": "2026-06-17",
+            "ddReportLink": "https://docs.google.com/document/d/doc123",
+        },
+        packet,
+    )
+
+    assert filtered == {"status": "data-gathering"}
 
 
 def test_translate_outdoor_play_score_uses_confidence_and_review_rules() -> None:
