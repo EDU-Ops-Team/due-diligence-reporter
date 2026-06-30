@@ -17,7 +17,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # Vendor gate ON: requires vendor-sourced SIR + BI + raycon_scenario.json. Greg's call (Rec. 8). Manual MCP path is unaffected.
+  # Vendor gate ON: requires vendor-sourced SIR + BI + Cost/Timeline Estimate.
   VENDOR_GATE_ENABLED: "1"
 
 jobs:

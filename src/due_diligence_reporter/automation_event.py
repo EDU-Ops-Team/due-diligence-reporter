@@ -279,6 +279,7 @@ def _format_republish_source(source_type: str, source_file: str = "") -> str:
     labels = {
         "vendor_sir": "Vendor SIR",
         "building_inspection": "Vendor Building Inspection",
+        "cost_timeline_estimate": "Cost/Timeline Estimate",
         "raycon_scenario": "RayCon Scenario JSON",
         "e_occupancy_report": "E-Occupancy report",
         "school_approval_report": "School Approval report",
@@ -762,7 +763,7 @@ def build_vendor_gate_review_required_event(
         mutation_status=mutation_status.strip() or "vendor_gate_review_required",
         details={
             "Required inputs": (
-                "vendor SIR, vendor Building Inspection, RayCon Scenario JSON"
+                "vendor SIR, vendor Building Inspection, Cost/Timeline Estimate"
             ),
             "Failure reason": failure_reason.strip()[:1000],
             "Drive folder": drive_folder_url.strip(),

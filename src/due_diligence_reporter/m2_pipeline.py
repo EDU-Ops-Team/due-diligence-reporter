@@ -70,8 +70,6 @@ PHASING_BUILD_CONTEXT_SOURCE_TYPES = frozenset(
         "cost_timeline_estimate",
         "initial_cost_estimate",
         "phasing_plan",
-        "raycon_scenario",
-        "raycon_scenario_json",
     }
 )
 
@@ -870,7 +868,6 @@ def _canonical_source_type(value: str) -> str:
         "capacitycalculation": "alpha_capacity_analysis",
         "initialcostestimate": "cost_timeline_estimate",
         "initial_cost_estimate": "cost_timeline_estimate",
-        "raycon_scenario_json": "raycon_scenario",
     }
     return aliases.get(normalized, aliases.get(normalized.casefold(), normalized))
 

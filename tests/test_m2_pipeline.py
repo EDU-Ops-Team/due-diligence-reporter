@@ -180,6 +180,34 @@ def test_source_watch_resumes_only_matching_open_site(tmp_path) -> None:
     assert state["evt-2"]["m2_state"] == "waiting_for_capacity_source"
 
 
+def test_source_watch_ignores_raycon_events(tmp_path) -> None:
+    store = JsonM2StateStore(tmp_path / "state.json")
+    consume_site_ready_event(_site_ready_event(), state_store=store)
+
+    result = watch_m2_sources(
+        state_store=store,
+        source_events_by_site={
+            "SITE1": [
+                {
+                    "source_type": "raycon_scenario",
+                    "doc_type": "raycon_scenario_json",
+                    "fingerprint": "raycon-1:2026-06-30T12:00:00Z",
+                    "drive_file_id": "raycon-1",
+                    "drive_url": "https://drive.example/raycon-1",
+                    "file_name": "raycon_scenario.json",
+                }
+            ]
+        },
+        apply=True,
+        now="2026-06-30T12:00:00Z",
+    )
+
+    state = store.load()["evt-1"]
+    assert result["resumed"] == 0
+    assert state["m2_state"] == "waiting_for_capacity_source"
+    assert state["open_blockers"][0]["id"] == "missing_capacity_source"
+
+
 def test_firestore_event_queue_polls_pending_events_and_updates_status(tmp_path) -> None:
     session = FakeFirestoreSession()
     session.documents["evt-1"] = encode_firestore_fields(_site_ready_event())

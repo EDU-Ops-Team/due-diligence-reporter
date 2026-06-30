@@ -98,6 +98,14 @@ from .utils import (
 logger = logging.getLogger("report_pipeline")
 
 _RAYCON_REPORT_FIELD_PATHS: frozenset[str] = frozenset(raycon_token_paths())
+_COST_TIMELINE_REQUIRED_REPORT_FIELDS: frozenset[str] = frozenset(
+    {
+        "exec.fastest_open_open_date",
+        "exec.max_capacity_open_date",
+        "exec.fastest_open_capex",
+        "exec.max_capacity_capex",
+    }
+)
 DD_REPORT_EVENT_FREQUENCY_CAP_BUSINESS_DAYS = 2
 DUE_DILIGENCE_UPDATE_STEP = "rhodes.due_diligence_update"
 LOCATIONOS_MCP_WRITE_REQUIRED_STATUS = "locationos_mcp_write_required"
@@ -269,7 +277,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_alpha_capacity_analysis_skill",
-        "description": "Run hosted Ops-Skills alpha-capacity-analysis from Block Plan text. Pass the full extracted Block Plan text from read_drive_document, plus site_name, site_address, drive_folder_url, block_plan_file_id, and total_building_sf when known. On success, DDR saves a machine-readable Alpha Capacity Analysis JSON artifact in M1 and returns report_data_fields for exec.fastest_open_capacity and exec.max_capacity_capacity. RayCon consumes the JSON artifact for pricing; do not use this tool for construction cost.",
+        "description": "Run hosted Ops-Skills alpha-capacity-analysis from Block Plan text. Pass the full extracted Block Plan text from read_drive_document, plus site_name, site_address, drive_folder_url, block_plan_file_id, and total_building_sf when known. On success, DDR saves a machine-readable Alpha Capacity Analysis JSON artifact in M1 and returns report_data_fields for exec.fastest_open_capacity and exec.max_capacity_capacity. The Cost/Timeline Estimate runs after Rhodes capacity readback; do not use this tool for construction cost.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -309,7 +317,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_alpha_phasing_plan_skill",
-        "description": "Create and publish the Alpha Phasing Plan workbook after source reads, E-Occupancy, School Approval, and RayCon context are available. Pass only confirmed phasing inputs; if deferred Phase II scope is not confirmed, call the tool with the missing fields so it returns concrete verification.open_items instead of inventing scope. On success, copy returned report_data_fields into report_data before prepare_due_diligence_data, including sources.alpha_phasing_plan_link and exec.alpha_phasing_* summary fields.",
+        "description": "Create and publish the Alpha Phasing Plan workbook after source reads, E-Occupancy, School Approval, and Cost/Timeline Estimate context are available. Pass only confirmed phasing inputs; if deferred Phase II scope is not confirmed, call the tool with the missing fields so it returns concrete verification.open_items instead of inventing scope. On success, copy returned report_data_fields into report_data before prepare_due_diligence_data, including sources.alpha_phasing_plan_link and exec.alpha_phasing_* summary fields.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -727,6 +735,91 @@ def _raycon_readiness_metadata(
     }
 
 
+def _cost_timeline_readiness_metadata(
+    gc: GoogleClient,
+    m1_files_by_type: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Return readiness fields for the M1 Cost/Timeline Estimate JSON."""
+
+    estimate_file = m1_files_by_type.get("cost_timeline_estimate")
+    if not estimate_file:
+        return {
+            "cost_timeline_estimate_found": False,
+            "cost_timeline_estimate_usable": False,
+            "cost_timeline_estimate_status": "missing",
+            "cost_timeline_estimate_failure_reason": "",
+            "cost_timeline_report_data_fields": {},
+        }
+
+    file_id = str(
+        estimate_file.get("id")
+        or estimate_file.get("drive_file_id")
+        or estimate_file.get("driveFileId")
+        or ""
+    ).strip()
+    base: dict[str, Any] = {
+        "cost_timeline_estimate_found": True,
+        "cost_timeline_estimate_usable": False,
+        "cost_timeline_estimate_status": "read_error",
+        "cost_timeline_estimate_failure_reason": "",
+        "cost_timeline_estimate_file_id": file_id,
+        "cost_timeline_estimate_modified_time": str(
+            estimate_file.get("modifiedTime") or ""
+        ),
+        "cost_timeline_report_data_fields": {},
+    }
+    if not file_id:
+        return {
+            **base,
+            "cost_timeline_estimate_status": "invalid",
+            "cost_timeline_estimate_failure_reason": (
+                "Cost/Timeline Estimate has no Drive file ID."
+            ),
+        }
+
+    try:
+        payload = json.loads(gc.download_file_bytes(file_id).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - one bad estimate should block cleanly
+        logger.warning("Cost/Timeline Estimate read failed: %s", exc)
+        return {
+            **base,
+            "cost_timeline_estimate_failure_reason": str(exc),
+        }
+    if not isinstance(payload, dict):
+        return {
+            **base,
+            "cost_timeline_estimate_status": "invalid",
+            "cost_timeline_estimate_failure_reason": (
+                "Cost/Timeline Estimate payload is not a JSON object."
+            ),
+        }
+
+    report_fields_raw = payload.get("report_data_fields")
+    report_fields = dict(report_fields_raw) if isinstance(report_fields_raw, dict) else {}
+    missing_fields = sorted(
+        field
+        for field in _COST_TIMELINE_REQUIRED_REPORT_FIELDS
+        if not str(report_fields.get(field) or "").strip()
+    )
+    if missing_fields:
+        return {
+            **base,
+            "cost_timeline_estimate_status": "invalid",
+            "cost_timeline_estimate_failure_reason": (
+                "Cost/Timeline Estimate missing report_data_fields: "
+                + ", ".join(missing_fields)
+            ),
+            "cost_timeline_report_data_fields": report_fields,
+        }
+
+    return {
+        **base,
+        "cost_timeline_estimate_usable": True,
+        "cost_timeline_estimate_status": "completed",
+        "cost_timeline_report_data_fields": report_fields,
+    }
+
+
 def check_site_readiness_direct(
     gc: GoogleClient,
     drive_folder_url: str,
@@ -844,25 +937,23 @@ def check_site_readiness_direct(
     sir_is_vendor = _vendor_check("sir")
     inspection_is_vendor = _vendor_check("building_inspection")
 
-    # ── RayCon scenario JSON ────────────────────────────────────────────────
-    # The third gating input. Lives only in M1 (written by RayCon's async
-    # /v1/jobs hand-off) and is keyed by the dedicated ``raycon_scenario_json``
-    # doc_type so an AI raycon_scenario_report can never satisfy this slot.
+    # ── Cost/Timeline Estimate plus legacy RayCon metadata ──────────────────
+    # Cost/Timeline Estimate is the active third gating input. Legacy RayCon
+    # metadata remains in the readiness payload for old report placeholders,
+    # but it no longer opens the full-report gate.
     raycon_metadata: dict[str, Any] = _raycon_readiness_metadata(
         gc, drive_folder_url, m1_folder_id, {}
     )
+    cost_timeline_metadata: dict[str, Any] = _cost_timeline_readiness_metadata(gc, {})
     if m1_folder_id:
         try:
             m1_files_by_type = _list_m1_documents_by_type(gc, m1_folder_id)
-            raycon_metadata = _raycon_readiness_metadata(
-                gc,
-                drive_folder_url,
-                m1_folder_id,
-                m1_files_by_type,
+            cost_timeline_metadata = _cost_timeline_readiness_metadata(
+                gc, m1_files_by_type
             )
         except Exception as e:  # pragma: no cover
             logger.warning(
-                "M1 lookup failed for raycon_scenario_json in %s: %s", site_title, e
+                "M1 lookup failed for cost_timeline_estimate in %s: %s", site_title, e
             )
 
     sir_review_files = [f for f in site_folder_files if f.get("doc_type") == "sir"]
@@ -887,6 +978,7 @@ def check_site_readiness_direct(
         "inspection_vendor": files_by_type["building_inspection"] is not None
             and inspection_is_vendor,
         **raycon_metadata,
+        **cost_timeline_metadata,
         "report_exists": files_by_type["dd_report"] is not None,
         "e_occupancy_report_found": files_by_type["e_occupancy_report"] is not None,
         "school_approval_report_found": files_by_type["school_approval_report"] is not None,
@@ -1577,7 +1669,7 @@ def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
     With ``VENDOR_GATE_ENABLED=1`` the gate requires:
       * Vendor-sourced SIR
       * Vendor-sourced Building Inspection
-      * RayCon scenario JSON (always vendor by definition — RayCon writes it)
+      * Cost/Timeline Estimate
 
     Without the flag (legacy default), only SIR + Building Inspection presence
     is checked, regardless of provenance — matches pre-cutover behavior.
@@ -1590,16 +1682,16 @@ def _missing_required_docs(readiness: dict[str, Any]) -> list[str]:
             )
         if not readiness.get("inspection_vendor", False):
             missing.append("Vendor Building Inspection")
-        raycon_found = bool(readiness.get("raycon_scenario_found", False))
-        raycon_usable = bool(readiness.get("raycon_scenario_usable", raycon_found))
-        if not raycon_found:
-            missing.append("RayCon Scenario JSON")
-        elif not raycon_usable:
-            status = str(readiness.get("raycon_scenario_status") or "").strip()
-            if status == "failed_validation":
-                missing.append("Successful RayCon Scenario JSON")
-            else:
-                missing.append("Usable RayCon Scenario JSON")
+        cost_timeline_found = bool(
+            readiness.get("cost_timeline_estimate_found", False)
+        )
+        cost_timeline_usable = bool(
+            readiness.get("cost_timeline_estimate_usable", cost_timeline_found)
+        )
+        if not cost_timeline_found:
+            missing.append("Cost/Timeline Estimate")
+        elif not cost_timeline_usable:
+            missing.append("Usable Cost/Timeline Estimate")
         return missing
 
     if not readiness.get("sir_found", False):
@@ -1692,11 +1784,12 @@ def _notify_vendor_gate_extraction_failure(
     """Alert humans when all vendor inputs are present but extraction fails.
 
     The vendor gate guarantees a vendor SIR + vendor Building Inspection +
-    RayCon scenario JSON were all on hand when generation was attempted. If
+    Cost/Timeline Estimate were all on hand when generation was attempted. If
     the agent still couldn't produce a complete report, the inputs almost
-    certainly need a human to disambiguate — OCR failure, malformed RayCon
-    payload, conflicting permit narratives, etc. We escalate to Google Chat
-    rather than silently leaving the row in ``report_incomplete``.
+    certainly need a human to disambiguate — OCR failure, malformed
+    Cost/Timeline Estimate payload, conflicting permit narratives, etc. We
+    escalate to Google Chat rather than silently leaving the row in
+    ``report_incomplete``.
 
     Idempotency: this alert is keyed on the failure_reason text so multiple
     runs of the same site with the same root cause don't spam the channel.
@@ -1709,7 +1802,7 @@ def _notify_vendor_gate_extraction_failure(
     lines = [
         f"DD Vendor Gate — Human Intervention Needed: {site_title}",
         "All three required inputs are present (vendor SIR, vendor Building "
-        "Inspection, RayCon Scenario JSON) but the report could not be "
+        "Inspection, Cost/Timeline Estimate) but the report could not be "
         "completed. A human reviewer should inspect the inputs.",
     ]
     if failure_reason:
@@ -3667,8 +3760,8 @@ def process_site_pipeline(
     open_questions_before: list[dict[str, Any]] | None = None,
     # When True, bypass the ``report_exists`` short-circuit so a fresh
     # report is generated on top of an existing DD Report Doc. Used by the
-    # event-driven republish path (raycon_followup) when authoritative
-    # inputs (e.g. raycon_scenario.json) have just landed. All other gates
+    # event-driven republish path when authoritative source inputs have just
+    # landed. All other gates
     # — vendor gate, missing required docs — still apply.
     force_regenerate: bool = False,
     due_diligence_write_mode: str = "api",
@@ -3805,9 +3898,9 @@ def process_site_pipeline(
             drive_folder_url=drive_folder_url,
         )
 
-    raycon_report_fields = readiness.get("raycon_report_data_fields")
-    if isinstance(raycon_report_fields, dict):
-        initial_report_fields.update(raycon_report_fields)
+    cost_timeline_report_fields = readiness.get("cost_timeline_report_data_fields")
+    if isinstance(cost_timeline_report_fields, dict):
+        initial_report_fields.update(cost_timeline_report_fields)
 
     readiness_result = _resolve_readiness_result(
         site_title, readiness, force_regenerate=force_regenerate
@@ -3980,7 +4073,7 @@ def process_site_pipeline(
             owner_email=p1_email or "",
         )
         # First-round publishing can proceed before every full-report
-        # vendor/RayCon input is present. Escalate only when the full input
+        # vendor/cost-timeline input is present. Escalate only when the full input
         # set was actually present and generation still failed.
         if (
             _vendor_gate_enabled()
@@ -4266,7 +4359,7 @@ def process_site_pipeline(
         completeness_result.trace_url = trace_url
         completeness_result.trace = agent_result.get("trace")
         # Same escalation as the agent-failure branch above: when the full
-        # vendor/RayCon input set was present but the resulting report is
+        # vendor/cost-timeline input set was present but the resulting report is
         # incomplete, humans need to look at the inputs.
         if (
             _vendor_gate_enabled()

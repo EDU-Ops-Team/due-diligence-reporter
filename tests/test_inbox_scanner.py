@@ -778,7 +778,7 @@ class TestClassification:
     @patch("due_diligence_reporter.inbox_scanner._resolve_m1_folder")
     @patch("due_diligence_reporter.inbox_scanner.classify_document")
     @patch("due_diligence_reporter.inbox_scanner._extract_email_metadata")
-    def test_duplicate_block_plan_skips_when_derived_docs_exist(
+    def test_duplicate_block_plan_skips_when_cost_timeline_estimate_exists(
         self,
         mock_extract,
         mock_classify,
@@ -806,7 +806,10 @@ class TestClassification:
         mock_resolve_m1.return_value = ("m1_folder_id", "https://drive.google.com/drive/folders/m1")
         mock_list_docs.return_value = {
             "block_plan": {"id": "block123", "name": "Apr 22 2026 - Alpha Keller Block Plan.pdf"},
-            "raycon_scenario_json": {"id": "ray-json-123", "name": "raycon_scenario.json"},
+            "cost_timeline_estimate": {
+                "id": "cost-json-123",
+                "name": "cost_timeline_estimate.json",
+            },
         }
         mock_build_summary.return_value = {
             "title": "Alpha Keller",
@@ -1439,6 +1442,33 @@ class TestScanResults:
         assert has_site_identity([{"site_title": "Alpha Keller", "matched_site_id": None}]) is True
 
 
+def test_block_plan_downstream_returns_cost_timeline_skip_marker():
+    result = _run_block_plan_downstream(
+        MagicMock(),
+        site_summary={
+            "id": "IEBLOCK123",
+            "title": "Alpha Keller",
+            "address": "123 Main St, Keller, TX 76248",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site_folder_456",
+            "total_building_sf": 12000,
+        },
+        block_plan_content="BLOCK PLAN FULL TEXT",
+        block_plan_url="https://drive.google.com/file/d/block123/view",
+        block_plan_file_id="block123",
+    )
+
+    assert result == [
+        {
+            "doc_type": "cost_timeline_estimate_request",
+            "block_plan_file_id": "block123",
+            "block_plan_url": "https://drive.google.com/file/d/block123/view",
+            "status": "skipped",
+            "dispatch_skipped": "raycon_disabled_use_cost_timeline_estimate",
+        }
+    ]
+
+
+@pytest.mark.skip(reason="RayCon dispatch is retired; cost/timeline estimate is the live path.")
 class TestBlockPlanDownstream:
     """Block Plan downstream now pings RayCon's async /v1/jobs endpoint and exits.
 
@@ -2365,6 +2395,31 @@ class TestRhodesDocumentRegistration:
 # ---------------------------------------------------------------------------
 
 
+def test_doc_arrival_folder_ping_returns_raycon_disabled_marker() -> None:
+    result = _run_doc_arrival_folder_ping(
+        MagicMock(),
+        site_summary={
+            "id": "IEBLOCK123",
+            "title": "Alpha Keller",
+            "address": "123 Main St, Keller, TX",
+            "drive_folder_url": "https://drive.google.com/drive/folders/site_abc",
+        },
+        doc_type="sir",
+        drive_file={
+            "id": "file-1",
+            "webViewLink": "https://drive.google.com/file/d/file-1/view",
+        },
+    )
+
+    assert result == {
+        "status": "skipped",
+        "reason": "raycon_disabled_use_cost_timeline_estimate",
+        "doc_type": "sir",
+        "file_id": "file-1",
+    }
+
+
+@pytest.mark.skip(reason="RayCon folder pings are retired.")
 class TestDocArrivalFolderPing:
     """On every classified upload — SIR, Worksmith inspection, ISP, Block
     Plan — we ping RayCon's /v1/jobs with the folder URL so it can decide

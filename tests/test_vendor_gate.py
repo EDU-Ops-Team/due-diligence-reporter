@@ -3,7 +3,7 @@
 Confirms:
 * Default OFF behavior matches pre-cutover (sir_found + inspection_found).
 * When VENDOR_GATE_ENABLED=1 the gate requires vendor SIR + vendor BI +
-  RayCon scenario JSON.
+  Cost/Timeline Estimate.
 * The Tulsa false-positive scenario (AI-generated SIR present, no vendor) is
   blocked.
 """
@@ -66,7 +66,7 @@ class TestMissingRequiredDocsVendorGate:
             "sir_vendor": True,
             "inspection_found": True,
             "inspection_vendor": True,
-            "raycon_scenario_found": True,
+            "cost_timeline_estimate_found": True,
         }
         assert _missing_required_docs(readiness) == []
 
@@ -78,36 +78,34 @@ class TestMissingRequiredDocsVendorGate:
             "sir_vendor": False,
             "inspection_found": False,
             "inspection_vendor": False,
-            "raycon_scenario_found": False,
+            "cost_timeline_estimate_found": False,
         }
         missing = _missing_required_docs(readiness)
         assert "Vendor SIR" in missing
         assert "Vendor Building Inspection" in missing
-        assert "RayCon Scenario JSON" in missing
+        assert "Cost/Timeline Estimate" in missing
 
-    def test_blocks_when_only_raycon_missing(self):
+    def test_blocks_when_only_cost_timeline_missing(self):
         readiness = {
             "sir_found": True,
             "sir_vendor": True,
             "inspection_found": True,
             "inspection_vendor": True,
-            "raycon_scenario_found": False,
+            "cost_timeline_estimate_found": False,
         }
-        assert _missing_required_docs(readiness) == ["RayCon Scenario JSON"]
+        assert _missing_required_docs(readiness) == ["Cost/Timeline Estimate"]
 
-    def test_blocks_when_raycon_json_failed_validation(self):
+    def test_blocks_when_cost_timeline_estimate_is_not_usable(self):
         readiness = {
             "sir_found": True,
             "sir_vendor": True,
             "inspection_found": True,
             "inspection_vendor": True,
-            "raycon_scenario_found": True,
-            "raycon_scenario_usable": False,
-            "raycon_scenario_status": "failed_validation",
+            "cost_timeline_estimate_found": True,
+            "cost_timeline_estimate_usable": False,
+            "cost_timeline_estimate_status": "invalid",
         }
-        assert _missing_required_docs(readiness) == [
-            "Successful RayCon Scenario JSON"
-        ]
+        assert _missing_required_docs(readiness) == ["Usable Cost/Timeline Estimate"]
 
     def test_blocks_when_inspection_is_ai_only(self):
         readiness = {
@@ -115,7 +113,7 @@ class TestMissingRequiredDocsVendorGate:
             "sir_vendor": True,
             "inspection_found": True,
             "inspection_vendor": False,
-            "raycon_scenario_found": True,
+            "cost_timeline_estimate_found": True,
         }
         assert _missing_required_docs(readiness) == ["Vendor Building Inspection"]
 
@@ -128,7 +126,7 @@ class TestReadinessResolution:
             "sir_vendor": False,
             "inspection_found": False,
             "inspection_vendor": False,
-            "raycon_scenario_found": False,
+            "cost_timeline_estimate_found": False,
             "report_exists": False,
         }
         result = _resolve_readiness_result("Alpha School Tulsa", readiness)
@@ -143,7 +141,7 @@ class TestReadinessResolution:
             "sir_vendor": False,
             "inspection_found": True,
             "inspection_vendor": True,
-            "raycon_scenario_found": True,
+            "cost_timeline_estimate_found": True,
             "report_exists": False,
         }
         result = _resolve_readiness_result("Alpha School Tulsa", readiness)

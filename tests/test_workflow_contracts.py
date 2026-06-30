@@ -330,6 +330,13 @@ def test_raycon_followup_can_enable_firestore_runtime_state_without_required_sec
     assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing" not in text
 
 
+def test_raycon_followup_workflow_is_job_disabled() -> None:
+    text = _workflow_text("raycon-followup.yml")
+
+    assert "if: ${{ false }}" in text
+    assert "RayCon is no longer an active DDR dependency" in text
+
+
 def test_raycon_followup_passes_alpha_capacity_model_override() -> None:
     text = _workflow_text("raycon-followup.yml")
 

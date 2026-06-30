@@ -20,7 +20,6 @@ logger = logging.getLogger("vendor_doc_sweep")
 CORE_SWEEP_DOC_TYPES = {
     "sir",
     "building_inspection",
-    "raycon_scenario_json",
     "e_occupancy_report",
     "school_approval_report",
     "opening_plan_report",

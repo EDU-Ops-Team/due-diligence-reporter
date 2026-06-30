@@ -1,12 +1,9 @@
 name: RayCon Follow-up
 
-# Picks up `raycon_scenario.json` files RayCon writes back into per-site
-# M1 folders (after DDR pings them via /v1/jobs) and publishes the
-# RayCon Scenario Google Doc. Runs every 5 minutes during business
-# hours so a Block Plan -> published scenario takes <10 min end-to-end.
-#
-# Re-running is safe: only re-publishes when the JSON is newer than
-# the existing report Doc.
+# Deprecated/disabled. DDR no longer uses RayCon as an active cost/timeline
+# dependency; the repo-owned Cost/Timeline Estimate runs after Rhodes capacity
+# readback in the M2 executor. This workflow is retained only as historical
+# reference and its job is guarded with `if: ${{ false }}`.
 #
 # ---------------------------------------------------------------------------
 # RayCon callback receiver (Rec. 2 from event-driven-ddr-recommendations.md)
@@ -23,9 +20,8 @@ name: RayCon Follow-up
 # this repo only). The outbound `RAYCON_WEBHOOK_SECRET` used for
 # DDR -> RayCon signing is unrelated and stays in place.
 #
-# Cron remains as the deterministic safety net: any callback GitHub
-# rejects, RayCon abandons, or this workflow fails to deliver gets
-# picked up on the next 5-minute tick.
+# The schedule remains in the file for historical context, but the job-level
+# false guard prevents scheduled or manual runs from interacting with RayCon.
 
 on:
   schedule:
@@ -83,11 +79,13 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # Vendor gate ON: requires vendor-sourced SIR + BI + raycon_scenario.json. Greg's call (Rec. 8). Manual MCP path is unaffected.
+  # RayCon is no longer an active DDR dependency. This workflow is retained
+  # only for historical/manual reference and is job-disabled below.
   VENDOR_GATE_ENABLED: "1"
 
 jobs:
   raycon-followup:
+    if: ${{ false }}
     runs-on: ubuntu-latest
 
     steps:

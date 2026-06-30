@@ -34,10 +34,16 @@ def _readiness(
     raycon_scenario_status: str = "",
     raycon_scenario_failure_reason: str = "",
     raycon_scenario_run_id: str = "",
+    cost_timeline_estimate_found: bool = True,
+    cost_timeline_estimate_usable: bool | None = None,
+    cost_timeline_estimate_status: str = "",
+    cost_timeline_estimate_failure_reason: str = "",
     report_exists: bool = False,
 ) -> dict:
     if raycon_scenario_usable is None:
         raycon_scenario_usable = raycon_scenario_found
+    if cost_timeline_estimate_usable is None:
+        cost_timeline_estimate_usable = cost_timeline_estimate_found
     return {
         "sir_found": sir_found,
         "sir_vendor": sir_vendor,
@@ -49,6 +55,10 @@ def _readiness(
         "raycon_scenario_status": raycon_scenario_status,
         "raycon_scenario_failure_reason": raycon_scenario_failure_reason,
         "raycon_scenario_run_id": raycon_scenario_run_id,
+        "cost_timeline_estimate_found": cost_timeline_estimate_found,
+        "cost_timeline_estimate_usable": cost_timeline_estimate_usable,
+        "cost_timeline_estimate_status": cost_timeline_estimate_status,
+        "cost_timeline_estimate_failure_reason": cost_timeline_estimate_failure_reason,
         "report_exists": report_exists,
         "e_occupancy_report_found": False,
         "school_approval_report_found": False,
@@ -169,14 +179,14 @@ def test_all_docs_present_ready_for_full_report(tmp_path, monkeypatch):
     assert statuses == {
         "vendor_sir": "present",
         "building_inspection": "present",
-        "raycon_scenario": "present",
+        "cost_timeline_estimate": "present",
     }
-    # When RayCon scenario is present, no block-plan / dispatch metadata
-    # should leak into the entry.
-    raycon_entry = next(b for b in result["blocking"] if b["doc"] == "raycon_scenario")
-    assert "block_plan_present" not in raycon_entry
-    assert "last_dispatch" not in raycon_entry
-    assert "minutes_since" not in raycon_entry
+    cost_entry = next(
+        b for b in result["blocking"] if b["doc"] == "cost_timeline_estimate"
+    )
+    assert "block_plan_present" not in cost_entry
+    assert "last_dispatch" not in cost_entry
+    assert "minutes_since" not in cost_entry
 
     assert result["would_be_pending"] == []
     assert len(result["would_be_filled_now"]) > 0
@@ -212,12 +222,8 @@ def test_vendor_sir_missing_blocks_partial(tmp_path, monkeypatch):
     assert statuses == {
         "vendor_sir": "missing",
         "building_inspection": "present",
-        "raycon_scenario": "pending",
+        "cost_timeline_estimate": "present",
     }
-    raycon_entry = next(b for b in result["blocking"] if b["doc"] == "raycon_scenario")
-    assert raycon_entry["block_plan_present"] is False
-    assert raycon_entry["last_dispatch"] is None
-    assert raycon_entry["minutes_since"] is None
 
 
 def test_ai_sir_present_allows_first_round_partial(tmp_path, monkeypatch):
@@ -281,6 +287,7 @@ def test_partial_with_pending_raycon_dispatched_14_min_ago(tmp_path, monkeypatch
             inspection_found=False,
             inspection_vendor=False,
             raycon_scenario_found=False,
+            cost_timeline_estimate_found=False,
         ),
         m1_docs={
             "block_plan": {"id": "bp-1", "modifiedTime": "2026-05-07T13:00:00Z"},
@@ -301,14 +308,16 @@ def test_partial_with_pending_raycon_dispatched_14_min_ago(tmp_path, monkeypatch
     assert statuses == {
         "vendor_sir": "present",
         "building_inspection": "missing",
-        "raycon_scenario": "pending",
+        "cost_timeline_estimate": "pending",
     }
 
-    raycon_entry = next(b for b in result["blocking"] if b["doc"] == "raycon_scenario")
-    assert raycon_entry["block_plan_present"] is True
-    assert raycon_entry["last_dispatch"] is not None
+    cost_entry = next(
+        b for b in result["blocking"] if b["doc"] == "cost_timeline_estimate"
+    )
+    assert "block_plan_present" not in cost_entry
+    assert "last_dispatch" not in cost_entry
     # Allow ±1 min jitter for the test's own walltime.
-    assert raycon_entry["minutes_since"] in (13, 14, 15)
+    assert "minutes_since" not in cost_entry
 
     # Pending tokens should include all RayCon paths.
     assert any(
@@ -343,12 +352,14 @@ def test_raycon_scenario_present_uses_run_timestamp(tmp_path, monkeypatch):
     finally:
         _stop_all(patchers)
 
-    raycon_entry = next(b for b in result["blocking"] if b["doc"] == "raycon_scenario")
-    assert raycon_entry["status"] == "present"
+    cost_entry = next(
+        b for b in result["blocking"] if b["doc"] == "cost_timeline_estimate"
+    )
+    assert cost_entry["status"] == "present"
     # When present, we don't surface dispatch metadata.
-    assert "last_dispatch" not in raycon_entry
-    assert "block_plan_present" not in raycon_entry
-    assert "minutes_since" not in raycon_entry
+    assert "last_dispatch" not in cost_entry
+    assert "block_plan_present" not in cost_entry
+    assert "minutes_since" not in cost_entry
 
 
 # ---------------------------------------------------------------------------
@@ -363,10 +374,10 @@ def test_raycon_scenario_failed_is_not_full_report_ready(tmp_path, monkeypatch):
     patchers = _patch_common(
         readiness=_readiness(
             raycon_scenario_found=True,
-            raycon_scenario_usable=False,
-            raycon_scenario_status="failed_validation",
-            raycon_scenario_failure_reason="capacity_not_defensible",
-            raycon_scenario_run_id="rc_failed",
+            cost_timeline_estimate_found=True,
+            cost_timeline_estimate_usable=False,
+            cost_timeline_estimate_status="invalid",
+            cost_timeline_estimate_failure_reason="missing capex",
         ),
         m1_docs={
             "block_plan": {"id": "bp-1", "modifiedTime": "2026-05-07T13:00:00Z"},
@@ -383,10 +394,11 @@ def test_raycon_scenario_failed_is_not_full_report_ready(tmp_path, monkeypatch):
         _stop_all(patchers)
 
     assert result["ready_for_full_report"] is False
-    raycon_entry = next(b for b in result["blocking"] if b["doc"] == "raycon_scenario")
-    assert raycon_entry["status"] == "failed_validation"
-    assert raycon_entry["failure_reason"] == "capacity_not_defensible"
-    assert raycon_entry["raycon_run_id"] == "rc_failed"
+    cost_entry = next(
+        b for b in result["blocking"] if b["doc"] == "cost_timeline_estimate"
+    )
+    assert cost_entry["status"] == "invalid"
+    assert cost_entry["failure_reason"] == "missing capex"
     assert result["projected_completeness"]["pending_reasons"] == {
         "raycon_scenario_failed": result["would_be_pending"]
     }
@@ -525,7 +537,7 @@ def test_vendor_gate_disabled_reports_legacy_view(tmp_path, monkeypatch):
     assert statuses == {
         "vendor_sir": "present",
         "building_inspection": "present",
-        "raycon_scenario": "pending",
+        "cost_timeline_estimate": "present",
     }
     assert result["ready_for_full_report"] is True
     assert result["partial_report_possible"] is True
@@ -596,7 +608,7 @@ def test_diagnose_does_not_create_m1_folder(tmp_path, monkeypatch):
     assert statuses == {
         "vendor_sir": "missing",
         "building_inspection": "missing",
-        "raycon_scenario": "pending",
+        "cost_timeline_estimate": "present",
     }
 
 
@@ -766,13 +778,8 @@ def test_gate_off_raycon_missing_vendor_missing_ready_true(tmp_path, monkeypatch
     assert statuses == {
         "vendor_sir": "present",       # legacy view: bare presence
         "building_inspection": "present",
-        "raycon_scenario": "pending",  # actual status, even though
-                                       # not blocking under gate-off
+        "cost_timeline_estimate": "present",
     }
-    raycon_entry = next(
-        b for b in result["blocking"] if b["doc"] == "raycon_scenario"
-    )
-    assert raycon_entry["block_plan_present"] is False
 
 
 # ---------------------------------------------------------------------------

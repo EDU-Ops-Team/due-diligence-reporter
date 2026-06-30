@@ -37,12 +37,6 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
                     "webViewLink": "https://drive/sir-1",
                 },
                 {
-                    "id": "raycon-1",
-                    "name": "raycon_scenario.json",
-                    "modifiedTime": "2026-05-26T11:00:00Z",
-                    "webViewLink": "https://drive/raycon-1",
-                },
-                {
                     "id": "capacity-1",
                     "name": "Alpha Capacity Analysis - Alpha Test.json",
                     "modifiedTime": "2026-05-26T11:10:00Z",
@@ -125,7 +119,6 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
 
     assert {event["source_type"] for event in events} == {
         "vendor_sir",
-        "raycon_scenario",
         "alpha_capacity_analysis",
         "cost_timeline_estimate",
         "block_plan",

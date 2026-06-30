@@ -1,5 +1,47 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-30 - Retire active RayCon interactions for cost/timeline
+
+- Branch/worktree: `codex/ddr-adhoc-locationos-runner` at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-7xk`.
+- Request: stop interacting with RayCon for M2 cost/time estimation. DDR should
+  let the repo-owned Cost/Timeline Estimate run once the required capacity data
+  is in hand.
+- Changes:
+  - M2 source-watch no longer treats `raycon_scenario` /
+    `raycon_scenario_json` as phasing/build context. `cost_timeline_estimate`
+    remains the registered M1 source mapped to Rhodes `initialCostEstimate`.
+  - The vendor/full-report gate now requires vendor SIR, vendor Building
+    Inspection, and a usable Cost/Timeline Estimate. Readiness reads the
+    registered Cost/Timeline JSON from M1 and requires FO/Max open-date and
+    capex report fields before it can open the gate.
+  - Inbox RayCon folder pings and Block Plan dispatches are default-disabled.
+    They return explicit skipped markers unless `RAYCON_INTERACTIONS_ENABLED`
+    is set to `1`, `true`, or `yes`. Duplicate Block Plan handling now skips
+    only when a Cost/Timeline Estimate already exists.
+  - `raycon-followup.yml` is retained only as historical reference and its job
+    is guarded with `if: ${{ false }}`. Scheduled/manual runs will not interact
+    with RayCon.
+  - Public readiness/diagnostic and automation-event text now reports
+    Cost/Timeline Estimate as the third input instead of RayCon. Legacy RayCon
+    parsing/helpers/tests remain for historical artifacts and explicit manual
+    fallback only.
+- Validation:
+
+```powershell
+uv run pytest tests/test_inbox_scanner.py tests/test_report_pipeline.py tests/test_vendor_gate.py tests/test_m2_pipeline.py tests/test_vendor_doc_sweep.py tests/test_workflow_contracts.py tests/test_diagnose_site_readiness.py tests/test_automation_event.py
+uv run ruff check src/due_diligence_reporter/inbox_scanner.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/server.py src/due_diligence_reporter/automation_event.py tests/test_inbox_scanner.py tests/test_report_pipeline.py tests/test_vendor_gate.py tests/test_diagnose_site_readiness.py tests/test_automation_event.py tests/test_workflow_contracts.py
+uv run mypy -m due_diligence_reporter.inbox_scanner -m due_diligence_reporter.report_pipeline -m due_diligence_reporter.server -m due_diligence_reporter.automation_event
+uv run ruff check .
+uv run mypy src/
+uv run pytest
+```
+
+Results: focused pytest passed (`235 passed, 13 skipped`); focused Ruff and
+focused mypy passed; full Ruff passed; full mypy passed for `51 source files`;
+full pytest passed (`1316 passed, 13 skipped`).
+
 ## 2026-06-30 - DDR M2 executor after capacity_ready
 
 - Branch/worktree: `codex/ddr-adhoc-locationos-runner` at

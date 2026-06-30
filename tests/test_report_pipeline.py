@@ -941,6 +941,7 @@ class TestProcessSitePipeline:
             "inspection_vendor": False,
             "raycon_scenario_found": False,
             "raycon_scenario_usable": False,
+            "cost_timeline_estimate_found": False,
             "report_exists": True,
         }
         trace = ReportTrace(
@@ -985,7 +986,10 @@ class TestProcessSitePipeline:
         )
 
         assert result.status == "waiting_on_docs"
-        assert result.missing_docs == ["Vendor Building Inspection", "RayCon Scenario JSON"]
+        assert result.missing_docs == [
+            "Vendor Building Inspection",
+            "Cost/Timeline Estimate",
+        ]
         mock_agent.assert_not_called()
         mock_completeness.assert_not_called()
         mock_email.assert_not_called()
@@ -1001,7 +1005,7 @@ class TestProcessSitePipeline:
             "still_open_item_count": 0,
             "outstanding_vendor_docs": [
                 "Vendor Building Inspection",
-                "RayCon Scenario JSON",
+                "Cost/Timeline Estimate",
             ],
         }
         assert not any(step.step == "notify.email" for step in result.steps)
@@ -3165,6 +3169,8 @@ class TestProcessSitePipeline:
             "inspection_found": True,
             "inspection_vendor": True,
             "raycon_scenario_found": True,
+            "cost_timeline_estimate_found": True,
+            "cost_timeline_estimate_usable": True,
             "report_exists": False,
         }
         mock_agent.return_value = {
@@ -3241,6 +3247,8 @@ class TestProcessSitePipeline:
             "inspection_found": True,
             "inspection_vendor": True,
             "raycon_scenario_found": True,
+            "cost_timeline_estimate_found": True,
+            "cost_timeline_estimate_usable": True,
             "report_exists": False,
         }
         mock_agent.return_value = {
@@ -3494,16 +3502,16 @@ class TestCheckSiteReadinessDirect:
 
     @patch("due_diligence_reporter.report_pipeline._list_m1_documents_by_type")
     @patch("due_diligence_reporter.report_pipeline._resolve_m1_folder")
-    def test_failed_raycon_json_is_not_usable_for_full_report(
+    def test_invalid_cost_timeline_estimate_is_not_usable_for_full_report(
         self,
         mock_resolve_m1,
         mock_list_m1,
     ):
         mock_resolve_m1.return_value = ("m1-folder-id", "M1")
         mock_list_m1.return_value = {
-            "raycon_scenario_json": {
-                "id": "raycon-json-1",
-                "name": "raycon_scenario.json",
+            "cost_timeline_estimate": {
+                "id": "cost-timeline-1",
+                "name": "Cost Timeline Estimate - Alpha Tulsa.json",
                 "modifiedTime": "2026-05-28T14:00:00Z",
             }
         }
@@ -3511,12 +3519,9 @@ class TestCheckSiteReadinessDirect:
         gc.list_files_recursive.return_value = []
         gc.download_file_bytes.return_value = json.dumps(
             {
-                "schema_version": "1.0",
-                "status": "failed",
-                "raycon_run_id": "rc_failed",
-                "validation": {
-                    "passed": False,
-                    "errors": ["capacity_not_defensible"],
+                "source_system": "cost_and_timeline_estimate",
+                "report_data_fields": {
+                    "exec.fastest_open_capex": "$100,000",
                 },
             }
         ).encode("utf-8")
@@ -3529,14 +3534,13 @@ class TestCheckSiteReadinessDirect:
             site_title="Alpha Tulsa 6940 S Utica Ave",
         )
 
-        assert result["raycon_scenario_found"] is True
-        assert result["raycon_scenario_usable"] is False
-        assert result["raycon_scenario_status"] == "failed_validation"
-        assert result["raycon_scenario_run_id"] == "rc_failed"
-        assert "capacity_not_defensible" in result["raycon_scenario_failure_reason"]
+        assert result["cost_timeline_estimate_found"] is True
+        assert result["cost_timeline_estimate_usable"] is False
+        assert result["cost_timeline_estimate_status"] == "invalid"
+        assert "exec.max_capacity_capex" in result["cost_timeline_estimate_failure_reason"]
         assert (
-            result["raycon_report_data_fields"]["exec.raycon_failure_reason"]
-            == "capacity_not_defensible"
+            result["cost_timeline_report_data_fields"]["exec.fastest_open_capex"]
+            == "$100,000"
         )
 
 

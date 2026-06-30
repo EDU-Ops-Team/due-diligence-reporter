@@ -419,7 +419,7 @@ def test_vendor_gate_review_required_event_renders_failure_context() -> None:
         in note
     )
     assert (
-        "Required inputs: vendor SIR, vendor Building Inspection, RayCon Scenario JSON"
+        "Required inputs: vendor SIR, vendor Building Inspection, Cost/Timeline Estimate"
         in note
     )
     assert "- Rerun DDR." in note

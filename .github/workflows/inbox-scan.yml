@@ -21,7 +21,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # Vendor gate ON: requires vendor-sourced SIR + BI + raycon_scenario.json. Greg's call (Rec. 8). Manual MCP path is unaffected.
+  # Vendor gate ON: requires vendor-sourced SIR + BI + Cost/Timeline Estimate.
   VENDOR_GATE_ENABLED: "1"
 
 jobs:
@@ -76,10 +76,8 @@ jobs:
           [ -n "${{ secrets.SIR_FOLDER_ID }}" ]              || { echo "SIR_FOLDER_ID missing"; exit 1; }
           [ -n "${{ secrets.ISP_FOLDER_ID }}" ]              || { echo "ISP_FOLDER_ID missing"; exit 1; }
           [ -n "${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}" ] || { echo "BUILDING_INSPECTION_FOLDER_ID missing"; exit 1; }
-          # RAYCON_WEBHOOK_SECRET is optional: RayCon's /v1/jobs is public
-          # under the current /v1/* rollout. When set, we sign the body
-          # with HMAC-SHA256 so we're ready the day RayCon flips on
-          # signature verification.
+          # RayCon interaction is disabled; cost/timeline now runs through
+          # the repo-owned M2 executor after capacity readback.
           echo "All required secrets are present"
 
       - name: Create .env file from secrets

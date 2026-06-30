@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -63,6 +64,16 @@ class DDRepublishResult(TypedDict, total=False):
 _EMAIL_RE = re.compile(r"<([^>]+)>")
 
 logger = logging.getLogger("[inbox_scanner]")
+
+
+def _raycon_interactions_enabled() -> bool:
+    """Return whether legacy RayCon pings/dispatches are explicitly enabled."""
+
+    return os.environ.get("RAYCON_INTERACTIONS_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 # Confidence threshold — auto-file at or above this, flag below for review
 AUTO_FILE_CONFIDENCE = 0.7
@@ -560,21 +571,21 @@ def _run_doc_arrival_folder_ping(
     doc_type: str,
     drive_file: dict[str, Any] | None,
 ) -> dict[str, str]:
-    """Tell RayCon a new doc landed in the site's Drive folder.
+    """Return the legacy RayCon folder-ping result for an uploaded source doc.
 
-    Fired on every successful classified upload (CDS SIR, Worksmith
-    inspection, ISP, Block Plan). RayCon walks the folder server-side
-    using ``drive_folder_url`` and decides whether the document set is
-    now complete enough to start computing scenarios. The ping is
-    idempotent on RayCon's side, so duplicate fires are safe.
-
-    Returns a status dict the caller can attach to the per-attachment
-    ``uploaded`` row. Failures are surfaced in the dict (``status`` =
-    ``error`` + ``error`` message) but never raise — a flaky RayCon
-    must not block a successful Drive upload from being marked done.
-    The cron-driven safety net in ``scripts/raycon_followup.py`` will
-    re-fire any missed pings.
+    The active DDR path no longer pings RayCon. Unless
+    ``RAYCON_INTERACTIONS_ENABLED`` is explicitly set, this returns a skipped
+    marker so the caller can record that Cost/Timeline Estimate is the live M2
+    path.
     """
+    if not _raycon_interactions_enabled():
+        return {
+            "status": "skipped",
+            "reason": "raycon_disabled_use_cost_timeline_estimate",
+            "doc_type": doc_type,
+            "file_id": str((drive_file or {}).get("id", "")),
+        }
+
     from .raycon_client import post_raycon_folder_ping
 
     site_id = str(site_summary.get("id", "")).strip()
@@ -780,28 +791,24 @@ def _run_block_plan_downstream(
     block_plan_file_bytes: bytes | None = None,
     block_plan_file_name: str = "Block Plan.pdf",
 ) -> list[dict[str, Any]]:
-    """Hand the Block Plan off to RayCon's async ``/v1/jobs`` endpoint.
+    """Return legacy Block Plan downstream dispatch rows.
 
-    Pre-cutover (April 2026) this function ran Capacity Brainlift +
-    the synchronous ``/v1/chat`` call inline, which took up to ~10
-    minutes per site. The new contract (per ``raycon_ddr_integration_spec.md``):
-
-    1. DDR files the Block Plan into the site's M1 folder (already done
-       by the caller at the time we run).
-    2. We POST an HMAC-signed job ping to RayCon with the 11 spec fields.
-       RayCon reads the Block Plan from Drive itself using
-       ``block_plan_file_id``, derives rooms, computes scenarios, and
-       writes ``raycon_scenario.json`` back into the same M1 folder.
-    3. The ``raycon-followup`` workflow polls every 5 minutes, picks up
-       the JSON when it lands, and publishes the RayCon Scenario
-       Google Doc. (Implemented in scripts/raycon_followup.py.)
-
-    No long inline wait. RayCon reads the PDF directly from Drive via
-    ``block_plan_file_id``. DDR also passes extracted text plus PDF bytes to
-    Alpha Capacity Analysis when an external capacity artifact is not already
-    present, so image-only PDFs do not silently skip the capacity source of
-    truth.
+    The active DDR path no longer hands Block Plans to RayCon. Unless
+    ``RAYCON_INTERACTIONS_ENABLED`` is explicitly set, this returns a skipped
+    Cost/Timeline Estimate request marker. The guarded legacy branch remains
+    only for explicit manual fallback.
     """
+    if not _raycon_interactions_enabled():
+        return [
+            {
+                "doc_type": "cost_timeline_estimate_request",
+                "block_plan_file_id": block_plan_file_id,
+                "block_plan_url": block_plan_url,
+                "status": "skipped",
+                "dispatch_skipped": "raycon_disabled_use_cost_timeline_estimate",
+            }
+        ]
+
     from .raycon_client import (
         alpha_capacity_counts_signature,
         post_raycon_job,
@@ -1685,9 +1692,9 @@ def process_email(
                     review_needed = True
                 continue
             existing_docs = _list_m1_documents_by_type(gc, target_folder_id)
-            if "raycon_scenario_json" in existing_docs:
+            if "cost_timeline_estimate" in existing_docs:
                 logger.info(
-                    "Block Plan '%s' already exists and RayCon scenario is published - skipping",
+                    "Block Plan '%s' already exists and Cost/Timeline Estimate is registered - skipping",
                     drive_filename,
                 )
                 skipped += 1
@@ -1695,7 +1702,7 @@ def process_email(
             drive_file = existing_docs.get("block_plan")
             rerun_existing_block_plan = True
             logger.info(
-                "Block Plan '%s' already exists but RayCon scenario is missing - re-pinging RayCon",
+                "Block Plan '%s' already exists but Cost/Timeline Estimate is missing - recording readiness marker",
                 drive_filename,
             )
             if drive_file is None:

@@ -4068,23 +4068,25 @@ async def check_site_readiness(
 
             sir_found = bool(readiness.get("sir_found"))
             report_exists = bool(readiness.get("report_exists"))
-            raycon_found = bool(readiness.get("raycon_scenario_found"))
-            raycon_usable = bool(readiness.get("raycon_scenario_usable", raycon_found))
-            raycon_failed = raycon_found and not raycon_usable
-            raycon_failure_reason = str(
-                readiness.get("raycon_scenario_failure_reason") or ""
+            cost_timeline_found = bool(readiness.get("cost_timeline_estimate_found"))
+            cost_timeline_usable = bool(
+                readiness.get("cost_timeline_estimate_usable", cost_timeline_found)
+            )
+            cost_timeline_failed = cost_timeline_found and not cost_timeline_usable
+            cost_timeline_failure_reason = str(
+                readiness.get("cost_timeline_estimate_failure_reason") or ""
             ).strip()
             missing_docs = [] if sir_found else ["sir"]
             ready_for_report = sir_found and not report_exists
             projected_completeness = project_completeness_from_readiness(
-                raycon_scenario_found=raycon_found,
-                raycon_scenario_failed=raycon_failed,
-                raycon_failure_reason=raycon_failure_reason,
+                raycon_scenario_found=cost_timeline_found,
+                raycon_scenario_failed=cost_timeline_failed,
+                raycon_failure_reason=cost_timeline_failure_reason,
             )
-            raycon_status_label = (
-                "failed validation"
-                if raycon_failed
-                else ("found" if raycon_found else "not yet posted")
+            cost_timeline_status_label = (
+                str(readiness.get("cost_timeline_estimate_status") or "invalid")
+                if cost_timeline_failed
+                else ("found" if cost_timeline_found else "not yet generated")
             )
 
             return {
@@ -4094,10 +4096,14 @@ async def check_site_readiness(
                 "isp_found": bool(readiness.get("isp_found")),
                 "inspection_found": bool(readiness.get("inspection_found")),
                 "report_exists": report_exists,
-                "raycon_scenario_found": raycon_found,
-                "raycon_scenario_usable": raycon_usable,
-                "raycon_scenario_status": readiness.get("raycon_scenario_status", ""),
-                "raycon_scenario_failure_reason": raycon_failure_reason,
+                "cost_timeline_estimate_found": cost_timeline_found,
+                "cost_timeline_estimate_usable": cost_timeline_usable,
+                "cost_timeline_estimate_status": readiness.get(
+                    "cost_timeline_estimate_status", ""
+                ),
+                "cost_timeline_estimate_failure_reason": (
+                    cost_timeline_failure_reason
+                ),
                 "missing_docs": missing_docs,
                 "ready_for_report": ready_for_report,
                 "drive_folder_url": drive_folder_url,
@@ -4109,8 +4115,8 @@ async def check_site_readiness(
                     f"  SIR: {'found' if sir_found else 'not found'}",
                     f"  Building Inspection: {'found' if readiness.get('inspection_found') else 'not found'}",
                     f"  DD Report: {'exists' if report_exists else 'not yet created'}",
-                    f"  RayCon scenario: {raycon_status_label}",
-                    f"  RayCon failure: {raycon_failure_reason}" if raycon_failure_reason else "",
+                    f"  Cost/Timeline Estimate: {cost_timeline_status_label}",
+                    f"  Cost/Timeline failure: {cost_timeline_failure_reason}" if cost_timeline_failure_reason else "",
                     "",
                     "Ready for first-round report generation." if ready_for_report else (
                         "Not ready - " + ", ".join(missing_docs) + " missing." if missing_docs else "Report already exists."
@@ -4230,9 +4236,6 @@ def _build_blocking_entries(
     *,
     readiness: dict[str, Any],
     vendor_gate_enabled: bool,
-    block_plan_present: bool,
-    raycon_last_dispatch: str | None,
-    raycon_minutes_since: int | None,
 ) -> list[dict[str, Any]]:
     """Build the ``blocking`` list in the response.
 
@@ -4247,29 +4250,24 @@ def _build_blocking_entries(
         sir_present = bool(readiness.get("sir_found"))
         bi_present = bool(readiness.get("inspection_found"))
 
-    raycon_present = bool(readiness.get("raycon_scenario_found"))
-    raycon_usable = bool(readiness.get("raycon_scenario_usable", raycon_present))
-    raycon_failed = raycon_present and not raycon_usable
+    cost_timeline_present = bool(readiness.get("cost_timeline_estimate_found"))
+    cost_timeline_usable = bool(
+        readiness.get("cost_timeline_estimate_usable", cost_timeline_present)
+    )
+    cost_timeline_failed = cost_timeline_present and not cost_timeline_usable
 
-    raycon_entry: dict[str, Any] = {
-        "doc": "raycon_scenario",
+    cost_timeline_entry: dict[str, Any] = {
+        "doc": "cost_timeline_estimate",
         "status": (
-            str(readiness.get("raycon_scenario_status") or "failed_validation")
-            if raycon_failed
-            else ("present" if raycon_present else "pending")
+            str(readiness.get("cost_timeline_estimate_status") or "invalid")
+            if cost_timeline_failed
+            else ("present" if cost_timeline_present else "pending")
         ),
     }
-    if raycon_failed:
-        raycon_entry["failure_reason"] = str(
-            readiness.get("raycon_scenario_failure_reason") or ""
+    if cost_timeline_failed:
+        cost_timeline_entry["failure_reason"] = str(
+            readiness.get("cost_timeline_estimate_failure_reason") or ""
         )
-        raycon_entry["raycon_run_id"] = str(
-            readiness.get("raycon_scenario_run_id") or ""
-        )
-    if not raycon_present:
-        raycon_entry["block_plan_present"] = block_plan_present
-        raycon_entry["last_dispatch"] = raycon_last_dispatch
-        raycon_entry["minutes_since"] = raycon_minutes_since
 
     return [
         {
@@ -4280,7 +4278,7 @@ def _build_blocking_entries(
             "doc": "building_inspection",
             "status": "present" if bi_present else "missing",
         },
-        raycon_entry,
+        cost_timeline_entry,
     ]
 
 
@@ -4295,21 +4293,17 @@ async def diagnose_site_readiness(
     Surfaces the cron-path readiness view for a site:
 
     * ``blocking`` — per-doc status (``vendor_sir`` / ``building_inspection``
-      / ``raycon_scenario``). For the RayCon entry, when the scenario JSON
-      hasn't landed yet, also reports ``block_plan_present``,
-      ``last_dispatch`` (most recent ``/v1/jobs`` POST timestamp from the
-      dispatch state file written by ``scripts/raycon_followup.py``), and
-      ``minutes_since`` (integer minutes since that dispatch).
+      / ``cost_timeline_estimate``).
     * ``ready_for_full_report`` — mirrors ``_missing_required_docs``
       exactly. Under ``VENDOR_GATE_ENABLED=1`` this requires vendor SIR,
-      vendor BI, and RayCon scenario to all be present; under
+      vendor BI, and Cost/Timeline Estimate to all be present; under
       ``VENDOR_GATE_ENABLED=0`` only SIR + BI presence is required and
-      RayCon absence does NOT block readiness (``blocking[]`` still
+      Cost/Timeline absence does NOT block readiness (``blocking[]`` still
       reports its actual status, but it's diagnostic-only).
     * ``partial_report_possible`` — true iff the floor for first-round
       publishing is met: any SIR is present, including the AI SIR /
       research output. A partial report is possible even if vendor SIR,
-      BI, or RayCon are still pending.
+      BI, or Cost/Timeline Estimate are still pending.
     * ``would_be_filled_now`` / ``would_be_pending`` — token paths the
       report would fill or leave pending if it ran right now.
     * ``vendor_gate_enabled`` — which view (vendor-strict vs. legacy) is
@@ -4317,7 +4311,7 @@ async def diagnose_site_readiness(
     * ``m1_folder_missing`` — true when the per-site ``M1`` Drive
       subfolder hasn't been created yet (the inbox scanner creates it
       on first upload). When true, ``drive_folder_url`` is ``null`` and
-      the vendor / RayCon slots will all surface as missing/pending —
+      the vendor / cost-timeline slots will all surface as missing/pending —
       no folder is created, since this tool is strictly read-only.
 
     Use this BEFORE ``create_dd_report`` to decide whether to run now
@@ -4326,8 +4320,8 @@ async def diagnose_site_readiness(
     Differs from ``check_site_readiness``: that tool is the
     pre-generation projection used internally by ``create_dd_report``;
     ``diagnose_site_readiness`` is the user/agent-facing diagnostic that
-    composes the cron-path readiness view, RayCon dispatch state, and
-    full token projection into one structured payload. Reports the
+    composes the cron-path readiness view and full token projection into one
+    structured payload. Reports the
     cron-path view (vendor gate enforced) by default; never bypass.
 
     This tool is strictly read-only — it must never trigger generation,
@@ -4391,14 +4385,8 @@ async def diagnose_site_readiness(
                 read_only=True,
             )
 
-            # Resolve M1 (read-only — never create) to find the Block
-            # Plan file ID and its modifiedTime. The Block Plan ID is
-            # the lookup key into the dispatch state map; its
-            # modifiedTime is the proxy for ``last_dispatch`` if the
-            # dispatch state file is missing (e.g. the cron has never
-            # run on this checkout).
-            block_plan_file_id: str | None = None
-            block_plan_modified: str | None = None
+            # Resolve M1 read-only so diagnostics can report whether the
+            # per-site source folder exists without creating it.
             try:
                 m1_folder_id, _ = _resolve_m1_folder(
                     gc, drive_folder_url, create_if_missing=False
@@ -4413,73 +4401,20 @@ async def diagnose_site_readiness(
 
             m1_folder_missing = m1_folder_id is None
 
-            if m1_folder_id:
-                try:
-                    m1_docs = _list_m1_documents_by_type(gc, m1_folder_id)
-                    bp = m1_docs.get("block_plan")
-                    if bp:
-                        block_plan_file_id = str(bp.get("id") or "") or None
-                        mt = bp.get("modifiedTime")
-                        if isinstance(mt, str):
-                            block_plan_modified = mt
-                except Exception as e:
-                    logger.warning(
-                        "diagnose_site_readiness: M1 list failed for '%s': %s",
-                        site_title,
-                        e,
-                    )
-
-            block_plan_present = block_plan_file_id is not None
-            raycon_present = bool(readiness.get("raycon_scenario_found"))
-            raycon_usable = bool(readiness.get("raycon_scenario_usable", raycon_present))
-            raycon_failed = raycon_present and not raycon_usable
-
-            # Resolve last_dispatch:
-            #   1. If RayCon scenario is present, the dispatch already
-            #      succeeded — surface its modifiedTime as the run
-            #      timestamp.
-            #   2. Otherwise, look up the dispatch state map for this
-            #      site / block_plan_file_id.
-            #   3. If neither is available but a Block Plan exists, fall
-            #      back to its modifiedTime as a documented proxy.
-            last_dispatch: str | None = None
-            if raycon_present and m1_folder_id:
-                # Re-resolve to pick up modifiedTime on the scenario.
-                try:
-                    m1_docs = _list_m1_documents_by_type(gc, m1_folder_id)
-                    rs = m1_docs.get("raycon_scenario_json")
-                    if rs and isinstance(rs.get("modifiedTime"), str):
-                        last_dispatch = rs["modifiedTime"]
-                except Exception:
-                    pass
-            if last_dispatch is None:
-                state = _load_raycon_dispatch_state()
-                last_dispatch, _ = _latest_dispatch_for_site(
-                    state,
-                    site_title,
-                    block_plan_file_id=block_plan_file_id,
-                )
-            if last_dispatch is None and block_plan_modified:
-                # Documented fallback: when the dispatch state file has
-                # no entry (e.g. this checkout's cron has never run for
-                # this site), use the Block Plan's Drive ``modifiedTime``
-                # as a proxy for "RayCon has been notified".
-                last_dispatch = block_plan_modified
-
-            minutes_since = _minutes_since_iso(last_dispatch)
-
+            cost_timeline_present = bool(readiness.get("cost_timeline_estimate_found"))
+            cost_timeline_usable = bool(
+                readiness.get("cost_timeline_estimate_usable", cost_timeline_present)
+            )
+            cost_timeline_failed = cost_timeline_present and not cost_timeline_usable
             vendor_gate_enabled = _vendor_gate_enabled()
             blocking = _build_blocking_entries(
                 readiness=readiness,
                 vendor_gate_enabled=vendor_gate_enabled,
-                block_plan_present=block_plan_present,
-                raycon_last_dispatch=last_dispatch,
-                raycon_minutes_since=minutes_since,
             )
 
             # ``ready_for_full_report`` mirrors ``_missing_required_docs``
             # exactly. Under the legacy gate (VENDOR_GATE_ENABLED=0) this
-            # means RayCon and vendor provenance do NOT block readiness —
+            # means Cost/Timeline Estimate and vendor provenance do NOT block readiness —
             # ``blocking[]`` still reports their actual status so the
             # caller sees the full diagnostic view, but they don't pull
             # ``ready_for_full_report`` to False.
@@ -4491,10 +4426,10 @@ async def diagnose_site_readiness(
             partial_report_possible = bool(readiness.get("sir_found"))
 
             projection = project_completeness_from_readiness(
-                raycon_scenario_found=raycon_present,
-                raycon_scenario_failed=raycon_failed,
+                raycon_scenario_found=cost_timeline_present,
+                raycon_scenario_failed=cost_timeline_failed,
                 raycon_failure_reason=str(
-                    readiness.get("raycon_scenario_failure_reason") or ""
+                    readiness.get("cost_timeline_estimate_failure_reason") or ""
                 ).strip(),
             )
             pending_paths: list[str] = []
@@ -4502,8 +4437,8 @@ async def diagnose_site_readiness(
                 pending_paths.extend(paths)
             pending_set = set(pending_paths)
             # ``would_be_filled_now`` is the complement of pending paths
-            # within the modeled token space (today: RayCon paths). When
-            # more pending axes are added, extend the modeled space here.
+            # within the modeled token space. These legacy token names are
+            # now fed by the Cost/Timeline Estimate.
             modeled_paths = set(raycon_token_paths())
             would_be_filled_now = sorted(modeled_paths - pending_set)
             would_be_pending = sorted(pending_set)
