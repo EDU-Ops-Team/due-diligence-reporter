@@ -42,15 +42,19 @@ def test_workflow_dispatch_site_inputs_are_not_interpolated_in_shell() -> None:
         "reprocess-mislabeled.yml",
         "drive-rhodes-reconciliation.yml",
         "portfolio-automation-gaps.yml",
+        "m2-direct-dd-events.yml",
     ):
         shell = "\n".join(_run_blocks(_workflow_text(workflow)))
+        assert "${{ inputs.apply }}" not in shell
         assert "${{ inputs.site }}" not in shell
         assert "${{ inputs.run_id }}" not in shell
         assert "${{ inputs.since }}" not in shell
         assert "${{ inputs.max_results }}" not in shell
+        assert "${{ inputs.max_events }}" not in shell
         assert "${{ inputs.max_sites }}" not in shell
         assert "${{ inputs.include_clean }}" not in shell
         assert "${{ inputs.trigger_remediation }}" not in shell
+        assert "${{ inputs.run_source_watch }}" not in shell
         assert "${{ inputs.mode }}" not in shell
         assert "${{ inputs.address }}" not in shell
         assert "${{ inputs.site_id }}" not in shell
@@ -87,6 +91,7 @@ def test_publish_to_mcp_hive_never_packages_generated_secret_files() -> None:
         '"credentials/*"',
         '".gcp-saved-tokens.json"',
         '".dd_republish_state.json"',
+        '".m2_direct_dd_state.json"',
         '".rhodes_registration_retry_state.json"',
         '".raycon_dispatch_state.json"',
         '".raycon_followup_alerts.json"',
@@ -109,6 +114,7 @@ def test_publish_to_mcp_hive_cancels_stale_mutating_runs() -> None:
         '"RayCon Follow-up"',
         '"Drive Rhodes Reconciliation"',
         '"Ad-Hoc DDR Run"',
+        '"M2 Direct DD Events"',
     ):
         assert workflow in text
 
@@ -118,6 +124,7 @@ def test_long_running_mutating_workflows_have_timeouts() -> None:
     assert "timeout-minutes: 60" in _workflow_text("vendor-doc-republish-sweep.yml")
     assert "timeout-minutes: 60" in _workflow_text("drive-rhodes-reconciliation.yml")
     assert "timeout-minutes: 60" in _workflow_text("ad-hoc-ddr-run.yml")
+    assert "timeout-minutes: 60" in _workflow_text("m2-direct-dd-events.yml")
 
 
 def test_ad_hoc_ddr_workflow_dispatch_uses_runner_and_opt_in_notifications() -> None:
@@ -180,16 +187,32 @@ def test_vendor_doc_republish_scheduled_runs_are_gated_by_repo_variable() -> Non
     ) in text
 
 
+def test_m2_direct_dd_scheduled_runs_are_gated_by_repo_variable() -> None:
+    text = _workflow_text("m2-direct-dd-events.yml")
+
+    assert (
+        "if: ${{ github.event_name != 'schedule' || "
+        "vars.M2_DIRECT_DD_EVENTS_ENABLED == 'true' }}"
+    ) in text
+
+
 def test_scheduled_dd_workflows_use_repo_cli_surfaces() -> None:
     daily_text = _workflow_text("daily-dd-check.yml")
     daily_shell = "\n".join(_run_blocks(daily_text))
     vendor_text = _workflow_text("vendor-doc-republish-sweep.yml")
     vendor_shell = "\n".join(_run_blocks(vendor_text))
+    m2_text = _workflow_text("m2-direct-dd-events.yml")
+    m2_shell = "\n".join(_run_blocks(m2_text))
 
     assert 'uv run ddr daily-check "${ARGS[@]}"' in daily_shell
     assert "scripts/daily_dd_check.py" not in daily_shell
     assert 'uv run ddr source-sweep "${args[@]}"' in vendor_shell
     assert "scripts/vendor_doc_republish_sweep.py" not in vendor_shell
+    assert 'uv run ddr "${ARGS[@]}" | tee m2-poll-events.json' in m2_shell
+    assert "ARGS=(m2 poll-events" in m2_shell
+    assert "ARGS=(m2 source-watch)" in m2_shell
+    assert 'uv run ddr "${ARGS[@]}" | tee m2-execute-ready.json' in m2_shell
+    assert "ARGS=(m2 execute-ready" in m2_shell
 
 
 def test_active_runtime_surfaces_do_not_mention_braintrust() -> None:
@@ -198,6 +221,7 @@ def test_active_runtime_surfaces_do_not_mention_braintrust() -> None:
         ROOT / ".github" / "workflows" / "daily-dd-check.yml",
         ROOT / ".github" / "workflows" / "vendor-doc-republish-sweep.yml",
         ROOT / ".github" / "workflows" / "ad-hoc-ddr-run.yml",
+        ROOT / ".github" / "workflows" / "m2-direct-dd-events.yml",
         ROOT / "docs" / "prompts" / "prompt_v4.md",
     ):
         assert "braintrust" not in path.read_text(encoding="utf-8").lower(), path
@@ -277,6 +301,22 @@ def test_dd_republish_workflows_can_enable_firestore_state_without_required_secr
         assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing" not in text
 
 
+def test_m2_direct_dd_workflow_uses_firestore_event_queue_and_state_store() -> None:
+    text = _workflow_text("m2-direct-dd-events.yml")
+
+    assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing" in text
+    assert "M2_DD_EVENT_FIRESTORE_PROJECT_ID" in text
+    assert "M2_DD_EVENT_FIRESTORE_DATABASE" in text
+    assert "M2_DD_EVENT_FIRESTORE_COLLECTION" in text
+    assert "m2DirectDdEvents" in text
+    assert "M2_DD_STATE_STORE" in text
+    assert "M2_DD_STATE_FIRESTORE_PROJECT_ID" in text
+    assert "M2_DD_STATE_FIRESTORE_DATABASE" in text
+    assert "M2_DD_STATE_FIRESTORE_COLLECTION" in text
+    assert "ddrM2DirectDdState" in text
+    assert "m2-execute-ready.json" in text
+
+
 def test_raycon_followup_can_enable_firestore_runtime_state_without_required_secret() -> None:
     text = _workflow_text("raycon-followup.yml")
 
@@ -322,6 +362,7 @@ def test_alpha_capacity_workflows_fail_fast_without_openai_key() -> None:
         "vendor-doc-republish-sweep.yml",
         "daily-dd-check.yml",
         "ad-hoc-ddr-run.yml",
+        "m2-direct-dd-events.yml",
         "publish-to-mcp-hive.yml",
     ):
         text = _workflow_text(workflow)
@@ -340,6 +381,7 @@ def test_locationos_workflows_accept_preferred_or_legacy_secret() -> None:
         "raycon-followup.yml",
         "vendor-doc-republish-sweep.yml",
         "ad-hoc-ddr-run.yml",
+        "m2-direct-dd-events.yml",
     ):
         text = _workflow_text(workflow)
 
@@ -355,6 +397,7 @@ def test_locationos_workflows_accept_preferred_or_legacy_secret() -> None:
         "raycon-followup.yml",
         "vendor-doc-republish-sweep.yml",
         "ad-hoc-ddr-run.yml",
+        "m2-direct-dd-events.yml",
     ):
         text = _workflow_text(workflow)
 

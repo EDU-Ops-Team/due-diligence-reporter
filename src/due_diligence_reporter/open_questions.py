@@ -23,6 +23,8 @@ SourceType = Literal[
     "traffic_analysis",
     "certificate_of_occupancy",
     "permit_of_record",
+    "block_plan",
+    "cost_timeline_estimate",
     "measured_floor_plan",
     "floor_plan",
     "lidar",
@@ -42,6 +44,8 @@ SOURCE_TYPE_ALPHA_PHASING_PLAN: SourceType = "alpha_phasing_plan_report"
 SOURCE_TYPE_TRAFFIC_ANALYSIS: SourceType = "traffic_analysis"
 SOURCE_TYPE_CERTIFICATE_OF_OCCUPANCY: SourceType = "certificate_of_occupancy"
 SOURCE_TYPE_PERMIT_OF_RECORD: SourceType = "permit_of_record"
+SOURCE_TYPE_BLOCK_PLAN: SourceType = "block_plan"
+SOURCE_TYPE_COST_TIMELINE_ESTIMATE: SourceType = "cost_timeline_estimate"
 SOURCE_TYPE_MEASURED_FLOOR_PLAN: SourceType = "measured_floor_plan"
 SOURCE_TYPE_FLOOR_PLAN: SourceType = "floor_plan"
 SOURCE_TYPE_LIDAR: SourceType = "lidar"
@@ -60,6 +64,8 @@ CORE_SOURCE_TYPES: frozenset[SourceType] = frozenset(
         SOURCE_TYPE_TRAFFIC_ANALYSIS,
         SOURCE_TYPE_CERTIFICATE_OF_OCCUPANCY,
         SOURCE_TYPE_PERMIT_OF_RECORD,
+        SOURCE_TYPE_BLOCK_PLAN,
+        SOURCE_TYPE_COST_TIMELINE_ESTIMATE,
         SOURCE_TYPE_MEASURED_FLOOR_PLAN,
         SOURCE_TYPE_FLOOR_PLAN,
         SOURCE_TYPE_LIDAR,
@@ -80,6 +86,9 @@ DOC_TYPE_TO_SOURCE_TYPE: dict[str, SourceType] = {
     "traffic_analysis": SOURCE_TYPE_TRAFFIC_ANALYSIS,
     "certificate_of_occupancy": SOURCE_TYPE_CERTIFICATE_OF_OCCUPANCY,
     "permit_of_record": SOURCE_TYPE_PERMIT_OF_RECORD,
+    "block_plan": SOURCE_TYPE_BLOCK_PLAN,
+    "cost_timeline_estimate": SOURCE_TYPE_COST_TIMELINE_ESTIMATE,
+    "initial_cost_estimate": SOURCE_TYPE_COST_TIMELINE_ESTIMATE,
     "measured_floor_plan": SOURCE_TYPE_MEASURED_FLOOR_PLAN,
     "floor_plan": SOURCE_TYPE_FLOOR_PLAN,
     "lidar": SOURCE_TYPE_LIDAR,

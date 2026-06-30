@@ -786,6 +786,10 @@ def test_ddr_doc_type_mapping_covers_inbox_supported_docs() -> None:
     alpha_capacity_mapping = map_ddr_doc_type_to_rhodes("alpha_capacity_analysis")
     assert alpha_capacity_mapping is not None
     assert alpha_capacity_mapping.doc_type == "capacityCalculation"
+    cost_timeline_mapping = map_ddr_doc_type_to_rhodes("cost_timeline_estimate")
+    assert cost_timeline_mapping is not None
+    assert cost_timeline_mapping.doc_type == "initialCostEstimate"
+    assert cost_timeline_mapping.milestone == "acquireProperty"
     outdoor_mapping = map_ddr_doc_type_to_rhodes("outdoor_play_space_report")
     assert outdoor_mapping is not None
     assert outdoor_mapping.doc_type == "other"

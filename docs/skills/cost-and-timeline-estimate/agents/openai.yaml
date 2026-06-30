@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cost And Timeline Estimate"
+  short_description: "Estimate buildout cost and timeline"
+  default_prompt: "Use $cost-and-timeline-estimate to estimate buildout cost and timeline from Rhodes capacity counts."

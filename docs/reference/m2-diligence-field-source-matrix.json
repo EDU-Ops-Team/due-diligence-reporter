@@ -20,14 +20,14 @@
       "field": "fast_open_date",
       "writer": "opening_plan",
       "locationos_key": "foDate",
-      "required_sources": ["opening_plan_report"],
+      "required_sources": ["opening_plan_report", "cost_timeline_estimate"],
       "rhodes_doc_type": "other"
     },
     {
       "field": "fast_open_capex",
       "writer": "alpha_phasing_plan",
       "locationos_key": "foCapEx",
-      "required_sources": ["alpha_phasing_plan_report"],
+      "required_sources": ["alpha_phasing_plan_report", "cost_timeline_estimate"],
       "rhodes_doc_type": "phasing"
     },
     {
@@ -41,14 +41,14 @@
       "field": "max_plan_date",
       "writer": "opening_plan",
       "locationos_key": "maxCapProjOpenDate",
-      "required_sources": ["opening_plan_report"],
+      "required_sources": ["opening_plan_report", "cost_timeline_estimate"],
       "rhodes_doc_type": "other"
     },
     {
       "field": "max_plan_capex",
       "writer": "alpha_phasing_plan",
       "locationos_key": "maxCapCapEx",
-      "required_sources": ["alpha_phasing_plan_report"],
+      "required_sources": ["alpha_phasing_plan_report", "cost_timeline_estimate"],
       "rhodes_doc_type": "phasing"
     },
     {

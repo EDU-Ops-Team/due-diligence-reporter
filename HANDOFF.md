@@ -1,5 +1,177 @@
 # Due Diligence Reporter Handoff
 
+## 2026-06-30 - DDR M2 executor after capacity_ready
+
+- Branch/worktree: `codex/ddr-adhoc-locationos-runner` at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-t9c`.
+- Request: automate DDR M2 states after `capacity_ready`, including capacity
+  analysis, cost/timeline, downstream M2 sources, source-packet DD writes,
+  readback verification, Rhodes source note, and final `complete` state.
+- Changes:
+  - Added `src/due_diligence_reporter/m2_executor.py`, a dry-run-by-default
+    executor for open M2 states. `--apply` runs the deterministic chain:
+    Alpha Capacity -> capacity write/readback -> cost/timeline ->
+    Outdoor Play -> Opening Plan -> Phase 1/2 -> source packet ->
+    packet-approved LocationOS writes/readbacks -> Rhodes source note ->
+    `complete`.
+  - The executor reuses registered M1/Rhodes source artifacts when present,
+    persists step history, JSON-safe adapter artifacts, blockers,
+    `source_packet`, `capacity_write`, `dd_write`, and `source_note`, and
+    skips blocked states whose `next_action` is not a known DDR executor
+    action.
+  - Added `uv run ddr m2 execute-ready --limit N [--apply] [--state-store PATH]`
+    and wired `.github/workflows/m2-direct-dd-events.yml` to run
+    `poll-events -> source-watch -> execute-ready`, uploading
+    `m2-execute-ready.json`.
+  - Promoted `cost_timeline_estimate` to a first-class registered M1 source:
+    classifier/doc-type vocabulary, M1 sweep recognition, Rhodes mapping to
+    `initialCostEstimate`, M2 pipeline canonicalization, source-packet source
+    requirements, and the M2 diligence field-source matrix.
+  - Added focused tests for executor state transitions, source-packet
+    cost/timeline requirements, source sweep recognition, CLI dispatch, Rhodes
+    doc-type mapping, and workflow contract coverage.
+- Validation:
+
+```powershell
+uv run pytest tests/test_m2_executor.py tests/test_source_packet.py
+uv run pytest tests/test_m2_executor.py tests/test_m2_pipeline.py tests/test_source_packet.py tests/test_ddr_cli.py tests/test_vendor_doc_sweep.py tests/test_rhodes.py::test_ddr_doc_type_mapping_covers_inbox_supported_docs tests/test_workflow_contracts.py
+uv run ruff check .
+uv run mypy src/
+uv run pytest
+git diff --check
+```
+
+Results: executor/source-packet focused tests passed (`16 passed`); broader M2
+focused suite passed (`70 passed`); full Ruff passed; full mypy passed for `51
+source files`; full pytest passed (`1325 passed`); `git diff --check` passed
+with only normal LF-to-CRLF warnings.
+
+Operational notes:
+
+- No live `--apply` workflow run was executed in this session. Live execution
+  depends on the existing OAuth, LocationOS/Rhodes, OpenAI/Anthropic, and
+  Firestore secrets already used by the M2 workflow.
+- No commit or push was performed.
+
+## 2026-06-30 - DDR M2 event consumer and watcher entrypoints
+
+- Branch/worktree: `codex/ddr-adhoc-locationos-runner` at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-rae`.
+- Request: implement the repo-owned AADP -> DDR M2 closed-loop plan from the
+  pasted brief. This session implemented the DDR-owned event intake, durable
+  state, source-watch, and workflow wiring in the current DDR checkout. The AADP
+  event producer/skill-execution slice was not edited in this workspace.
+- Changes:
+  - Added `src/due_diligence_reporter/m2_pipeline.py` with validation for
+    `aadp.site_ready_for_ddr.v1`, required SIR + School Approval
+    registration/readback gates, local JSON M2 state, optional Firestore-backed
+    M2 state, Firestore `m2DirectDdEvents` polling, and open-state source
+    resume rules.
+  - Added `uv run ddr m2 consume-event --input <json>`,
+    `uv run ddr m2 poll-events --apply`, and
+    `uv run ddr m2 source-watch --apply`. Live Rhodes document readback is the
+    default for event consumption/polling; `--skip-rhodes-readback` exists for
+    schema/local-state canaries.
+  - Added `.github/workflows/m2-direct-dd-events.yml`, scheduled/manual and
+    gated by `M2_DIRECT_DD_EVENTS_ENABLED`. It uses Firestore event queue envs,
+    writes OAuth/Firestore credentials from secrets, polls pending events, then
+    watches only sites with open M2 state.
+  - Updated MCP Hive packaging and stale mutating workflow cancellation so
+    `.m2_direct_dd_state.json` is excluded and stale `M2 Direct DD Events` runs
+    are canceled during publish.
+  - Added focused tests in `tests/test_m2_pipeline.py`, CLI coverage in
+    `tests/test_ddr_cli.py`, and workflow contract assertions in
+    `tests/test_workflow_contracts.py`.
+- Validation:
+
+```powershell
+uv run pytest tests/test_m2_pipeline.py tests/test_ddr_cli.py tests/test_workflow_contracts.py
+uv run ruff check src/due_diligence_reporter/m2_pipeline.py src/due_diligence_reporter/ddr_cli.py tests/test_m2_pipeline.py tests/test_ddr_cli.py tests/test_workflow_contracts.py
+uv run mypy -m due_diligence_reporter.m2_pipeline -m due_diligence_reporter.ddr_cli
+uv run ruff check .
+uv run pytest
+uv run mypy src/
+```
+
+Results: focused pytest `47 passed`; focused Ruff passed; focused mypy passed;
+full Ruff passed; full pytest `1316 passed`; full mypy passed for `50 source
+files`.
+
+Remaining cross-repo work:
+
+- AADP still needs the producer side: execute-mode EOC + School Approval
+  generation/registration/readback, `aadp.site_ready_for_ddr.v1` event
+  emission to `m2DirectDdEvents`, and its workflow contract tests. This should
+  be done in the `alpha-analysis-downstream-processing` checkout with its own
+  Beads issue and validation.
+- The new DDR event consumer currently initializes state and resumes blockers
+  when matching source inputs land. The deeper skill-chain execution after
+  resume (capacity analysis -> cost/timeline -> outdoor play/opening/phasing ->
+  packet-approved DD writes -> Rhodes note) remains the next DDR automation
+  slice.
+
+## 2026-06-30 - Rhodes-backed cost-and-timeline estimate skill
+
+- Branch/worktree: `codex/ddr-adhoc-locationos-runner` at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-wdu`. Earlier `ddr-jux` was the superseded RayCon-dependent
+  interpretation; follow-up Beads issue `ddr-lk2` renamed and aligned the skill
+  with Ops-Skills rules.
+- Publish follow-up: Beads issue `ddr-t8v` opened ready PR
+  `https://github.com/EDU-Ops-Team/Ops-Skills/pull/137` from clean temp
+  checkout `C:\tmp\ops-skills-cost-timeline-pr`, branch
+  `codex/cost-and-timeline-estimate-skill`, commit `1eec15e`.
+- Request: build a standalone skill, similar in output shape to RayCon, that
+  reads accepted Fastest Open / Max Capacity counts from Rhodes and estimates
+  cost and timeline without judging or deriving capacity.
+- Changes:
+  - Reviewed Ops-Skills `origin/main` reference files from the local
+    `EDU-Ops-Team/Ops-Skills.git` checkout: `README.md`, `CONTRIBUTING.md`,
+    `.github/CODEOWNERS`, `.claude/skill-authoring-guidelines.md`,
+    `scripts/skill-lint.mjs`, `skills/rhodes-site-sync/SKILL.md`, and
+    `skills/cost-benchmarking/SKILL.md`.
+  - Added `docs/skills/cost-and-timeline-estimate/SKILL.md` as a standalone
+    Codex skill. It follows the Ops-Skills shape with scorecard metadata,
+    best-effort telemetry, Rhodes-first input rules, and explicit prohibitions
+    on RayCon dispatch, `raycon_scenario.json`, Block Plan capacity derivation,
+    or capacity-quality judgment.
+  - Added
+    `docs/skills/cost-and-timeline-estimate/scripts/estimate.py`, a
+    standard-library deterministic estimator that reads capacity from a
+    `rhodes_site`/`getSite` payload (`dueDiligence.foCapacity` and
+    `dueDiligence.maxCapCapacity`) plus optional gross SF, start date,
+    market/city multiplier, and scenario overrides.
+  - Added
+    `docs/skills/cost-and-timeline-estimate/references/assumptions.md` with
+    Rhodes capacity field mapping, ROM unit costs, schedule assumptions,
+    category vocabulary, downstream payload shape, and override semantics.
+  - Added `tests/test_cost_and_timeline_estimate_skill.py` covering
+    Rhodes-sourced capacity, category/timeline overrides, CLI output, missing
+    Rhodes capacity, and downstream handoff fields.
+  - Fixed the generated `agents/openai.yaml` default prompt to reference
+    `$cost-and-timeline-estimate`.
+  - The estimator returns `source_system=cost_and_timeline_estimate`,
+    `estimate_version=cost_and_timeline_estimate.v1`, `rhodes_capacity_read`,
+    `scenarios`, `warnings`, `assumptions`, DDR-ready `report_data_fields`, and
+    `downstream_inputs` for subsequent skills.
+- Validation:
+
+```powershell
+uv run pytest tests\test_cost_and_timeline_estimate_skill.py -q
+uv run ruff check docs\skills\cost-and-timeline-estimate\scripts\estimate.py tests\test_cost_and_timeline_estimate_skill.py
+uv run mypy docs\skills\cost-and-timeline-estimate\scripts\estimate.py tests\test_cost_and_timeline_estimate_skill.py
+```
+
+Results: pytest passed (`4 passed`); scoped Ruff passed; scoped mypy passed
+with only the existing pyproject unused-override note.
+
+Skill validation note: attempted
+`quick_validate.py docs\skills\cost-and-timeline-estimate`; it failed before
+validating because `PyYAML`/`yaml` is not installed in the repo `uv`
+environment.
+
 ## 2026-06-29 - Ad-hoc runner aligned to M2 source-packet closure
 
 - Branch/worktree: `codex/ddr-adhoc-locationos-runner` at

@@ -104,28 +104,40 @@ _M2_FIELD_MATRIX: tuple[M2FieldSpec, ...] = (
         report_data_key="exec.fastest_open_open_date",
         locationos_key="foDate",
         writer="opening_plan",
-        required_sources=(_source("Opening Plan", "opening_plan_report"),),
+        required_sources=(
+            _source("Opening Plan", "opening_plan_report"),
+            _source("Cost/Timeline Estimate", "cost_timeline_estimate"),
+        ),
     ),
     M2FieldSpec(
         field="max_plan_date",
         report_data_key="exec.max_capacity_open_date",
         locationos_key="maxCapProjOpenDate",
         writer="opening_plan",
-        required_sources=(_source("Opening Plan", "opening_plan_report"),),
+        required_sources=(
+            _source("Opening Plan", "opening_plan_report"),
+            _source("Cost/Timeline Estimate", "cost_timeline_estimate"),
+        ),
     ),
     M2FieldSpec(
         field="fast_open_capex",
         report_data_key="exec.fastest_open_capex",
         locationos_key="foCapEx",
         writer="alpha_phasing_plan",
-        required_sources=(_source("Alpha Phasing Plan", "alpha_phasing_plan_report"),),
+        required_sources=(
+            _source("Alpha Phasing Plan", "alpha_phasing_plan_report"),
+            _source("Cost/Timeline Estimate", "cost_timeline_estimate"),
+        ),
     ),
     M2FieldSpec(
         field="max_plan_capex",
         report_data_key="exec.max_capacity_capex",
         locationos_key="maxCapCapEx",
         writer="alpha_phasing_plan",
-        required_sources=(_source("Alpha Phasing Plan", "alpha_phasing_plan_report"),),
+        required_sources=(
+            _source("Alpha Phasing Plan", "alpha_phasing_plan_report"),
+            _source("Cost/Timeline Estimate", "cost_timeline_estimate"),
+        ),
     ),
     M2FieldSpec(
         field="building_score",

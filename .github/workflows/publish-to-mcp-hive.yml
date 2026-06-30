@@ -219,6 +219,7 @@ jobs:
             ".gcp-saved-tokens.json" \
             "credentials/*" \
             ".dd_republish_state.json" \
+            ".m2_direct_dd_state.json" \
             ".rhodes_registration_retry_state.json" \
             ".raycon_dispatch_state.json" \
             ".raycon_followup_alerts.json"
@@ -269,6 +270,7 @@ jobs:
             "RayCon Follow-up"
             "Drive Rhodes Reconciliation"
             "Ad-Hoc DDR Run"
+            "M2 Direct DD Events"
           )
           for workflow in "${workflows[@]}"; do
             gh run list \

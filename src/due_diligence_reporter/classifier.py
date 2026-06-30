@@ -33,6 +33,7 @@ DOC_TYPES = frozenset({
     "opening_plan_report",
     "alpha_phasing_plan_report",
     "alpha_capacity_analysis",
+    "cost_timeline_estimate",
     "outdoor_play_space_report",
     "traffic_analysis",
     "certificate_of_occupancy",
@@ -58,6 +59,7 @@ AI_GENERATED_DOC_TYPES = frozenset({
     "opening_plan_report",
     "alpha_phasing_plan_report",
     "alpha_capacity_analysis",
+    "cost_timeline_estimate",
     "outdoor_play_space_report",
     "traffic_analysis",
     "capacity_brainlift_report",
@@ -138,6 +140,12 @@ def classify_by_keywords(filename: str) -> tuple[str, float]:
         return "lidar", 0.95
     if "alpha capacity analysis" in name:
         return "alpha_capacity_analysis", 0.95
+    if (
+        "cost timeline estimate" in name
+        or "cost and timeline estimate" in name
+        or "cost_timeline_estimate" in name
+    ):
+        return "cost_timeline_estimate", 0.95
     if "capacity brainlift" in name:
         return "capacity_brainlift_report", 0.95
     # The async hand-off result file. Filename is fixed by the

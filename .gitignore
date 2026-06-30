@@ -26,6 +26,7 @@ credentials/
 oauth_response.json
 .raycon_*_state.json
 .dd_republish_state.json
+.m2_direct_dd_state.json
 .rhodes_registration_retry_state.json
 
 # Claude Code

@@ -64,6 +64,136 @@ def test_ddr_source_sweep_dispatches_repo_cli_surface(monkeypatch) -> None:
     assert calls == [{"site": "Alpha Keller", "dry_run": True}]
 
 
+def test_ddr_m2_consume_event_writes_local_state(tmp_path, capsys) -> None:
+    event_path = tmp_path / "site-ready-event.json"
+    state_path = tmp_path / ".m2_direct_dd_state.json"
+    event_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "aadp.site_ready_for_ddr.v1",
+                "event_id": "evt-cli",
+                "status": "pending",
+                "ready_for_ddr": True,
+                "site": {
+                    "id": "SITE1",
+                    "name": "Alpha CLI",
+                    "address": "123 Main St",
+                },
+                "drive": {
+                    "site_folder_url": "https://drive.google.com/drive/folders/site",
+                    "m1_folder_url": "https://drive.google.com/drive/folders/m1",
+                },
+                "registered_documents": [
+                    {
+                        "source_type": "sir",
+                        "title": "Alpha CLI SIR",
+                        "rhodes_doc_type": "siteInvestigationReport",
+                        "registration_status": "registered",
+                        "readback_status": "verified",
+                    },
+                    {
+                        "source_type": "school_approval_report",
+                        "title": "Alpha CLI School Approval Report",
+                        "rhodes_doc_type": "regulatoryApproval",
+                        "registration_status": "registered",
+                        "readback_status": "verified",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = ddr_cli.main([
+        "m2",
+        "consume-event",
+        "--input",
+        str(event_path),
+        "--state-store",
+        str(state_path),
+        "--skip-rhodes-readback",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["event_id"] == "evt-cli"
+    assert payload["m2_state"] == "waiting_for_capacity_source"
+    assert "evt-cli" in state_path.read_text(encoding="utf-8")
+
+
+def test_ddr_m2_poll_events_dispatches_with_apply(monkeypatch, capsys) -> None:
+    calls = []
+    queue = object()
+    store = object()
+    monkeypatch.setattr(ddr_cli, "build_m2_event_queue_from_env", lambda: queue)
+    monkeypatch.setattr(ddr_cli, "build_m2_state_store", lambda *args: store)
+
+    def fake_poll(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "success",
+            "apply": kwargs["apply"],
+            "events_found": 0,
+            "events_processed": 0,
+            "blocked": 0,
+            "failed": 0,
+            "rows": [],
+        }
+
+    monkeypatch.setattr(ddr_cli, "poll_m2_events", fake_poll)
+
+    exit_code = ddr_cli.main([
+        "m2",
+        "poll-events",
+        "--apply",
+        "--limit",
+        "2",
+        "--skip-rhodes-readback",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["apply"] is True
+    assert calls[0]["event_queue"] is queue
+    assert calls[0]["state_store"] is store
+    assert calls[0]["limit"] == 2
+    assert calls[0]["verify_rhodes_readback"] is False
+
+
+def test_ddr_m2_execute_ready_dispatches_with_apply(monkeypatch, capsys) -> None:
+    calls = []
+    store = object()
+    monkeypatch.setattr(ddr_cli, "build_m2_state_store", lambda *args: store)
+
+    def fake_execute(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "success",
+            "apply": kwargs["apply"],
+            "states_checked": 0,
+            "executed": 0,
+            "completed": 0,
+            "blocked": 0,
+            "rows": [],
+        }
+
+    monkeypatch.setattr(ddr_cli, "execute_ready_m2_states", fake_execute)
+
+    exit_code = ddr_cli.main([
+        "m2",
+        "execute-ready",
+        "--apply",
+        "--limit",
+        "3",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["apply"] is True
+    assert calls[0]["state_store"] is store
+    assert calls[0]["limit"] == 3
+
+
 def test_ddr_notes_smoke_test_resolves_owner_and_writes_headless_note(
     monkeypatch,
     capsys,

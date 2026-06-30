@@ -49,6 +49,18 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
                     "webViewLink": "https://drive/capacity-1",
                 },
                 {
+                    "id": "cost-1",
+                    "name": "Cost Timeline Estimate - Alpha Test.json",
+                    "modifiedTime": "2026-05-26T11:12:00Z",
+                    "webViewLink": "https://drive/cost-1",
+                },
+                {
+                    "id": "block-1",
+                    "name": "Block Plan - Alpha Test.pdf",
+                    "modifiedTime": "2026-05-26T11:15:00Z",
+                    "webViewLink": "https://drive/block-1",
+                },
+                {
                     "id": "outdoor-1",
                     "name": "Outdoor Play Space Report - Alpha Test.md",
                     "modifiedTime": "2026-05-26T11:20:00Z",
@@ -115,6 +127,8 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
         "vendor_sir",
         "raycon_scenario",
         "alpha_capacity_analysis",
+        "cost_timeline_estimate",
+        "block_plan",
         "outdoor_play_space_report",
         "alpha_phasing_plan_report",
         "school_approval_report",
@@ -126,6 +140,8 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
         "permit_of_record",
     }
     assert any(event["fingerprint"] == "sir-1:2026-05-26T10:00:00Z" for event in events)
+    assert any(event["fingerprint"] == "cost-1:2026-05-26T11:12:00Z" for event in events)
+    assert any(event["fingerprint"] == "block-1:2026-05-26T11:15:00Z" for event in events)
 
 
 def test_collect_core_source_events_can_skip_provenance_cache_writes() -> None:

@@ -1,0 +1,239 @@
+name: M2 Direct DD Events
+
+on:
+  schedule:
+    - cron: '15 12-23 * * 1-5'
+    - cron: '15 0-2 * * 2-6'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Apply event/state updates'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      max_events:
+        description: 'Maximum pending events to process'
+        required: false
+        default: '10'
+        type: string
+      run_source_watch:
+        description: 'Watch open M2 states for newly landed source inputs'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+concurrency:
+  group: m2-direct-dd-events
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  m2-direct-dd-events:
+    if: ${{ github.event_name != 'schedule' || vars.M2_DIRECT_DD_EVENTS_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore M2 state fallback
+        id: restore-m2-state
+        uses: actions/cache/restore@v4
+        with:
+          path: .m2_direct_dd_state.json
+          key: m2-direct-dd-state-${{ github.run_id }}
+          restore-keys: |
+            m2-direct-dd-state-
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.14"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Verify required secrets
+        run: |
+          [ -n "${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}" ] || { echo "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ] || { echo "OAUTH_CLIENT_ID missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ] || { echo "OAUTH_CLIENT_SECRET missing"; exit 1; }
+          [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ] || { echo "OAUTH_REFRESH_TOKEN missing"; exit 1; }
+          [ -n "${{ secrets.OPENAI_API_KEY }}" ] || { echo "OPENAI_API_KEY missing"; exit 1; }
+          [ -n "${{ secrets.LOCATIONOS_MCP_API_KEY || secrets.RHODES_API_KEY }}" ] || { echo "LOCATIONOS_MCP_API_KEY or RHODES_API_KEY missing"; exit 1; }
+          [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ] || { echo "ANTHROPIC_API_KEY missing"; exit 1; }
+
+      - name: Create .env file from secrets
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_CAPACITY_MODEL: ${{ vars.OPENAI_CAPACITY_MODEL || 'gpt-4o' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_DRIVE_ROOT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_ROOT_FOLDER_ID }}
+          DDR_GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.DDR_GOOGLE_CHAT_WEBHOOK_URL }}
+          DD_TEMPLATE_V3_GOOGLE_DOC_ID: ${{ secrets.DD_TEMPLATE_V3_GOOGLE_DOC_ID }}
+          SIR_FOLDER_ID: ${{ secrets.SIR_FOLDER_ID }}
+          ISP_FOLDER_ID: ${{ secrets.ISP_FOLDER_ID }}
+          BUILDING_INSPECTION_FOLDER_ID: ${{ secrets.BUILDING_INSPECTION_FOLDER_ID }}
+          LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
+          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
+          RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
+          AERIE_API_KEY: ${{ secrets.AERIE_API_KEY }}
+          AERIE_API_BASE_URL: ${{ vars.AERIE_API_BASE_URL || 'https://edu-ops.klair.ai/api' }}
+          M2_DD_EVENT_FIRESTORE_PROJECT_ID: ${{ vars.M2_DD_EVENT_FIRESTORE_PROJECT_ID || vars.M2_DD_STATE_FIRESTORE_PROJECT_ID || vars.DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID }}
+          M2_DD_EVENT_FIRESTORE_DATABASE: ${{ vars.M2_DD_EVENT_FIRESTORE_DATABASE || vars.M2_DD_STATE_FIRESTORE_DATABASE || vars.DD_REPUBLISH_STATE_FIRESTORE_DATABASE }}
+          M2_DD_EVENT_FIRESTORE_COLLECTION: ${{ vars.M2_DD_EVENT_FIRESTORE_COLLECTION || 'm2DirectDdEvents' }}
+          M2_DD_STATE_STORE: ${{ vars.M2_DD_STATE_STORE || 'firestore' }}
+          M2_DD_STATE_FIRESTORE_PROJECT_ID: ${{ vars.M2_DD_STATE_FIRESTORE_PROJECT_ID || vars.M2_DD_EVENT_FIRESTORE_PROJECT_ID || vars.DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID }}
+          M2_DD_STATE_FIRESTORE_DATABASE: ${{ vars.M2_DD_STATE_FIRESTORE_DATABASE || vars.M2_DD_EVENT_FIRESTORE_DATABASE || vars.DD_REPUBLISH_STATE_FIRESTORE_DATABASE }}
+          M2_DD_STATE_FIRESTORE_COLLECTION: ${{ vars.M2_DD_STATE_FIRESTORE_COLLECTION || 'ddrM2DirectDdState' }}
+        run: |
+          touch .env
+          echo "OPENAI_API_KEY=${OPENAI_API_KEY}" >> .env
+          echo "OPENAI_CAPACITY_MODEL=${OPENAI_CAPACITY_MODEL}" >> .env
+          echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> .env
+          echo "GOOGLE_DRIVE_ROOT_FOLDER_ID=${GOOGLE_DRIVE_ROOT_FOLDER_ID}" >> .env
+          echo "DDR_GOOGLE_CHAT_WEBHOOK_URL=${DDR_GOOGLE_CHAT_WEBHOOK_URL}" >> .env
+          echo "DD_TEMPLATE_V3_GOOGLE_DOC_ID=${DD_TEMPLATE_V3_GOOGLE_DOC_ID}" >> .env
+          echo "SIR_FOLDER_ID=${SIR_FOLDER_ID}" >> .env
+          echo "ISP_FOLDER_ID=${ISP_FOLDER_ID}" >> .env
+          echo "BUILDING_INSPECTION_FOLDER_ID=${BUILDING_INSPECTION_FOLDER_ID}" >> .env
+          LOCATIONOS_TOKEN="${LOCATIONOS_MCP_API_KEY:-${RHODES_API_KEY:-}}"
+          echo "LOCATIONOS_MCP_API_KEY=${LOCATIONOS_TOKEN}" >> .env
+          echo "RHODES_API_KEY=${RHODES_API_KEY:-${LOCATIONOS_TOKEN}}" >> .env
+          echo "RHODES_MCP_URL=${RHODES_MCP_URL}" >> .env
+          echo "AERIE_API_KEY=${AERIE_API_KEY}" >> .env
+          echo "AERIE_API_BASE_URL=${AERIE_API_BASE_URL}" >> .env
+          echo "M2_DD_EVENT_FIRESTORE_PROJECT_ID=${M2_DD_EVENT_FIRESTORE_PROJECT_ID}" >> .env
+          echo "M2_DD_EVENT_FIRESTORE_DATABASE=${M2_DD_EVENT_FIRESTORE_DATABASE}" >> .env
+          echo "M2_DD_EVENT_FIRESTORE_COLLECTION=${M2_DD_EVENT_FIRESTORE_COLLECTION}" >> .env
+          echo "M2_DD_STATE_STORE=${M2_DD_STATE_STORE}" >> .env
+          echo "M2_DD_STATE_FIRESTORE_PROJECT_ID=${M2_DD_STATE_FIRESTORE_PROJECT_ID}" >> .env
+          echo "M2_DD_STATE_FIRESTORE_DATABASE=${M2_DD_STATE_FIRESTORE_DATABASE}" >> .env
+          echo "M2_DD_STATE_FIRESTORE_COLLECTION=${M2_DD_STATE_FIRESTORE_COLLECTION}" >> .env
+
+      - name: Write Google OAuth client secrets
+        env:
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+        run: |
+          mkdir -p credentials
+          python -c "
+          import json, os
+          data = {
+              'installed': {
+                  'client_id': os.environ['OAUTH_CLIENT_ID'],
+                  'client_secret': os.environ['OAUTH_CLIENT_SECRET'],
+                  'redirect_uris': ['http://localhost'],
+                  'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+                  'token_uri': 'https://oauth2.googleapis.com/token',
+              }
+          }
+          with open('credentials/client_secrets.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+
+      - name: Write Google OAuth refresh token
+        env:
+          OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+        run: |
+          python -c "
+          import json, os
+          data = {
+              'token': None,
+              'refresh_token': os.environ['OAUTH_REFRESH_TOKEN'],
+              'token_uri': 'https://oauth2.googleapis.com/token',
+              'client_id': os.environ['OAUTH_CLIENT_ID'],
+              'client_secret': os.environ['OAUTH_CLIENT_SECRET'],
+              'scopes': [
+                  'https://www.googleapis.com/auth/drive',
+                  'https://www.googleapis.com/auth/documents',
+                  'https://www.googleapis.com/auth/gmail.modify',
+              ],
+          }
+          with open('.gcp-saved-tokens.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+
+      - name: Write Firestore service account credentials
+        env:
+          GCP_FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p credentials
+          printf '%s' "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON}" > credentials/firestore-service-account.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=${GITHUB_WORKSPACE}/credentials/firestore-service-account.json" >> "$GITHUB_ENV"
+          echo "Firestore service account credentials configured"
+
+      - name: Poll pending M2 events
+        env:
+          INPUT_APPLY: ${{ inputs.apply }}
+          INPUT_MAX_EVENTS: ${{ inputs.max_events }}
+        run: |
+          set -euo pipefail
+          APPLY="${INPUT_APPLY:-true}"
+          MAX_EVENTS="${INPUT_MAX_EVENTS:-10}"
+          ARGS=(m2 poll-events --limit "$MAX_EVENTS")
+          if [ "$APPLY" = "true" ]; then
+            ARGS+=(--apply)
+          fi
+          uv run ddr "${ARGS[@]}" | tee m2-poll-events.json
+
+      - name: Watch open M2 source states
+        env:
+          INPUT_APPLY: ${{ inputs.apply }}
+          INPUT_RUN_SOURCE_WATCH: ${{ inputs.run_source_watch }}
+        run: |
+          set -euo pipefail
+          APPLY="${INPUT_APPLY:-true}"
+          RUN_SOURCE_WATCH="${INPUT_RUN_SOURCE_WATCH:-true}"
+          if [ "$RUN_SOURCE_WATCH" != "true" ]; then
+            echo '{"status":"skipped","reason":"source_watch_disabled"}' | tee m2-source-watch.json
+            exit 0
+          fi
+          ARGS=(m2 source-watch)
+          if [ "$APPLY" = "true" ]; then
+            ARGS+=(--apply)
+          fi
+          uv run ddr "${ARGS[@]}" | tee m2-source-watch.json
+
+      - name: Execute ready M2 states
+        env:
+          INPUT_APPLY: ${{ inputs.apply }}
+          INPUT_MAX_EVENTS: ${{ inputs.max_events }}
+        run: |
+          set -euo pipefail
+          APPLY="${INPUT_APPLY:-true}"
+          MAX_EVENTS="${INPUT_MAX_EVENTS:-10}"
+          ARGS=(m2 execute-ready --limit "$MAX_EVENTS")
+          if [ "$APPLY" = "true" ]; then
+            ARGS+=(--apply)
+          fi
+          uv run ddr "${ARGS[@]}" | tee m2-execute-ready.json
+
+      - name: Upload M2 event artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m2-direct-dd-events
+          path: |
+            m2-poll-events.json
+            m2-source-watch.json
+            m2-execute-ready.json
+          if-no-files-found: ignore
+
+      - name: Save M2 state fallback
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .m2_direct_dd_state.json
+          key: m2-direct-dd-state-${{ github.run_id }}

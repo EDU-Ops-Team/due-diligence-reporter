@@ -15,6 +15,15 @@ from .adhoc_runner import (
 from .adhoc_runner import (
     build_parser as build_run_site_parser,
 )
+from .m2_executor import execute_ready_m2_states
+from .m2_pipeline import (
+    build_m2_event_queue_from_env,
+    build_m2_state_store,
+    consume_site_ready_event,
+    open_m2_site_ids,
+    poll_m2_events,
+    watch_m2_sources,
+)
 from .pipeline_manifest import load_run_manifest
 from .portfolio_automation_gaps import build_portfolio_automation_gap_snapshot
 from .review_execution import execute_ddr_review_requests
@@ -67,6 +76,52 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Detect source events without applying republish decisions",
     )
+
+    m2_parser = subparsers.add_parser(
+        "m2",
+        help="Consume AADP site-ready events and watch open M2 source state",
+    )
+    m2_subparsers = m2_parser.add_subparsers(dest="m2_command", required=True)
+    m2_consume = m2_subparsers.add_parser(
+        "consume-event",
+        help="Consume one aadp.site_ready_for_ddr.v1 JSON event",
+    )
+    m2_consume.add_argument("--input", required=True)
+    m2_consume.add_argument("--state-store", default=None)
+    m2_consume.add_argument("--dry-run", action="store_true")
+    m2_consume.add_argument(
+        "--skip-rhodes-readback",
+        action="store_true",
+        help="Validate only the event's own registration/readback proof",
+    )
+
+    m2_poll = m2_subparsers.add_parser(
+        "poll-events",
+        help="Poll Firestore m2DirectDdEvents for pending AADP events",
+    )
+    m2_poll.add_argument("--apply", action="store_true")
+    m2_poll.add_argument("--limit", type=int, default=10)
+    m2_poll.add_argument("--state-store", default=None)
+    m2_poll.add_argument(
+        "--skip-rhodes-readback",
+        action="store_true",
+        help="Validate only the event's own registration/readback proof",
+    )
+
+    m2_watch = m2_subparsers.add_parser(
+        "source-watch",
+        help="Watch only sites with open DDR M2 state for resume source arrivals",
+    )
+    m2_watch.add_argument("--apply", action="store_true")
+    m2_watch.add_argument("--state-store", default=None)
+
+    m2_execute = m2_subparsers.add_parser(
+        "execute-ready",
+        help="Execute DDR-owned M2 states that are ready after source-watch",
+    )
+    m2_execute.add_argument("--apply", action="store_true")
+    m2_execute.add_argument("--limit", type=int, default=10)
+    m2_execute.add_argument("--state-store", default=None)
 
     notes_smoke_parser = subparsers.add_parser(
         "notes-smoke-test",
@@ -164,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_daily_check(args)
     elif args.command == "source-sweep":
         return _run_source_sweep(args)
+    elif args.command == "m2":
+        return _run_m2(args)
     elif args.command == "notes-smoke-test":
         return _run_notes_smoke_test(args)
     elif args.command == "run-site":
@@ -534,6 +591,125 @@ def _run_source_sweep(args: argparse.Namespace) -> int:
         site=str(args.site or "").strip(),
     )
     return 0
+
+
+def _run_m2(args: argparse.Namespace) -> int:
+    if args.m2_command == "consume-event":
+        return _run_m2_consume_event(args)
+    if args.m2_command == "poll-events":
+        return _run_m2_poll_events(args)
+    if args.m2_command == "source-watch":
+        return _run_m2_source_watch(args)
+    if args.m2_command == "execute-ready":
+        return _run_m2_execute_ready(args)
+    print(f"Unknown m2 command: {args.m2_command}")
+    return 2
+
+
+def _run_m2_consume_event(args: argparse.Namespace) -> int:
+    payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    state_store = _m2_state_store(args)
+    result = consume_site_ready_event(
+        payload,
+        state_store=state_store,
+        apply=not bool(args.dry_run),
+        verify_rhodes_readback=not bool(args.skip_rhodes_readback),
+        document_lister=None if args.skip_rhodes_readback else _m2_rhodes_document_lister(),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_m2_poll_events(args: argparse.Namespace) -> int:
+    state_store = _m2_state_store(args)
+    result = poll_m2_events(
+        event_queue=build_m2_event_queue_from_env(),
+        state_store=state_store,
+        apply=bool(args.apply),
+        limit=int(args.limit),
+        verify_rhodes_readback=not bool(args.skip_rhodes_readback),
+        document_lister=None if args.skip_rhodes_readback else _m2_rhodes_document_lister(),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 1 if result.get("failed") else 0
+
+
+def _run_m2_source_watch(args: argparse.Namespace) -> int:
+    from .config import get_settings
+    from .google_client import GoogleClient
+    from .rhodes import list_rhodes_site_records
+    from .vendor_doc_sweep import collect_core_source_events
+
+    state_store = _m2_state_store(args)
+    state = state_store.load()
+    site_ids = open_m2_site_ids(state)
+    if not site_ids:
+        result = {
+            "status": "success",
+            "apply": bool(args.apply),
+            "open_states_checked": 0,
+            "resumed": 0,
+            "rows": [],
+        }
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    settings = get_settings()
+    gc = GoogleClient.from_oauth_config(
+        client_config_path=str(settings.get_client_config_path()),
+        token_file_path=str(settings.get_token_file_path()),
+        oauth_port=settings.oauth_port,
+        scopes=settings.google_scopes,
+    )
+    events_by_site: dict[str, list[dict[str, Any]]] = {}
+    for site_record in list_rhodes_site_records(site_ids=site_ids):
+        site_id = _site_record_id(site_record)
+        if not site_id:
+            continue
+        events_by_site[site_id] = collect_core_source_events(
+            gc,
+            site_record,
+            read_only=not bool(args.apply),
+        )
+
+    result = watch_m2_sources(
+        state_store=state_store,
+        source_events_by_site=events_by_site,
+        apply=bool(args.apply),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_m2_execute_ready(args: argparse.Namespace) -> int:
+    result = execute_ready_m2_states(
+        state_store=_m2_state_store(args),
+        apply=bool(args.apply),
+        limit=int(args.limit),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "success" else 1
+
+
+def _m2_rhodes_document_lister() -> Any:
+    from .rhodes import RhodesClient
+
+    rhodes = RhodesClient()
+    return lambda site_id, doc_type: rhodes.list_documents(
+        site_id=site_id,
+        doc_type=doc_type,
+    )
+
+
+def _m2_state_store(args: argparse.Namespace) -> Any:
+    path = _path_arg(args.state_store)
+    if path is not None:
+        return build_m2_state_store(path)
+    return build_m2_state_store()
+
+
+def _site_record_id(site_record: dict[str, Any]) -> str:
+    return _first_text_arg(site_record.get("id"), site_record.get("site_id"))
 
 
 def _run_notes_smoke_test(args: argparse.Namespace) -> int:

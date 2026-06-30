@@ -316,6 +316,10 @@ DDR_DOC_TYPE_TO_RHODES: dict[str, RhodesDocumentMapping] = {
         "capacityCalculation",
         milestone="acquireProperty",
     ),
+    "cost_timeline_estimate": RhodesDocumentMapping(
+        "initialCostEstimate",
+        milestone="acquireProperty",
+    ),
     "capacity_brainlift_report": RhodesDocumentMapping(
         "capacityCalculation",
         milestone="acquireProperty",

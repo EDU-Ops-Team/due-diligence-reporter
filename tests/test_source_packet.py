@@ -129,6 +129,7 @@ def test_unmapped_source_blocks_related_field_write() -> None:
 def test_source_packet_completion_requires_registered_sources_and_verified_writes() -> None:
     docs = [
         _registered("alpha_capacity_analysis", "Alpha Capacity Analysis"),
+        _registered("cost_timeline_estimate", "Cost/Timeline Estimate"),
         _registered("opening_plan_report", "Opening Plan"),
         _registered("alpha_phasing_plan_report", "Alpha Phasing Plan"),
         _registered("outdoor_play_space_report", "Outdoor Play Space Report"),
@@ -196,6 +197,31 @@ def test_source_packet_note_lines_are_concise_and_do_not_use_ddr_as_source() -> 
     ]
     assert "DDR" not in "\n".join(lines)
     assert "drive.example" not in "\n".join(lines)
+
+
+def test_cost_timeline_source_is_required_for_dates_and_capex() -> None:
+    packet = build_m2_source_packet(
+        values={
+            "exec.fastest_open_open_date": "08/12/26",
+            "exec.max_capacity_open_date": "10/01/26",
+            "exec.fastest_open_capex": "$125,000",
+            "exec.max_capacity_capex": "$250,000",
+        },
+        supporting_documents=[
+            _registered("opening_plan_report", "Opening Plan"),
+            _registered("alpha_phasing_plan_report", "Alpha Phasing Plan"),
+        ],
+    )
+
+    updates = {row["field"]: row for row in packet["dd_field_updates"]}
+
+    assert updates["fast_open_date"]["write_status"] == "blocked"
+    assert updates["fast_open_date"]["hold_reason"] == (
+        "required_source_not_registered: Cost/Timeline Estimate"
+    )
+    assert updates["max_plan_date"]["write_status"] == "blocked"
+    assert updates["fast_open_capex"]["write_status"] == "blocked"
+    assert updates["max_plan_capex"]["write_status"] == "blocked"
 
 
 def test_locationos_filter_holds_completion_fields_until_packet_complete() -> None:

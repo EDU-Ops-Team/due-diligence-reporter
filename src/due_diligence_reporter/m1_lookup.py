@@ -39,6 +39,7 @@ M1_RECOGNIZED_DOC_TYPES = {
     "school_approval_report",
     "opening_plan_report",
     "alpha_capacity_analysis",
+    "cost_timeline_estimate",
     "outdoor_play_space_report",
     "alpha_phasing_plan_report",
     "traffic_analysis",
