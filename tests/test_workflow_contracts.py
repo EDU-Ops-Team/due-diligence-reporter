@@ -303,8 +303,12 @@ def test_dd_republish_workflows_can_enable_firestore_state_without_required_secr
 
 def test_m2_direct_dd_workflow_uses_firestore_event_queue_and_state_store() -> None:
     text = _workflow_text("m2-direct-dd-events.yml")
+    shell = "\n".join(_run_blocks(text))
 
     assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing" in text
+    assert "[ -n \"${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}\" ]" not in shell
+    assert "require_secret GCP_FIRESTORE_SERVICE_ACCOUNT_JSON" in shell
+    assert "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}" in text
     assert "M2_DD_EVENT_FIRESTORE_PROJECT_ID" in text
     assert "M2_DD_EVENT_FIRESTORE_DATABASE" in text
     assert "M2_DD_EVENT_FIRESTORE_COLLECTION" in text

@@ -63,14 +63,30 @@ jobs:
         run: uv sync
 
       - name: Verify required secrets
+        env:
+          GCP_FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LOCATIONOS_TOKEN: ${{ secrets.LOCATIONOS_MCP_API_KEY || secrets.RHODES_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          [ -n "${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}" ] || { echo "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing"; exit 1; }
-          [ -n "${{ secrets.OAUTH_CLIENT_ID }}" ] || { echo "OAUTH_CLIENT_ID missing"; exit 1; }
-          [ -n "${{ secrets.OAUTH_CLIENT_SECRET }}" ] || { echo "OAUTH_CLIENT_SECRET missing"; exit 1; }
-          [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ] || { echo "OAUTH_REFRESH_TOKEN missing"; exit 1; }
-          [ -n "${{ secrets.OPENAI_API_KEY }}" ] || { echo "OPENAI_API_KEY missing"; exit 1; }
-          [ -n "${{ secrets.LOCATIONOS_MCP_API_KEY || secrets.RHODES_API_KEY }}" ] || { echo "LOCATIONOS_MCP_API_KEY or RHODES_API_KEY missing"; exit 1; }
-          [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ] || { echo "ANTHROPIC_API_KEY missing"; exit 1; }
+          require_secret() {
+            local name="$1"
+            local message="${2:-$name missing}"
+            if [ -z "${!name:-}" ]; then
+              echo "${message}"
+              exit 1
+            fi
+          }
+          require_secret GCP_FIRESTORE_SERVICE_ACCOUNT_JSON "GCP_FIRESTORE_SERVICE_ACCOUNT_JSON missing"
+          require_secret OAUTH_CLIENT_ID "OAUTH_CLIENT_ID missing"
+          require_secret OAUTH_CLIENT_SECRET "OAUTH_CLIENT_SECRET missing"
+          require_secret OAUTH_REFRESH_TOKEN "OAUTH_REFRESH_TOKEN missing"
+          require_secret OPENAI_API_KEY "OPENAI_API_KEY missing"
+          require_secret LOCATIONOS_TOKEN "LOCATIONOS_MCP_API_KEY or RHODES_API_KEY missing"
+          require_secret ANTHROPIC_API_KEY "ANTHROPIC_API_KEY missing"
 
       - name: Create .env file from secrets
         env:
