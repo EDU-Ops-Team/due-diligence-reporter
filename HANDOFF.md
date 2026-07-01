@@ -1,5 +1,99 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-01 - DD-field approval handoff note
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-e3w`.
+- Request: make due-diligence field writes behave like document-registration
+  handoffs when LocationOS blocks on browser/OAuth/elicitation approval.
+- Changes:
+  - `update_rhodes_due_diligence(...)` now detects approval-required
+    `updateDueDiligence` responses such as `awaiting_browser_approval` and
+    elicitation/confirmation-style errors before readback.
+  - Instead of surfacing those as generic field mismatches, DDR writes one
+    concise Rhodes site note with:
+    `Site Name`, `Site Address`, and `Due Diligence Fields to update`.
+  - The result status is `pending_user_action` with
+    `human_followup_type=due_diligence_update`; it is not treated as a
+    successful SOR write.
+  - Structured result metadata preserves safe approval response fields such as
+    `pendingMutationId`, `approvalSessionId`, `reviewUrl`, and
+    `rejectionReason`; the note body does not include those technical IDs.
+- Validation:
+
+```powershell
+uv run pytest tests\test_rhodes.py -q --basetemp C:\tmp\ddr-dd-handoff-rhodes
+uv run ruff check src\due_diligence_reporter\rhodes.py tests\test_rhodes.py
+uv run mypy src\due_diligence_reporter\rhodes.py
+uv run pytest tests\test_m2_executor.py tests\test_report_pipeline.py -q --basetemp C:\tmp\ddr-dd-handoff-pipeline
+```
+
+Results: Rhodes tests passed (`44 passed`); scoped Ruff passed; scoped mypy
+passed; adjacent M2/report pipeline tests passed (`96 passed`).
+
+## 2026-07-01 - Scoped M2 live canary blocked at DD approval gate
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-d2l` remains open/in-progress. Follow-up bugs filed:
+  `ddr-53o` and `ddr-e3w`.
+- Request: run the scoped M2 Direct DD canary end to end after the prior
+  no-write smoke only proved workflow infrastructure.
+- Site/event: Alpha Miami Beach 300 71st 3rd,
+  `m2-canary-20260701-miami-beach-300-71st-3rd`.
+- Setup performed:
+  - Registered and read back the existing School Approval document as
+    `regulatoryApproval`.
+  - Registered and read back the existing Alpha Capacity Analysis JSON as
+    `capacityCalculation`.
+  - Confirmed required SIR and Block Plan registrations were already present.
+  - Set M2-specific GitHub variables so the event queue and state store use
+    Firestore project `ap-automation-464623`, database
+    `edu-ops-email-router`, collections `m2DirectDdEvents` and
+    `ddrM2DirectDdState`.
+  - Seeded the Firestore canary event for the scoped site/event selector.
+- Workflow evidence:
+  - Dry-run `28541483946` succeeded and selected exactly the intended event.
+    Artifact: `C:\tmp\ddr-m2-run-28541483946\m2-direct-dd-events`.
+  - First apply `28541527111` reached `execute-ready` but blocked at
+    `run_alpha_capacity_analysis` because GitHub Actions could not load
+    Ops-Skills:
+    `Could not load Ops-Skills alpha-capacity-analysis skill and rulesets. Set OPS_SKILLS_REPO_PATH to the Ops-Skills repo root or install the Ops Skills Codex plugin cache.`
+  - Recovery apply `28541634944` reused the registered Alpha Capacity report
+    fields (`foCapacity=114`, `maxCapCapacity=199`) and executed the capacity
+    write step. Artifact:
+    `C:\tmp\ddr-m2-run-28541634944\m2-direct-dd-events`.
+- Final live readback:
+  - LocationOS returned `status=awaiting_browser_approval` for the
+    `updateDueDiligence` capacity write.
+  - The site still reads back `foCapacity=95` and `maxCapCapacity=114`; the
+    requested canary values `114` and `199` were not applied.
+  - The persisted M2 state remains `status=blocked`,
+    `m2_state=capacity_ready`, with blocker
+    `capacity_write_readback_pending` and reason
+    `LocationOS readback mismatch for foCapacity, maxCapCapacity`.
+- Follow-up work:
+  - `ddr-53o`: provision or preflight Ops-Skills in the GitHub Actions runner
+    so Alpha Capacity generation works without local plugin cache.
+  - `ddr-e3w`: classify `awaiting_browser_approval` / pending LocationOS
+    approval responses explicitly instead of surfacing them as generic
+    readback mismatches.
+- Validation/readback commands used:
+
+```powershell
+gh run watch 28541483946 --repo EDU-Ops-Team/due-diligence-reporter --exit-status
+gh run watch 28541527111 --repo EDU-Ops-Team/due-diligence-reporter --exit-status
+gh run watch 28541634944 --repo EDU-Ops-Team/due-diligence-reporter --exit-status
+gh run download 28541634944 --repo EDU-Ops-Team/due-diligence-reporter --dir C:\tmp\ddr-m2-run-28541634944
+Get-Content -Raw -LiteralPath C:\tmp\ddr-m2-run-28541634944\m2-direct-dd-events\m2-execute-ready.json
+```
+
+Current status: the full scoped canary was run, but it is not green. Do not run
+broad M2 `apply=true`; fix or explicitly approve the DD write boundary, then
+rerun the same scoped selector and require live LocationOS readback before
+closing `ddr-d2l`.
+
 ## 2026-07-01 - Opening Plan and Phase 1 Phase 2 workbook artifact language
 
 - Branch/worktree: current checkout at

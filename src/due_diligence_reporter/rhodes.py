@@ -21,6 +21,8 @@ NOTES_API_NOT_CONFIGURED_REASON = "aerie_notes_api_not_configured"
 DOCUMENT_REGISTRATION_PENDING_USER_ACTION = "pending_user_action"
 DOCUMENT_REGISTRATION_FOLLOWUP_TYPE = "document_registration"
 DOCUMENT_REGISTRATION_FALLBACK_OWNER_EMAIL = "greg.foote@trilogy.com"
+DUE_DILIGENCE_UPDATE_PENDING_USER_ACTION = "pending_user_action"
+DUE_DILIGENCE_UPDATE_FOLLOWUP_TYPE = "due_diligence_update"
 REQUEST_ID_RE = re.compile(r"Request ID:\s*([A-Za-z0-9-]+)")
 DOCUMENT_REGISTRATION_HANDOFF_ERROR_MARKERS = (
     "approval",
@@ -31,6 +33,16 @@ DOCUMENT_REGISTRATION_HANDOFF_ERROR_MARKERS = (
     "permission denied",
     "not configured",
     "missing locationos mcp bearer token",
+)
+DUE_DILIGENCE_UPDATE_HANDOFF_ERROR_MARKERS = (
+    "approval",
+    "awaiting_browser_approval",
+    "browser",
+    "confirmation",
+    "elicitation",
+    "oauth",
+    "pendingmutation",
+    "requires approval",
 )
 
 
@@ -1178,6 +1190,10 @@ def update_rhodes_due_diligence(
     site_id: str,
     fields: dict[str, Any],
     client: RhodesClient | None = None,
+    notes_client: AerieNotesClient | None = None,
+    owner_user_id: str = "",
+    owner_email: str = "",
+    fallback_owner_email: str = DOCUMENT_REGISTRATION_FALLBACK_OWNER_EMAIL,
 ) -> dict[str, Any]:
     """Update Rhodes due diligence fields through LocationOS."""
 
@@ -1206,9 +1222,33 @@ def update_rhodes_due_diligence(
         status = "skipped" if reason == LOCATIONOS_NOT_CONFIGURED_REASON else "failed"
         return {**base, "status": status, "reason": reason, "error": str(exc)}
 
+    mcp_note_client = (
+        client
+        if client is not None and not isinstance(client, RhodesClient)
+        else None
+    )
+
     try:
         response = rhodes.update_due_diligence(site_id=clean_site_id, fields=clean_fields)
     except RhodesError as exc:
+        error = str(exc)
+        if _due_diligence_update_error_is_handoff_eligible(error):
+            handoff = _create_due_diligence_update_handoff(
+                site_id=clean_site_id,
+                fields=clean_fields,
+                rhodes=rhodes,
+                mcp_note_client=mcp_note_client,
+                notes_client=notes_client,
+                owner_user_id=owner_user_id,
+                owner_email=owner_email,
+                fallback_owner_email=fallback_owner_email,
+            )
+            return _due_diligence_handoff_result(
+                base=base,
+                error=error,
+                response=None,
+                handoff=handoff,
+            )
         readback = _verify_due_diligence_readback(
             rhodes,
             site_id=clean_site_id,
@@ -1230,6 +1270,28 @@ def update_rhodes_due_diligence(
             "error": str(exc),
             "error_summary": _summarize_locationos_write_error(str(exc)),
         }
+
+    if _due_diligence_response_needs_handoff(response):
+        error = (
+            _due_diligence_response_error(response)
+            or str(response.get("message") or response.get("status") or "approval_required")
+        )
+        handoff = _create_due_diligence_update_handoff(
+            site_id=clean_site_id,
+            fields=clean_fields,
+            rhodes=rhodes,
+            mcp_note_client=mcp_note_client,
+            notes_client=notes_client,
+            owner_user_id=owner_user_id,
+            owner_email=owner_email,
+            fallback_owner_email=fallback_owner_email,
+        )
+        return _due_diligence_handoff_result(
+            base=base,
+            error=error,
+            response=response,
+            handoff=handoff,
+        )
 
     response_error = _due_diligence_response_error(response)
     if response_error:
@@ -1427,6 +1489,222 @@ def _due_diligence_readback_request(site_id: str, fields: dict[str, Any]) -> dic
     }
 
 
+def _due_diligence_field_handoff_value(value: Any) -> str:
+    if isinstance(value, dict | list):
+        text = json.dumps(value, sort_keys=True)
+    elif isinstance(value, bool):
+        text = str(value).lower()
+    else:
+        text = str(value)
+    text = " ".join(text.strip().split())
+    return text if len(text) <= 500 else f"{text[:497]}..."
+
+
+def _build_due_diligence_update_handoff_note_body(
+    *,
+    site_name: str,
+    site_address: str,
+    fields: dict[str, Any],
+) -> str:
+    lines = [
+        f"Site Name: {site_name.strip()}",
+        f"Site Address: {site_address.strip()}",
+        "Due Diligence Fields to update:",
+    ]
+    for key in sorted(fields):
+        lines.append(f"{key}: {_due_diligence_field_handoff_value(fields[key])}")
+    return "\n".join(lines)
+
+
+def _due_diligence_update_error_is_handoff_eligible(error: str) -> bool:
+    message = str(error or "").casefold()
+    return any(marker in message for marker in DUE_DILIGENCE_UPDATE_HANDOFF_ERROR_MARKERS)
+
+
+def _due_diligence_response_needs_handoff(response: dict[str, Any]) -> bool:
+    status = str(response.get("status") or "").strip().casefold()
+    if status in {
+        "awaiting_browser_approval",
+        "awaiting_approval",
+        "pending_approval",
+        "pending_browser_approval",
+        "pending_confirmation",
+        "requires_approval",
+    }:
+        return True
+    if any(str(response.get(key) or "").strip() for key in ("reviewUrl", "approvalSessionId")):
+        return True
+    error = _due_diligence_response_error(response)
+    return bool(error and _due_diligence_update_error_is_handoff_eligible(error))
+
+
+def _create_due_diligence_update_handoff(
+    *,
+    site_id: str,
+    fields: dict[str, Any],
+    rhodes: RhodesClient | None,
+    mcp_note_client: RhodesClient | None,
+    notes_client: AerieNotesClient | None,
+    owner_user_id: str = "",
+    owner_email: str = "",
+    fallback_owner_email: str = DOCUMENT_REGISTRATION_FALLBACK_OWNER_EMAIL,
+) -> dict[str, Any]:
+    clean_site_id = site_id.strip()
+    clean_fields = _clean_due_diligence_fields(fields)
+    if not clean_fields:
+        return {
+            "status": "skipped",
+            "reason": "no_fields",
+            "error": "Due diligence update handoff requires at least one field.",
+        }
+
+    site: dict[str, Any] = {}
+    site_lookup_error = ""
+    if rhodes is not None:
+        try:
+            site = rhodes.get_site(site_id=clean_site_id)
+        except RhodesError as exc:
+            site_lookup_error = str(exc)
+
+    resolved_site_name = _site_name(site)
+    resolved_site_address = _site_address(site)
+    resolved_site_slug = str(site.get("slug") or "").strip()
+    if not resolved_site_name:
+        return {
+            "status": "failed",
+            "reason": "missing_site_name",
+            "error": "Due diligence update handoff requires a site name.",
+            "site_lookup_error": site_lookup_error,
+        }
+    if not resolved_site_address:
+        return {
+            "status": "failed",
+            "reason": "missing_site_address",
+            "error": "Due diligence update handoff requires a site address.",
+            "site_lookup_error": site_lookup_error,
+        }
+
+    owner = _resolve_document_registration_handoff_owner(
+        site=site,
+        owner_user_id=owner_user_id,
+        owner_email=owner_email,
+        fallback_owner_email=fallback_owner_email,
+        rhodes=rhodes,
+    )
+    if not owner["owner_user_id"]:
+        return {
+            "status": "failed",
+            "reason": "owner_route_unresolved",
+            "error": "Due diligence update handoff requires a P1/site owner or fallback owner user ID.",
+            "owner_email": owner["owner_email"],
+            "fallback_owner_used": owner["fallback_owner_used"],
+            "site_lookup_error": site_lookup_error,
+        }
+
+    note_body = _build_due_diligence_update_handoff_note_body(
+        site_name=resolved_site_name,
+        site_address=resolved_site_address,
+        fields=clean_fields,
+    )
+    note = add_rhodes_site_note(
+        site_id=clean_site_id,
+        site_slug=resolved_site_slug,
+        body=note_body,
+        owner_user_id=owner["owner_user_id"],
+        owner_email=owner["owner_email"],
+        client=mcp_note_client,
+        notes_client=notes_client,
+        automation_source="due_diligence_update_handoff",
+    )
+    if note.get("status") != "created":
+        return {
+            "status": "failed",
+            "reason": "handoff_note_failed",
+            "error": str(note.get("error") or note.get("reason") or "note_write_failed"),
+            "note": note,
+            "note_body": note_body,
+            "site_lookup_error": site_lookup_error,
+        }
+
+    return {
+        "status": "created",
+        "reason": "handoff_note_created",
+        "note_status": note.get("status"),
+        "note_readback_status": str(_dict_get(note.get("readback"), "status") or ""),
+        "rhodes_note_id": str(note.get("rhodes_note_id") or ""),
+        "readback": note.get("readback"),
+        "mentioned_owner_user_ids": _unique_nonempty(
+            str(value) for value in note.get("mentioned_user_ids", [])
+        )
+        if isinstance(note.get("mentioned_user_ids"), list)
+        else [],
+        "owner_user_id": owner["owner_user_id"],
+        "owner_email": owner["owner_email"],
+        "fallback_owner_used": owner["fallback_owner_used"],
+        "field_count": len(clean_fields),
+        "fields": [
+            {
+                "name": key,
+                "value": _due_diligence_field_handoff_value(clean_fields[key]),
+            }
+            for key in sorted(clean_fields)
+        ],
+        "human_followup_required": True,
+        "human_followup_type": DUE_DILIGENCE_UPDATE_FOLLOWUP_TYPE,
+        "rhodes_due_diligence_status": DUE_DILIGENCE_UPDATE_PENDING_USER_ACTION,
+        "remaining_work": [],
+        "note_body": note_body,
+        "site_name": resolved_site_name,
+        "site_address": resolved_site_address,
+        "site_slug": resolved_site_slug,
+        "site_lookup_error": site_lookup_error,
+    }
+
+
+def _due_diligence_handoff_result(
+    *,
+    base: dict[str, Any],
+    error: str,
+    response: dict[str, Any] | None,
+    handoff: dict[str, Any],
+) -> dict[str, Any]:
+    if handoff.get("status") == "created":
+        result = {
+            **base,
+            "status": DUE_DILIGENCE_UPDATE_PENDING_USER_ACTION,
+            "reason": "handoff_note_created",
+            "error": error,
+            "error_summary": "LocationOS updateDueDiligence requires approval; handoff note created.",
+            "rhodes_due_diligence_status": DUE_DILIGENCE_UPDATE_PENDING_USER_ACTION,
+            "human_followup_required": True,
+            "human_followup_type": DUE_DILIGENCE_UPDATE_FOLLOWUP_TYPE,
+            "remaining_work": [],
+            "due_diligence_update_handoff": handoff,
+        }
+    else:
+        result = {
+            **base,
+            "status": "failed",
+            "reason": "due_diligence_handoff_failed",
+            "error": error,
+            "error_summary": "LocationOS updateDueDiligence requires approval, but the handoff note could not be created.",
+            "rhodes_due_diligence_status": "failed",
+            "human_followup_required": True,
+            "human_followup_type": DUE_DILIGENCE_UPDATE_FOLLOWUP_TYPE,
+            "remaining_work": [
+                {
+                    "type": DUE_DILIGENCE_UPDATE_FOLLOWUP_TYPE,
+                    "status": "blocked",
+                    "reason": str(handoff.get("reason") or "handoff_failed"),
+                }
+            ],
+            "due_diligence_update_handoff": handoff,
+        }
+    if response is not None:
+        result["response"] = _summarize_due_diligence_response(response)
+    return result
+
+
 def _summarize_locationos_write_error(error: str) -> str:
     clean_error = str(error or "").strip()
     request_ids = REQUEST_ID_RE.findall(clean_error)
@@ -1469,7 +1747,19 @@ def _summarize_due_diligence_response(response: dict[str, Any]) -> dict[str, Any
         "type": type(response).__name__,
         "keys": sorted(str(key) for key in response.keys())[:20],
     }
-    for key in ("status", "success", "message", "error", "id", "_id", "siteId"):
+    for key in (
+        "status",
+        "success",
+        "message",
+        "error",
+        "id",
+        "_id",
+        "siteId",
+        "pendingMutationId",
+        "approvalSessionId",
+        "reviewUrl",
+        "rejectionReason",
+    ):
         value = response.get(key)
         if isinstance(value, str | bool | int | float) or value is None:
             summary[key] = value

@@ -1131,7 +1131,7 @@ def test_update_rhodes_due_diligence_reports_rejected_response() -> None:
     client = FakeRhodesClient(
         due_diligence_response={
             "status": "rejected",
-            "rejectionReason": "Action requires confirmation",
+            "rejectionReason": "Validation failed",
         }
     )
 
@@ -1143,7 +1143,7 @@ def test_update_rhodes_due_diligence_reports_rejected_response() -> None:
 
     assert result["status"] == "failed"
     assert result["reason"] == "write_rejected"
-    assert "Action requires confirmation" in result["error"]
+    assert "Validation failed" in result["error"]
     assert result["write_request"] == {
         "server": "locationos",
         "tool": "updateDueDiligence",
@@ -1155,6 +1155,89 @@ def test_update_rhodes_due_diligence_reports_rejected_response() -> None:
         "arguments": {"siteId": "SITE1"},
         "verify_fields": ["status"],
     }
+
+
+def test_update_rhodes_due_diligence_handoffs_browser_approval_response() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "slug": "alpha-test",
+            "address": "123 Main St, Denver, CO 80202",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={
+            "status": "awaiting_browser_approval",
+            "pendingMutationId": "MUT1",
+            "approvalSessionId": "APPROVAL1",
+            "reviewUrl": "https://locationos.example/review",
+        },
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"maxCapCapacity": 54, "foCapacity": 36},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    expected_body = (
+        "Site Name: Alpha Test\n"
+        "Site Address: 123 Main St, Denver, CO 80202\n"
+        "Due Diligence Fields to update:\n"
+        "foCapacity: 36\n"
+        "maxCapCapacity: 54"
+    )
+    handoff = result["due_diligence_update_handoff"]
+
+    assert result["status"] == "pending_user_action"
+    assert result["reason"] == "handoff_note_created"
+    assert result["rhodes_due_diligence_status"] == "pending_user_action"
+    assert result["human_followup_required"] is True
+    assert result["human_followup_type"] == "due_diligence_update"
+    assert result["remaining_work"] == []
+    assert result["response"]["status"] == "awaiting_browser_approval"
+    assert result["response"]["pendingMutationId"] == "MUT1"
+    assert "readback" not in result
+    assert handoff["status"] == "created"
+    assert handoff["note_body"] == expected_body
+    assert handoff["note_readback_status"] == "verified"
+    assert handoff["rhodes_note_id"] == "NOTE1"
+    assert handoff["field_count"] == 2
+    assert handoff["fields"] == [
+        {"name": "foCapacity", "value": "36"},
+        {"name": "maxCapCapacity", "value": "54"},
+    ]
+    assert client.notes[0]["body"] == expected_body
+    assert client.notes[0]["mentions"] == ["OWNER1"]
+
+
+def test_update_rhodes_due_diligence_handoffs_elicitation_exception() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "slug": "alpha-test",
+            "address": "123 Main St, Denver, CO 80202",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_exception=RhodesError("Error: elicitation_unsupported"),
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"maxCapCapacity": 71},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "pending_user_action"
+    assert result["reason"] == "handoff_note_created"
+    assert result["error"] == "Error: elicitation_unsupported"
+    assert result["due_diligence_update_handoff"]["note_body"] == (
+        "Site Name: Alpha Test\n"
+        "Site Address: 123 Main St, Denver, CO 80202\n"
+        "Due Diligence Fields to update:\n"
+        "maxCapCapacity: 71"
+    )
 
 
 def test_update_rhodes_due_diligence_preserves_failed_write_request_and_readback() -> None:
