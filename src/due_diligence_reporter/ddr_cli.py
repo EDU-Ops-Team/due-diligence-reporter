@@ -20,6 +20,7 @@ from .m2_pipeline import (
     build_m2_event_queue_from_env,
     build_m2_state_store,
     consume_site_ready_event,
+    m2_filter_summary,
     open_m2_site_ids,
     poll_m2_events,
     watch_m2_sources,
@@ -659,6 +660,10 @@ def _run_m2_source_watch(args: argparse.Namespace) -> int:
         result = {
             "status": "success",
             "apply": bool(args.apply),
+            "filters": m2_filter_summary(
+                site_id=str(args.site_id or ""),
+                event_id=str(args.event_id or ""),
+            ),
             "open_states_checked": 0,
             "resumed": 0,
             "rows": [],

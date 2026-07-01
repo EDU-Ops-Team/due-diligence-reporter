@@ -210,6 +210,7 @@ def test_source_watch_canary_filters_open_states(tmp_path) -> None:
 
     state = store.load()
     assert result["open_states_checked"] == 1
+    assert result["filters"] == {"site_id": "SITE2", "event_id": ""}
     assert result["resumed"] == 0
     assert result["rows"][0]["event_id"] == "evt-2"
     assert state["evt-1"]["m2_state"] == "waiting_for_capacity_source"
@@ -331,6 +332,7 @@ def test_poll_m2_events_canary_filters_before_limit(tmp_path) -> None:
     )
 
     assert result["events_found"] == 1
+    assert result["filters"] == {"site_id": "SITE2", "event_id": ""}
     assert result["rows"][0]["event_id"] == "evt-2"
     assert store.load() == {}
 

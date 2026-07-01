@@ -17,7 +17,12 @@ from .alpha_capacity_analysis import generate_alpha_capacity_analysis_artifact
 from .config import get_settings
 from .google_client import GoogleClient
 from .m1_lookup import _resolve_m1_folder
-from .m2_pipeline import M2StateStore, m2_state_is_open, m2_state_matches_filters
+from .m2_pipeline import (
+    M2StateStore,
+    m2_filter_summary,
+    m2_state_is_open,
+    m2_state_matches_filters,
+)
 from .rhodes import (
     RhodesClient,
     add_rhodes_site_note,
@@ -164,6 +169,7 @@ def execute_ready_m2_states(
     return {
         "status": "success",
         "apply": apply,
+        "filters": m2_filter_summary(site_id=site_id, event_id=event_id),
         "states_checked": len(rows),
         "executed": sum(1 for row in rows if row.get("status") != "preview"),
         "completed": sum(1 for row in rows if row.get("m2_state") == "complete"),

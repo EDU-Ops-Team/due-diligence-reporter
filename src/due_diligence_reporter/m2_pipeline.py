@@ -602,15 +602,20 @@ def poll_m2_events(
 ) -> dict[str, Any]:
     """Consume pending Firestore M2 events and update event/state status."""
 
-    events = event_queue.pending_events(limit=limit, site_id=site_id, event_id=event_id)
+    target_event_id = event_id
+    events = event_queue.pending_events(
+        limit=limit,
+        site_id=site_id,
+        event_id=target_event_id,
+    )
     rows: list[dict[str, Any]] = []
     for event in events:
-        event_id = _text(event.get("event_id"))
+        pending_event_id = _text(event.get("event_id"))
         if apply:
             event_queue.update_event_status(
                 event,
                 "processing",
-                {"event_id": event_id, "started_at": _utc_now_iso()},
+                {"event_id": pending_event_id, "started_at": _utc_now_iso()},
             )
         try:
             result = consume_site_ready_event(
@@ -622,7 +627,7 @@ def poll_m2_events(
             )
         except M2EventValidationError as exc:
             result = {
-                "event_id": event_id,
+                "event_id": pending_event_id,
                 "status": "failed",
                 "error": str(exc),
             }
@@ -640,6 +645,7 @@ def poll_m2_events(
     return {
         "status": "success",
         "apply": apply,
+        "filters": m2_filter_summary(site_id=site_id, event_id=target_event_id),
         "events_found": len(events),
         "events_processed": len(rows),
         "blocked": sum(1 for row in rows if row.get("event_status") == "blocked"),
@@ -696,6 +702,7 @@ def watch_m2_sources(
     return {
         "status": "success",
         "apply": apply,
+        "filters": m2_filter_summary(site_id=site_id, event_id=event_id),
         "open_states_checked": len(rows),
         "resumed": sum(1 for row in rows if row["resumed"]),
         "rows": rows,
@@ -806,6 +813,15 @@ def m2_state_matches_filters(
         if entry_site_id != target_site_id:
             return False
     return True
+
+
+def m2_filter_summary(*, site_id: str = "", event_id: str = "") -> dict[str, str]:
+    """Return normalized M2 canary selector metadata for operator artifacts."""
+
+    return {
+        "site_id": _text(site_id),
+        "event_id": _text(event_id),
+    }
 
 
 def m2_state_summary(state: dict[str, Any]) -> dict[str, Any]:

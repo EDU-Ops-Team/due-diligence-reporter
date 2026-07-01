@@ -29,6 +29,8 @@
     leave scheduled all-site behavior unchanged when selectors are omitted.
   - Added `target_site_id` and `target_event_id` manual workflow inputs and
     passed them through all three M2 workflow stages.
+  - M2 poll/source-watch/execute artifacts now include a top-level `filters`
+    object so no-write and apply runs show the site/event selector used.
 - Validation:
 
 ```powershell

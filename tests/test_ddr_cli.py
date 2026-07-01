@@ -193,6 +193,7 @@ def test_ddr_m2_source_watch_dispatches_canary_filters(monkeypatch, capsys) -> N
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert payload["open_states_checked"] == 0
+    assert payload["filters"] == {"site_id": "SITE2", "event_id": "evt-2"}
     assert calls[0][2] == {"site_id": "SITE2", "event_id": "evt-2"}
 
 

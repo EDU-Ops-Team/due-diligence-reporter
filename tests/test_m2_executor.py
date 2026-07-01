@@ -293,6 +293,7 @@ def test_execute_ready_canary_filter_only_executes_matching_site(tmp_path) -> No
 
     state = store.load()
     assert result["states_checked"] == 1
+    assert result["filters"] == {"site_id": "SITE2", "event_id": ""}
     assert result["rows"][0]["event_id"] == "evt-2"
     assert state["evt-1"]["m2_state"] == "capacity_ready"
     assert state["evt-2"]["m2_state"] == "complete"
