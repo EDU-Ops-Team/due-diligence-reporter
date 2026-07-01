@@ -110,6 +110,7 @@ Use `doc_type` from `list_drive_documents`. Required source roles:
 - `block_plan`: capacity/layout input for Alpha Capacity Analysis.
 - `alpha_capacity_analysis`: primary source for `fast_open_capacity` and `max_plan_capacity`.
 - `outdoor_play_space_report`: primary source for `play_area_score` and `play_area_comment`.
+- `security_due_diligence_report`: source-packet evidence for pre-lease security swing-item screening. Use only as support evidence; it does not own DD field writes yet.
 - `e_occupancy_report`, `school_approval_report`, `opening_plan_report`, `alpha_phasing_plan_report`, `traffic_analysis`, and `raycon_scenario_report`: use for their owned fields.
 - `dd_report`: existing/generated report view only; do not use as M2 source evidence.
 - `capacity_brainlift_report`, `isp`: historical/inventory only.
@@ -117,7 +118,7 @@ Use `doc_type` from `list_drive_documents`. Required source roles:
 
 Use source labels: `SIR`, `Building Inspection`, `Block Plan`,
 `E-Occupancy Report`, `School Approval Report`, `RayCon Scenario`, `Alpha
-Phasing Plan`, `Opening Plan`, or `Project note <MM/DD>`. Do not display Drive
+Phasing Plan`, `Opening Plan`, `Security Due Diligence`, or `Project note <MM/DD>`. Do not display Drive
 file IDs, token names, or raw run IDs.
 
 ---

@@ -333,6 +333,10 @@ DDR_DOC_TYPE_TO_RHODES: dict[str, RhodesDocumentMapping] = {
         milestone="acquireProperty",
         quality_bar="outdoorRecreation",
     ),
+    "security_due_diligence_report": RhodesDocumentMapping(
+        "other",
+        milestone="acquireProperty",
+    ),
     "school_approval_report": RhodesDocumentMapping(
         "regulatoryApproval",
         milestone="acquireProperty",

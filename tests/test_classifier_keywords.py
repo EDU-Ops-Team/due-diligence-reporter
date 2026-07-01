@@ -176,6 +176,12 @@ class TestClassifyByKeywordsM2SourcePacketDocs:
             0.95,
         )
 
+    def test_security_due_diligence_report(self):
+        assert classify_by_keywords("Security Due Diligence - Alpha Keller.md") == (
+            "security_due_diligence_report",
+            0.95,
+        )
+
     def test_kh_traffic_analysis(self):
         assert classify_by_keywords("KH Traffic Analysis - Alpha Keller.pdf") == (
             "traffic_analysis",

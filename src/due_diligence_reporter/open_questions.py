@@ -28,6 +28,7 @@ SourceType = Literal[
     "measured_floor_plan",
     "floor_plan",
     "lidar",
+    "security_due_diligence_report",
 ]
 
 OpenQuestionStatus = Literal["open", "closed"]
@@ -49,6 +50,7 @@ SOURCE_TYPE_COST_TIMELINE_ESTIMATE: SourceType = "cost_timeline_estimate"
 SOURCE_TYPE_MEASURED_FLOOR_PLAN: SourceType = "measured_floor_plan"
 SOURCE_TYPE_FLOOR_PLAN: SourceType = "floor_plan"
 SOURCE_TYPE_LIDAR: SourceType = "lidar"
+SOURCE_TYPE_SECURITY_DUE_DILIGENCE: SourceType = "security_due_diligence_report"
 
 CORE_SOURCE_TYPES: frozenset[SourceType] = frozenset(
     {
@@ -69,6 +71,7 @@ CORE_SOURCE_TYPES: frozenset[SourceType] = frozenset(
         SOURCE_TYPE_MEASURED_FLOOR_PLAN,
         SOURCE_TYPE_FLOOR_PLAN,
         SOURCE_TYPE_LIDAR,
+        SOURCE_TYPE_SECURITY_DUE_DILIGENCE,
     }
 )
 
@@ -92,6 +95,7 @@ DOC_TYPE_TO_SOURCE_TYPE: dict[str, SourceType] = {
     "measured_floor_plan": SOURCE_TYPE_MEASURED_FLOOR_PLAN,
     "floor_plan": SOURCE_TYPE_FLOOR_PLAN,
     "lidar": SOURCE_TYPE_LIDAR,
+    "security_due_diligence_report": SOURCE_TYPE_SECURITY_DUE_DILIGENCE,
 }
 
 REPORT_OPEN_ITEM_KEYS = (

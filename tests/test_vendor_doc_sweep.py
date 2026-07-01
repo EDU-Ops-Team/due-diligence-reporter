@@ -61,6 +61,12 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
                     "webViewLink": "https://drive/outdoor-1",
                 },
                 {
+                    "id": "security-1",
+                    "name": "Security Due Diligence - Alpha Test.md",
+                    "modifiedTime": "2026-05-26T11:25:00Z",
+                    "webViewLink": "https://drive/security-1",
+                },
+                {
                     "id": "phasing-1",
                     "name": "Alpha Phasing Plan - Alpha Test.xlsx",
                     "modifiedTime": "2026-05-26T11:30:00Z",
@@ -123,6 +129,7 @@ def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:
         "cost_timeline_estimate",
         "block_plan",
         "outdoor_play_space_report",
+        "security_due_diligence_report",
         "alpha_phasing_plan_report",
         "school_approval_report",
         "opening_plan_report",

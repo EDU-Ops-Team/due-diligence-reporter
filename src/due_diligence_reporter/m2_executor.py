@@ -56,6 +56,7 @@ KNOWN_EXECUTOR_ACTIONS = frozenset(
         "write_capacity_fields",
         "run_cost_timeline_estimate",
         "run_downstream_source_skills",
+        "run_security_due_diligence",
         "build_m2_source_packet",
         "write_packet_approved_dd_fields",
         "add_source_note",
@@ -107,6 +108,9 @@ class M2ExecutorAdapters(Protocol):
 
     def run_phase_1_phase_2(self, state: dict[str, Any]) -> M2StepResult:
         """Run or reuse the Phase 1 / Phase 2 source."""
+
+    def run_security_due_diligence(self, state: dict[str, Any]) -> M2StepResult:
+        """Run or reuse the Security Due Diligence source."""
 
     def add_source_note(self, state: dict[str, Any], note_lines: Sequence[str]) -> dict[str, Any]:
         """Add and verify the concise Rhodes M2 source note."""
@@ -238,20 +242,35 @@ def execute_m2_state(
         )
 
     if _needs_downstream_sources(updated):
-        for step_name, runner in (
-            ("run_outdoor_play_space", adapters.run_outdoor_play),
-            ("run_opening_plan_v2", adapters.run_opening_plan),
-            ("run_phase_1_phase_2", adapters.run_phase_1_phase_2),
+        for step_name, source_type, runner in (
+            ("run_outdoor_play_space", "outdoor_play_space_report", adapters.run_outdoor_play),
+            ("run_opening_plan_v2", "opening_plan_report", adapters.run_opening_plan),
+            ("run_phase_1_phase_2", "alpha_phasing_plan_report", adapters.run_phase_1_phase_2),
+            (
+                "run_security_due_diligence",
+                "security_due_diligence_report",
+                adapters.run_security_due_diligence,
+            ),
         ):
+            if source_type == "security_due_diligence_report" and not _security_due_diligence_is_due(updated):
+                continue
+            if _has_doc(updated, source_type):
+                continue
             result = runner(updated)
             steps.append(_step_row(step_name, result))
             if not _step_succeeded(result):
+                next_action = (
+                    "run_security_due_diligence"
+                    if step_name == "run_security_due_diligence"
+                    else "run_downstream_source_skills"
+                )
                 _set_blocker(
                     updated,
                     blocker_id=f"{step_name}_failed",
                     m2_state="waiting_for_external_sources",
                     reason=_step_reason(result, f"{step_name} did not complete."),
-                    next_action="run_downstream_source_skills",
+                    next_action=next_action,
+                    resume_source_types=_resume_source_types(result),
                 )
                 return _finish(updated, steps, timestamp)
             _merge_step_result(updated, result)
@@ -596,6 +615,33 @@ class LiveM2ExecutorAdapters:
         )
         return _step_result_from_tool(result)
 
+    def run_security_due_diligence(self, state: dict[str, Any]) -> M2StepResult:
+        existing = _registered_doc(state, "security_due_diligence_report")
+        if existing:
+            return M2StepResult(
+                status="success",
+                supporting_documents=[existing],
+                artifacts={"reused_existing": True},
+            )
+        if not _security_due_diligence_is_due(state):
+            return M2StepResult(
+                status="success",
+                message=(
+                    "Security Due Diligence is not due until a block/floor plan "
+                    "and Alpha Capacity Analysis are present."
+                ),
+            )
+        return M2StepResult(
+            status="blocked",
+            reason=(
+                "Security Due Diligence is ready but no registered memo is present. "
+                "Run ops-skills:security-due-diligence with the site address, "
+                "block/floor plan context, and Alpha Capacity Analysis context, "
+                "then save/register the memo as security_due_diligence_report."
+            ),
+            raw={"resume_source_types": ["security_due_diligence_report"]},
+        )
+
     def add_source_note(self, state: dict[str, Any], note_lines: Sequence[str]) -> dict[str, Any]:
         body = _source_note_body(state, note_lines)
         return add_rhodes_site_note(site_id=_site_id(state), body=body)
@@ -679,15 +725,23 @@ def _needs_cost_timeline(state: dict[str, Any]) -> bool:
 
 
 def _needs_downstream_sources(state: dict[str, Any]) -> bool:
+    required = _required_downstream_source_types(state)
+    return not all(_has_doc(state, source_type) for source_type in required) and (
+        _text(state.get("m2_state")) == "waiting_for_external_sources"
+        or "run_downstream_source_skills" in _next_actions(state)
+        or "run_security_due_diligence" in _next_actions(state)
+    )
+
+
+def _required_downstream_source_types(state: dict[str, Any]) -> set[str]:
     required = {
         "outdoor_play_space_report",
         "opening_plan_report",
         "alpha_phasing_plan_report",
     }
-    return not all(_has_doc(state, source_type) for source_type in required) and (
-        _text(state.get("m2_state")) == "waiting_for_external_sources"
-        or "run_downstream_source_skills" in _next_actions(state)
-    )
+    if _security_due_diligence_is_due(state):
+        required.add("security_due_diligence_report")
+    return required
 
 
 def _finish(
@@ -717,6 +771,7 @@ def _set_blocker(
     m2_state: str,
     reason: str,
     next_action: str,
+    resume_source_types: Sequence[str] = (),
 ) -> None:
     state["status"] = "blocked"
     state["m2_state"] = m2_state
@@ -725,7 +780,7 @@ def _set_blocker(
             "id": blocker_id,
             "m2_state": m2_state,
             "reason": reason,
-            "resume_source_types": [],
+            "resume_source_types": sorted({_canonical_source_type(value) for value in resume_source_types}),
             "next_action": next_action,
         }
     ]
@@ -907,6 +962,14 @@ def _step_reason(result: M2StepResult, fallback: str) -> str:
     return result.reason or result.message or fallback
 
 
+def _resume_source_types(result: M2StepResult) -> list[str]:
+    return [
+        value
+        for value in _string_list(_dict(result.raw).get("resume_source_types"))
+        if value
+    ]
+
+
 def _write_reason(result: dict[str, Any], fallback: str) -> str:
     return _text(
         result.get("error_summary")
@@ -922,6 +985,21 @@ def _has_capacity_report_fields(state: dict[str, Any]) -> bool:
         _text(report_data.get("exec.fastest_open_capacity"))
         and _text(report_data.get("exec.max_capacity_capacity"))
     )
+
+
+def _security_due_diligence_is_due(state: dict[str, Any]) -> bool:
+    return _has_doc(state, "alpha_capacity_analysis") and _has_security_plan_source(state)
+
+
+def _has_security_plan_source(state: dict[str, Any]) -> bool:
+    source_types = {
+        "block_plan",
+        "floor_plan",
+        "measured_floor_plan",
+        "fastest_open_block_plan",
+        "max_capacity_block_plan",
+    }
+    return any(_has_doc(state, source_type) or _event_doc(state, source_type) for source_type in source_types)
 
 
 def _has_doc(state: dict[str, Any], source_type: str) -> bool:
@@ -1091,6 +1169,9 @@ def _canonical_source_type(value: str) -> str:
         "initial_cost_estimate": "cost_timeline_estimate",
         "initialcostestimate": "cost_timeline_estimate",
         "cost_and_timeline_estimate": "cost_timeline_estimate",
+        "security_due_diligence": "security_due_diligence_report",
+        "securityduediligence": "security_due_diligence_report",
+        "securityduediligencereport": "security_due_diligence_report",
     }
     return aliases.get(normalized, aliases.get(normalized.casefold(), normalized))
 
@@ -1103,6 +1184,14 @@ def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 def _text(value: Any) -> str:

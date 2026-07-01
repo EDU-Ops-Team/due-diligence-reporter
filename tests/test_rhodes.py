@@ -794,6 +794,10 @@ def test_ddr_doc_type_mapping_covers_inbox_supported_docs() -> None:
     assert outdoor_mapping is not None
     assert outdoor_mapping.doc_type == "other"
     assert outdoor_mapping.quality_bar == "outdoorRecreation"
+    security_mapping = map_ddr_doc_type_to_rhodes("security_due_diligence_report")
+    assert security_mapping is not None
+    assert security_mapping.doc_type == "other"
+    assert security_mapping.milestone == "acquireProperty"
     school_mapping = map_ddr_doc_type_to_rhodes("school_approval_report")
     assert school_mapping is not None
     assert school_mapping.doc_type == "regulatoryApproval"

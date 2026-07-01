@@ -17,7 +17,7 @@ Current V4.4 behavior:
 - M2 closure uses registered supporting documents plus per-field DD writes. A rendered DDR is optional presentation, not the source of truth.
 - The M2 source packet is complete only when required source docs are registered, writable DD fields are readback-verified, LocationOS schema gaps are explicitly held, and no required source gaps remain.
 - Open verification items are stored as structured run state and rendered only as `Open Items to Verify` in the DDR body.
-- Existing DD data can be refreshed when a core source type changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, School Approval report, Opening Plan, Alpha Capacity Analysis, Outdoor Play Space Report, Alpha Phasing Plan, KH traffic analysis, CO/permit of record, measured floor plan, or LiDAR.
+- Existing DD data can be refreshed when a core source type changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, School Approval report, Opening Plan, Alpha Capacity Analysis, Outdoor Play Space Report, Security Due Diligence report, Alpha Phasing Plan, KH traffic analysis, CO/permit of record, measured floor plan, or LiDAR.
 - The active source sweep entrypoint is `uv run ddr source-sweep`; it scans active Rhodes sites with linked Drive folders and calls the shared `dd_republish` path. `scripts/vendor_doc_republish_sweep.py` remains a compatibility wrapper.
 
 Legacy mode summary:
@@ -222,6 +222,7 @@ For each unprocessed email with PDF attachments:
 | `alpha_phasing_plan_report` | `phasing` | `acquireProperty` |
 | `alpha_capacity_analysis` | `capacityCalculation` | `acquireProperty` |
 | `outdoor_play_space_report` | `other` / quality bar `outdoorRecreation` | `acquireProperty` |
+| `security_due_diligence_report` | `other` | `acquireProperty` |
 | `school_approval_report` | `regulatoryApproval` | `acquireProperty` |
 | `certificate_of_occupancy` | `certificateOfOccupancy` | `acquireProperty` |
 | `permit_of_record` | `permit` | `acquireProperty` |
@@ -409,7 +410,7 @@ team can run the review process in `docs/process/sir-learning-loop.md`.
 
 ### Step 5 â€” Run Skill Tools
 
-Six skill tools analyze the source data and produce structured outputs. E-Occupancy, School Approval, Opening Plan, Outdoor Play Space, Alpha Capacity Analysis, and Alpha Phasing each produce or identify source artifacts that must be registered before related DD fields write. These enrichment tools should run after source reads and before `prepare_due_diligence_data`.
+M2 skill tools analyze the source data and produce structured outputs. E-Occupancy, School Approval, Opening Plan, Outdoor Play Space, Alpha Capacity Analysis, Security Due Diligence, and Alpha Phasing each produce or identify source artifacts that must be registered before related DD fields write. These enrichment tools should run after source reads and before `prepare_due_diligence_data`.
 
 **E-Occupancy Skill** â€” `apply_e_occupancy_skill(building_type_description, stories, ..., ibc_occupancy_group, fire_area_sqft, has_below_grade_space, already_sprinklered, construction_type, max_travel_distance_ft, existing_exit_count, projected_occupant_load, site_name, drive_folder_url)`
 1. Loads the hosted `ease-of-conversion` skill and rating-band reference from Ops-Skills (`OPS_SKILLS_REPO_PATH`, the sibling Ops-Skills checkout, or the installed Ops Skills plugin cache)
@@ -446,6 +447,12 @@ Six skill tools analyze the source data and produce structured outputs. E-Occupa
 3. Uploads the generated Markdown, JSON, PNG, and HTML artifacts to the site's M1 folder through DDR's Drive client.
 4. Registers those artifacts on Rhodes as `other` under quality bar `outdoorRecreation`.
 5. Returns `exec.play_area_score`, `exec.play_area_comment`, `supporting_documents`, and field-source metadata.
+
+**Security Due Diligence** - `ops-skills:security-due-diligence`
+1. Runs after a Block Plan or Floor Plan source and Alpha Capacity Analysis are present.
+2. Produces a one-page pre-lease security go/no-go memo covering securability, lease alteration rights, adverse neighbors/co-tenants, and weapons posture.
+3. The memo is filed to M1 and registered as `security_due_diligence_report` / `other` / `acquireProperty`.
+4. It is source-packet evidence only today; it does not write LocationOS DD fields until a field owner/schema exists.
 
 **Alpha Phasing Plan** - `apply_alpha_phasing_plan_skill(site_name, site_address, drive_folder_url, source_of_truth, quality_bar_target, opening_target_date, must_complete_before_opening, deferred_scopes, ...)`
 1. Loads the hosted `alpha-phasing-plan` skill from Ops-Skills.

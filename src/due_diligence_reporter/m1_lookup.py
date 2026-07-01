@@ -41,6 +41,7 @@ M1_RECOGNIZED_DOC_TYPES = {
     "alpha_capacity_analysis",
     "cost_timeline_estimate",
     "outdoor_play_space_report",
+    "security_due_diligence_report",
     "alpha_phasing_plan_report",
     "traffic_analysis",
     "certificate_of_occupancy",

@@ -69,6 +69,7 @@ _ALWAYS_AI_DOC_TYPES = frozenset({
     "opening_plan_report",
     "capacity_brainlift_report",
     "raycon_scenario_report",
+    "security_due_diligence_report",
 })
 
 # Source doc types where vendor-vs-AI distinction matters for the gate.

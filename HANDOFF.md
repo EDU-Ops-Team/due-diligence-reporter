@@ -1,5 +1,44 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-01 - Security Due Diligence M2 source gate
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-pl6`.
+- Request: add the new `ops-skills:security-due-diligence` memo as a source
+  DDR wants to run once a Block Plan or Floor Plan exists and Alpha Capacity
+  Analysis is done.
+- Changes:
+  - Added `security_due_diligence_report` to DDR source classification,
+    M1-recognized documents, source sweep events, open-question source mapping,
+    and Rhodes document registration mapping (`other` / `acquireProperty`).
+  - Updated the M2 executor downstream chain so Security Due Diligence becomes
+    due only when a block/floor plan source and registered Alpha Capacity
+    Analysis are present. If no registered memo exists, the live adapter blocks
+    with next action `run_security_due_diligence` and resume source type
+    `security_due_diligence_report`.
+  - Updated M2 source-watch follow-up handling so a later registered security
+    memo moves the state to `source_packet_ready` rather than incorrectly
+    marking the M2 state complete.
+  - Documented the memo as evidence-only source-packet support for now; it does
+    not write LocationOS DD fields until a field/schema owner exists.
+- Validation:
+
+```powershell
+uv run pytest tests/test_classifier_keywords.py tests/test_rhodes.py tests/test_open_questions.py tests/test_vendor_doc_sweep.py tests/test_m2_pipeline.py tests/test_m2_executor.py
+uv run ruff check .
+uv run mypy src/
+uv run pytest
+```
+
+Results: focused tests passed (`119 passed`); full Ruff passed; full mypy
+passed for `51 source files`; full pytest passed (`1320 passed, 13 skipped`).
+
+Operational notes:
+
+- No live M2 `--apply` run was executed in this session.
+- No commit, push, or Beads remote sync was performed.
+
 ## 2026-06-30 - Retire active RayCon interactions for cost/timeline
 
 - Branch/worktree: `codex/ddr-adhoc-locationos-runner` at

@@ -72,6 +72,7 @@ PHASING_BUILD_CONTEXT_SOURCE_TYPES = frozenset(
         "phasing_plan",
     }
 )
+SECURITY_DUE_DILIGENCE_SOURCE_TYPES = frozenset({"security_due_diligence_report"})
 
 DocumentLister = Callable[[str, str], list[dict[str, Any]]]
 
@@ -848,6 +849,8 @@ def _normalized_source_type(doc: dict[str, Any]) -> str:
         return "alpha_capacity_analysis"
     if rhodes_doc_type == "floorPlan":
         return "floor_plan"
+    if rhodes_doc_type == "other" and "security due diligence" in title:
+        return "security_due_diligence_report"
     if rhodes_doc_type == "lidar":
         return "lidar"
     if rhodes_doc_type == "certificateOfOccupancy":
@@ -868,6 +871,9 @@ def _canonical_source_type(value: str) -> str:
         "capacitycalculation": "alpha_capacity_analysis",
         "initialcostestimate": "cost_timeline_estimate",
         "initial_cost_estimate": "cost_timeline_estimate",
+        "security_due_diligence": "security_due_diligence_report",
+        "securityduediligence": "security_due_diligence_report",
+        "securityduediligencereport": "security_due_diligence_report",
     }
     return aliases.get(normalized, aliases.get(normalized.casefold(), normalized))
 
@@ -1003,6 +1009,16 @@ def _followup_blockers_after_resume(
                 "write_capacity_fields",
             )
         )
+    if matched_types & SECURITY_DUE_DILIGENCE_SOURCE_TYPES:
+        next_blockers.append(
+            _blocker(
+                "build_m2_source_packet",
+                "source_packet_ready",
+                "Security Due Diligence memo arrived; build source packet.",
+                set(),
+                "build_m2_source_packet",
+            )
+        )
     return _dedupe_blockers(next_blockers)
 
 
@@ -1041,6 +1057,7 @@ def _rhodes_doc_type_for_source(source_type: str) -> str:
         "block_plan": "fastestOpenBlockPlan",
         "cost_timeline_estimate": "initialCostEstimate",
         "floor_plan": "floorPlan",
+        "security_due_diligence_report": "other",
         "lidar": "lidar",
         "certificate_of_occupancy": "certificateOfOccupancy",
         "permit": "permit",

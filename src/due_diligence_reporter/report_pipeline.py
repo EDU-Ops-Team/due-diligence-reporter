@@ -846,6 +846,7 @@ def check_site_readiness_direct(
             "e_occupancy_report_found": False, "school_approval_report_found": False,
             "opening_plan_report_found": False,
             "alpha_phasing_plan_report_found": False,
+            "security_due_diligence_report_found": False,
             "error": "bad_url",
         }
 
@@ -882,6 +883,7 @@ def check_site_readiness_direct(
         "opening_plan_report": None,
         "alpha_capacity_analysis": None,
         "outdoor_play_space_report": None,
+        "security_due_diligence_report": None,
         "alpha_phasing_plan_report": None,
         "traffic_analysis": None,
         "certificate_of_occupancy": None,
@@ -985,6 +987,9 @@ def check_site_readiness_direct(
         "opening_plan_report_found": files_by_type["opening_plan_report"] is not None,
         "alpha_phasing_plan_report_found": (
             files_by_type["alpha_phasing_plan_report"] is not None
+        ),
+        "security_due_diligence_report_found": (
+            files_by_type["security_due_diligence_report"] is not None
         ),
         "all_files": ai_generated_site_files,
         "sir_learning_review": sir_learning_review.to_dict(),

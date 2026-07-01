@@ -117,6 +117,13 @@ def test_alpha_phasing_doc_type_maps_to_source_type() -> None:
     )
 
 
+def test_security_due_diligence_doc_type_maps_to_source_type() -> None:
+    assert (
+        source_type_for_doc_type("security_due_diligence_report")
+        == "security_due_diligence_report"
+    )
+
+
 def test_alpha_phasing_source_event_can_close_phasing_open_item() -> None:
     previous = extract_open_questions_from_report_data(
         {

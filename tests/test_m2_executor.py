@@ -202,6 +202,22 @@ class FakeAdapters:
             ],
         )
 
+    def run_security_due_diligence(self, state: dict[str, Any]) -> M2StepResult:
+        del state
+        self.calls.append("security")
+        if self.fail_source_step == "security":
+            return M2StepResult(
+                status="blocked",
+                reason="security due diligence memo missing",
+                raw={"resume_source_types": ["security_due_diligence_report"]},
+            )
+        return M2StepResult(
+            status="success",
+            supporting_documents=[
+                _doc("security_due_diligence_report", "Security Due Diligence", "other")
+            ],
+        )
+
     def add_source_note(self, state: dict[str, Any], note_lines: list[str]) -> dict[str, Any]:
         del state
         self.calls.append("note")
@@ -234,6 +250,7 @@ def test_execute_ready_m2_state_completes_successfully(tmp_path) -> None:
         "outdoor",
         "opening",
         "phasing",
+        "security",
         "write",
         "note",
     ]
@@ -324,6 +341,23 @@ def test_failed_source_registration_blocks_before_packet_write(tmp_path) -> None
     state = store.load()["evt-1"]
     assert state["m2_state"] == "waiting_for_external_sources"
     assert state["open_blockers"][0]["id"] == "run_outdoor_play_space_failed"
+    assert adapters.write_calls == [{"foCapacity": 36, "maxCapCapacity": 54}]
+    assert "note" not in adapters.calls
+
+
+def test_security_due_diligence_blocks_until_memo_is_registered(tmp_path) -> None:
+    store = _capacity_ready_store(tmp_path)
+    adapters = FakeAdapters(fail_source_step="security")
+
+    execute_ready_m2_states(state_store=store, apply=True, adapters=adapters)
+
+    state = store.load()["evt-1"]
+    assert state["m2_state"] == "waiting_for_external_sources"
+    assert state["open_blockers"][0]["id"] == "run_security_due_diligence_failed"
+    assert state["open_blockers"][0]["next_action"] == "run_security_due_diligence"
+    assert state["open_blockers"][0]["resume_source_types"] == [
+        "security_due_diligence_report"
+    ]
     assert adapters.write_calls == [{"foCapacity": 36, "maxCapCapacity": 54}]
     assert "note" not in adapters.calls
 

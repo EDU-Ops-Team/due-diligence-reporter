@@ -208,6 +208,49 @@ def test_source_watch_ignores_raycon_events(tmp_path) -> None:
     assert state["open_blockers"][0]["id"] == "missing_capacity_source"
 
 
+def test_source_watch_resumes_security_due_diligence_memo(tmp_path) -> None:
+    store = JsonM2StateStore(tmp_path / "state.json")
+    consume_site_ready_event(_site_ready_event(), state_store=store)
+    state = store.load()
+    state["evt-1"]["m2_state"] = "waiting_for_external_sources"
+    state["evt-1"]["open_blockers"] = [
+        {
+            "id": "run_security_due_diligence_failed",
+            "m2_state": "waiting_for_external_sources",
+            "reason": "security due diligence memo missing",
+            "resume_source_types": ["security_due_diligence_report"],
+            "next_action": "run_security_due_diligence",
+        }
+    ]
+    store.save(state)
+
+    result = watch_m2_sources(
+        state_store=store,
+        source_events_by_site={
+            "SITE1": [
+                {
+                    "source_type": "security_due_diligence_report",
+                    "doc_type": "security_due_diligence_report",
+                    "fingerprint": "security-1:2026-06-30T12:00:00Z",
+                    "drive_file_id": "security-1",
+                    "drive_url": "https://drive.example/security-1",
+                    "file_name": "Security Due Diligence - Alpha Test.md",
+                }
+            ]
+        },
+        apply=True,
+        now="2026-06-30T12:00:00Z",
+    )
+
+    resumed = store.load()["evt-1"]
+    assert result["resumed"] == 1
+    assert resumed["m2_state"] == "source_packet_ready"
+    assert resumed["open_blockers"][0]["id"] == "build_m2_source_packet"
+    assert {
+        doc["source_type"] for doc in resumed["registered_documents"]
+    } >= {"security_due_diligence_report"}
+
+
 def test_firestore_event_queue_polls_pending_events_and_updates_status(tmp_path) -> None:
     session = FakeFirestoreSession()
     session.documents["evt-1"] = encode_firestore_fields(_site_ready_event())
