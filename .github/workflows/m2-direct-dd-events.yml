@@ -19,6 +19,11 @@ on:
         required: false
         default: '10'
         type: string
+      source_event_limit:
+        description: 'Maximum pending source-available events to inspect'
+        required: false
+        default: '50'
+        type: string
       run_source_watch:
         description: 'Watch open M2 states for newly landed source inputs'
         required: false
@@ -228,12 +233,14 @@ jobs:
         env:
           INPUT_APPLY: ${{ inputs.apply }}
           INPUT_RUN_SOURCE_WATCH: ${{ inputs.run_source_watch }}
+          INPUT_SOURCE_EVENT_LIMIT: ${{ inputs.source_event_limit }}
           INPUT_TARGET_SITE_ID: ${{ inputs.target_site_id }}
           INPUT_TARGET_EVENT_ID: ${{ inputs.target_event_id }}
         run: |
           set -euo pipefail
           APPLY="${INPUT_APPLY:-true}"
           RUN_SOURCE_WATCH="${INPUT_RUN_SOURCE_WATCH:-true}"
+          SOURCE_EVENT_LIMIT="${INPUT_SOURCE_EVENT_LIMIT:-50}"
           TARGET_SITE_ID="${INPUT_TARGET_SITE_ID:-}"
           TARGET_EVENT_ID="${INPUT_TARGET_EVENT_ID:-}"
           if [ "$RUN_SOURCE_WATCH" != "true" ]; then
@@ -241,6 +248,7 @@ jobs:
             exit 0
           fi
           ARGS=(m2 source-watch)
+          ARGS+=(--source-event-limit "$SOURCE_EVENT_LIMIT")
           if [ -n "$TARGET_SITE_ID" ]; then
             ARGS+=(--site-id "$TARGET_SITE_ID")
           fi

@@ -320,6 +320,9 @@ def test_m2_direct_dd_workflow_uses_firestore_event_queue_and_state_store() -> N
     assert "ddrM2DirectDdState" in text
     assert "target_site_id:" in text
     assert "target_event_id:" in text
+    assert "source_event_limit:" in text
+    assert 'INPUT_SOURCE_EVENT_LIMIT: ${{ inputs.source_event_limit }}' in text
+    assert 'ARGS+=(--source-event-limit "$SOURCE_EVENT_LIMIT")' in shell
     assert 'TARGET_SITE_ID="${INPUT_TARGET_SITE_ID:-}"' in shell
     assert 'TARGET_EVENT_ID="${INPUT_TARGET_EVENT_ID:-}"' in shell
     assert 'ARGS+=(--site-id "$TARGET_SITE_ID")' in shell

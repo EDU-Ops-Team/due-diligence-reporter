@@ -49,4 +49,4 @@ def test_raycon_rebuild_package_blocks_no_capacity_auto_dispatch() -> None:
 
     assert "dispatch_skipped=capacity_analysis_not_available" in text
     assert "instead of sending a no-capacity request" in text
-    assert "does not dispatch a no-capacity RayCon job" in how_it_works
+    assert "blocks the M2 state with a concrete next action" in how_it_works

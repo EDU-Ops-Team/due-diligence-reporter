@@ -38,6 +38,7 @@ CORE_SWEEP_DOC_TYPES = {
 }
 
 RepublishCallback = Callable[..., Any]
+SourceEventEmitter = Callable[[dict[str, Any], dict[str, Any]], Any]
 
 
 def collect_core_source_events(
@@ -112,6 +113,7 @@ def run_vendor_doc_republish_sweep(
     dry_run: bool = False,
     republish_callback: RepublishCallback = maybe_republish_dd_report,
     pipeline_runner: Callable[..., PipelineResult] | None = None,
+    source_event_emitter: SourceEventEmitter | None = None,
 ) -> dict[str, Any]:
     """Scan active Rhodes sites for core source changes and republish in place."""
     rows: list[dict[str, Any]] = []
@@ -157,6 +159,15 @@ def run_vendor_doc_republish_sweep(
             continue
 
         for event in events:
+            source_event_status = "not_configured"
+            source_event_error = ""
+            if source_event_emitter is not None:
+                try:
+                    source_event_emitter(site_summary, event)
+                    source_event_status = "emitted" if not dry_run else "dry_run"
+                except Exception as exc:  # noqa: BLE001 - republish remains the compatibility path
+                    source_event_status = "failed"
+                    source_event_error = str(exc)
             kwargs = {
                 "site_summary": site_summary,
                 "reason": event["source_type"],
@@ -177,11 +188,16 @@ def run_vendor_doc_republish_sweep(
             )
             row = outcome.as_dict() if hasattr(outcome, "as_dict") else dict(outcome)
             row["site_title"] = site_summary.get("title", "")
+            row["source_event_status"] = source_event_status
+            if source_event_error:
+                row["source_event_error"] = source_event_error
             rows.append(row)
 
     return {
         "sites_scanned": len(site_records),
         "source_events": sum(1 for row in rows if row.get("content_fingerprint")),
+        "canonical_source_events": sum(1 for row in rows if row.get("source_event_status") == "emitted"),
+        "source_event_errors": sum(1 for row in rows if row.get("source_event_status") == "failed"),
         "republished": sum(1 for row in rows if row.get("dd_report_republish") == "republish"),
         "skipped": sum(
             1

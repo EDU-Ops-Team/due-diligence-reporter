@@ -17,12 +17,15 @@ from .adhoc_runner import (
 )
 from .m2_executor import execute_ready_m2_states
 from .m2_pipeline import (
+    M2EventQueueError,
     build_m2_event_queue_from_env,
     build_m2_state_store,
     consume_site_ready_event,
     m2_filter_summary,
     open_m2_site_ids,
     poll_m2_events,
+    source_available_event_from_observation,
+    watch_m2_source_event_queue,
     watch_m2_sources,
 )
 from .pipeline_manifest import load_run_manifest
@@ -119,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     m2_watch.add_argument("--state-store", default=None)
     m2_watch.add_argument("--site-id", default="")
     m2_watch.add_argument("--event-id", default="")
+    m2_watch.add_argument("--source-event-limit", type=int, default=50)
 
     m2_execute = m2_subparsers.add_parser(
         "execute-ready",
@@ -683,19 +687,45 @@ def _run_m2_source_watch(args: argparse.Namespace) -> int:
         site_id = _site_record_id(site_record)
         if not site_id:
             continue
-        events_by_site[site_id] = collect_core_source_events(
+        observations = collect_core_source_events(
             gc,
             site_record,
             read_only=not bool(args.apply),
         )
+        events_by_site[site_id] = [
+            source_available_event_from_observation(
+                site=site_record,
+                observation=observation,
+                producer={
+                    "workflow": "m2-source-watch-drive-scan",
+                    "artifact_type": "drive_scan_observation",
+                },
+            )
+            for observation in observations
+        ]
 
-    result = watch_m2_sources(
-        state_store=state_store,
-        source_events_by_site=events_by_site,
-        apply=bool(args.apply),
-        site_id=str(args.site_id or ""),
-        event_id=str(args.event_id or ""),
-    )
+    try:
+        result = watch_m2_source_event_queue(
+            event_queue=build_m2_event_queue_from_env(),
+            state_store=state_store,
+            fallback_source_events_by_site=events_by_site,
+            apply=bool(args.apply),
+            limit=int(args.source_event_limit),
+            site_id=str(args.site_id or ""),
+            event_id=str(args.event_id or ""),
+        )
+    except M2EventQueueError as exc:
+        result = watch_m2_sources(
+            state_store=state_store,
+            source_events_by_site=events_by_site,
+            apply=bool(args.apply),
+            site_id=str(args.site_id or ""),
+            event_id=str(args.event_id or ""),
+        )
+        result["source_event_queue"] = {
+            "status": "unavailable",
+            "reason": str(exc),
+        }
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 M2_EVENT_SCHEMA_VERSION = "aadp.site_ready_for_ddr.v1"
+SOURCE_AVAILABLE_SCHEMA_VERSION = "ddr.source_available.v1"
 M2_STATE_SCHEMA_VERSION = "ddr.m2_state.v1"
 DEFAULT_M2_STATE_PATH = PROJECT_ROOT / ".m2_direct_dd_state.json"
 DEFAULT_M2_STATE_FIRESTORE_COLLECTION = "ddrM2DirectDdState"
@@ -242,16 +243,18 @@ class FirestoreM2EventQueue:
         limit: int = 10,
         site_id: str = "",
         event_id: str = "",
+        schema_version: str = M2_EVENT_SCHEMA_VERSION,
     ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         target_site_id = _text(site_id)
         target_event_id = _text(event_id)
+        target_schema_version = _text(schema_version)
         for document in self._list_documents():
             fields = document.get("fields")
             if not isinstance(fields, dict):
                 continue
             event = decode_firestore_fields(fields)
-            if _text(event.get("schema_version")) != M2_EVENT_SCHEMA_VERSION:
+            if target_schema_version and _text(event.get("schema_version")) != target_schema_version:
                 continue
             if _text(event.get("status")) != "pending":
                 continue
@@ -266,6 +269,34 @@ class FirestoreM2EventQueue:
                 event["_firestore_document_id"] = document_id
             events.append(event)
         return sorted(events, key=lambda item: _text(item.get("event_id")))[: max(limit, 0)]
+
+    def pending_source_events(
+        self,
+        *,
+        limit: int = 50,
+        site_id: str = "",
+    ) -> list[dict[str, Any]]:
+        return self.pending_events(
+            limit=limit,
+            site_id=site_id,
+            schema_version=SOURCE_AVAILABLE_SCHEMA_VERSION,
+        )
+
+    def write_event(self, event: dict[str, Any]) -> None:
+        event_id = _text(event.get("event_id"))
+        if not event_id:
+            raise M2EventQueueError("Cannot write Firestore event without event_id")
+        payload = {
+            key: value
+            for key, value in event.items()
+            if isinstance(key, str) and not key.startswith("_")
+        }
+        response = self.session.patch(
+            self._document_url(event_id),
+            json={"fields": encode_firestore_fields(payload)},
+            timeout=10,
+        )
+        response.raise_for_status()
 
     def update_event_status(
         self,
@@ -443,6 +474,248 @@ def validate_site_ready_event(payload: dict[str, Any]) -> dict[str, Any]:
     event["remaining_work"] = _list_of_dicts_or_strings(payload.get("remaining_work"))
     event["aadp_receipt"] = payload.get("aadp_receipt") if isinstance(payload.get("aadp_receipt"), dict) else {}
     return event
+
+
+def build_source_available_event(
+    *,
+    site: Mapping[str, Any],
+    source_type: str,
+    document: Mapping[str, Any],
+    producer: Mapping[str, Any],
+    fingerprint: str = "",
+    event_id: str = "",
+    status: str = "pending",
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Build the canonical event emitted when DDR source evidence becomes available."""
+
+    clean_site_id = _first_text(site.get("id"), site.get("site_id"), site.get("siteId"))
+    clean_source_type = _canonical_source_type(source_type)
+    clean_fingerprint = _text(fingerprint) or _source_event_fingerprint(
+        site_id=clean_site_id,
+        source_type=clean_source_type,
+        document=document,
+    )
+    event = {
+        "schema_version": SOURCE_AVAILABLE_SCHEMA_VERSION,
+        "event_id": _text(event_id)
+        or _source_available_event_id(
+            site_id=clean_site_id,
+            source_type=clean_source_type,
+            fingerprint=clean_fingerprint,
+        ),
+        "status": _text(status) or "pending",
+        "site": dict(site),
+        "source_type": clean_source_type,
+        "document": dict(document),
+        "producer": dict(producer),
+        "fingerprint": clean_fingerprint,
+        "created_at": created_at or _utc_now_iso(),
+    }
+    return validate_source_available_event(event)
+
+
+def emit_source_available_event(
+    event_queue: FirestoreM2EventQueue,
+    *,
+    site: Mapping[str, Any],
+    source_type: str,
+    document: Mapping[str, Any],
+    producer: Mapping[str, Any],
+    fingerprint: str = "",
+    event_id: str = "",
+    status: str = "pending",
+    created_at: str | None = None,
+    apply: bool = True,
+) -> dict[str, Any]:
+    """Validate and optionally enqueue a canonical DDR source-available event."""
+
+    event = build_source_available_event(
+        site=site,
+        source_type=source_type,
+        document=document,
+        producer=producer,
+        fingerprint=fingerprint,
+        event_id=event_id,
+        status=status,
+        created_at=created_at,
+    )
+    if apply:
+        event_queue.write_event(event)
+    return event
+
+
+def source_available_event_from_observation(
+    *,
+    site: Mapping[str, Any],
+    observation: Mapping[str, Any],
+    producer: Mapping[str, Any],
+    registration_status: str = "pending_user_action",
+    readback_status: str = "not_verified",
+    status: str = "pending",
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Convert a Drive/source observation into the canonical source-event contract."""
+
+    source_type = _event_source_type(dict(observation))
+    document = {
+        "title": _first_text(
+            observation.get("file_name"),
+            observation.get("name"),
+            source_type.replace("_", " ").title(),
+        ),
+        "drive_url": _first_text(observation.get("drive_url"), observation.get("webViewLink")),
+        "drive_file_id": _first_text(
+            observation.get("drive_file_id"),
+            observation.get("file_id"),
+            observation.get("id"),
+        ),
+        "rhodes_doc_type": _rhodes_doc_type_for_source(source_type),
+        "registration_status": registration_status,
+        "readback_status": readback_status,
+        "readback_verified": readback_status in {"verified", "readback_verified", "found"},
+    }
+    normalized_site = {
+        "id": _first_text(site.get("id"), site.get("site_id"), site.get("siteId")),
+        "name": _first_text(site.get("name"), site.get("title"), site.get("site_name")),
+        "address": _first_text(site.get("address"), site.get("site_address")),
+        "site_record_url": _first_text(site.get("site_record_url"), site.get("url")),
+    }
+    return build_source_available_event(
+        site=normalized_site,
+        source_type=source_type,
+        document=document,
+        producer=producer,
+        fingerprint=_text(observation.get("fingerprint")),
+        event_id=_text(observation.get("event_id")),
+        status=status,
+        created_at=created_at,
+    )
+
+
+def validate_source_available_event(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate and normalize one ``ddr.source_available.v1`` event."""
+
+    if not isinstance(payload, dict):
+        raise M2EventValidationError("source event payload must be an object")
+    schema = _text(payload.get("schema_version"))
+    if schema != SOURCE_AVAILABLE_SCHEMA_VERSION:
+        raise M2EventValidationError(
+            f"schema_version must be {SOURCE_AVAILABLE_SCHEMA_VERSION}"
+        )
+    event_id = _text(payload.get("event_id"))
+    if not event_id:
+        raise M2EventValidationError("event_id is required")
+    status = _text(payload.get("status"))
+    if status not in EVENT_STATUSES:
+        raise M2EventValidationError("status must be one of pending, processing, completed, blocked, failed")
+    source_type = _canonical_source_type(_text(payload.get("source_type") or payload.get("sourceType")))
+    if not source_type:
+        raise M2EventValidationError("source_type is required")
+    fingerprint = _text(payload.get("fingerprint"))
+    if not fingerprint:
+        raise M2EventValidationError("fingerprint is required")
+    created_at = _text(payload.get("created_at") or payload.get("createdAt"))
+    if not created_at:
+        raise M2EventValidationError("created_at is required")
+
+    site = payload.get("site")
+    if not isinstance(site, dict):
+        raise M2EventValidationError("site must be an object")
+    site_id = _first_text(site.get("id"), site.get("site_id"), site.get("siteId"))
+    site_name = _first_text(site.get("name"), site.get("title"), site.get("site_name"))
+    if not site_id:
+        raise M2EventValidationError("site.id is required")
+    if not site_name:
+        raise M2EventValidationError("site.name is required")
+
+    document = payload.get("document")
+    if not isinstance(document, dict):
+        raise M2EventValidationError("document must be an object")
+    document_title = _first_text(document.get("title"), document.get("name"), payload.get("file_name"))
+    drive_file_id = _first_text(
+        document.get("drive_file_id"),
+        document.get("driveFileId"),
+        document.get("file_id"),
+        document.get("fileId"),
+        payload.get("drive_file_id"),
+        payload.get("id"),
+    )
+    drive_url = _first_text(
+        document.get("drive_url"),
+        document.get("driveUrl"),
+        document.get("url"),
+        document.get("link"),
+        payload.get("drive_url"),
+        payload.get("webViewLink"),
+    )
+    if not document_title:
+        raise M2EventValidationError("document.title is required")
+    if not (drive_file_id or drive_url):
+        raise M2EventValidationError("document.drive_file_id or document.drive_url is required")
+
+    registration_status = _first_text(
+        document.get("registration_status"),
+        document.get("registrationStatus"),
+        payload.get("registration_status"),
+    )
+    if not registration_status:
+        raise M2EventValidationError("document.registration_status is required")
+    readback_status = _first_text(
+        document.get("readback_status"),
+        document.get("readbackStatus"),
+        payload.get("readback_status"),
+    )
+    producer = payload.get("producer")
+    if not isinstance(producer, dict):
+        raise M2EventValidationError("producer must be an object")
+    if not _first_text(producer.get("workflow"), producer.get("run_id"), producer.get("runId")):
+        raise M2EventValidationError("producer.workflow or producer.run_id is required")
+
+    normalized = dict(payload)
+    normalized["event_id"] = event_id
+    normalized["status"] = status
+    normalized["site"] = {
+        "id": site_id,
+        "name": site_name,
+        "address": _first_text(site.get("address"), site.get("site_address")),
+        "site_record_url": _first_text(site.get("site_record_url"), site.get("url")),
+    }
+    normalized["source_type"] = source_type
+    normalized["document"] = {
+        "title": document_title,
+        "drive_url": drive_url,
+        "drive_file_id": drive_file_id,
+        "rhodes_doc_type": _first_text(
+            document.get("rhodes_doc_type"),
+            document.get("rhodesDocType"),
+            document.get("doc_type"),
+            document.get("docType"),
+        ),
+        "rhodes_milestone": _first_text(
+            document.get("rhodes_milestone"),
+            document.get("rhodesMilestone"),
+            document.get("milestone"),
+        ),
+        "registration_status": registration_status,
+        "readback_status": readback_status,
+        "readback_verified": bool(document.get("readback_verified") or document.get("readbackVerified")),
+    }
+    normalized["producer"] = {
+        "workflow": _text(producer.get("workflow")),
+        "run_id": _first_text(producer.get("run_id"), producer.get("runId")),
+        "artifact_type": _first_text(producer.get("artifact_type"), producer.get("artifactType")),
+    }
+    normalized["fingerprint"] = fingerprint
+    normalized["created_at"] = created_at
+    normalized["doc_type"] = _first_text(payload.get("doc_type"), normalized["document"]["rhodes_doc_type"])
+    normalized["drive_file_id"] = drive_file_id
+    normalized["drive_url"] = drive_url
+    normalized["file_name"] = document_title
+    normalized["registration_status"] = registration_status
+    normalized["readback_status"] = readback_status
+    normalized["readback_verified"] = normalized["document"]["readback_verified"]
+    return normalized
 
 
 def consume_site_ready_event(
@@ -692,7 +965,7 @@ def watch_m2_sources(
         row["event_id"] = state_event_id
         row["site_id"] = entry_site_id
         rows.append(row)
-        if row["resumed"]:
+        if row.get("state_changed", row["resumed"]):
             changed = True
             if apply:
                 state[state_event_id] = updated
@@ -706,7 +979,106 @@ def watch_m2_sources(
         "filters": m2_filter_summary(site_id=site_id, event_id=event_id),
         "open_states_checked": len(rows),
         "resumed": sum(1 for row in rows if row["resumed"]),
+        "source_events_consumed": sum(len(row.get("matched_source_event_ids", [])) for row in rows),
+        "source_events_blocked": sum(len(row.get("blocked_source_event_ids", [])) for row in rows),
         "rows": rows,
+    }
+
+
+def watch_m2_source_event_queue(
+    *,
+    event_queue: FirestoreM2EventQueue,
+    state_store: M2StateStore,
+    fallback_source_events_by_site: Mapping[str, Sequence[dict[str, Any]]] | None = None,
+    apply: bool = False,
+    limit: int = 50,
+    now: str | None = None,
+    site_id: str = "",
+    event_id: str = "",
+) -> dict[str, Any]:
+    """Consume canonical source events, update M2 state, and acknowledge handled events."""
+
+    pending_events = event_queue.pending_source_events(limit=limit, site_id=site_id)
+    valid_events: list[dict[str, Any]] = []
+    invalid_rows: list[dict[str, Any]] = []
+    for event in pending_events:
+        try:
+            valid_events.append(validate_source_available_event(event))
+        except M2EventValidationError as exc:
+            result = {
+                "event_id": _text(event.get("event_id")),
+                "status": "failed",
+                "error": str(exc),
+            }
+            invalid_rows.append(result)
+            if apply:
+                event_queue.update_event_status(event, "failed", result)
+
+    events_by_site: dict[str, list[dict[str, Any]]] = {}
+    for site, events in (fallback_source_events_by_site or {}).items():
+        events_by_site[_text(site)] = [dict(event) for event in events if isinstance(event, dict)]
+    for event in valid_events:
+        raw_site = event.get("site")
+        event_site_id = _text(raw_site.get("id")) if isinstance(raw_site, dict) else ""
+        if not event_site_id:
+            continue
+        events_by_site.setdefault(event_site_id, []).append(event)
+
+    watch_result = watch_m2_sources(
+        state_store=state_store,
+        source_events_by_site=events_by_site,
+        apply=apply,
+        now=now,
+        site_id=site_id,
+        event_id=event_id,
+    )
+    completed_ids = {
+        event_id
+        for row in watch_result.get("rows", [])
+        for event_id in _string_list(row.get("matched_source_event_ids"))
+    }
+    blocked_ids = {
+        event_id
+        for row in watch_result.get("rows", [])
+        for event_id in _string_list(row.get("blocked_source_event_ids"))
+    }
+    valid_by_id = {_text(event.get("event_id")): event for event in valid_events}
+    if apply:
+        for source_event_id in sorted(completed_ids):
+            source_event = valid_by_id.get(source_event_id)
+            if source_event is not None:
+                event_queue.update_event_status(
+                    source_event,
+                    "completed",
+                    {"event_id": source_event_id, "status": "completed"},
+                )
+        for source_event_id in sorted(blocked_ids):
+            source_event = valid_by_id.get(source_event_id)
+            if source_event is not None:
+                event_queue.update_event_status(
+                    source_event,
+                    "blocked",
+                    {
+                        "event_id": source_event_id,
+                        "status": "blocked",
+                        "next_action": "document_registration_handoff",
+                    },
+                )
+
+    pending_ids = set(valid_by_id) - completed_ids - blocked_ids
+    return {
+        **watch_result,
+        "source_event_queue": {
+            "status": "success",
+            "schema_version": SOURCE_AVAILABLE_SCHEMA_VERSION,
+            "events_found": len(pending_events),
+            "events_valid": len(valid_events),
+            "events_invalid": len(invalid_rows),
+            "events_completed": len(completed_ids),
+            "events_blocked": len(blocked_ids),
+            "events_pending": len(pending_ids),
+            "invalid_rows": invalid_rows,
+        },
     }
 
 
@@ -721,19 +1093,51 @@ def advance_m2_state_with_source_events(
     updated = dict(state)
     blockers = _list_of_dicts(updated.get("open_blockers"))
     matched_events: list[dict[str, Any]] = []
+    blocked_events: list[dict[str, Any]] = []
     remaining_blockers: list[dict[str, Any]] = []
     for blocker in blockers:
         matching = _matching_resume_events(blocker, source_events)
-        if matching:
-            matched_events.extend(matching)
+        verified_matching = [event for event in matching if _source_event_is_verified(event)]
+        blocked_matching = [event for event in matching if not _source_event_is_verified(event)]
+        if verified_matching:
+            matched_events.extend(verified_matching)
+            continue
+        if blocked_matching:
+            blocked_events.extend(blocked_matching)
             continue
         remaining_blockers.append(blocker)
+
+    if blocked_events:
+        prior_events = _list_of_dicts(updated.get("source_events"))
+        updated["source_events"] = _dedupe_source_events([*prior_events, *blocked_events])
+        handoff_blockers = [
+            _document_registration_handoff_blocker(event)
+            for event in blocked_events
+            if _event_source_type(event)
+        ]
+        next_blockers = _dedupe_blockers([*remaining_blockers, *handoff_blockers])
+        updated["open_blockers"] = next_blockers
+        updated["m2_state"] = _state_name_from_blockers(next_blockers)
+        updated["status"] = "blocked"
+        updated["updated_at"] = now or _utc_now_iso()
+        return updated, {
+            "resumed": False,
+            "state_changed": True,
+            "m2_state": updated["m2_state"],
+            "matched_source_types": [],
+            "matched_source_event_ids": [],
+            "blocked_source_event_ids": _source_event_ids(blocked_events),
+            "next_actions": _next_actions_for_blockers(next_blockers),
+        }
 
     if not matched_events:
         return updated, {
             "resumed": False,
+            "state_changed": False,
             "m2_state": _text(updated.get("m2_state")),
             "matched_source_types": [],
+            "matched_source_event_ids": [],
+            "blocked_source_event_ids": [],
             "next_actions": _next_actions_for_blockers(blockers),
         }
 
@@ -754,8 +1158,11 @@ def advance_m2_state_with_source_events(
     updated["updated_at"] = now or _utc_now_iso()
     return updated, {
         "resumed": True,
+        "state_changed": True,
         "m2_state": updated["m2_state"],
         "matched_source_types": sorted({_event_source_type(event) for event in matched_events}),
+        "matched_source_event_ids": _source_event_ids(matched_events),
+        "blocked_source_event_ids": [],
         "next_actions": _next_actions_for_blockers(next_blockers),
     }
 
@@ -1026,6 +1433,33 @@ def _blocker(
     }
 
 
+def _document_registration_handoff_blocker(event: dict[str, Any]) -> dict[str, Any]:
+    source_type = _event_source_type(event)
+    document = event.get("document")
+    event_doc = document if isinstance(document, dict) else {}
+    title = _first_text(event_doc.get("title"), event.get("file_name"), source_type)
+    registration_status = _first_text(
+        event_doc.get("registration_status"),
+        event.get("registration_status"),
+        "unknown",
+    )
+    readback_status = _first_text(
+        event_doc.get("readback_status"),
+        event.get("readback_status"),
+        "not_verified",
+    )
+    return _blocker(
+        f"document_registration_handoff:{source_type}",
+        "blocked",
+        (
+            f"{title} arrived as {source_type}, but Rhodes registration/readback "
+            f"is not verified ({registration_status}/{readback_status})."
+        ),
+        {source_type},
+        "document_registration_handoff",
+    )
+
+
 def _matching_resume_events(
     blocker: dict[str, Any],
     source_events: Sequence[dict[str, Any]],
@@ -1094,15 +1528,39 @@ def _merge_registered_document_event(
     source_type = _event_source_type(event)
     if not source_type:
         return docs
+    raw_document = event.get("document")
+    event_doc = raw_document if isinstance(raw_document, dict) else {}
     document = {
         "source_type": source_type,
-        "title": _text(event.get("file_name") or event.get("name")) or source_type.replace("_", " ").title(),
-        "rhodes_doc_type": _rhodes_doc_type_for_source(source_type),
-        "drive_url": _text(event.get("drive_url") or event.get("webViewLink")),
-        "drive_file_id": _text(event.get("drive_file_id") or event.get("id")),
-        "registration_status": "registered",
-        "readback_status": "verified",
-        "readback_verified": True,
+        "title": _first_text(
+            event_doc.get("title"),
+            event.get("file_name"),
+            event.get("name"),
+            source_type.replace("_", " ").title(),
+        ),
+        "rhodes_doc_type": _first_text(
+            event_doc.get("rhodes_doc_type"),
+            event.get("rhodes_doc_type"),
+            _rhodes_doc_type_for_source(source_type),
+        ),
+        "drive_url": _first_text(event_doc.get("drive_url"), event.get("drive_url"), event.get("webViewLink")),
+        "drive_file_id": _first_text(event_doc.get("drive_file_id"), event.get("drive_file_id"), event.get("id")),
+        "registration_status": _first_text(
+            event_doc.get("registration_status"),
+            event.get("registration_status"),
+            "registered",
+        ),
+        "readback_status": _first_text(
+            event_doc.get("readback_status"),
+            event.get("readback_status"),
+            "verified",
+        ),
+        "readback_verified": bool(
+            event_doc.get("readback_verified")
+            or event_doc.get("readbackVerified")
+            or event.get("readback_verified")
+            or event.get("readbackVerified")
+        ),
         "fields_supported": [],
     }
     filtered = [doc for doc in docs if _normalized_source_type(doc) != source_type]
@@ -1134,11 +1592,56 @@ def _event_source_type(event: dict[str, Any]) -> str:
     )
 
 
+def _source_event_is_verified(event: dict[str, Any]) -> bool:
+    if _text(event.get("schema_version")) != SOURCE_AVAILABLE_SCHEMA_VERSION:
+        return True
+    raw_document = event.get("document")
+    document = raw_document if isinstance(raw_document, dict) else {}
+    registration_status = _first_text(
+        document.get("registration_status"),
+        event.get("registration_status"),
+    )
+    readback_status = _first_text(
+        document.get("readback_status"),
+        event.get("readback_status"),
+    )
+    readback_verified = bool(
+        document.get("readback_verified")
+        or document.get("readbackVerified")
+        or event.get("readback_verified")
+        or event.get("readbackVerified")
+    )
+    return registration_status in REGISTERED_DOCUMENT_STATUSES and (
+        readback_status in {"verified", "readback_verified", "found"}
+        or readback_verified
+    )
+
+
+def _source_event_ids(events: Sequence[dict[str, Any]]) -> list[str]:
+    return _dedupe(
+        [
+            _text(event.get("event_id"))
+            or _source_available_event_id(
+                site_id=_source_event_site_id(event),
+                source_type=_event_source_type(event),
+                fingerprint=_text(event.get("fingerprint")),
+            )
+            for event in events
+        ]
+    )
+
+
+def _source_event_site_id(event: dict[str, Any]) -> str:
+    site = event.get("site")
+    return _text(site.get("id")) if isinstance(site, dict) else ""
+
+
 def _dedupe_source_events(events: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
     for event in events:
         key = "|".join([
+            _text(event.get("event_id")),
             _event_source_type(event),
             _text(event.get("fingerprint")),
             _text(event.get("drive_file_id") or event.get("id")),
@@ -1219,6 +1722,33 @@ def _first_text(*values: Any) -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _source_available_event_id(*, site_id: str, source_type: str, fingerprint: str) -> str:
+    raw_key = "|".join([_text(site_id), _canonical_source_type(source_type), _text(fingerprint)])
+    return f"ddr-source-{hashlib.sha256(raw_key.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _source_event_fingerprint(
+    *,
+    site_id: str,
+    source_type: str,
+    document: Mapping[str, Any],
+) -> str:
+    return "|".join(
+        [
+            _text(site_id),
+            _canonical_source_type(source_type),
+            _first_text(
+                document.get("drive_file_id"),
+                document.get("driveFileId"),
+                document.get("file_id"),
+                document.get("fileId"),
+            ),
+            _first_text(document.get("drive_modified_time"), document.get("modifiedTime")),
+            _first_text(document.get("drive_url"), document.get("driveUrl"), document.get("url")),
+        ]
+    )
 
 
 def _document_id_for_key(key: str) -> str:

@@ -2,7 +2,7 @@
 
 **Version:** 4.4.0
 **Team:** EDU Ops Intelligence
-**Last Updated:** 2026-06-29
+**Last Updated:** 2026-07-01
 
 ---
 
@@ -19,8 +19,24 @@ Current V4.4 behavior:
 - The M2 source packet is complete only when required source docs are registered, writable DD fields are readback-verified, LocationOS schema gaps are explicitly held, and no required source gaps remain.
 - Source-packet completion proves evidence registration and DD-field write/readback status; it does not replace human/legal validation for source-sensitive code path, education approval, permit, lease, cost, schedule, or phasing assumptions.
 - Open verification items are stored as structured run state and rendered only as `Open Items to Verify` in the DDR body.
-- Existing DD data can be refreshed when a core source type changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, School Approval report, Opening Plan, Alpha Capacity Analysis, Outdoor Play Space Report, Security Due Diligence report, Phase 1 Phase 2 workbook, KH traffic analysis, CO/permit of record, measured floor plan, or LiDAR.
+- Existing DD data can be refreshed when a core source type changes: vendor SIR, Building Inspection, E-Occupancy report, School Approval report, Opening Plan, Alpha Capacity Analysis, Cost/Timeline Estimate, Outdoor Play Space Report, Security Due Diligence report, Phase 1 Phase 2 workbook, KH traffic analysis, CO/permit of record, measured floor plan, block plan, or LiDAR.
 - The active source sweep entrypoint is `uv run ddr source-sweep`; it scans active Rhodes sites with linked Drive folders and calls the shared `dd_republish` path. `scripts/vendor_doc_republish_sweep.py` remains a compatibility wrapper.
+- The active M2 progression loop is `uv run ddr m2 poll-events`, `uv run ddr m2 source-watch`, then `uv run ddr m2 execute-ready`. It consumes site-ready events plus canonical `ddr.source_available.v1` source events from Firestore, keeps per-site M2 state, and either runs the next deterministic step or records a blocker with `next_action`.
+
+### Event-driven M2 progression contract
+
+DDR uses two durable event contracts:
+
+- `aadp.site_ready_for_ddr.v1` starts DDR-owned M2 state after AADP has verified the site, Drive folder, and required initial Rhodes document registrations.
+- `ddr.source_available.v1` records each new or generated source artifact. Required fields are `schema_version`, `event_id`, `site`, `source_type`, `document`, `producer`, `fingerprint`, `status`, and `created_at`.
+
+`ddr.source_available.v1` events are SOR-safe only when `document.registration_status` is `registered` or `already_registered` and readback is verified. If a source is observed in Drive but registration/readback is missing, DDR records `document_registration_handoff` instead of advancing the source packet. This keeps Drive observation, Rhodes registration, DD-field write, and final readback as separate receipts.
+
+Human placement:
+
+- Automatic: source-event creation, deterministic state advancement, skill execution for configured factual/internal steps, and DD-field writes that have source-packet approval plus readback.
+- Human on exception: unmapped docs, failed or approval-gated `registerDocument`, failed or approval-gated `updateDueDiligence`, missing source evidence, or failed readback.
+- Human before action: external commitments, legal/lease/budget decisions, vendor approvals, or any message that represents Greg externally.
 
 Legacy mode summary:
 
@@ -46,7 +62,7 @@ The V4 DD view is a **structured executive one-pager** -- not the multi-page nar
 
 ### Phase 1 Phase 2 Workbook
 
-Run `apply_alpha_phasing_plan_skill` after the source reads and the E-Occupancy, School Approval, and RayCon context are available, but before `prepare_due_diligence_data`. This is an enrichment step, not a first-round publish blocker and not part of the final vendor-readiness gate.
+Run `apply_alpha_phasing_plan_skill` after the source reads and the E-Occupancy, School Approval, Alpha Capacity, and Cost/Timeline context are available, but before `prepare_due_diligence_data`. This is an enrichment step, not a first-round publish blocker and not part of the final vendor-readiness gate.
 
 The tool publishes an Excel workbook in the site's M1 folder, auto-registers the workbook on the Rhodes site record as a `phasing` support document for the `acquireProperty` milestone when `site_id` is available, and returns a source link plus a compact Buildout Analysis summary:
 
@@ -91,15 +107,14 @@ Delta analysis compares each scenario against Fastest Open:
 | Row | Max Capacity delta | Max Value delta |
 |-----|-------------------|----------------|
 
-Rules: capacity comes from Alpha Capacity Analysis or a RayCon scenario that
-explicitly carries Alpha Capacity Analysis provenance; RayCon owns construction
-cost and schedule. Cost = single midpoint number (not a range), timeline =
-MM/YY format only, and sourced team notes may override cost or schedule numbers
-only, not published capacity.
+Rules: capacity comes from Alpha Capacity Analysis. Cost and schedule come from
+the Cost/Timeline Estimate, Opening Plan, and source-backed team notes. Cost =
+single midpoint number (not a range), timeline = MM/YY format only, and sourced
+team notes may override cost or schedule numbers only, not published capacity.
 
 ### Detailed Cost Breakdown
 
-The report also carries a fixed-row cost table across the same three scenario columns. These rows are normalized from RayCon's variable category labels so the template layout stays stable:
+The report also carries a fixed-row cost table across the same three scenario columns. These rows are normalized from Cost/Timeline Estimate categories so the template layout stays stable:
 
 - Demolition
 - Framing / Doors
@@ -441,8 +456,8 @@ M2 skill tools analyze the source data and produce structured outputs. E-Occupan
 2. Uses the full extracted Block Plan text plus the Block Plan PDF itself when Drive file context is available, so image-only PDFs do not silently skip the capacity source of truth.
 3. Requires both capacity counts to mark the result successful; otherwise it returns `insufficient_evidence` with concrete open items.
 4. Publishes `Alpha Capacity Analysis - <site> - <block_plan_file_id>.json` in M1 when Drive context is available and registers it as `capacityCalculation` when `site_id` is available.
-5. RayCon consumes this JSON artifact for published capacity and student-scaled pricing; RayCon remains responsible for construction cost, schedule, and calculator audit evidence.
-6. If neither an existing artifact nor a newly generated artifact has both counts, DDR records `dispatch_skipped=capacity_analysis_not_available` and does not dispatch a no-capacity RayCon job from the automated Block Plan path.
+5. The M2 executor consumes this JSON artifact for FO/Max capacity writes and as an input to the Cost/Timeline Estimate step.
+6. If neither an existing artifact nor a newly generated artifact has both counts, DDR records `capacity_analysis_not_available` and blocks the M2 state with a concrete next action instead of continuing without capacity evidence.
 
 **Outdoor Play Space** - `apply_outdoor_play_space_skill(site_name, site_id, address, drive_folder_url, student_count, ...)`
 1. Runs `ops-skills:outdoor-play-space` with `--skip-drive-upload`.
@@ -526,7 +541,7 @@ legacy/optional render path for a human-readable view.
 
 **Source-read fallback:** If the pipeline does not know the Rhodes site ID, Rhodes cannot create the note, or the P1 DRI cannot be mentioned, the same `source_review_required` event body is posted to the configured Google Chat webhook.
 
-**Vendor-gate activity:** When the full vendor input set is present (vendor SIR, vendor Building Inspection, and a usable RayCon Scenario JSON) but report generation still fails or the generated report remains incomplete, the pipeline records a concise `DDR source review` site note in Rhodes. The note names the required input set and asks the owner to repair the source issue and rerun DDR. Run IDs, raw failure reasons, Drive folders, and trace links stay in the run manifest and structured event status.
+**Vendor-gate activity:** When the required vendor/source input set is present (vendor SIR, vendor Building Inspection, and registered M2 source artifacts) but report generation still fails or the generated report remains incomplete, the pipeline records a concise `DDR source review` site note in Rhodes. The note names the required input set and asks the owner to repair the source issue and rerun DDR. Run IDs, raw failure reasons, Drive folders, and trace links stay in the run manifest and structured event status.
 
 **Vendor-gate fallback:** If the pipeline does not know the Rhodes site ID, Rhodes cannot create the note, or the P1 DRI cannot be mentioned, the same `vendor_gate_review_required` event body is posted to the configured Google Chat webhook.
 

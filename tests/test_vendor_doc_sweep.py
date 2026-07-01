@@ -206,6 +206,45 @@ def test_sweep_triggers_republish_for_core_source_doc() -> None:
     assert callback.call_args.kwargs["source_event"]["source_type"] == "vendor_sir"
 
 
+def test_sweep_can_emit_canonical_source_event_receipt() -> None:
+    gc = MagicMock()
+    callback = MagicMock(
+        return_value={
+            "dd_report_republish": "skip_no_prior_report",
+            "republish_reason": "vendor_sir",
+            "content_fingerprint": "sir-1:2026-05-26T10:00:00Z",
+        }
+    )
+    source_event_emitter = MagicMock()
+    with patch(
+        "due_diligence_reporter.vendor_doc_sweep.collect_core_source_events",
+        return_value=[
+            {
+                "source_type": "vendor_sir",
+                "fingerprint": "sir-1:2026-05-26T10:00:00Z",
+                "doc_type": "sir",
+            }
+        ],
+    ):
+        result = run_vendor_doc_republish_sweep(
+            gc,
+            settings=MagicMock(),
+            system_prompt="prompt",
+            shared_cache={},
+            republish_state={},
+            site_records=[_site()],
+            republish_callback=callback,
+            source_event_emitter=source_event_emitter,
+        )
+
+    assert result["canonical_source_events"] == 1
+    assert result["source_event_errors"] == 0
+    assert result["rows"][0]["source_event_status"] == "emitted"
+    source_event_emitter.assert_called_once()
+    assert source_event_emitter.call_args.args[0]["id"] == "site-1"
+    assert source_event_emitter.call_args.args[1]["source_type"] == "vendor_sir"
+
+
 def test_sweep_skips_site_with_no_prior_report_without_error() -> None:
     gc = MagicMock()
     callback = MagicMock(
