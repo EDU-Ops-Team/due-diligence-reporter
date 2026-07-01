@@ -269,6 +269,46 @@ def test_execute_ready_dry_run_does_not_mutate_state(tmp_path) -> None:
     assert store.load() == before
 
 
+def test_execute_ready_canary_filter_only_executes_matching_site(tmp_path) -> None:
+    store = _capacity_ready_store(tmp_path)
+    state = store.load()
+    state["evt-2"] = {
+        **state["evt-1"],
+        "event_id": "evt-2",
+        "site": {
+            **state["evt-1"]["site"],
+            "id": "SITE2",
+            "name": "Alpha Other",
+        },
+    }
+    store.save(state)
+    adapters = FakeAdapters()
+
+    result = execute_ready_m2_states(
+        state_store=store,
+        apply=True,
+        adapters=adapters,
+        site_id="SITE2",
+    )
+
+    state = store.load()
+    assert result["states_checked"] == 1
+    assert result["rows"][0]["event_id"] == "evt-2"
+    assert state["evt-1"]["m2_state"] == "capacity_ready"
+    assert state["evt-2"]["m2_state"] == "complete"
+    assert adapters.calls == [
+        "alpha",
+        "write",
+        "cost",
+        "outdoor",
+        "opening",
+        "phasing",
+        "security",
+        "write",
+        "note",
+    ]
+
+
 def test_execute_ready_skips_unknown_blocked_next_action(tmp_path) -> None:
     store = _capacity_ready_store(tmp_path)
     state = store.load()

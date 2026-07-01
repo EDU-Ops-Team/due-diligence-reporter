@@ -102,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
     m2_poll.add_argument("--apply", action="store_true")
     m2_poll.add_argument("--limit", type=int, default=10)
     m2_poll.add_argument("--state-store", default=None)
+    m2_poll.add_argument("--site-id", default="")
+    m2_poll.add_argument("--event-id", default="")
     m2_poll.add_argument(
         "--skip-rhodes-readback",
         action="store_true",
@@ -114,6 +116,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     m2_watch.add_argument("--apply", action="store_true")
     m2_watch.add_argument("--state-store", default=None)
+    m2_watch.add_argument("--site-id", default="")
+    m2_watch.add_argument("--event-id", default="")
 
     m2_execute = m2_subparsers.add_parser(
         "execute-ready",
@@ -122,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
     m2_execute.add_argument("--apply", action="store_true")
     m2_execute.add_argument("--limit", type=int, default=10)
     m2_execute.add_argument("--state-store", default=None)
+    m2_execute.add_argument("--site-id", default="")
+    m2_execute.add_argument("--event-id", default="")
 
     notes_smoke_parser = subparsers.add_parser(
         "notes-smoke-test",
@@ -629,6 +635,8 @@ def _run_m2_poll_events(args: argparse.Namespace) -> int:
         limit=int(args.limit),
         verify_rhodes_readback=not bool(args.skip_rhodes_readback),
         document_lister=None if args.skip_rhodes_readback else _m2_rhodes_document_lister(),
+        site_id=str(args.site_id or ""),
+        event_id=str(args.event_id or ""),
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 1 if result.get("failed") else 0
@@ -642,7 +650,11 @@ def _run_m2_source_watch(args: argparse.Namespace) -> int:
 
     state_store = _m2_state_store(args)
     state = state_store.load()
-    site_ids = open_m2_site_ids(state)
+    site_ids = open_m2_site_ids(
+        state,
+        site_id=str(args.site_id or ""),
+        event_id=str(args.event_id or ""),
+    )
     if not site_ids:
         result = {
             "status": "success",
@@ -676,6 +688,8 @@ def _run_m2_source_watch(args: argparse.Namespace) -> int:
         state_store=state_store,
         source_events_by_site=events_by_site,
         apply=bool(args.apply),
+        site_id=str(args.site_id or ""),
+        event_id=str(args.event_id or ""),
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
@@ -686,6 +700,8 @@ def _run_m2_execute_ready(args: argparse.Namespace) -> int:
         state_store=_m2_state_store(args),
         apply=bool(args.apply),
         limit=int(args.limit),
+        site_id=str(args.site_id or ""),
+        event_id=str(args.event_id or ""),
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result.get("status") == "success" else 1

@@ -1,5 +1,59 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-01 - M2 Direct DD canary controls and smoke verification
+
+- Branch/worktree: `codex/ddr-adhoc-locationos-runner` at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-kdr`.
+- Request: reviewer/verifier pass to determine whether the repo-owned M2 Direct
+  DD process works and what should happen next.
+- Live smoke findings:
+  - Initial no-write GitHub Actions smoke failed in `Verify required secrets`
+    because the workflow interpolated multiline Firestore JSON directly into a
+    shell `[ -n ... ]` test.
+  - Fixed and pushed that workflow secret check, then re-ran the no-write M2
+    workflow successfully. Artifacts reported `status=success`, but with
+    `events_found=0`, `open_states_checked=0`, and `states_checked=0`, so the
+    workflow infrastructure is proven but no live M2 state was exercised.
+  - A read-only Drive/Rhodes reconciliation smoke for
+    `Alpha Miami Beach 300 71st 3rd` succeeded and found M1 source files, but
+    reported `would_register=13`, `already_registered=0`, and
+    `registered_verified=0`. That site is not ready for an M2 canary until the
+    required docs are registered/read back in Rhodes.
+- Changes:
+  - Added optional `--site-id` and `--event-id` canary selectors to
+    `uv run ddr m2 poll-events`, `source-watch`, and `execute-ready`.
+  - Firestore event polling applies filters before `limit`, so a targeted
+    event cannot be skipped because another pending event sorts first.
+  - Source watch and executor filtering now share the same state selector and
+    leave scheduled all-site behavior unchanged when selectors are omitted.
+  - Added `target_site_id` and `target_event_id` manual workflow inputs and
+    passed them through all three M2 workflow stages.
+- Validation:
+
+```powershell
+uv run pytest tests/test_m2_pipeline.py tests/test_m2_executor.py tests/test_ddr_cli.py tests/test_workflow_contracts.py
+uv run ruff check src/due_diligence_reporter/m2_pipeline.py src/due_diligence_reporter/m2_executor.py src/due_diligence_reporter/ddr_cli.py tests/test_m2_pipeline.py tests/test_m2_executor.py tests/test_ddr_cli.py tests/test_workflow_contracts.py
+uv run ruff check .
+uv run mypy src/
+git diff --check
+uv run pytest
+```
+
+Results: focused M2/CLI/workflow pytest passed (`63 passed`); scoped Ruff
+passed; full Ruff passed; full mypy passed for `51 source files`;
+`git diff --check` passed with normal Windows LF-to-CRLF warnings only; full
+pytest passed (`1324 passed, 13 skipped`).
+
+Operational next step:
+
+- Do not run broad `apply=true` for M2 yet. First prepare one canary site by
+  registering and verifying the minimum AADP handoff documents in Rhodes,
+  enqueue or seed one `aadp.site_ready_for_ddr.v1` event, run the M2 workflow
+  with `apply=false` plus `target_site_id`/`target_event_id`, inspect artifacts,
+  then run `apply=true` only for that same selector if the dry-run names the
+  intended site/event.
+
 ## 2026-07-01 - Security Due Diligence M2 source gate
 
 - Branch/worktree: current checkout at

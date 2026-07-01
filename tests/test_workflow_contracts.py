@@ -318,6 +318,12 @@ def test_m2_direct_dd_workflow_uses_firestore_event_queue_and_state_store() -> N
     assert "M2_DD_STATE_FIRESTORE_DATABASE" in text
     assert "M2_DD_STATE_FIRESTORE_COLLECTION" in text
     assert "ddrM2DirectDdState" in text
+    assert "target_site_id:" in text
+    assert "target_event_id:" in text
+    assert 'TARGET_SITE_ID="${INPUT_TARGET_SITE_ID:-}"' in shell
+    assert 'TARGET_EVENT_ID="${INPUT_TARGET_EVENT_ID:-}"' in shell
+    assert 'ARGS+=(--site-id "$TARGET_SITE_ID")' in shell
+    assert 'ARGS+=(--event-id "$TARGET_EVENT_ID")' in shell
     assert "m2-execute-ready.json" in text
 
 

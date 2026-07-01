@@ -235,8 +235,16 @@ class FirestoreM2EventQueue:
         self.database = database.strip() or DEFAULT_FIRESTORE_DATABASE
         self.session = session or build_authorized_session()
 
-    def pending_events(self, *, limit: int = 10) -> list[dict[str, Any]]:
+    def pending_events(
+        self,
+        *,
+        limit: int = 10,
+        site_id: str = "",
+        event_id: str = "",
+    ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
+        target_site_id = _text(site_id)
+        target_event_id = _text(event_id)
         for document in self._list_documents():
             fields = document.get("fields")
             if not isinstance(fields, dict):
@@ -245,6 +253,12 @@ class FirestoreM2EventQueue:
             if _text(event.get("schema_version")) != M2_EVENT_SCHEMA_VERSION:
                 continue
             if _text(event.get("status")) != "pending":
+                continue
+            if target_event_id and _text(event.get("event_id")) != target_event_id:
+                continue
+            site = event.get("site")
+            event_site_id = _text(site.get("id")) if isinstance(site, dict) else ""
+            if target_site_id and event_site_id != target_site_id:
                 continue
             document_id = _document_id_from_document(document)
             if document_id:
@@ -583,10 +597,12 @@ def poll_m2_events(
     limit: int = 10,
     verify_rhodes_readback: bool = False,
     document_lister: DocumentLister | None = None,
+    site_id: str = "",
+    event_id: str = "",
 ) -> dict[str, Any]:
     """Consume pending Firestore M2 events and update event/state status."""
 
-    events = event_queue.pending_events(limit=limit)
+    events = event_queue.pending_events(limit=limit, site_id=site_id, event_id=event_id)
     rows: list[dict[str, Any]] = []
     for event in events:
         event_id = _text(event.get("event_id"))
@@ -638,6 +654,8 @@ def watch_m2_sources(
     source_events_by_site: Mapping[str, Sequence[dict[str, Any]]],
     apply: bool = False,
     now: str | None = None,
+    site_id: str = "",
+    event_id: str = "",
 ) -> dict[str, Any]:
     """Resume only open M2 states whose current blockers match new source events."""
 
@@ -645,25 +663,32 @@ def watch_m2_sources(
     state = state_store.load()
     rows: list[dict[str, Any]] = []
     changed = False
-    for event_id, entry in state.items():
+    for state_event_id, entry in state.items():
         if not m2_state_is_open(entry):
+            continue
+        if not m2_state_matches_filters(
+            state_event_id,
+            entry,
+            site_id=site_id,
+            event_id=event_id,
+        ):
             continue
         raw_site = entry.get("site")
         site = raw_site if isinstance(raw_site, dict) else {}
-        site_id = _text(site.get("id"))
-        events = list(source_events_by_site.get(site_id, ()))
+        entry_site_id = _text(site.get("id"))
+        events = list(source_events_by_site.get(entry_site_id, ()))
         updated, row = advance_m2_state_with_source_events(
             entry,
             events,
             now=timestamp,
         )
-        row["event_id"] = event_id
-        row["site_id"] = site_id
+        row["event_id"] = state_event_id
+        row["site_id"] = entry_site_id
         rows.append(row)
         if row["resumed"]:
             changed = True
             if apply:
-                state[event_id] = updated
+                state[state_event_id] = updated
 
     if apply and changed:
         state_store.save(state)
@@ -733,21 +758,54 @@ def m2_state_is_open(state: dict[str, Any]) -> bool:
     return _text(state.get("m2_state")) in OPEN_M2_STATES
 
 
-def open_m2_site_ids(state: dict[str, dict[str, Any]]) -> list[str]:
+def open_m2_site_ids(
+    state: dict[str, dict[str, Any]],
+    *,
+    site_id: str = "",
+    event_id: str = "",
+) -> list[str]:
     """Return unique Rhodes site IDs with open M2 state."""
 
     site_ids: list[str] = []
     seen: set[str] = set()
-    for entry in state.values():
+    for state_event_id, entry in state.items():
         if not m2_state_is_open(entry):
             continue
-        site = entry.get("site")
-        site_id = _text(site.get("id")) if isinstance(site, dict) else ""
-        if not site_id or site_id in seen:
+        if not m2_state_matches_filters(
+            state_event_id,
+            entry,
+            site_id=site_id,
+            event_id=event_id,
+        ):
             continue
-        seen.add(site_id)
-        site_ids.append(site_id)
+        site = entry.get("site")
+        entry_site_id = _text(site.get("id")) if isinstance(site, dict) else ""
+        if not entry_site_id or entry_site_id in seen:
+            continue
+        seen.add(entry_site_id)
+        site_ids.append(entry_site_id)
     return site_ids
+
+
+def m2_state_matches_filters(
+    state_event_id: str,
+    state: dict[str, Any],
+    *,
+    site_id: str = "",
+    event_id: str = "",
+) -> bool:
+    """Return True when an M2 state matches optional canary selectors."""
+
+    target_event_id = _text(event_id)
+    if target_event_id and _text(state_event_id) != target_event_id:
+        return False
+    target_site_id = _text(site_id)
+    if target_site_id:
+        site = state.get("site")
+        entry_site_id = _text(site.get("id")) if isinstance(site, dict) else ""
+        if entry_site_id != target_site_id:
+            return False
+    return True
 
 
 def m2_state_summary(state: dict[str, Any]) -> dict[str, Any]:

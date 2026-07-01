@@ -17,7 +17,7 @@ from .alpha_capacity_analysis import generate_alpha_capacity_analysis_artifact
 from .config import get_settings
 from .google_client import GoogleClient
 from .m1_lookup import _resolve_m1_folder
-from .m2_pipeline import M2StateStore, m2_state_is_open
+from .m2_pipeline import M2StateStore, m2_state_is_open, m2_state_matches_filters
 from .rhodes import (
     RhodesClient,
     add_rhodes_site_note,
@@ -123,6 +123,8 @@ def execute_ready_m2_states(
     limit: int = 10,
     adapters: M2ExecutorAdapters | None = None,
     now: str | None = None,
+    site_id: str = "",
+    event_id: str = "",
 ) -> dict[str, Any]:
     """Execute open M2 states that are ready for DDR-owned automation."""
 
@@ -132,21 +134,28 @@ def execute_ready_m2_states(
     changed = False
     remaining = max(limit, 0)
 
-    for event_id, entry in state.items():
+    for state_event_id, entry in state.items():
         if remaining <= 0:
             break
+        if not m2_state_matches_filters(
+            state_event_id,
+            entry,
+            site_id=site_id,
+            event_id=event_id,
+        ):
+            continue
         if not _is_executor_ready(entry):
             continue
         remaining -= 1
         if not apply:
-            rows.append(_preview_row(event_id, entry))
+            rows.append(_preview_row(state_event_id, entry))
             continue
         runner = adapters or LiveM2ExecutorAdapters()
         updated, row = execute_m2_state(entry, adapters=runner, now=timestamp)
-        row["event_id"] = event_id
+        row["event_id"] = state_event_id
         rows.append(row)
         if row.get("changed"):
-            state[event_id] = updated
+            state[state_event_id] = updated
             changed = True
 
     if apply and changed:

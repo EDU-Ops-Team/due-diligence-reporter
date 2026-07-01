@@ -148,6 +148,10 @@ def test_ddr_m2_poll_events_dispatches_with_apply(monkeypatch, capsys) -> None:
         "--apply",
         "--limit",
         "2",
+        "--site-id",
+        "SITE2",
+        "--event-id",
+        "evt-2",
         "--skip-rhodes-readback",
     ])
 
@@ -157,7 +161,39 @@ def test_ddr_m2_poll_events_dispatches_with_apply(monkeypatch, capsys) -> None:
     assert calls[0]["event_queue"] is queue
     assert calls[0]["state_store"] is store
     assert calls[0]["limit"] == 2
+    assert calls[0]["site_id"] == "SITE2"
+    assert calls[0]["event_id"] == "evt-2"
     assert calls[0]["verify_rhodes_readback"] is False
+
+
+def test_ddr_m2_source_watch_dispatches_canary_filters(monkeypatch, capsys) -> None:
+    calls = []
+
+    class Store:
+        def load(self):
+            return {}
+
+    monkeypatch.setattr(ddr_cli, "build_m2_state_store", lambda *args: Store())
+
+    def fake_open_site_ids(state, **kwargs):
+        calls.append(("open", state, kwargs))
+        return []
+
+    monkeypatch.setattr(ddr_cli, "open_m2_site_ids", fake_open_site_ids)
+
+    exit_code = ddr_cli.main([
+        "m2",
+        "source-watch",
+        "--site-id",
+        "SITE2",
+        "--event-id",
+        "evt-2",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["open_states_checked"] == 0
+    assert calls[0][2] == {"site_id": "SITE2", "event_id": "evt-2"}
 
 
 def test_ddr_m2_execute_ready_dispatches_with_apply(monkeypatch, capsys) -> None:
@@ -185,6 +221,10 @@ def test_ddr_m2_execute_ready_dispatches_with_apply(monkeypatch, capsys) -> None
         "--apply",
         "--limit",
         "3",
+        "--site-id",
+        "SITE2",
+        "--event-id",
+        "evt-2",
     ])
 
     payload = json.loads(capsys.readouterr().out)
@@ -192,6 +232,8 @@ def test_ddr_m2_execute_ready_dispatches_with_apply(monkeypatch, capsys) -> None
     assert payload["apply"] is True
     assert calls[0]["state_store"] is store
     assert calls[0]["limit"] == 3
+    assert calls[0]["site_id"] == "SITE2"
+    assert calls[0]["event_id"] == "evt-2"
 
 
 def test_ddr_notes_smoke_test_resolves_owner_and_writes_headless_note(

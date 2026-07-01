@@ -27,6 +27,16 @@ on:
         options:
           - 'true'
           - 'false'
+      target_site_id:
+        description: 'Optional Rhodes site ID canary filter'
+        required: false
+        default: ''
+        type: string
+      target_event_id:
+        description: 'Optional M2 event ID canary filter'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: m2-direct-dd-events
@@ -194,11 +204,21 @@ jobs:
         env:
           INPUT_APPLY: ${{ inputs.apply }}
           INPUT_MAX_EVENTS: ${{ inputs.max_events }}
+          INPUT_TARGET_SITE_ID: ${{ inputs.target_site_id }}
+          INPUT_TARGET_EVENT_ID: ${{ inputs.target_event_id }}
         run: |
           set -euo pipefail
           APPLY="${INPUT_APPLY:-true}"
           MAX_EVENTS="${INPUT_MAX_EVENTS:-10}"
+          TARGET_SITE_ID="${INPUT_TARGET_SITE_ID:-}"
+          TARGET_EVENT_ID="${INPUT_TARGET_EVENT_ID:-}"
           ARGS=(m2 poll-events --limit "$MAX_EVENTS")
+          if [ -n "$TARGET_SITE_ID" ]; then
+            ARGS+=(--site-id "$TARGET_SITE_ID")
+          fi
+          if [ -n "$TARGET_EVENT_ID" ]; then
+            ARGS+=(--event-id "$TARGET_EVENT_ID")
+          fi
           if [ "$APPLY" = "true" ]; then
             ARGS+=(--apply)
           fi
@@ -208,15 +228,25 @@ jobs:
         env:
           INPUT_APPLY: ${{ inputs.apply }}
           INPUT_RUN_SOURCE_WATCH: ${{ inputs.run_source_watch }}
+          INPUT_TARGET_SITE_ID: ${{ inputs.target_site_id }}
+          INPUT_TARGET_EVENT_ID: ${{ inputs.target_event_id }}
         run: |
           set -euo pipefail
           APPLY="${INPUT_APPLY:-true}"
           RUN_SOURCE_WATCH="${INPUT_RUN_SOURCE_WATCH:-true}"
+          TARGET_SITE_ID="${INPUT_TARGET_SITE_ID:-}"
+          TARGET_EVENT_ID="${INPUT_TARGET_EVENT_ID:-}"
           if [ "$RUN_SOURCE_WATCH" != "true" ]; then
             echo '{"status":"skipped","reason":"source_watch_disabled"}' | tee m2-source-watch.json
             exit 0
           fi
           ARGS=(m2 source-watch)
+          if [ -n "$TARGET_SITE_ID" ]; then
+            ARGS+=(--site-id "$TARGET_SITE_ID")
+          fi
+          if [ -n "$TARGET_EVENT_ID" ]; then
+            ARGS+=(--event-id "$TARGET_EVENT_ID")
+          fi
           if [ "$APPLY" = "true" ]; then
             ARGS+=(--apply)
           fi
@@ -226,11 +256,21 @@ jobs:
         env:
           INPUT_APPLY: ${{ inputs.apply }}
           INPUT_MAX_EVENTS: ${{ inputs.max_events }}
+          INPUT_TARGET_SITE_ID: ${{ inputs.target_site_id }}
+          INPUT_TARGET_EVENT_ID: ${{ inputs.target_event_id }}
         run: |
           set -euo pipefail
           APPLY="${INPUT_APPLY:-true}"
           MAX_EVENTS="${INPUT_MAX_EVENTS:-10}"
+          TARGET_SITE_ID="${INPUT_TARGET_SITE_ID:-}"
+          TARGET_EVENT_ID="${INPUT_TARGET_EVENT_ID:-}"
           ARGS=(m2 execute-ready --limit "$MAX_EVENTS")
+          if [ -n "$TARGET_SITE_ID" ]; then
+            ARGS+=(--site-id "$TARGET_SITE_ID")
+          fi
+          if [ -n "$TARGET_EVENT_ID" ]; then
+            ARGS+=(--event-id "$TARGET_EVENT_ID")
+          fi
           if [ "$APPLY" = "true" ]; then
             ARGS+=(--apply)
           fi

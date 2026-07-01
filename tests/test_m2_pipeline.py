@@ -180,6 +180,42 @@ def test_source_watch_resumes_only_matching_open_site(tmp_path) -> None:
     assert state["evt-2"]["m2_state"] == "waiting_for_capacity_source"
 
 
+def test_source_watch_canary_filters_open_states(tmp_path) -> None:
+    store = JsonM2StateStore(tmp_path / "state.json")
+    consume_site_ready_event(_site_ready_event(), state_store=store)
+    second = _site_ready_event()
+    second["event_id"] = "evt-2"
+    second["site"]["id"] = "SITE2"
+    second["site"]["name"] = "Alpha Other"
+    consume_site_ready_event(second, state_store=store)
+
+    result = watch_m2_sources(
+        state_store=store,
+        source_events_by_site={
+            "SITE1": [
+                {
+                    "source_type": "block_plan",
+                    "doc_type": "block_plan",
+                    "fingerprint": "block-1:2026-06-30T12:00:00Z",
+                    "drive_file_id": "block-1",
+                    "drive_url": "https://drive.example/block-1",
+                    "file_name": "Block Plan - Alpha Test.pdf",
+                }
+            ]
+        },
+        apply=True,
+        site_id="SITE2",
+        now="2026-06-30T12:00:00Z",
+    )
+
+    state = store.load()
+    assert result["open_states_checked"] == 1
+    assert result["resumed"] == 0
+    assert result["rows"][0]["event_id"] == "evt-2"
+    assert state["evt-1"]["m2_state"] == "waiting_for_capacity_source"
+    assert state["evt-2"]["m2_state"] == "waiting_for_capacity_source"
+
+
 def test_source_watch_ignores_raycon_events(tmp_path) -> None:
     store = JsonM2StateStore(tmp_path / "state.json")
     consume_site_ready_event(_site_ready_event(), state_store=store)
@@ -273,6 +309,30 @@ def test_firestore_event_queue_polls_pending_events_and_updates_status(tmp_path)
         if document_id == "evt-1"
     ]
     assert patched_statuses == ["processing", "blocked"]
+
+
+def test_poll_m2_events_canary_filters_before_limit(tmp_path) -> None:
+    session = FakeFirestoreSession()
+    session.documents["evt-1"] = encode_firestore_fields(_site_ready_event())
+    second = _site_ready_event()
+    second["event_id"] = "evt-2"
+    second["site"]["id"] = "SITE2"
+    second["site"]["name"] = "Alpha Other"
+    session.documents["evt-2"] = encode_firestore_fields(second)
+    store = JsonM2StateStore(tmp_path / "state.json")
+    queue = FirestoreM2EventQueue(project_id="project", session=session)
+
+    result = poll_m2_events(
+        event_queue=queue,
+        state_store=store,
+        apply=False,
+        limit=1,
+        site_id="SITE2",
+    )
+
+    assert result["events_found"] == 1
+    assert result["rows"][0]["event_id"] == "evt-2"
+    assert store.load() == {}
 
 
 def test_json_state_store_ignores_corrupt_state(tmp_path) -> None:
