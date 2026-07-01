@@ -80,11 +80,13 @@ class FakeAdapters:
         packet_write_status: str = "updated",
         fail_source_step: str = "",
         note_status: str = "created",
+        phase_source_type: str = "alpha_phasing_plan_report",
     ) -> None:
         self.capacity_write_status = capacity_write_status
         self.packet_write_status = packet_write_status
         self.fail_source_step = fail_source_step
         self.note_status = note_status
+        self.phase_source_type = phase_source_type
         self.calls: list[str] = []
         self.write_calls: list[dict[str, Any]] = []
 
@@ -196,7 +198,7 @@ class FakeAdapters:
                 "site_square_footage_confirmed": "Measured plan confirms SF.",
             },
             supporting_documents=[
-                _doc("alpha_phasing_plan_report", "Phase 1 Phase 2", "phasing"),
+                _doc(self.phase_source_type, "Phase 1 Phase 2", "phasing"),
                 _doc("traffic_analysis", "Traffic Analysis", "other"),
                 _doc("measured_floor_plan", "Measured Floor Plan", "floorPlan"),
             ],
@@ -308,6 +310,22 @@ def test_execute_ready_canary_filter_only_executes_matching_site(tmp_path) -> No
         "write",
         "note",
     ]
+
+
+def test_phase_scope_register_source_type_alias_completes_packet(tmp_path) -> None:
+    store = _capacity_ready_store(tmp_path)
+    adapters = FakeAdapters(phase_source_type="phase_scope_register")
+
+    execute_ready_m2_states(state_store=store, apply=True, adapters=adapters)
+
+    state = store.load()["evt-1"]
+    docs = {
+        doc["title"]: doc["source_type"]
+        for doc in state["source_packet"]["supporting_documents"]
+    }
+
+    assert state["m2_state"] == "complete"
+    assert docs["Phase 1 Phase 2"] == "alpha_phasing_plan_report"
 
 
 def test_execute_ready_skips_unknown_blocked_next_action(tmp_path) -> None:

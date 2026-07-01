@@ -13,9 +13,11 @@ The Due Diligence Reporter is an AI agent powered by Claude that prepares direct
 Current V4.4 behavior:
 
 - First-round readiness is `SIR found AND no existing DD source packet`. Missing vendor docs do not block the first direct-field publish.
+- SIR candidate permit/phase traces are first-round handoff evidence, not a first-round publish blocker and not final Phase 1 / Phase 2 truth.
 - Rhodes / LocationOS is the source of truth for site ID, Drive folder URL, P1 DRI / site owner, and registered document links.
 - M2 closure uses registered supporting documents plus per-field DD writes. A rendered DDR is optional presentation, not the source of truth.
 - The M2 source packet is complete only when required source docs are registered, writable DD fields are readback-verified, LocationOS schema gaps are explicitly held, and no required source gaps remain.
+- Source-packet completion proves evidence registration and DD-field write/readback status; it does not replace human/legal validation for source-sensitive code path, education approval, permit, lease, cost, schedule, or phasing assumptions.
 - Open verification items are stored as structured run state and rendered only as `Open Items to Verify` in the DDR body.
 - Existing DD data can be refreshed when a core source type changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, School Approval report, Opening Plan, Alpha Capacity Analysis, Outdoor Play Space Report, Security Due Diligence report, Alpha Phasing Plan, KH traffic analysis, CO/permit of record, measured floor plan, or LiDAR.
 - The active source sweep entrypoint is `uv run ddr source-sweep`; it scans active Rhodes sites with linked Drive folders and calls the shared `dd_republish` path. `scripts/vendor_doc_republish_sweep.py` remains a compatibility wrapper.
@@ -232,7 +234,7 @@ For each unprocessed email with PDF attachments:
 
 Current Phase 2 behavior uses the matched Rhodes site record from Phase 1 (`site_title`, `matched_site_id`, address, and Drive folder URL). Older references below to site matching being inactive are stale and retained only until this process doc is fully cleaned up.
 
-Rhodes registration is a non-blocking post-upload side effect. If registration fails or Rhodes is unavailable, the Drive upload remains successful and the scan summary records the Rhodes registration failure for operator follow-up. The scanner retries Rhodes registration on later runs; after the original attempt plus two retries, it writes a concise `Document filing review` note to the Rhodes site. The note mentions the P1 DRI when a Rhodes user ID can be resolved. If no owner can be notified in Rhodes, or the note write fails, the same concise event body is posted to the configured Google Chat webhook.
+Rhodes registration is a non-blocking post-upload side effect, but approval-gated or unavailable registration paths use the document-registration handoff pattern. After DDR has created or found the artifact and has a human-openable Drive URL, it attempts `registerDocument`. If the registration path cannot complete because it needs approval, OAuth, or another eligible LocationOS/Aerie handoff, DDR writes and reads back one grouped Rhodes site note for the owner. Multi-artifact skills group all eligible document-registration failures from that run into one note instead of writing one note per artifact. The note body is optimized for copy/paste into Aerie: `Site:`, `Address:`, `Documents to register:`, then each document display name and Drive URL. File IDs, doc types, milestones, blockers, Gmail IDs, and task keys stay in the receipt/manifest. When the note and owner mention read back, the automation-owned work can complete with `rhodes_registration_status=pending_user_action`, `human_followup_required=true`, and `human_followup_type=document_registration`. Missing artifact URLs, ambiguous site identity, unresolved owner/fallback routing, note-write failure, or note-readback failure remain hard blockers.
 
 Registration retry state is persisted through a store boundary. Local development defaults to `.rhodes_registration_retry_state.json`; scheduled/production runs should set `RHODES_RETRY_STATE_STORE=firestore` and `RHODES_RETRY_STATE_FIRESTORE_PROJECT_ID=<project>` so retry attempts, Rhodes note IDs, and Google Chat fallback metadata survive runner changes. GitHub Actions can provide those values through repository variables plus the optional `GCP_FIRESTORE_SERVICE_ACCOUNT_JSON` secret, which is written to `GOOGLE_APPLICATION_CREDENTIALS` for the scan step. If Firestore is unconfigured or unavailable, the scanner falls back to the local JSON file and keeps filing documents.
 
@@ -432,6 +434,7 @@ M2 skill tools analyze the source data and produce structured outputs. E-Occupan
 2. Reuses an existing M1 Opening Plan when present, so republish runs do not create duplicates.
 3. Publishes a Google Doc in the site's M1 folder and registers it on Rhodes as `other` / `acquireProperty` when the pipeline has a `site_id`.
 4. Returns `sources.opening_plan_link` for inclusion in the DDR Referenced Reports table.
+5. Owns the final Fast Open / Max Plan opening dates and the final Permit-Scope Trace / Phase Scope Register. The Cost/Timeline Estimate remains required supporting schedule/cost evidence for source-packet writes; it does not override the Opening Plan's final opening-date call.
 
 **Alpha Capacity Analysis** - `apply_alpha_capacity_analysis_skill(site_name, site_address, block_plan_content, drive_folder_url, block_plan_file_id, total_building_sf)`
 1. Loads hosted `alpha-capacity-analysis` skill instructions and Microschool / 250+ rulesets from Ops-Skills.
@@ -461,6 +464,7 @@ M2 skill tools analyze the source data and produce structured outputs. E-Occupan
 4. Registers the workbook on Rhodes as `phasing` / `acquireProperty` when the pipeline has a `site_id`.
 5. Returns `sources.alpha_phasing_plan_link` and compact `exec.alpha_phasing_*` summary fields.
 6. If minimum inputs are missing, returns concrete `verification.open_items` and does not publish generic Phase II scope.
+7. DDR normalizes `phase-1-phase-2`, `Phase 1 Phase 2`, `Phase Scope Register`, and `phasing` document aliases to the canonical `alpha_phasing_plan_report` source type so the M2 source packet can unlock CapEx and building fields.
 
 ---
 
@@ -482,6 +486,8 @@ M2 skill tools analyze the source data and produce structured outputs. E-Occupan
 3. **Build source packet** - Combines `supporting_documents[]` with normalized values to produce `dd_field_updates[]`, source holds, and concise source-note lines.
 
 4. **Return diagnostics** - Returns applied replacement counts, unmatched keys, unfilled tokens, normalized report data, and the M2 source packet to the pipeline.
+
+**Skill output contract:** analytical skills must return machine-readable `supporting_documents[]` entries, not only prose statements that an artifact was linked. Each entry needs a canonical `source_type`, title, Drive link or file ID, Rhodes doc type, and registration/readback status so the source packet can decide which DD fields are writable.
 
 **Token evidence:** As the agent reads each source document, it builds a parallel `evidence` dict recording the raw excerpt supporting each token value. Evidence is kept in the local run manifest instead of publishing a companion trace file.
 

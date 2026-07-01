@@ -81,8 +81,13 @@ from .report_schema import (
     normalize_report_data,
 )
 from .retry import retry_config
-from .rhodes import lookup_rhodes_site_owner as _lookup_rhodes_site_owner
-from .rhodes import register_rhodes_document_for_upload
+from .rhodes import (
+    create_document_registration_handoff_for_uploads,
+    register_rhodes_document_for_upload,
+)
+from .rhodes import (
+    lookup_rhodes_site_owner as _lookup_rhodes_site_owner,
+)
 from .school_approval_skill import (
     SchoolApprovalSkillError,
     load_school_approval_skill,
@@ -2213,6 +2218,7 @@ async def apply_outdoor_play_space_skill(
 
             supporting_documents: list[SourceDocumentRef] = []
             artifact_results: dict[str, dict[str, Any]] = {}
+            registration_attempts: list[dict[str, Any]] = []
             for label, path in artifacts.items():
                 if label == "drive_manifest":
                     continue
@@ -2231,9 +2237,12 @@ async def apply_outdoor_play_space_skill(
                     title=title,
                     drive_file_id=drive_file_id,
                     drive_url=drive_url,
+                    site_name=site_name,
+                    site_address=address,
                     mime_type=_outdoor_play_mime_type(label),
                     original_filename=path.name,
                     source="apply_outdoor_play_space_skill",
+                    handoff_on_registration_failure=False,
                 )
                 artifact_results[label] = {
                     "drive_file_id": drive_file_id,
@@ -2241,12 +2250,68 @@ async def apply_outdoor_play_space_skill(
                     "title": title,
                     "rhodes_registration": registration,
                 }
+                registration_attempts.append(
+                    {
+                        **registration,
+                        "ddr_doc_type": "outdoor_play_space_report",
+                        "title": title,
+                        "drive_file_id": drive_file_id,
+                        "drive_url": drive_url,
+                        "mime_type": _outdoor_play_mime_type(label),
+                        "original_filename": path.name,
+                        "source": "apply_outdoor_play_space_skill",
+                    }
+                )
+
+            document_registration_handoff = create_document_registration_handoff_for_uploads(
+                site_id=site_id,
+                site_name=site_name,
+                site_address=address,
+                documents=registration_attempts,
+            )
+            if document_registration_handoff.get("status") == "failed":
+                return {
+                    "status": "blocked",
+                    "error": "Document registration handoff failed",
+                    "message": str(
+                        document_registration_handoff.get("error")
+                        or document_registration_handoff.get("reason")
+                        or "Document registration handoff failed"
+                    ),
+                    "artifacts": artifact_results,
+                    "document_registration_handoff": document_registration_handoff,
+                }
+            if document_registration_handoff.get("status") == "created":
+                pending_file_ids = {
+                    str(document.get("file_id") or "").strip()
+                    for document in document_registration_handoff.get("documents", [])
+                    if isinstance(document, dict)
+                }
+                for artifact in artifact_results.values():
+                    if str(artifact.get("drive_file_id") or "").strip() not in pending_file_ids:
+                        continue
+                    registration = artifact["rhodes_registration"]
+                    if isinstance(registration, dict):
+                        registration.update(
+                            {
+                                "status": "pending_user_action",
+                                "reason": "handoff_note_created",
+                                "rhodes_registration_status": "pending_user_action",
+                                "human_followup_required": True,
+                                "human_followup_type": "document_registration",
+                                "remaining_work": [],
+                                "document_registration_handoff": document_registration_handoff,
+                            }
+                        )
+
+            for artifact in artifact_results.values():
+                registration = artifact["rhodes_registration"]
                 supporting_documents.append(
                     SourceDocumentRef(
                         source_type="outdoor_play_space_report",
-                        title=title,
-                        drive_url=drive_url,
-                        drive_file_id=drive_file_id,
+                        title=str(artifact.get("title") or ""),
+                        drive_url=str(artifact.get("drive_url") or ""),
+                        drive_file_id=str(artifact.get("drive_file_id") or ""),
                         rhodes_doc_type=str(registration.get("rhodes_doc_type") or "other"),
                         quality_bar=str(
                             registration.get("rhodes_quality_bar") or "outdoorRecreation"
@@ -2307,6 +2372,8 @@ async def apply_outdoor_play_space_skill(
                 "play_space_result": play_data,
                 "message": "Outdoor Play Space source packet artifacts uploaded and registered.",
             }
+            if document_registration_handoff.get("status") == "created":
+                result["document_registration_handoff"] = document_registration_handoff
             if not final_student_count:
                 result["open_items"] = [
                     (

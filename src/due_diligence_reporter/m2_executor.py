@@ -35,6 +35,7 @@ from .source_packet import (
     mark_written_fields_from_update_result,
     source_packet_is_complete,
 )
+from .source_types import canonical_source_type
 from .utils import extract_text_from_pdf_bytes
 
 logger = logging.getLogger(__name__)
@@ -1179,16 +1180,7 @@ def _int_from_text(value: Any) -> int | None:
 
 
 def _canonical_source_type(value: str) -> str:
-    normalized = value.strip().replace("-", "_")
-    aliases = {
-        "initial_cost_estimate": "cost_timeline_estimate",
-        "initialcostestimate": "cost_timeline_estimate",
-        "cost_and_timeline_estimate": "cost_timeline_estimate",
-        "security_due_diligence": "security_due_diligence_report",
-        "securityduediligence": "security_due_diligence_report",
-        "securityduediligencereport": "security_due_diligence_report",
-    }
-    return aliases.get(normalized, aliases.get(normalized.casefold(), normalized))
+    return canonical_source_type(value)
 
 
 def _dict(value: Any) -> dict[str, Any]:

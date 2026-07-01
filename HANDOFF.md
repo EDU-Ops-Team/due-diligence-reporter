@@ -1,5 +1,114 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-01 - Grouped document-registration handoff for multi-artifact skills
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-5ow`.
+- Request: avoid one Rhodes handoff note per artifact when a skill produces
+  multiple documents and direct document registration is approval-gated.
+- Changes:
+  - Added `create_document_registration_handoff_for_uploads(...)` as a shared
+    batch finalizer in `src/due_diligence_reporter/rhodes.py`.
+  - The single-document helper still owns the default policy. Batch callers can
+    set `handoff_on_registration_failure=False`, collect attempted
+    registrations, and then write one grouped note for all eligible
+    `pending_user_action` documents.
+  - `apply_outdoor_play_space_skill` now registers each generated artifact with
+    per-artifact handoff disabled, then finalizes one grouped handoff for the
+    Markdown, JSON, PNG, and HTML artifacts if registration is approval-gated.
+  - Updated `docs/process/HOW-IT-WORKS.md` to state that multi-artifact skills
+    group eligible document-registration failures into one note per run.
+- Validation:
+
+```powershell
+uv run pytest tests/test_outdoor_play_space_tool.py tests/test_rhodes.py -k "document_registration_handoff or register_rhodes_document_for_upload or outdoor_play_space_skill"
+uv run ruff check src\due_diligence_reporter\rhodes.py src\due_diligence_reporter\server.py tests\test_rhodes.py tests\test_outdoor_play_space_tool.py
+uv run mypy src/
+uv run ruff check .
+uv run pytest
+```
+
+Results: focused grouped-handoff tests passed (`10 passed`); scoped Ruff
+passed; full mypy passed for `52 source files`; full Ruff passed; full pytest
+passed (`1332 passed, 13 skipped`).
+
+## 2026-07-01 - Phase Scope Register aliases for M2 source packets
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-uka` (closed).
+- Request: evaluate PR 142's Ops-Skills changes against the DDR due
+  diligence process, explain the real-world impact, and add the agreed
+  alignment fixes.
+- Changes:
+  - Added shared DDR source-type canonicalization in
+    `src/due_diligence_reporter/source_types.py`.
+  - Normalized `phase-1-phase-2`, `Phase 1 Phase 2`, `Phase Scope Register`,
+    and Rhodes `phasing` aliases to canonical `alpha_phasing_plan_report` in
+    source-packet, M2 executor, and M2 pipeline paths.
+  - Updated classifier keyword routing so files named `Phase Scope Register`
+    or `Phase 1 Phase 2` are recognized as phasing source artifacts.
+  - Documented the process boundary: SIR candidate traces are first-round
+    handoff evidence, Opening Plan owns final opening dates and phase truth,
+    Cost/Timeline remains required supporting evidence, source-packet
+    completion does not replace human/legal validation, and skills must return
+    machine-readable `supporting_documents[]` entries for DDR field writes.
+- Validation:
+
+```powershell
+uv run pytest tests/test_source_packet.py tests/test_m2_executor.py tests/test_classifier_keywords.py
+uv run ruff check src/due_diligence_reporter/source_types.py src/due_diligence_reporter/source_packet.py src/due_diligence_reporter/m2_executor.py src/due_diligence_reporter/m2_pipeline.py src/due_diligence_reporter/classifier.py tests/test_source_packet.py tests/test_m2_executor.py tests/test_classifier_keywords.py
+uv run mypy src/
+uv run pytest
+uv run ruff check .
+git diff --check
+```
+
+Results: focused pytest passed (`72 passed`); scoped Ruff passed; full mypy
+passed for `52 source files`; full pytest passed (`1330 passed, 13 skipped`);
+full Ruff passed; `git diff --check` passed with normal Windows LF-to-CRLF
+warnings only.
+
+## 2026-07-01 - Document registration handoff pattern adopted
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-t3o`.
+- Request: adopt the AADP document-registration handoff pattern for DDR:
+  automation should finish artifact/Drive-owned work, then write a Rhodes note
+  so a human can complete Aerie/Rhodes document registration when direct
+  registration is approval-gated or unavailable.
+- Changes:
+  - `register_rhodes_document_for_upload(...)` still returns `registered` /
+    `already_registered` for successful direct registration.
+  - Eligible approval/OAuth/unavailable `registerDocument` errors with a
+    human-openable Drive URL now create and read back a grouped Rhodes site
+    note before returning `status=pending_user_action`.
+  - The handoff note follows the copy/paste contract:
+    `Site`, `Address`, `Documents to register`, then document title and Drive
+    URL only. File IDs, doc types, milestones, Gmail IDs, task/source keys, and
+    raw blockers remain in the structured receipt.
+  - Owner routing uses the site P1/site owner first and resolves Greg Foote as
+    fallback when no owner route is available. Missing owner/fallback, missing
+    URL, missing site name/address, note-write failure, or note-readback failure
+    remain failed/blocking.
+  - Updated `docs/process/HOW-IT-WORKS.md` with the new operating contract.
+- Validation:
+
+```powershell
+uv run pytest tests/test_rhodes.py -k "register_rhodes_document_for_upload"
+uv run pytest tests/test_rhodes.py
+uv run ruff check src\due_diligence_reporter\rhodes.py tests\test_rhodes.py
+uv run mypy src/
+uv run ruff check .
+uv run pytest
+```
+
+Results: focused registration tests passed (`6 passed`); full Rhodes tests
+passed (`41 passed`); scoped Ruff passed; full mypy passed for `51 source
+files`; full Ruff passed; full pytest passed (`1327 passed, 13 skipped`).
+
 ## 2026-07-01 - M2 Direct DD canary controls and smoke verification
 
 - Branch/worktree: `codex/ddr-adhoc-locationos-runner` at

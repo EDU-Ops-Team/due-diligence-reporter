@@ -224,6 +224,30 @@ def test_cost_timeline_source_is_required_for_dates_and_capex() -> None:
     assert updates["max_plan_capex"]["write_status"] == "blocked"
 
 
+def test_phase_scope_register_alias_satisfies_phasing_source_requirements() -> None:
+    packet = build_m2_source_packet(
+        values={
+            "exec.fastest_open_capex": "$125,000",
+            "exec.max_capacity_capex": "$250,000",
+            "exec.building_score": "2",
+            "exec.building_comment": "Phase II scope tracked.",
+        },
+        supporting_documents=[
+            _registered("phase_scope_register", "Phase Scope Register"),
+            _registered("cost_timeline_estimate", "Cost/Timeline Estimate"),
+        ],
+    )
+
+    docs = {doc["title"]: doc for doc in packet["supporting_documents"]}
+    updates = {row["field"]: row for row in packet["dd_field_updates"]}
+
+    assert docs["Phase Scope Register"]["source_type"] == "alpha_phasing_plan_report"
+    assert updates["fast_open_capex"]["write_status"] == "pending"
+    assert updates["max_plan_capex"]["write_status"] == "pending"
+    assert updates["building_score"]["write_status"] == "pending"
+    assert updates["building_comment"]["write_status"] == "pending"
+
+
 def test_locationos_filter_holds_completion_fields_until_packet_complete() -> None:
     filtered = locationos_fields_allowed_by_source_packet(
         {

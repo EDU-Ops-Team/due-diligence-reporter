@@ -125,6 +125,8 @@ def classify_by_keywords(filename: str) -> tuple[str, float]:
     if (
         "alpha phasing plan" in name
         or re.search(r"\bphasing[-_\s]+plan\b", name)
+        or re.search(r"\bphase[-_\s]+scope[-_\s]+register\b", name)
+        or re.search(r"\bphase[-_\s]*1[-_\s]+phase[-_\s]*2\b", name)
         or ("phase i" in name and "phase ii" in name and "quality" in name)
     ):
         return "alpha_phasing_plan_report", 0.95

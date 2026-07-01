@@ -23,6 +23,7 @@ from .source_packet import (
     SourceDocumentRef,
     build_m2_source_packet,
 )
+from .source_types import canonical_source_type
 
 logger = logging.getLogger(__name__)
 
@@ -935,21 +936,7 @@ def _normalized_source_type(doc: dict[str, Any]) -> str:
 
 
 def _canonical_source_type(value: str) -> str:
-    normalized = value.strip().replace("-", "_")
-    aliases = {
-        "site_investigation_report": "sir",
-        "siteinvestigationreport": "sir",
-        "school_approval": "school_approval_report",
-        "schoolapprovalreport": "school_approval_report",
-        "regulatoryapproval": "school_approval_report",
-        "capacitycalculation": "alpha_capacity_analysis",
-        "initialcostestimate": "cost_timeline_estimate",
-        "initial_cost_estimate": "cost_timeline_estimate",
-        "security_due_diligence": "security_due_diligence_report",
-        "securityduediligence": "security_due_diligence_report",
-        "securityduediligencereport": "security_due_diligence_report",
-    }
-    return aliases.get(normalized, aliases.get(normalized.casefold(), normalized))
+    return canonical_source_type(value)
 
 
 def _document_is_verified(doc: dict[str, Any]) -> bool:

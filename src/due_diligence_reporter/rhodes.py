@@ -18,7 +18,20 @@ RHODES_TIMEOUT_SECONDS = 20.0
 DRIVE_FOLDER_URL_PREFIX = "https://drive.google.com/drive/folders/"
 LOCATIONOS_NOT_CONFIGURED_REASON = "locationos_mcp_not_configured"
 NOTES_API_NOT_CONFIGURED_REASON = "aerie_notes_api_not_configured"
+DOCUMENT_REGISTRATION_PENDING_USER_ACTION = "pending_user_action"
+DOCUMENT_REGISTRATION_FOLLOWUP_TYPE = "document_registration"
+DOCUMENT_REGISTRATION_FALLBACK_OWNER_EMAIL = "greg.foote@trilogy.com"
 REQUEST_ID_RE = re.compile(r"Request ID:\s*([A-Za-z0-9-]+)")
+DOCUMENT_REGISTRATION_HANDOFF_ERROR_MARKERS = (
+    "approval",
+    "confirmation",
+    "elicitation",
+    "oauth",
+    "user cancelled",
+    "permission denied",
+    "not configured",
+    "missing locationos mcp bearer token",
+)
 
 
 class RhodesError(RuntimeError):
@@ -2114,6 +2127,455 @@ def map_ddr_doc_type_to_rhodes(ddr_doc_type: str) -> RhodesDocumentMapping | Non
     return DDR_DOC_TYPE_TO_RHODES.get(ddr_doc_type.strip())
 
 
+def _registration_error_is_handoff_eligible(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return any(marker in message for marker in DOCUMENT_REGISTRATION_HANDOFF_ERROR_MARKERS)
+
+
+def _build_document_registration_handoff_note_body(
+    *,
+    site_name: str,
+    site_address: str,
+    documents: Iterable[dict[str, str]],
+) -> str:
+    lines = [
+        f"Site: {site_name.strip()}",
+        f"Address: {site_address.strip()}",
+        "Documents to register:",
+    ]
+    for document in documents:
+        lines.append(str(document.get("display_name") or "").strip())
+        lines.append(f"  Drive: {str(document.get('url') or '').strip()}")
+    return "\n".join(lines)
+
+
+def _resolve_document_registration_handoff_owner(
+    *,
+    site: dict[str, Any],
+    owner_user_id: str,
+    owner_email: str,
+    fallback_owner_email: str,
+    rhodes: RhodesClient | None,
+) -> dict[str, Any]:
+    clean_owner_user_id = owner_user_id.strip()
+    clean_owner_email = owner_email.strip()
+    fallback_used = False
+
+    site_owner = _extract_p1_dri(site)
+    if not clean_owner_user_id:
+        clean_owner_user_id = site_owner.get("userId", "")
+    if not clean_owner_email:
+        clean_owner_email = site_owner.get("email", "")
+
+    if not clean_owner_user_id and clean_owner_email and rhodes is not None:
+        try:
+            clean_owner_user_id = _user_id(rhodes.get_user(email=clean_owner_email) or {})
+        except RhodesError:
+            clean_owner_user_id = ""
+
+    if not clean_owner_user_id and fallback_owner_email.strip():
+        fallback_used = True
+        clean_owner_email = fallback_owner_email.strip()
+        if rhodes is not None:
+            try:
+                clean_owner_user_id = _user_id(
+                    rhodes.get_user(email=clean_owner_email) or {}
+                )
+            except RhodesError:
+                clean_owner_user_id = ""
+
+    return {
+        "owner_user_id": clean_owner_user_id,
+        "owner_email": clean_owner_email,
+        "fallback_owner_used": fallback_used,
+    }
+
+
+def _create_document_registration_handoff_for_documents(
+    *,
+    site_id: str,
+    site_name: str,
+    site_address: str,
+    site_slug: str,
+    documents: list[dict[str, Any]],
+    owner_user_id: str,
+    owner_email: str,
+    fallback_owner_email: str,
+    rhodes: RhodesClient | None,
+    mcp_note_client: RhodesClient | None,
+    notes_client: AerieNotesClient | None,
+) -> dict[str, Any]:
+    clean_site_id = site_id.strip()
+    if not documents:
+        return {
+            "status": "skipped",
+            "reason": "no_documents",
+            "error": "Document registration handoff requires at least one document.",
+        }
+    missing_urls = [
+        str(document.get("display_name") or document.get("file_name") or "").strip()
+        for document in documents
+        if not str(document.get("url") or "").strip()
+    ]
+    if missing_urls:
+        return {
+            "status": "failed",
+            "reason": "missing_artifact_url",
+            "error": "Document registration handoff requires a human-openable artifact URL.",
+            "documents": documents,
+            "missing_url_documents": missing_urls,
+        }
+
+    site: dict[str, Any] = {}
+    site_lookup_error = ""
+    if rhodes is not None:
+        try:
+            site = rhodes.get_site(
+                site_id=clean_site_id or None,
+                slug=site_slug.strip() or None,
+            )
+        except RhodesError as exc:
+            site_lookup_error = str(exc)
+
+    resolved_site_name = site_name.strip() or _site_name(site)
+    resolved_site_address = site_address.strip() or _site_address(site)
+    resolved_site_slug = site_slug.strip() or str(site.get("slug") or "").strip()
+    if not resolved_site_name:
+        return {
+            "status": "failed",
+            "reason": "missing_site_name",
+            "error": "Document registration handoff requires a site name.",
+            "site_lookup_error": site_lookup_error,
+        }
+    if not resolved_site_address:
+        return {
+            "status": "failed",
+            "reason": "missing_site_address",
+            "error": "Document registration handoff requires a site address.",
+            "site_lookup_error": site_lookup_error,
+        }
+
+    owner = _resolve_document_registration_handoff_owner(
+        site=site,
+        owner_user_id=owner_user_id,
+        owner_email=owner_email,
+        fallback_owner_email=fallback_owner_email,
+        rhodes=rhodes,
+    )
+    if not owner["owner_user_id"]:
+        return {
+            "status": "failed",
+            "reason": "owner_route_unresolved",
+            "error": "Document registration handoff requires a P1/site owner or fallback owner user ID.",
+            "owner_email": owner["owner_email"],
+            "fallback_owner_used": owner["fallback_owner_used"],
+            "site_lookup_error": site_lookup_error,
+        }
+
+    note_body = _build_document_registration_handoff_note_body(
+        site_name=resolved_site_name,
+        site_address=resolved_site_address,
+        documents=[
+            {
+                "display_name": str(document.get("display_name") or "").strip(),
+                "url": str(document.get("url") or "").strip(),
+            }
+            for document in documents
+        ],
+    )
+    note = add_rhodes_site_note(
+        site_id=clean_site_id,
+        site_slug=resolved_site_slug,
+        body=note_body,
+        owner_user_id=owner["owner_user_id"],
+        owner_email=owner["owner_email"],
+        client=mcp_note_client,
+        notes_client=notes_client,
+        automation_source="document_registration_handoff",
+    )
+    if note.get("status") != "created":
+        return {
+            "status": "failed",
+            "reason": "handoff_note_failed",
+            "error": str(note.get("error") or note.get("reason") or "note_write_failed"),
+            "note": note,
+            "note_body": note_body,
+            "documents": documents,
+            "site_lookup_error": site_lookup_error,
+        }
+
+    result = {
+        "status": "created",
+        "reason": "handoff_note_created",
+        "note_status": note.get("status"),
+        "note_readback_status": str(_dict_get(note.get("readback"), "status") or ""),
+        "rhodes_note_id": str(note.get("rhodes_note_id") or ""),
+        "readback": note.get("readback"),
+        "mentioned_owner_user_ids": _unique_nonempty(
+            str(value) for value in note.get("mentioned_user_ids", [])
+        )
+        if isinstance(note.get("mentioned_user_ids"), list)
+        else [],
+        "owner_user_id": owner["owner_user_id"],
+        "owner_email": owner["owner_email"],
+        "fallback_owner_used": owner["fallback_owner_used"],
+        "document_count": len(documents),
+        "documents": documents,
+        "human_followup_required": True,
+        "human_followup_type": DOCUMENT_REGISTRATION_FOLLOWUP_TYPE,
+        "rhodes_registration_status": DOCUMENT_REGISTRATION_PENDING_USER_ACTION,
+        "remaining_work": [],
+        "note_body": note_body,
+        "site_name": resolved_site_name,
+        "site_address": resolved_site_address,
+        "site_slug": resolved_site_slug,
+        "site_lookup_error": site_lookup_error,
+    }
+    message_ids = _unique_nonempty(str(document.get("message_id") or "") for document in documents)
+    attachment_ids = _unique_nonempty(
+        str(document.get("attachment_id") or "") for document in documents
+    )
+    if message_ids:
+        result["message_ids"] = message_ids
+    if attachment_ids:
+        result["attachment_ids"] = attachment_ids
+    if len(documents) == 1:
+        result["message_id"] = str(documents[0].get("message_id") or "").strip()
+        result["attachment_id"] = str(documents[0].get("attachment_id") or "").strip()
+    return result
+
+
+def _document_registration_handoff_item(
+    *,
+    ddr_doc_type: str,
+    mapping: RhodesDocumentMapping,
+    title: str,
+    drive_file_id: str,
+    drive_url: str,
+    mime_type: str,
+    original_filename: str,
+    source: str,
+    message_id: str,
+    attachment_id: str,
+    registration_error: Exception | str,
+) -> dict[str, Any]:
+    clean_title = title.strip() or original_filename.strip() or ddr_doc_type.strip()
+    return {
+        "display_name": clean_title,
+        "url": drive_url.strip(),
+        "file_id": drive_file_id.strip(),
+        "file_name": original_filename.strip() or clean_title,
+        "ddr_doc_type": ddr_doc_type.strip(),
+        "docType": mapping.doc_type,
+        "milestone": mapping.milestone or "",
+        "quality_bar": mapping.quality_bar or "",
+        "mime_type": mime_type.strip(),
+        "task_key": source.strip(),
+        "message_id": message_id.strip(),
+        "attachment_id": attachment_id.strip(),
+        "registration_blocker": str(registration_error),
+        "registration_status": DOCUMENT_REGISTRATION_PENDING_USER_ACTION,
+        "human_followup_required": True,
+        "human_followup_type": DOCUMENT_REGISTRATION_FOLLOWUP_TYPE,
+    }
+
+
+def _create_document_registration_handoff(
+    *,
+    site_id: str,
+    site_name: str,
+    site_address: str,
+    site_slug: str,
+    ddr_doc_type: str,
+    mapping: RhodesDocumentMapping,
+    title: str,
+    drive_file_id: str,
+    drive_url: str,
+    mime_type: str,
+    original_filename: str,
+    source: str,
+    message_id: str,
+    attachment_id: str,
+    registration_error: Exception,
+    owner_user_id: str,
+    owner_email: str,
+    fallback_owner_email: str,
+    rhodes: RhodesClient | None,
+    mcp_note_client: RhodesClient | None,
+    notes_client: AerieNotesClient | None,
+) -> dict[str, Any]:
+    return _create_document_registration_handoff_for_documents(
+        site_id=site_id,
+        site_name=site_name,
+        site_address=site_address,
+        site_slug=site_slug,
+        documents=[
+            _document_registration_handoff_item(
+                ddr_doc_type=ddr_doc_type,
+                mapping=mapping,
+                title=title,
+                drive_file_id=drive_file_id,
+                drive_url=drive_url,
+                mime_type=mime_type,
+                original_filename=original_filename,
+                source=source,
+                message_id=message_id,
+                attachment_id=attachment_id,
+                registration_error=registration_error,
+            )
+        ],
+        owner_user_id=owner_user_id,
+        owner_email=owner_email,
+        fallback_owner_email=fallback_owner_email,
+        rhodes=rhodes,
+        mcp_note_client=mcp_note_client,
+        notes_client=notes_client,
+    )
+
+
+def create_document_registration_handoff_for_uploads(
+    *,
+    site_id: str,
+    documents: Iterable[dict[str, Any]],
+    site_name: str = "",
+    site_address: str = "",
+    site_slug: str = "",
+    owner_user_id: str = "",
+    owner_email: str = "",
+    fallback_owner_email: str = DOCUMENT_REGISTRATION_FALLBACK_OWNER_EMAIL,
+    notes_client: AerieNotesClient | None = None,
+    client: RhodesClient | None = None,
+) -> dict[str, Any]:
+    """Write one grouped human handoff note for eligible registration failures."""
+
+    handoff_documents: list[dict[str, Any]] = []
+    for raw_document in documents:
+        registration = _dict_get(raw_document, "registration") or _dict_get(
+            raw_document, "rhodes_registration"
+        )
+        if not isinstance(registration, dict):
+            registration = raw_document
+        status = str(registration.get("status") or raw_document.get("status") or "").strip()
+        error = str(registration.get("error") or raw_document.get("error") or "").strip()
+        if (
+            status != "failed"
+            or not _registration_error_is_handoff_eligible(Exception(error))
+        ):
+            continue
+
+        ddr_doc_type = str(
+            raw_document.get("ddr_doc_type")
+            or registration.get("ddr_doc_type")
+            or raw_document.get("source_type")
+            or ""
+        ).strip()
+        mapping = map_ddr_doc_type_to_rhodes(ddr_doc_type)
+        if mapping is None:
+            rhodes_doc_type = str(
+                raw_document.get("rhodes_doc_type")
+                or registration.get("rhodes_doc_type")
+                or ""
+            ).strip()
+            if not rhodes_doc_type:
+                return {
+                    "status": "failed",
+                    "reason": "missing_document_metadata",
+                    "error": "Document registration handoff requires a Rhodes doc type.",
+                    "documents": [raw_document],
+                }
+            mapping = RhodesDocumentMapping(
+                rhodes_doc_type,
+                milestone=str(
+                    raw_document.get("rhodes_milestone")
+                    or registration.get("rhodes_milestone")
+                    or ""
+                ).strip()
+                or None,
+                quality_bar=str(
+                    raw_document.get("rhodes_quality_bar")
+                    or registration.get("rhodes_quality_bar")
+                    or ""
+                ).strip()
+                or None,
+            )
+
+        handoff_documents.append(
+            _document_registration_handoff_item(
+                ddr_doc_type=ddr_doc_type,
+                mapping=mapping,
+                title=str(raw_document.get("title") or raw_document.get("name") or "").strip(),
+                drive_file_id=str(
+                    raw_document.get("drive_file_id")
+                    or registration.get("drive_file_id")
+                    or ""
+                ).strip(),
+                drive_url=str(
+                    raw_document.get("drive_url")
+                    or raw_document.get("url")
+                    or registration.get("drive_url")
+                    or ""
+                ).strip(),
+                mime_type=str(
+                    raw_document.get("mime_type")
+                    or registration.get("mime_type")
+                    or ""
+                ).strip(),
+                original_filename=str(
+                    raw_document.get("original_filename")
+                    or raw_document.get("file_name")
+                    or ""
+                ).strip(),
+                source=str(raw_document.get("source") or registration.get("source") or "").strip(),
+                message_id=str(
+                    raw_document.get("message_id")
+                    or registration.get("message_id")
+                    or ""
+                ).strip(),
+                attachment_id=str(
+                    raw_document.get("attachment_id")
+                    or registration.get("attachment_id")
+                    or ""
+                ).strip(),
+                registration_error=error,
+            )
+        )
+
+    if not handoff_documents:
+        return {"status": "skipped", "reason": "no_eligible_registration_failures"}
+
+    rhodes: RhodesClient | None = None
+    rhodes_error = ""
+    try:
+        rhodes = client or RhodesClient()
+    except RhodesError as exc:
+        rhodes_error = str(exc)
+
+    handoff = _create_document_registration_handoff_for_documents(
+        site_id=site_id,
+        site_name=site_name,
+        site_address=site_address,
+        site_slug=site_slug,
+        documents=handoff_documents,
+        owner_user_id=owner_user_id,
+        owner_email=owner_email,
+        fallback_owner_email=fallback_owner_email,
+        rhodes=rhodes,
+        mcp_note_client=(
+            client
+            if client is not None and not isinstance(client, RhodesClient)
+            else None
+        ),
+        notes_client=notes_client,
+    )
+    if rhodes_error:
+        handoff["rhodes_client_error"] = rhodes_error
+    return handoff
+
+
+def _dict_get(value: Any, key: str) -> Any:
+    return value.get(key) if isinstance(value, dict) else None
+
+
 def register_rhodes_document_for_upload(
     *,
     site_id: str,
@@ -2121,11 +2583,19 @@ def register_rhodes_document_for_upload(
     title: str,
     drive_file_id: str,
     drive_url: str = "",
+    site_name: str = "",
+    site_address: str = "",
+    site_slug: str = "",
     mime_type: str = "application/pdf",
     original_filename: str = "",
     source: str = "inbox_scanner",
     message_id: str = "",
     attachment_id: str = "",
+    owner_user_id: str = "",
+    owner_email: str = "",
+    fallback_owner_email: str = DOCUMENT_REGISTRATION_FALLBACK_OWNER_EMAIL,
+    notes_client: AerieNotesClient | None = None,
+    handoff_on_registration_failure: bool = True,
     client: RhodesClient | None = None,
 ) -> dict[str, Any]:
     """Idempotently register a DDR-uploaded Drive file on a Rhodes site.
@@ -2153,6 +2623,7 @@ def register_rhodes_document_for_upload(
     if mapping is None:
         return {**base, "status": "skipped", "reason": "unmapped_doc_type"}
 
+    rhodes: RhodesClient | None = None
     try:
         rhodes = client or RhodesClient()
         existing = rhodes.find_document_by_drive_file_id(
@@ -2189,6 +2660,67 @@ def register_rhodes_document_for_upload(
             ),
         )
     except RhodesError as exc:
+        if (
+            handoff_on_registration_failure
+            and drive_url.strip()
+            and _registration_error_is_handoff_eligible(exc)
+        ):
+            handoff = _create_document_registration_handoff(
+                site_id=clean_site_id,
+                site_name=site_name,
+                site_address=site_address,
+                site_slug=site_slug,
+                ddr_doc_type=ddr_doc_type,
+                mapping=mapping,
+                title=title,
+                drive_file_id=clean_drive_file_id,
+                drive_url=drive_url,
+                mime_type=mime_type,
+                original_filename=original_filename,
+                source=source,
+                message_id=message_id,
+                attachment_id=attachment_id,
+                registration_error=exc,
+                owner_user_id=owner_user_id,
+                owner_email=owner_email,
+                fallback_owner_email=fallback_owner_email,
+                rhodes=rhodes,
+                mcp_note_client=(
+                    client
+                    if client is not None and not isinstance(client, RhodesClient)
+                    else None
+                ),
+                notes_client=notes_client,
+            )
+            if handoff.get("status") == "created":
+                return {
+                    **base,
+                    "status": DOCUMENT_REGISTRATION_PENDING_USER_ACTION,
+                    "reason": "handoff_note_created",
+                    "error": str(exc),
+                    "rhodes_registration_status": DOCUMENT_REGISTRATION_PENDING_USER_ACTION,
+                    "human_followup_required": True,
+                    "human_followup_type": DOCUMENT_REGISTRATION_FOLLOWUP_TYPE,
+                    "remaining_work": [],
+                    "document_registration_handoff": handoff,
+                }
+            return {
+                **base,
+                "status": "failed",
+                "reason": "registration_handoff_failed",
+                "error": str(exc),
+                "rhodes_registration_status": "failed",
+                "human_followup_required": True,
+                "human_followup_type": DOCUMENT_REGISTRATION_FOLLOWUP_TYPE,
+                "remaining_work": [
+                    {
+                        "type": DOCUMENT_REGISTRATION_FOLLOWUP_TYPE,
+                        "status": "blocked",
+                        "reason": str(handoff.get("reason") or "handoff_failed"),
+                    }
+                ],
+                "document_registration_handoff": handoff,
+            }
         return {**base, "status": "failed", "reason": "rhodes_error", "error": str(exc)}
     except Exception as exc:  # noqa: BLE001 - non-fatal scanner side effect
         return {**base, "status": "failed", "reason": "unexpected_error", "error": str(exc)}

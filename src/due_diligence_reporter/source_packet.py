@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass
 from dataclasses import field as dataclass_field
 from typing import Any
 
+from .source_types import canonical_source_type
+
 REGISTERED_DOCUMENT_STATUSES = frozenset({"registered", "already_registered"})
 
 SCHEMA_GAP_CONFIRMATION_FIELDS = frozenset(
@@ -607,9 +609,13 @@ def _source_doc_is_registered_and_mapped(doc: SourceDocumentRef) -> bool:
 
 def _coerce_source_document(raw: SourceDocumentRef | dict[str, Any]) -> SourceDocumentRef:
     if isinstance(raw, SourceDocumentRef):
-        return raw
+        data = raw.to_dict()
+        data["source_type"] = canonical_source_type(raw.source_type)
+        return SourceDocumentRef(**data)
     return SourceDocumentRef(
-        source_type=str(raw.get("source_type") or raw.get("doc_type") or "").strip(),
+        source_type=canonical_source_type(
+            str(raw.get("source_type") or raw.get("doc_type") or "").strip()
+        ),
         title=str(raw.get("title") or raw.get("name") or "").strip(),
         drive_url=str(raw.get("drive_url") or raw.get("doc_url") or "").strip(),
         drive_file_id=str(raw.get("drive_file_id") or raw.get("doc_id") or "").strip(),

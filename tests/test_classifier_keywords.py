@@ -204,6 +204,12 @@ class TestClassifyByKeywordsAlphaPhasingPlan:
             0.95,
         )
 
+    def test_phase_scope_register(self):
+        assert classify_by_keywords("Phase Scope Register - Alpha Keller.xlsx") == (
+            "alpha_phasing_plan_report",
+            0.95,
+        )
+
     def test_phase_i_phase_ii_quality_plan(self):
         assert classify_by_keywords("Phase I Phase II Quality Bar Plan - Alpha Keller.xlsx") == (
             "alpha_phasing_plan_report",

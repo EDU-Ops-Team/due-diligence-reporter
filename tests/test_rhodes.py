@@ -9,6 +9,7 @@ from due_diligence_reporter.rhodes import (
     RhodesClient,
     RhodesError,
     add_rhodes_site_note,
+    create_document_registration_handoff_for_uploads,
     list_rhodes_site_records,
     lookup_rhodes_site_owner,
     map_ddr_doc_type_to_rhodes,
@@ -43,6 +44,7 @@ class FakeRhodesClient:
         note_responses: list[dict[str, Any] | None] | None = None,
         due_diligence_response: dict[str, Any] | None = None,
         due_diligence_exception: Exception | None = None,
+        registration_exception: Exception | None = None,
     ) -> None:
         self.site = site or {}
         self.resolved_site = resolved_site
@@ -52,6 +54,7 @@ class FakeRhodesClient:
         self.note_responses = list(note_responses or [])
         self.due_diligence_response = due_diligence_response
         self.due_diligence_exception = due_diligence_exception
+        self.registration_exception = registration_exception
         self.documents: list[dict[str, Any]] = []
         self.registered_documents: list[dict[str, Any]] = []
         self.notes: list[dict[str, Any]] = []
@@ -126,6 +129,8 @@ class FakeRhodesClient:
         quality_bar: str | None = None,
         notes: str = "",
     ) -> dict[str, Any]:
+        if self.registration_exception is not None:
+            raise self.registration_exception
         self.calls.append(
             (
                 "register_document",
@@ -871,6 +876,204 @@ def test_register_rhodes_document_for_upload_handles_missing_config(monkeypatch)
     assert result["status"] == "failed"
     assert result["reason"] == "rhodes_error"
     assert "LocationOS MCP bearer token" in result["error"]
+
+
+def test_register_rhodes_document_for_upload_handoffs_approval_gated_registration() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "slug": "alpha-test",
+            "address": "123 Main St, Denver, CO 80202",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        registration_exception=RhodesError("Action requires confirmation"),
+    )
+
+    result = register_rhodes_document_for_upload(
+        site_id="SITE1",
+        ddr_doc_type="sir",
+        title="Alpha Test SIR.pdf",
+        drive_file_id="drive-file-1",
+        drive_url="https://drive.google.com/file/d/drive-file-1/view",
+        original_filename="Alpha Test SIR source.pdf",
+        message_id="gmail-msg-1",
+        attachment_id="att-1",
+        source="m2_executor",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    expected_body = (
+        "Site: Alpha Test\n"
+        "Address: 123 Main St, Denver, CO 80202\n"
+        "Documents to register:\n"
+        "Alpha Test SIR.pdf\n"
+        "  Drive: https://drive.google.com/file/d/drive-file-1/view"
+    )
+    handoff = result["document_registration_handoff"]
+    document = handoff["documents"][0]
+
+    assert result["status"] == "pending_user_action"
+    assert result["rhodes_registration_status"] == "pending_user_action"
+    assert result["human_followup_required"] is True
+    assert result["human_followup_type"] == "document_registration"
+    assert result["remaining_work"] == []
+    assert handoff["status"] == "created"
+    assert handoff["note_body"] == expected_body
+    assert handoff["note_readback_status"] == "verified"
+    assert handoff["rhodes_note_id"] == "NOTE1"
+    assert handoff["mentioned_owner_user_ids"] == ["OWNER1"]
+    assert document["file_id"] == "drive-file-1"
+    assert document["file_name"] == "Alpha Test SIR source.pdf"
+    assert document["docType"] == "siteInvestigationReport"
+    assert document["milestone"] == "acquireProperty"
+    assert document["task_key"] == "m2_executor"
+    assert document["registration_status"] == "pending_user_action"
+    assert document["human_followup_required"] is True
+    assert document["human_followup_type"] == "document_registration"
+    assert "Drive file ID" not in handoff["note_body"]
+    assert "siteInvestigationReport" not in handoff["note_body"]
+    assert client.notes[0]["body"] == expected_body
+    assert client.notes[0]["mentions"] == ["OWNER1"]
+    assert client.registered_documents == []
+
+
+def test_register_rhodes_document_for_upload_uses_greg_fallback_for_handoff() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "slug": "alpha-test",
+            "address": "123 Main St, Denver, CO 80202",
+        },
+        registration_exception=RhodesError("Approval unavailable"),
+    )
+    client.users_by_email["greg.foote@trilogy.com"] = {
+        "_id": "GREG1",
+        "email": "greg.foote@trilogy.com",
+    }
+
+    result = register_rhodes_document_for_upload(
+        site_id="SITE1",
+        ddr_doc_type="school_approval_report",
+        title="School Approval Report",
+        drive_file_id="drive-file-1",
+        drive_url="https://drive.google.com/file/d/drive-file-1/view",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    handoff = result["document_registration_handoff"]
+
+    assert result["status"] == "pending_user_action"
+    assert handoff["fallback_owner_used"] is True
+    assert handoff["owner_email"] == "greg.foote@trilogy.com"
+    assert handoff["owner_user_id"] == "GREG1"
+    assert handoff["mentioned_owner_user_ids"] == ["GREG1"]
+    assert client.notes[0]["mentions"] == ["GREG1"]
+
+
+def test_register_rhodes_document_for_upload_blocks_when_handoff_note_fails() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "slug": "alpha-test",
+            "address": "123 Main St, Denver, CO 80202",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        note_response={
+            "status": "rejected",
+            "rejectionReason": "Action requires confirmation",
+        },
+        registration_exception=RhodesError("Action requires confirmation"),
+    )
+
+    result = register_rhodes_document_for_upload(
+        site_id="SITE1",
+        ddr_doc_type="sir",
+        title="Alpha Test SIR.pdf",
+        drive_file_id="drive-file-1",
+        drive_url="https://drive.google.com/file/d/drive-file-1/view",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "registration_handoff_failed"
+    assert result["rhodes_registration_status"] == "failed"
+    assert result["remaining_work"] == [
+        {
+            "type": "document_registration",
+            "status": "blocked",
+            "reason": "handoff_note_failed",
+        }
+    ]
+    assert result["document_registration_handoff"]["status"] == "failed"
+    assert result["document_registration_handoff"]["reason"] == "handoff_note_failed"
+
+
+def test_create_document_registration_handoff_for_uploads_groups_documents() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "slug": "alpha-test",
+            "address": "123 Main St, Denver, CO 80202",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        }
+    )
+
+    result = create_document_registration_handoff_for_uploads(
+        site_id="SITE1",
+        documents=[
+            {
+                "status": "failed",
+                "error": "Action requires confirmation",
+                "ddr_doc_type": "outdoor_play_space_report",
+                "title": "Outdoor Play Space Report - Alpha Test (Markdown)",
+                "drive_file_id": "drive-md",
+                "drive_url": "https://drive/md",
+                "mime_type": "text/markdown",
+                "original_filename": "play_space.md",
+                "source": "apply_outdoor_play_space_skill",
+            },
+            {
+                "status": "failed",
+                "error": "Action requires confirmation",
+                "ddr_doc_type": "outdoor_play_space_report",
+                "title": "Outdoor Play Space Report - Alpha Test (HTML)",
+                "drive_file_id": "drive-html",
+                "drive_url": "https://drive/html",
+                "mime_type": "text/html",
+                "original_filename": "open_space_map.html",
+                "source": "apply_outdoor_play_space_skill",
+            },
+        ],
+        client=client,  # type: ignore[arg-type]
+    )
+
+    expected_body = (
+        "Site: Alpha Test\n"
+        "Address: 123 Main St, Denver, CO 80202\n"
+        "Documents to register:\n"
+        "Outdoor Play Space Report - Alpha Test (Markdown)\n"
+        "  Drive: https://drive/md\n"
+        "Outdoor Play Space Report - Alpha Test (HTML)\n"
+        "  Drive: https://drive/html"
+    )
+
+    assert result["status"] == "created"
+    assert result["document_count"] == 2
+    assert result["note_body"] == expected_body
+    assert result["rhodes_registration_status"] == "pending_user_action"
+    assert result["human_followup_required"] is True
+    assert result["human_followup_type"] == "document_registration"
+    assert result["remaining_work"] == []
+    assert [doc["file_id"] for doc in result["documents"]] == ["drive-md", "drive-html"]
+    assert {doc["registration_status"] for doc in result["documents"]} == {
+        "pending_user_action"
+    }
+    assert client.notes[0]["body"] == expected_body
+    assert client.notes[0]["mentions"] == ["OWNER1"]
 
 
 def test_rhodes_client_add_site_note_sends_explicit_site_anchor() -> None:
