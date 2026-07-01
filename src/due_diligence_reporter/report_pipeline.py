@@ -176,7 +176,7 @@ _DUE_DILIGENCE_RECOMMENDATION_KEYS: tuple[str, ...] = (
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "list_drive_documents",
-        "description": "List matched shared DD source reports plus site-folder artifacts found in the site folder or its M1 subfolder. Results may include Block Plan PDFs and derived reports such as Capacity Brainlift, RayCon Scenario, Opening Plan, Alpha Phasing Plan, and DD reports. Each file includes a doc_type field. If drive_folder_url is not already known, pass site_name and site_address so the tool can resolve the linked site folder from Rhodes instead of asking the user for a folder.",
+        "description": "List matched shared DD source reports plus site-folder artifacts found in the site folder or its M1 subfolder. Results may include Block Plan PDFs and derived reports such as Capacity Brainlift, RayCon Scenario, Opening Plan, Phase 1 Phase 2 workbook, and DD reports. Each file includes a doc_type field. If drive_folder_url is not already known, pass site_name and site_address so the tool can resolve the linked site folder from Rhodes instead of asking the user for a folder.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -317,7 +317,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_alpha_phasing_plan_skill",
-        "description": "Create and publish the Alpha Phasing Plan workbook after source reads, E-Occupancy, School Approval, and Cost/Timeline Estimate context are available. Pass only confirmed phasing inputs; if deferred Phase II scope is not confirmed, call the tool with the missing fields so it returns concrete verification.open_items instead of inventing scope. On success, copy returned report_data_fields into report_data before prepare_due_diligence_data, including sources.alpha_phasing_plan_link and exec.alpha_phasing_* summary fields.",
+        "description": "Create and publish the Phase 1 Phase 2 workbook after source reads, E-Occupancy, School Approval, and Cost/Timeline Estimate context are available. Pass only confirmed phasing inputs; if deferred Phase II scope is not confirmed, call the tool with the missing fields so it returns concrete verification.open_items instead of inventing scope. On success, copy returned report_data_fields into report_data before prepare_due_diligence_data, including sources.alpha_phasing_plan_link and exec.alpha_phasing_* summary fields.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -394,7 +394,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "save_skill_report",
-        "description": "Save a skill assessment (E-Occupancy, School Approval, Capacity Brainlift, or RayCon Scenario) as a standalone Google Doc in the site's M1 subfolder. Alpha Phasing Plan uses apply_alpha_phasing_plan_skill because its required output is an Excel workbook. Pass the FULL result dict from the skill tool as skill_data — the tool formats it into a readable document. Returns doc_url for inclusion in sources.* tokens.",
+        "description": "Save a skill assessment (E-Occupancy, School Approval, Capacity Brainlift, or RayCon Scenario) as a standalone Google Doc in the site's M1 subfolder. The Phase 1 Phase 2 workbook uses apply_alpha_phasing_plan_skill because its required output is an Excel workbook. Pass the FULL result dict from the skill tool as skill_data — the tool formats it into a readable document. Returns doc_url for inclusion in sources.* tokens.",
         "input_schema": {
             "type": "object",
             "properties": {

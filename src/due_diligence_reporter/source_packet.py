@@ -127,7 +127,7 @@ _M2_FIELD_MATRIX: tuple[M2FieldSpec, ...] = (
         locationos_key="foCapEx",
         writer="alpha_phasing_plan",
         required_sources=(
-            _source("Alpha Phasing Plan", "alpha_phasing_plan_report"),
+            _source("Phase 1 Phase 2 workbook", "alpha_phasing_plan_report"),
             _source("Cost/Timeline Estimate", "cost_timeline_estimate"),
         ),
     ),
@@ -137,7 +137,7 @@ _M2_FIELD_MATRIX: tuple[M2FieldSpec, ...] = (
         locationos_key="maxCapCapEx",
         writer="alpha_phasing_plan",
         required_sources=(
-            _source("Alpha Phasing Plan", "alpha_phasing_plan_report"),
+            _source("Phase 1 Phase 2 workbook", "alpha_phasing_plan_report"),
             _source("Cost/Timeline Estimate", "cost_timeline_estimate"),
         ),
     ),
@@ -146,14 +146,14 @@ _M2_FIELD_MATRIX: tuple[M2FieldSpec, ...] = (
         report_data_key="exec.building_score",
         locationos_key="buildingScore",
         writer="alpha_phasing_plan",
-        required_sources=(_source("Alpha Phasing Plan", "alpha_phasing_plan_report"),),
+        required_sources=(_source("Phase 1 Phase 2 workbook", "alpha_phasing_plan_report"),),
     ),
     M2FieldSpec(
         field="building_comment",
         report_data_key="exec.building_comment",
         locationos_key="buildingComment",
         writer="alpha_phasing_plan",
-        required_sources=(_source("Alpha Phasing Plan", "alpha_phasing_plan_report"),),
+        required_sources=(_source("Phase 1 Phase 2 workbook", "alpha_phasing_plan_report"),),
     ),
     M2FieldSpec(
         field="play_area_score",

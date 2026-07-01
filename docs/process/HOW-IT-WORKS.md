@@ -19,7 +19,7 @@ Current V4.4 behavior:
 - The M2 source packet is complete only when required source docs are registered, writable DD fields are readback-verified, LocationOS schema gaps are explicitly held, and no required source gaps remain.
 - Source-packet completion proves evidence registration and DD-field write/readback status; it does not replace human/legal validation for source-sensitive code path, education approval, permit, lease, cost, schedule, or phasing assumptions.
 - Open verification items are stored as structured run state and rendered only as `Open Items to Verify` in the DDR body.
-- Existing DD data can be refreshed when a core source type changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, School Approval report, Opening Plan, Alpha Capacity Analysis, Outdoor Play Space Report, Security Due Diligence report, Alpha Phasing Plan, KH traffic analysis, CO/permit of record, measured floor plan, or LiDAR.
+- Existing DD data can be refreshed when a core source type changes: vendor SIR, Building Inspection, RayCon scenario JSON, E-Occupancy report, School Approval report, Opening Plan, Alpha Capacity Analysis, Outdoor Play Space Report, Security Due Diligence report, Phase 1 Phase 2 workbook, KH traffic analysis, CO/permit of record, measured floor plan, or LiDAR.
 - The active source sweep entrypoint is `uv run ddr source-sweep`; it scans active Rhodes sites with linked Drive folders and calls the shared `dd_republish` path. `scripts/vendor_doc_republish_sweep.py` remains a compatibility wrapper.
 
 Legacy mode summary:
@@ -41,10 +41,10 @@ The V4 DD view is a **structured executive one-pager** -- not the multi-page nar
 | Section | Count | What it covers |
 |---------|-------|----------------|
 | **meta** | 8 | Site name, address, school type, marketing name, report date, prepared by, site ID, Drive folder link |
-| **exec** | 45 | "Can this school be open in time for the current school year?" card, direct answer, two build scenarios, Alpha Phasing Plan summary, detailed cost breakdown, lease conditions, trade-offs |
-| **sources** | 8 | Links to SIR, Building Inspection, Block Plan, site record, E-Occupancy Assessment, School Approval Assessment, Opening Plan, and Alpha Phasing Plan |
+| **exec** | 45 | "Can this school be open in time for the current school year?" card, direct answer, two build scenarios, Phase 1 Phase 2 workbook summary, detailed cost breakdown, lease conditions, trade-offs |
+| **sources** | 8 | Links to SIR, Building Inspection, Block Plan, site record, E-Occupancy Assessment, School Approval Assessment, Opening Plan, and Phase 1 Phase 2 workbook |
 
-### Alpha Phasing Plan
+### Phase 1 Phase 2 Workbook
 
 Run `apply_alpha_phasing_plan_skill` after the source reads and the E-Occupancy, School Approval, and RayCon context are available, but before `prepare_due_diligence_data`. This is an enrichment step, not a first-round publish blocker and not part of the final vendor-readiness gate.
 
@@ -248,7 +248,7 @@ The read-only `portfolio_automation_gap_snapshot` MCP tool rolls those Rhodes re
 
 Portfolio Gaps emits ActionRecord telemetry for non-document gaps such as missing P1 DRI, missing Drive folder, open automation failures, pending review tasks, and Rhodes snapshot read errors. DDR document registration and readback health remain under Drive-to-Rhodes reconciliation telemetry rather than Portfolio Gaps.
 
-**Drive-to-Rhodes reconciliation:** `scripts/drive_rhodes_reconciliation.py` is the safety sweep for files that already exist in a site's `M1 - Acquire Property` folder. It loads Rhodes-linked sites, scans each M1 folder, classifies recognized source files, and idempotently registers missing Rhodes document records by Drive file ID. The scheduled `Drive Rhodes Reconciliation` workflow runs this backfill on weekdays; manual runs can pass `--dry-run` / workflow `dry_run=true` to report what would be registered without writing to Rhodes. Generated support documents are registered when they have an explicit mapping, such as Alpha Phasing Plan -> `phasing` / `acquireProperty`; unmapped reports are surfaced as skipped rows instead of being forced into unsafe Rhodes document types.
+**Drive-to-Rhodes reconciliation:** `scripts/drive_rhodes_reconciliation.py` is the safety sweep for files that already exist in a site's `M1 - Acquire Property` folder. It loads Rhodes-linked sites, scans each M1 folder, classifies recognized source files, and idempotently registers missing Rhodes document records by Drive file ID. The scheduled `Drive Rhodes Reconciliation` workflow runs this backfill on weekdays; manual runs can pass `--dry-run` / workflow `dry_run=true` to report what would be registered without writing to Rhodes. Generated support documents are registered when they have an explicit mapping, such as Phase 1 Phase 2 workbook -> `phasing` / `acquireProperty`; unmapped reports are surfaced as skipped rows instead of being forced into unsafe Rhodes document types.
 
 ### Phase 2 â€” Per-Site Pipeline
 
@@ -434,7 +434,7 @@ M2 skill tools analyze the source data and produce structured outputs. E-Occupan
 2. Reuses an existing M1 Opening Plan when present, so republish runs do not create duplicates.
 3. Publishes a Google Doc in the site's M1 folder and registers it on Rhodes as `other` / `acquireProperty` when the pipeline has a `site_id`.
 4. Returns `sources.opening_plan_link` for inclusion in the DDR Referenced Reports table.
-5. Owns the final Fast Open / Max Plan opening dates and the final Permit-Scope Trace / Phase Scope Register. The Cost/Timeline Estimate remains required supporting schedule/cost evidence for source-packet writes; it does not override the Opening Plan's final opening-date call.
+5. Owns the final Fast Open / Max Plan opening dates and aligned opening-scope decisions. The Phase 1 Phase 2 workbook is the companion artifact that validates the aligned Phase 1 / Phase 2 scope, CapEx, and building-field data points. The Cost/Timeline Estimate remains required supporting schedule/cost evidence for source-packet writes; it does not override the Opening Plan's final opening-date call.
 
 **Alpha Capacity Analysis** - `apply_alpha_capacity_analysis_skill(site_name, site_address, block_plan_content, drive_folder_url, block_plan_file_id, total_building_sf)`
 1. Loads hosted `alpha-capacity-analysis` skill instructions and Microschool / 250+ rulesets from Ops-Skills.
@@ -457,14 +457,14 @@ M2 skill tools analyze the source data and produce structured outputs. E-Occupan
 3. The memo is filed to M1 and registered as `security_due_diligence_report` / `other` / `acquireProperty`.
 4. It is source-packet evidence only today; it does not write LocationOS DD fields until a field owner/schema exists.
 
-**Alpha Phasing Plan** - `apply_alpha_phasing_plan_skill(site_name, site_address, drive_folder_url, source_of_truth, quality_bar_target, opening_target_date, must_complete_before_opening, deferred_scopes, ...)`
+**Phase 1 Phase 2 workbook** - `apply_alpha_phasing_plan_skill(site_name, site_address, drive_folder_url, source_of_truth, quality_bar_target, opening_target_date, must_complete_before_opening, deferred_scopes, ...)`
 1. Loads the hosted `alpha-phasing-plan` skill from Ops-Skills.
 2. Requires confirmed Phase I opening scope and confirmed Phase II deferred scope.
 3. Publishes a workbook with Executive Summary, Quality Bar Matrix, Phase I Budget Schedule, Phase II Budget Schedule, Render Deck Inputs, and Source Notes tabs.
 4. Registers the workbook on Rhodes as `phasing` / `acquireProperty` when the pipeline has a `site_id`.
 5. Returns `sources.alpha_phasing_plan_link` and compact `exec.alpha_phasing_*` summary fields.
 6. If minimum inputs are missing, returns concrete `verification.open_items` and does not publish generic Phase II scope.
-7. DDR normalizes `phase-1-phase-2`, `Phase 1 Phase 2`, `Phase Scope Register`, and `phasing` document aliases to the canonical `alpha_phasing_plan_report` source type so the M2 source packet can unlock CapEx and building fields.
+7. DDR normalizes `phase-1-phase-2`, `Phase 1 Phase 2 workbook`, legacy `Phase Scope Register`, and `phasing` document aliases to the canonical `alpha_phasing_plan_report` source type so the M2 source packet can unlock CapEx and building fields.
 
 ---
 

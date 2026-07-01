@@ -1,5 +1,35 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-01 - Opening Plan and Phase 1 Phase 2 workbook artifact language
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-y7g` (closed after validation).
+- Request: standardize how DDR talks about aligned DD evidence artifacts:
+  the evidence artifacts are the Opening Plan and the Phase 1 Phase 2 workbook.
+- Changes:
+  - Updated process docs, source-packet labels, report source labels, Google Doc
+    report headings, workbook metadata/title row, tool descriptions, blocked
+    messages, and uploaded workbook filename to use `Phase 1 Phase 2 workbook`.
+  - Kept the internal `alpha_phasing_plan_report` source type and
+    `alpha_phasing_*` report-data keys for compatibility with the existing M2
+    packet schema.
+  - Left legacy filename/source aliases in place so older `Alpha Phasing Plan`
+    or `Phase Scope Register` files can still be recognized and normalized.
+- Validation:
+
+```powershell
+uv run pytest tests/test_source_packet.py tests/test_m2_executor.py tests/test_classifier_keywords.py tests/test_alpha_phasing_plan.py tests/test_google_doc_builder.py tests/test_report_schema.py
+uv run mypy src/
+uv run ruff check .
+uv run pytest
+git diff --check
+```
+
+Results: focused pytest passed (`256 passed`); full mypy passed for `52 source
+files`; full Ruff passed; full pytest passed (`1332 passed, 13 skipped`);
+`git diff --check` passed with normal Windows LF-to-CRLF warnings only.
+
 ## 2026-07-01 - Grouped document-registration handoff for multi-artifact skills
 
 - Branch/worktree: current checkout at
@@ -33,7 +63,7 @@ Results: focused grouped-handoff tests passed (`10 passed`); scoped Ruff
 passed; full mypy passed for `52 source files`; full Ruff passed; full pytest
 passed (`1332 passed, 13 skipped`).
 
-## 2026-07-01 - Phase Scope Register aliases for M2 source packets
+## 2026-07-01 - Phase 1 Phase 2 workbook source aliases
 
 - Branch/worktree: current checkout at
   `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
@@ -44,16 +74,19 @@ passed (`1332 passed, 13 skipped`).
 - Changes:
   - Added shared DDR source-type canonicalization in
     `src/due_diligence_reporter/source_types.py`.
-  - Normalized `phase-1-phase-2`, `Phase 1 Phase 2`, `Phase Scope Register`,
-    and Rhodes `phasing` aliases to canonical `alpha_phasing_plan_report` in
-    source-packet, M2 executor, and M2 pipeline paths.
-  - Updated classifier keyword routing so files named `Phase Scope Register`
-    or `Phase 1 Phase 2` are recognized as phasing source artifacts.
+  - Normalized `phase-1-phase-2`, `Phase 1 Phase 2 workbook`, legacy
+    `Phase Scope Register`, and Rhodes `phasing` aliases to canonical
+    `alpha_phasing_plan_report` in source-packet, M2 executor, and M2 pipeline
+    paths.
+  - Updated classifier keyword routing so files named `Phase 1 Phase 2
+    Workbook` are recognized as phasing source artifacts.
   - Documented the process boundary: SIR candidate traces are first-round
-    handoff evidence, Opening Plan owns final opening dates and phase truth,
-    Cost/Timeline remains required supporting evidence, source-packet
-    completion does not replace human/legal validation, and skills must return
-    machine-readable `supporting_documents[]` entries for DDR field writes.
+    handoff evidence, Opening Plan owns final opening dates and aligned
+    opening-scope decisions, the Phase 1 Phase 2 workbook validates aligned
+    phase scope / CapEx / building-field data points, Cost/Timeline remains
+    required supporting evidence, source-packet completion does not replace
+    human/legal validation, and skills must return machine-readable
+    `supporting_documents[]` entries for DDR field writes.
 - Validation:
 
 ```powershell

@@ -131,7 +131,7 @@ def test_source_packet_completion_requires_registered_sources_and_verified_write
         _registered("alpha_capacity_analysis", "Alpha Capacity Analysis"),
         _registered("cost_timeline_estimate", "Cost/Timeline Estimate"),
         _registered("opening_plan_report", "Opening Plan"),
-        _registered("alpha_phasing_plan_report", "Alpha Phasing Plan"),
+        _registered("alpha_phasing_plan_report", "Phase 1 Phase 2 workbook"),
         _registered("outdoor_play_space_report", "Outdoor Play Space Report"),
         _registered("sir", "SIR"),
         _registered("school_approval_report", "School Approval Report"),
@@ -209,7 +209,7 @@ def test_cost_timeline_source_is_required_for_dates_and_capex() -> None:
         },
         supporting_documents=[
             _registered("opening_plan_report", "Opening Plan"),
-            _registered("alpha_phasing_plan_report", "Alpha Phasing Plan"),
+            _registered("alpha_phasing_plan_report", "Phase 1 Phase 2 workbook"),
         ],
     )
 
@@ -224,7 +224,7 @@ def test_cost_timeline_source_is_required_for_dates_and_capex() -> None:
     assert updates["max_plan_capex"]["write_status"] == "blocked"
 
 
-def test_phase_scope_register_alias_satisfies_phasing_source_requirements() -> None:
+def test_phase_1_phase_2_workbook_alias_satisfies_phasing_source_requirements() -> None:
     packet = build_m2_source_packet(
         values={
             "exec.fastest_open_capex": "$125,000",
@@ -233,7 +233,7 @@ def test_phase_scope_register_alias_satisfies_phasing_source_requirements() -> N
             "exec.building_comment": "Phase II scope tracked.",
         },
         supporting_documents=[
-            _registered("phase_scope_register", "Phase Scope Register"),
+            _registered("phase_1_phase_2_report", "Phase 1 Phase 2 workbook"),
             _registered("cost_timeline_estimate", "Cost/Timeline Estimate"),
         ],
     )
@@ -241,7 +241,7 @@ def test_phase_scope_register_alias_satisfies_phasing_source_requirements() -> N
     docs = {doc["title"]: doc for doc in packet["supporting_documents"]}
     updates = {row["field"]: row for row in packet["dd_field_updates"]}
 
-    assert docs["Phase Scope Register"]["source_type"] == "alpha_phasing_plan_report"
+    assert docs["Phase 1 Phase 2 workbook"]["source_type"] == "alpha_phasing_plan_report"
     assert updates["fast_open_capex"]["write_status"] == "pending"
     assert updates["max_plan_capex"]["write_status"] == "pending"
     assert updates["building_score"]["write_status"] == "pending"

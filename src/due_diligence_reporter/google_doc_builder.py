@@ -148,7 +148,7 @@ _SOURCE_DOC_ROWS: list[tuple[str, str]] = [
     ("E-Occupancy Assessment", "sources.e_occupancy_link"),
     ("School Approval Assessment", "sources.school_approval_link"),
     ("Opening Plan", "sources.opening_plan_link"),
-    ("Alpha Phasing Plan", "sources.alpha_phasing_plan_link"),
+    ("Phase 1 Phase 2 workbook", "sources.alpha_phasing_plan_link"),
 ]
 
 _AI_GENERATED_SOURCE_TOKENS: frozenset[str] = frozenset({
@@ -192,7 +192,7 @@ _LINK_GAP_LABELS: dict[str, str] = {
     "sources.e_occupancy_link": "[Not found - E-Occupancy report not yet in Drive folder]",
     "sources.school_approval_link": "[Not found - School Approval Assessment]",
     "sources.opening_plan_link": "[Not found - Opening Plan]",
-    "sources.alpha_phasing_plan_link": "[Not found - Alpha Phasing Plan]",
+    "sources.alpha_phasing_plan_link": "[Not found - Phase 1 Phase 2 workbook]",
     "meta.drive_folder_url": "",
 }
 
@@ -1629,7 +1629,7 @@ def build_dd_report_doc(
 
         b4 = _DocBuilder(start_index=end_idx)
         b4.insert_text("\n")
-        b4.insert_heading("Alpha Phasing Plan", level=3)
+        b4.insert_heading("Phase 1 Phase 2 workbook", level=3)
         for label, token in _ALPHA_PHASING_SUMMARY_ROWS:
             value = _resolve_value(replacements, token, "")
             if not value.strip():

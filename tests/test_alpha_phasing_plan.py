@@ -25,7 +25,7 @@ metadata:
   version: '0.3'
 ---
 
-# Alpha Phasing Plan
+# Phase 1 Phase 2 workbook
 """
 
 
@@ -159,6 +159,9 @@ def test_apply_alpha_phasing_plan_skill_uploads_workbook(monkeypatch: pytest.Mon
     )
     gc.upload_file_to_folder.assert_called_once()
     assert gc.upload_file_to_folder.call_args.args[0] == "m1"
+    assert gc.upload_file_to_folder.call_args.args[1].startswith(
+        "Phase 1 Phase 2 Workbook - Alpha Test - "
+    )
     assert gc.upload_file_to_folder.call_args.kwargs["mime_type"].endswith(
         "spreadsheetml.sheet"
     )
@@ -188,3 +191,6 @@ def test_apply_alpha_phasing_plan_skill_returns_open_items_when_blocked() -> Non
     assert result["status"] == "blocked"
     assert "confirmed Phase II deferred scope" in result["missing_inputs"]
     assert "verification.open_items" in result["report_data_fields"]
+    assert "Confirm Phase 1 Phase 2 workbook input" in result["report_data_fields"][
+        "verification.open_items"
+    ]

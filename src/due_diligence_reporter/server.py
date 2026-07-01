@@ -4802,7 +4802,7 @@ async def apply_alpha_phasing_plan_skill(
     source_notes: list[str] | str | None = None,
     budget_tracker_url: str = "",
 ) -> dict[str, Any]:
-    """Publish an Alpha Phasing Plan workbook and return DDR-ready fields.
+    """Publish a Phase 1 Phase 2 workbook and return DDR-ready fields.
 
     The tool is deliberately strict about minimum inputs: it does not invent
     Phase II line items. When phasing inputs are incomplete, it returns concrete
@@ -4833,7 +4833,7 @@ async def apply_alpha_phasing_plan_skill(
                 "verification.open_items": open_items,
             },
             "message": (
-                "Alpha Phasing Plan not published because minimum phasing "
+                "Phase 1 Phase 2 workbook not published because minimum phasing "
                 "inputs are incomplete."
             ),
         }
@@ -4889,7 +4889,7 @@ async def apply_alpha_phasing_plan_skill(
         )
         today_str = datetime.now().strftime("%Y-%m-%d")
         safe_site = re.sub(r"[^A-Za-z0-9._ -]+", "", site_name).strip() or "Site"
-        workbook_name = f"Alpha Phasing Plan - {safe_site} - {today_str}.xlsx"
+        workbook_name = f"Phase 1 Phase 2 Workbook - {safe_site} - {today_str}.xlsx"
 
         try:
             workbook = gc.upload_file_to_folder(
@@ -4905,7 +4905,7 @@ async def apply_alpha_phasing_plan_skill(
             logger.error("Alpha Phasing workbook upload failed: %s", e)
             return {
                 "status": "error",
-                "error": "Failed to upload Alpha Phasing Plan workbook",
+                "error": "Failed to upload Phase 1 Phase 2 workbook",
                 "message": str(e),
             }
 

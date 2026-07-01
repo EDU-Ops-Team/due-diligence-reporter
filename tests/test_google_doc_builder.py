@@ -870,7 +870,7 @@ class TestBuildDdReportDocRequestStructure:
             < inserted_text.index("Fastest Open\n")
             < inserted_text.index("Max Capacity\n")
             < inserted_text.index("Direct Answer\n")
-            < inserted_text.index("Alpha Phasing Plan\n")
+            < inserted_text.index("Phase 1 Phase 2 workbook\n")
             < inserted_text.index("Detailed Cost Breakdown\n")
             < inserted_text.index("Fastest Open Cost Breakdown\n")
             < inserted_text.index("Max Capacity Cost Breakdown\n")

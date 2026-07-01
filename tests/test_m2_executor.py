@@ -198,7 +198,7 @@ class FakeAdapters:
                 "site_square_footage_confirmed": "Measured plan confirms SF.",
             },
             supporting_documents=[
-                _doc(self.phase_source_type, "Phase 1 Phase 2", "phasing"),
+                _doc(self.phase_source_type, "Phase 1 Phase 2 workbook", "phasing"),
                 _doc("traffic_analysis", "Traffic Analysis", "other"),
                 _doc("measured_floor_plan", "Measured Floor Plan", "floorPlan"),
             ],
@@ -312,9 +312,9 @@ def test_execute_ready_canary_filter_only_executes_matching_site(tmp_path) -> No
     ]
 
 
-def test_phase_scope_register_source_type_alias_completes_packet(tmp_path) -> None:
+def test_phase_1_phase_2_source_type_alias_completes_packet(tmp_path) -> None:
     store = _capacity_ready_store(tmp_path)
-    adapters = FakeAdapters(phase_source_type="phase_scope_register")
+    adapters = FakeAdapters(phase_source_type="phase_1_phase_2_report")
 
     execute_ready_m2_states(state_store=store, apply=True, adapters=adapters)
 
@@ -325,7 +325,7 @@ def test_phase_scope_register_source_type_alias_completes_packet(tmp_path) -> No
     }
 
     assert state["m2_state"] == "complete"
-    assert docs["Phase 1 Phase 2"] == "alpha_phasing_plan_report"
+    assert docs["Phase 1 Phase 2 workbook"] == "alpha_phasing_plan_report"
 
 
 def test_execute_ready_skips_unknown_blocked_next_action(tmp_path) -> None:

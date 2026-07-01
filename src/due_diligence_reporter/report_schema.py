@@ -301,7 +301,7 @@ TOKEN_SOURCES: dict[str, str] = {
     "exec.tradeoffs_and_deficiencies": "Agent",
     "sources.rebl_link": "REBL",
     "sources.opening_plan_link": "Opening Plan",
-    "sources.alpha_phasing_plan_link": "Alpha Phasing Plan",
+    "sources.alpha_phasing_plan_link": "Phase 1 Phase 2 workbook",
 }
 
 for scenario in SCENARIOS:
@@ -309,7 +309,7 @@ for scenario in SCENARIOS:
         TOKEN_SOURCES[f"exec.{scenario}_{metric}"] = source
 
 for token in ALPHA_PHASING_TOKENS:
-    TOKEN_SOURCES[token] = "Alpha Phasing Plan"
+    TOKEN_SOURCES[token] = "Phase 1 Phase 2 workbook"
 
 for token in SCENARIO_SUMMARY_TOKENS:
     TOKEN_SOURCES[token] = "Agent"
@@ -347,7 +347,7 @@ LINK_DISPLAY_LABELS: dict[str, str] = {
     "sources.e_occupancy_link": "View E-Occupancy",
     "sources.school_approval_link": "View School Approval",
     "sources.opening_plan_link": "View Opening Plan",
-    "sources.alpha_phasing_plan_link": "View Alpha Phasing Plan",
+    "sources.alpha_phasing_plan_link": "View Phase 1 Phase 2 workbook",
     "meta.drive_folder_url": "View Site Folder",
 }
 

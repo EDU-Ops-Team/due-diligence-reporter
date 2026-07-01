@@ -1,4 +1,4 @@
-"""Alpha Phasing Plan workbook generation helpers."""
+"""Phase 1 Phase 2 workbook generation helpers."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class AlphaPhasingSkill:
 
 
 class AlphaPhasingPlanError(RuntimeError):
-    """Raised when the Alpha Phasing Plan skill cannot be loaded or rendered."""
+    """Raised when the Phase 1 Phase 2 workbook cannot be loaded or rendered."""
 
 
 def load_alpha_phasing_skill() -> AlphaPhasingSkill:
@@ -93,7 +93,7 @@ def alpha_phasing_open_items(missing_inputs: list[str]) -> str:
     """Format missing input names as concrete DDR verification open items."""
 
     return "\n".join(
-        f"- Confirm Alpha Phasing Plan input: {item}."
+        f"- Confirm Phase 1 Phase 2 workbook input: {item}."
         for item in missing_inputs
     )
 
@@ -241,7 +241,7 @@ def _executive_summary_rows(
     skill: AlphaPhasingSkill | None,
 ) -> list[list[Any]]:
     rows: list[list[Any]] = [
-        ["Alpha Phasing Plan"],
+        ["Phase 1 Phase 2 workbook"],
         ["Site", site_name],
         ["Address", site_address],
         ["Quality Bar Target", quality_bar_target],
@@ -493,7 +493,7 @@ def _core_xml(created: str) -> str:
         'xmlns:dcmitype="http://purl.org/dc/dcmitype/" '
         'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
         "<dc:creator>Due Diligence Reporter</dc:creator>"
-        "<dc:title>Alpha Phasing Plan</dc:title>"
+        "<dc:title>Phase 1 Phase 2 workbook</dc:title>"
         f'<dcterms:created xsi:type="dcterms:W3CDTF">{created}</dcterms:created>'
         f'<dcterms:modified xsi:type="dcterms:W3CDTF">{created}</dcterms:modified>'
         "</cp:coreProperties>"
