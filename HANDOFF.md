@@ -4,6 +4,9 @@
 
 - Branch/worktree: current checkout at
   `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Publication:
+  - Pushed `2c66cf76fe731d50abb06a1fe6fab4d145a21783` to `origin/main`
+    with the verified-handoff terminal path.
 - Scope:
   - Implemented the accepted add-note/human-after-the-loop pattern for
     due-diligence field writes inside `m2_executor`.
@@ -40,17 +43,30 @@ Results: focused executor/Rhodes pytest passed (`56 passed`); broader focused
 pytest passed (`127 passed`); Ruff passed; mypy passed for 5 source files;
 `git diff --check` passed with only normal Windows LF/CRLF warnings.
 
-Next operational sequence:
+- Post-push no-write workflow proof:
+  - M2 Direct DD Events run `28613677867` completed success on head SHA
+    `2c66cf76fe731d50abb06a1fe6fab4d145a21783`.
+  - `m2-poll-events.json`: `status=success`, `apply=false`,
+    `events_found=0`, `blocked=0`, filtered to the Miami Beach canary.
+  - `m2-source-watch.json`: `status=success`, `open_states_checked=1`,
+    source-event queue clear (`events_pending=0`, `events_blocked=0`), and
+    the targeted state remains `capacity_ready` with
+    `next_actions=["write_capacity_fields"]`.
+  - `m2-execute-ready.json`: `status=success`, `apply=false`, `blocked=0`,
+    `completed=0`, `executed=0`; preview row would execute
+    `write_capacity_fields` for Alpha Miami Beach 300 71st 3rd.
 
-1. Publish the code to `origin/main`.
-2. Rerun the scoped M2 canary for
+Remaining operational sequence:
+
+1. Rerun the scoped M2 canary with `apply=true` for
    `site_id=k174yvghy8yzb638b6rt5wdh3s88c6pq` and
-   `event_id=m2-canary-20260701-miami-beach-300-71st-3rd`.
-3. Inspect `m2-execute-ready.json`; green proof is workflow success,
+   `event_id=m2-canary-20260701-miami-beach-300-71st-3rd`; this can create
+   another owner-facing handoff note, so confirm before running it.
+2. Inspect `m2-execute-ready.json`; green proof is workflow success,
    `blocked=0`, `completed=1`, `m2_state=complete`,
    `completion_mode=due_diligence_update_handoff`, and the verified
    `manual_handoff_note_id` / owner-note field list.
-4. Only after that proof, decide whether to enable broad scheduled apply.
+3. Only after that proof, decide whether to enable broad scheduled apply.
    Vendor dry-run still has a broad source backlog, so do not turn on both
    schedule variables without first accepting the backlog behavior.
 
