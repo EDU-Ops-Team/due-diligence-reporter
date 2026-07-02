@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import time
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from .adhoc_runner import (
@@ -42,6 +44,20 @@ from .sir_trends import (
     parse_since,
     summarize_sir_trends,
 )
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _load_repo_script(script_name: str) -> ModuleType:
+    script_path = _repo_root() / "scripts" / f"{script_name}.py"
+    spec = importlib.util.spec_from_file_location(f"_ddr_repo_script_{script_name}", script_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load repo script: {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -588,15 +604,13 @@ def _run_review_execution(args: argparse.Namespace) -> None:
 
 
 def _run_daily_check(args: argparse.Namespace) -> int:
-    from scripts import daily_dd_check
-
+    daily_dd_check = _load_repo_script("daily_dd_check")
     daily_dd_check.main(site_filter=str(args.site or "").strip() or None)
     return 0
 
 
 def _run_source_sweep(args: argparse.Namespace) -> int:
-    from scripts import vendor_doc_republish_sweep
-
+    vendor_doc_republish_sweep = _load_repo_script("vendor_doc_republish_sweep")
     vendor_doc_republish_sweep.main(
         dry_run=bool(args.dry_run),
         site=str(args.site or "").strip(),

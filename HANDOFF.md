@@ -1,5 +1,61 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-02 - Incoming-source DDR readiness review
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issues:
+  - `ddr-0q2`: readiness review, closed after verification.
+  - `ddr-20h`: still open; local CLI import fix is not pushed.
+  - `ddr-1q6`: follow-up to enable scheduled incoming-source workflows.
+- Request: review and verify whether the DDR process has the pieces needed to
+  run as new source information arrives.
+- Verdict:
+  - The code/workflow pieces are present locally: Inbox Scan is scheduled;
+    Vendor Doc Republish Sweep calls `uv run ddr source-sweep`; source sweep
+    collects core M1/root source docs, emits canonical source events when the
+    M2 queue is configured, and runs the compatibility republish path; M2
+    Direct DD Events runs `poll-events`, `source-watch`, and `execute-ready`
+    against Firestore-backed event/state stores.
+  - The process is not operationally green on `origin/main` yet.
+- Live blockers:
+  - Latest Daily DD Check run `28599202771` failed on `origin/main` commit
+    `f85a02e` with `ModuleNotFoundError: No module named 'scripts'` from
+    `ddr_cli._run_daily_check`.
+  - `origin/main` still imports `scripts.daily_dd_check` and
+    `scripts.vendor_doc_republish_sweep` from the installed `ddr` console
+    script path. Local working-tree changes fix both by loading repo scripts
+    by file path, but they are uncommitted/unpushed.
+  - Latest scheduled Vendor Doc Republish Sweep run `28601122621` was skipped
+    with no steps. Latest scheduled M2 Direct DD Events run `28600025022` was
+    skipped with no steps. GitHub variables include Firestore event/state
+    settings, but do not include `VENDOR_DOC_REPUBLISH_SWEEP_ENABLED=true` or
+    `M2_DIRECT_DD_EVENTS_ENABLED=true`.
+  - Inbox Scan is active: latest checked scheduled run `28598827516` succeeded
+    on `origin/main` commit `f85a02e`.
+- Validation:
+
+```powershell
+uv run pytest tests\test_ddr_cli.py tests\test_workflow_contracts.py tests\test_vendor_doc_sweep.py tests\test_m2_pipeline.py tests\test_m2_executor.py -q --basetemp C:\tmp\ddr-incoming-process-readiness
+uv run ruff check src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\m2_pipeline.py src\due_diligence_reporter\m2_executor.py tests\test_ddr_cli.py tests\test_workflow_contracts.py tests\test_vendor_doc_sweep.py tests\test_m2_pipeline.py tests\test_m2_executor.py
+uv run mypy src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\m2_pipeline.py src\due_diligence_reporter\m2_executor.py
+```
+
+Results: focused pytest passed (`80 passed`); focused Ruff passed; focused
+mypy passed for 4 source files.
+
+Next operational steps:
+
+1. Commit and push the local `ddr_cli.py` / `tests/test_ddr_cli.py` import fix
+   plus any intended prior local commit(s).
+2. Enable `VENDOR_DOC_REPUBLISH_SWEEP_ENABLED=true` and
+   `M2_DIRECT_DD_EVENTS_ENABLED=true` intentionally in GitHub variables.
+3. Run a manual no-write verification:
+   `vendor-doc-republish-sweep.yml` with `dry_run=true`, then
+   `m2-direct-dd-events.yml` with `apply=false`.
+4. Verify the next scheduled Vendor/M2 runs execute steps instead of skipping,
+   and inspect artifacts/logs before calling the incoming-source process green.
+
 ## 2026-07-02 - Ad-hoc source sweep no-prior-DDR fallback
 
 - Branch/worktree: current checkout at

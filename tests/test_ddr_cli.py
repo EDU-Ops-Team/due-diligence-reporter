@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+from types import ModuleType, SimpleNamespace
 
 from due_diligence_reporter import ddr_cli
 
@@ -62,6 +64,73 @@ def test_ddr_source_sweep_dispatches_repo_cli_surface(monkeypatch) -> None:
 
     assert exit_code == 0
     assert calls == [{"site": "Alpha Keller", "dry_run": True}]
+
+
+def test_ddr_daily_check_loads_repo_script_without_importable_scripts(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    call_path = tmp_path / "daily-call.json"
+    (scripts_dir / "daily_dd_check.py").write_text(
+        "\n".join([
+            "import json",
+            "from pathlib import Path",
+            f"CALL_PATH = Path({str(call_path)!r})",
+            "def main(site_filter=None):",
+            "    CALL_PATH.write_text(",
+            "        json.dumps({'site_filter': site_filter}),",
+            "        encoding='utf-8',",
+            "    )",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ddr_cli, "_repo_root", lambda: tmp_path)
+    monkeypatch.setitem(sys.modules, "scripts", ModuleType("scripts"))
+    monkeypatch.delitem(sys.modules, "scripts.daily_dd_check", raising=False)
+
+    exit_code = ddr_cli._run_daily_check(SimpleNamespace(site="Alpha Keller"))
+
+    assert exit_code == 0
+    assert json.loads(call_path.read_text(encoding="utf-8")) == {
+        "site_filter": "Alpha Keller",
+    }
+
+
+def test_ddr_source_sweep_loads_repo_script_without_importable_scripts(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    call_path = tmp_path / "source-sweep-call.json"
+    (scripts_dir / "vendor_doc_republish_sweep.py").write_text(
+        "\n".join([
+            "import json",
+            "from pathlib import Path",
+            f"CALL_PATH = Path({str(call_path)!r})",
+            "def main(*, dry_run=False, site=''):",
+            "    CALL_PATH.write_text(",
+            "        json.dumps({'dry_run': dry_run, 'site': site}),",
+            "        encoding='utf-8',",
+            "    )",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ddr_cli, "_repo_root", lambda: tmp_path)
+    monkeypatch.setitem(sys.modules, "scripts", ModuleType("scripts"))
+    monkeypatch.delitem(sys.modules, "scripts.vendor_doc_republish_sweep", raising=False)
+
+    exit_code = ddr_cli._run_source_sweep(
+        SimpleNamespace(site="Alpha Keller", dry_run=True)
+    )
+
+    assert exit_code == 0
+    assert json.loads(call_path.read_text(encoding="utf-8")) == {
+        "dry_run": True,
+        "site": "Alpha Keller",
+    }
 
 
 def test_ddr_m2_consume_event_writes_local_state(tmp_path, capsys) -> None:
