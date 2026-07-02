@@ -61,6 +61,7 @@ jobs:
           [ -n "${{ secrets.OAUTH_REFRESH_TOKEN }}" ] || { echo "OAUTH_REFRESH_TOKEN missing"; exit 1; }
           [ -n "${{ secrets.OPENAI_API_KEY }}" ] || { echo "OPENAI_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.LOCATIONOS_MCP_API_KEY || secrets.RHODES_API_KEY }}" ] || { echo "LOCATIONOS_MCP_API_KEY or RHODES_API_KEY missing"; exit 1; }
+          [ -n "${{ secrets.AERIE_API_KEY }}" ] || { echo "AERIE_API_KEY missing"; exit 1; }
           [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ] || { echo "ANTHROPIC_API_KEY missing"; exit 1; }
 
       - name: Create .env file from secrets

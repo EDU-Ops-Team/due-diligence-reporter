@@ -1,5 +1,80 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-02 - Incoming-source enablement attempted, Aerie secret blocked
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issues:
+  - `ddr-20h`: closed after the console-script import fix was pushed.
+  - `ddr-1q6`: still open/in-progress; scheduled enablement is blocked.
+  - `ddr-d2l`: still open/in-progress; scoped M2 canary is not green.
+  - `ddr-7to`: new blocker for provisioning `AERIE_API_KEY` in GitHub.
+- Code publication:
+  - Pushed local ahead commit `08733ea` and import-fix commit `ad06870` to
+    `origin/main`.
+  - `origin/main` and local `HEAD` both reached
+    `ad068706878703c332f46bf3e1f77e2a2798addf`.
+- Local validation before the push:
+
+```powershell
+uv run pytest tests\test_ddr_cli.py tests\test_workflow_contracts.py tests\test_vendor_doc_sweep.py tests\test_m2_pipeline.py tests\test_m2_executor.py -q --basetemp C:\tmp\ddr-incoming-process-enable
+uv run ruff check src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\m2_pipeline.py src\due_diligence_reporter\m2_executor.py tests\test_ddr_cli.py tests\test_workflow_contracts.py tests\test_vendor_doc_sweep.py tests\test_m2_pipeline.py tests\test_m2_executor.py
+uv run mypy src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\m2_pipeline.py src\due_diligence_reporter\m2_executor.py
+git diff --check
+```
+
+Results: focused pytest passed (`80 passed`); focused Ruff passed; focused
+mypy passed for 4 source files; `git diff --check` passed with normal Windows
+LF-to-CRLF warnings.
+
+- GitHub no-write verification:
+  - Vendor Doc Republish Sweep dry-run `28604615477` succeeded on
+    `origin/main` commit `ad06870`. Required setup/secrets steps passed and
+    source sweep summary was
+    `sites=61 events=250 republished=0 skipped=260 errors=0`. Extracted logs
+    had no `ModuleNotFoundError`, traceback, or GitHub error lines.
+  - M2 Direct DD Events no-write run `28604622239` succeeded and uploaded
+    `m2-poll-events.json`, `m2-source-watch.json`, and
+    `m2-execute-ready.json`. The source-event queue reported
+    `status=success`, `events_pending=0`, and `events_blocked=0`; the ready
+    executor preview still showed the known Miami Beach canary would execute
+    `write_capacity_fields`.
+- Scoped canary:
+  - M2 canary apply `28605628703` was correctly filtered to site
+    `k174yvghy8yzb638b6rt5wdh3s88c6pq` and event
+    `m2-canary-20260701-miami-beach-300-71st-3rd`.
+  - Workflow completed successfully, but `m2-execute-ready.json` is not green:
+    `executed=1`, `blocked=1`, blocker `capacity_write_readback_pending`,
+    step `write_capacity_fields`, error `awaiting_browser_approval`, reason
+    `due_diligence_handoff_failed`.
+- Live configuration blocker:
+  - `gh secret list --repo EDU-Ops-Team/due-diligence-reporter` does not show
+    `AERIE_API_KEY`.
+  - The incoming-source workflows already write `AERIE_API_KEY` to `.env`, but
+    they did not fail fast when it was absent.
+  - Added repo-side workflow preflight hardening so
+    `vendor-doc-republish-sweep.yml` and `m2-direct-dd-events.yml` require
+    `AERIE_API_KEY`, with coverage in `tests/test_workflow_contracts.py`.
+  - Focused validation for this hardening passed:
+    `uv run pytest tests\test_workflow_contracts.py -q --basetemp C:\tmp\ddr-aerie-workflow-contracts`,
+    `uv run ruff check tests\test_workflow_contracts.py`, and
+    `git diff --check`.
+- Schedule variables were intentionally not enabled:
+  - `VENDOR_DOC_REPUBLISH_SWEEP_ENABLED` remains unset.
+  - `M2_DIRECT_DD_EVENTS_ENABLED` remains unset.
+  - Queued scheduled Vendor run `28604734897` skipped because the vendor gate
+    was still unset.
+
+Next operational sequence:
+
+1. Provision `AERIE_API_KEY` as a GitHub secret for
+   `EDU-Ops-Team/due-diligence-reporter`.
+2. Rerun a scoped M2 canary with the same site/event selector and require
+   headless handoff note/readback proof, or a completed DD write/readback.
+3. Rerun Vendor dry-run and M2 no-write after the secret is present.
+4. Enable schedule variables only after the above is green, then verify the next
+   scheduled Vendor/M2 runs execute steps instead of skipping.
+
 ## 2026-07-02 - Incoming-source DDR readiness review
 
 - Branch/worktree: current checkout at

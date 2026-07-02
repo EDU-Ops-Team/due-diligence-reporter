@@ -85,6 +85,7 @@ jobs:
           OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           LOCATIONOS_TOKEN: ${{ secrets.LOCATIONOS_MCP_API_KEY || secrets.RHODES_API_KEY }}
+          AERIE_API_KEY: ${{ secrets.AERIE_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           require_secret() {
@@ -101,6 +102,7 @@ jobs:
           require_secret OAUTH_REFRESH_TOKEN "OAUTH_REFRESH_TOKEN missing"
           require_secret OPENAI_API_KEY "OPENAI_API_KEY missing"
           require_secret LOCATIONOS_TOKEN "LOCATIONOS_MCP_API_KEY or RHODES_API_KEY missing"
+          require_secret AERIE_API_KEY "AERIE_API_KEY missing"
           require_secret ANTHROPIC_API_KEY "ANTHROPIC_API_KEY missing"
 
       - name: Create .env file from secrets

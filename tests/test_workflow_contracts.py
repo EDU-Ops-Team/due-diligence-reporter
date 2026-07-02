@@ -196,6 +196,17 @@ def test_m2_direct_dd_scheduled_runs_are_gated_by_repo_variable() -> None:
     ) in text
 
 
+def test_incoming_source_workflows_require_aerie_secret_for_handoffs() -> None:
+    vendor_text = _workflow_text("vendor-doc-republish-sweep.yml")
+    m2_text = _workflow_text("m2-direct-dd-events.yml")
+    m2_shell = "\n".join(_run_blocks(m2_text))
+
+    assert "AERIE_API_KEY: ${{ secrets.AERIE_API_KEY }}" in vendor_text
+    assert "AERIE_API_KEY missing" in vendor_text
+    assert "AERIE_API_KEY: ${{ secrets.AERIE_API_KEY }}" in m2_text
+    assert 'require_secret AERIE_API_KEY "AERIE_API_KEY missing"' in m2_shell
+
+
 def test_scheduled_dd_workflows_use_repo_cli_surfaces() -> None:
     daily_text = _workflow_text("daily-dd-check.yml")
     daily_shell = "\n".join(_run_blocks(daily_text))
