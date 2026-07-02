@@ -1,5 +1,67 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-02 - Incoming-source enablement verified, schedules still gated
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Code publication:
+  - `origin/main` is at `fe9ade8a21d6f2c3d88c28057dcdd405732ee2ad`.
+  - This includes the source-sweep related local commit `08733ea`, the
+    console-script import fix `ad06870`, and workflow preflight hardening for
+    `AERIE_API_KEY`.
+- Beads:
+  - `ddr-20h`: closed; Daily DD console-script import fix is pushed.
+  - `ddr-7to`: closed; `AERIE_API_KEY` was provisioned and live note readback
+    was verified.
+  - `ddr-d2l`: still open; scoped M2 canary remains blocked on
+    LocationOS/browser approval and DD field readback.
+  - `ddr-1q6`: still open; scheduled incoming-source workflows remain gated.
+- GitHub configuration:
+  - Repo secret list now includes `AERIE_API_KEY`, updated
+    `2026-07-02T17:05:29Z`.
+  - Repo variables still do not include
+    `VENDOR_DOC_REPUBLISH_SWEEP_ENABLED` or `M2_DIRECT_DD_EVENTS_ENABLED`.
+    This is intentional; do not enable schedules until `ddr-d2l` is green.
+- Current no-write workflow proof on `fe9ade8`:
+  - Vendor Doc Republish Sweep dry-run `28608109863` completed success in
+    `36m59s`. Required setup/secrets steps passed. Source-sweep log summary:
+    `sites=61 events=252 republished=0 skipped=262 errors=0`. Filtered log
+    review found no `ModuleNotFoundError`, traceback, validation failure, or
+    fatal GitHub error marker; only Node deprecation warnings and the summary
+    line matched the broad failure search.
+  - M2 Direct DD Events no-write run `28608113491` completed success and
+    uploaded `m2-poll-events.json`, `m2-source-watch.json`, and
+    `m2-execute-ready.json`. Artifacts report `status=success` throughout.
+    Source-event queue is clear:
+    `events_found=0`, `events_pending=0`, `events_blocked=0`,
+    `events_invalid=0`.
+- Scoped canary proof after Aerie provisioning:
+  - M2 canary apply `28607871909` ran on `fe9ade8` with filters
+    `site_id=k174yvghy8yzb638b6rt5wdh3s88c6pq` and
+    `event_id=m2-canary-20260701-miami-beach-300-71st-3rd`.
+  - Workflow completed success, but `m2-execute-ready.json` still shows the
+    targeted row blocked:
+    `capacity_write_readback_pending` / `pending_user_action` /
+    `handoff_note_created` for `write_capacity_fields`.
+  - Live Aerie/Rhodes note readback verified note
+    `hx7wkfrad5jxzrwn6208zq4kj189sfss` on site
+    `k174yvghy8yzb638b6rt5wdh3s88c6pq`; the note includes
+    `foCapacity: 114`, `maxCapCapacity: 199`, and an owner mention.
+  - M2 no-write preview `28608113491` confirms the only ready state is this
+    same Miami Beach canary and it would execute `write_capacity_fields`.
+
+Current decision:
+
+- Do not set `VENDOR_DOC_REPUBLISH_SWEEP_ENABLED=true` yet. The vendor dry-run
+  sees a broad source backlog (`252` source events) and would emit/process it
+  when scheduled apply is enabled.
+- Do not set `M2_DIRECT_DD_EVENTS_ENABLED=true` yet. The only ready state still
+  requires DD write approval and LocationOS readback proof.
+- Next required proof is to complete or approve the Miami Beach canary DD field
+  write, then rerun scoped M2 apply and verify LocationOS readback shows
+  `foCapacity=114` and `maxCapCapacity=199`. Only after that should the broad
+  schedule variables be enabled and the first scheduled runs inspected.
+
 ## 2026-07-02 - Incoming-source enablement attempted, Aerie secret blocked
 
 - Branch/worktree: current checkout at
