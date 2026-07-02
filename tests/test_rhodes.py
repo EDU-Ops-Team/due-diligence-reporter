@@ -1183,6 +1183,7 @@ def test_update_rhodes_due_diligence_handoffs_browser_approval_response() -> Non
     expected_body = (
         "Site Name: Alpha Test\n"
         "Site Address: 123 Main St, Denver, CO 80202\n"
+        "Copy/paste these field names and values into the LocationOS due diligence record:\n"
         "Due Diligence Fields to update:\n"
         "foCapacity: 36\n"
         "maxCapCapacity: 54"
@@ -1235,6 +1236,7 @@ def test_update_rhodes_due_diligence_handoffs_elicitation_exception() -> None:
     assert result["due_diligence_update_handoff"]["note_body"] == (
         "Site Name: Alpha Test\n"
         "Site Address: 123 Main St, Denver, CO 80202\n"
+        "Copy/paste these field names and values into the LocationOS due diligence record:\n"
         "Due Diligence Fields to update:\n"
         "maxCapCapacity: 71"
     )

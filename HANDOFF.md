@@ -1,5 +1,59 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-02 - Verified DD handoff notes now complete M2 automation locally
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Scope:
+  - Implemented the accepted add-note/human-after-the-loop pattern for
+    due-diligence field writes inside `m2_executor`.
+  - When `updateDueDiligence` returns `pending_user_action` /
+    `handoff_note_created` and the Rhodes/Aerie handoff note is created with
+    verified readback and a note ID, M2 now finishes the automation as
+    `m2_state=complete` with
+    `completion_mode=due_diligence_update_handoff`.
+  - The completed row/state preserves `human_followup_required=true`,
+    `human_followup_type=due_diligence_update`,
+    `manual_handoff_note_id`, and handoff field metadata so the process does
+    not misrepresent the manual LocationOS update as already read back.
+  - Failed, missing, or unverified handoff notes still block on the existing
+    capacity/packet readback blockers.
+  - The site-owner note body now explicitly says to copy/paste the listed field
+    names and values into the LocationOS due diligence record.
+- Beads:
+  - `ddr-w88`: closed after local implementation and focused validation.
+  - `ddr-d2l`: still open until the scoped Miami Beach canary is rerun on the
+    published code and the artifact shows the verified handoff as terminal.
+  - `ddr-1q6`: still open; schedule variables remain disabled until `ddr-d2l`
+    has live proof.
+- Validation:
+
+```powershell
+uv run pytest tests\test_m2_executor.py tests\test_rhodes.py -q --basetemp C:\tmp\ddr-handoff-terminal
+uv run pytest tests\test_ddr_cli.py tests\test_workflow_contracts.py tests\test_vendor_doc_sweep.py tests\test_m2_pipeline.py tests\test_m2_executor.py tests\test_rhodes.py -q --basetemp C:\tmp\ddr-incoming-handoff-enable
+uv run ruff check src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\m2_pipeline.py src\due_diligence_reporter\m2_executor.py src\due_diligence_reporter\rhodes.py tests\test_ddr_cli.py tests\test_workflow_contracts.py tests\test_vendor_doc_sweep.py tests\test_m2_pipeline.py tests\test_m2_executor.py tests\test_rhodes.py
+uv run mypy src\due_diligence_reporter\ddr_cli.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\m2_pipeline.py src\due_diligence_reporter\m2_executor.py src\due_diligence_reporter\rhodes.py
+git diff --check
+```
+
+Results: focused executor/Rhodes pytest passed (`56 passed`); broader focused
+pytest passed (`127 passed`); Ruff passed; mypy passed for 5 source files;
+`git diff --check` passed with only normal Windows LF/CRLF warnings.
+
+Next operational sequence:
+
+1. Publish the code to `origin/main`.
+2. Rerun the scoped M2 canary for
+   `site_id=k174yvghy8yzb638b6rt5wdh3s88c6pq` and
+   `event_id=m2-canary-20260701-miami-beach-300-71st-3rd`.
+3. Inspect `m2-execute-ready.json`; green proof is workflow success,
+   `blocked=0`, `completed=1`, `m2_state=complete`,
+   `completion_mode=due_diligence_update_handoff`, and the verified
+   `manual_handoff_note_id` / owner-note field list.
+4. Only after that proof, decide whether to enable broad scheduled apply.
+   Vendor dry-run still has a broad source backlog, so do not turn on both
+   schedule variables without first accepting the backlog behavior.
+
 ## 2026-07-02 - Incoming-source enablement verified, schedules still gated
 
 - Branch/worktree: current checkout at

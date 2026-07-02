@@ -34,6 +34,7 @@ from .source_packet import (
     build_m2_source_packet,
     mark_written_fields_from_update_result,
     source_packet_is_complete,
+    source_packet_note_lines,
 )
 from .source_types import canonical_source_type
 from .utils import extract_text_from_pdf_bytes
@@ -70,6 +71,8 @@ KNOWN_EXECUTOR_ACTIONS = frozenset(
 )
 
 REGISTERED_STATUSES = frozenset({"registered", "already_registered"})
+DUE_DILIGENCE_HANDOFF_COMPLETION_MODE = "due_diligence_update_handoff"
+DUE_DILIGENCE_HANDOFF_PACKET_STATUS = "handoff_pending_manual_update"
 SCORE_KEYS = frozenset(
     {
         "buildingScore",
@@ -220,6 +223,9 @@ def execute_m2_state(
         updated["capacity_write"] = write_result
         steps.append(_dict_step_row("write_capacity_fields", write_result))
         if write_result.get("status") != "updated":
+            if _due_diligence_handoff_verified(write_result):
+                _complete_with_due_diligence_handoff(updated, write_result)
+                return _finish(updated, steps, timestamp)
             _set_blocker(
                 updated,
                 blocker_id="capacity_write_readback_pending",
@@ -335,6 +341,13 @@ def execute_m2_state(
     )
     updated["source_packet"] = packet
     updated["dd_write"] = write_result
+    if _due_diligence_handoff_verified(write_result):
+        updated["source_packet"] = _mark_packet_handoff_pending(
+            source_packet=packet,
+            write_result=write_result,
+        )
+        _complete_with_due_diligence_handoff(updated, write_result)
+        return _finish(updated, steps, timestamp)
     if not source_packet_is_complete(packet):
         _set_blocker(
             updated,
@@ -768,7 +781,7 @@ def _finish(
     state["updated_at"] = timestamp
     history = _list_of_dicts(state.get("m2_execution_steps"))
     state["m2_execution_steps"] = [*history, *steps]
-    return state, {
+    row: dict[str, Any] = {
         "status": _text(state.get("status")) or "blocked",
         "changed": True,
         "site_id": _site_id(state),
@@ -778,6 +791,17 @@ def _finish(
         "steps": steps,
         "source_packet_status": _text(_dict(state.get("source_packet")).get("status")),
     }
+    if completion_mode := _text(state.get("completion_mode")):
+        row["completion_mode"] = completion_mode
+    if state.get("human_followup_required") is True:
+        row["human_followup_required"] = True
+    if human_followup_type := _text(state.get("human_followup_type")):
+        row["human_followup_type"] = human_followup_type
+    if note_id := _text(state.get("manual_handoff_note_id")):
+        row["manual_handoff_note_id"] = note_id
+    if note_readback_status := _text(state.get("manual_handoff_note_readback_status")):
+        row["manual_handoff_note_readback_status"] = note_readback_status
+    return state, row
 
 
 def _set_blocker(
@@ -868,6 +892,96 @@ def _pending_locationos_fields(packet: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
+def _due_diligence_handoff_verified(result: Mapping[str, Any]) -> bool:
+    if _text(result.get("status")) != "pending_user_action":
+        return False
+    if _text(result.get("reason")) != "handoff_note_created":
+        return False
+    handoff = _dict(result.get("due_diligence_update_handoff"))
+    if _text(handoff.get("status")) != "created":
+        return False
+    if _handoff_note_readback_status(handoff) != "verified":
+        return False
+    return bool(_text(handoff.get("rhodes_note_id")))
+
+
+def _complete_with_due_diligence_handoff(
+    state: dict[str, Any],
+    write_result: Mapping[str, Any],
+) -> None:
+    handoff = _dict(write_result.get("due_diligence_update_handoff"))
+    note_id = _text(handoff.get("rhodes_note_id"))
+    state["status"] = "complete"
+    state["m2_state"] = "complete"
+    state["open_blockers"] = []
+    state["completion_mode"] = DUE_DILIGENCE_HANDOFF_COMPLETION_MODE
+    state["human_followup_required"] = True
+    state["human_followup_type"] = (
+        _text(write_result.get("human_followup_type"))
+        or _text(handoff.get("human_followup_type"))
+        or "due_diligence_update"
+    )
+    state["manual_handoff"] = _json_safe(
+        {
+            "type": "due_diligence_update",
+            "status": _text(handoff.get("status")) or "created",
+            "reason": _text(write_result.get("reason") or handoff.get("reason")),
+            "rhodes_note_id": note_id,
+            "note_readback_status": _handoff_note_readback_status(handoff),
+            "field_count": handoff.get("field_count"),
+            "fields": _list_of_dicts(handoff.get("fields")),
+        }
+    )
+    state["manual_handoff_note_id"] = note_id
+    state["manual_handoff_note_readback_status"] = _handoff_note_readback_status(handoff)
+
+
+def _mark_packet_handoff_pending(
+    *,
+    source_packet: dict[str, Any],
+    write_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    packet = dict(source_packet)
+    raw_updates = packet.get("dd_field_updates")
+    if not isinstance(raw_updates, list):
+        return packet
+    handoff = _dict(write_result.get("due_diligence_update_handoff"))
+    note_id = _text(handoff.get("rhodes_note_id"))
+    updated_fields = {
+        str(field).strip()
+        for field in write_result.get("updated_fields", [])
+        if str(field).strip()
+    }
+    reason = _write_reason(dict(write_result), "Verified handoff note created.")
+    next_updates: list[dict[str, Any]] = []
+    for raw_update in raw_updates:
+        row = dict(raw_update) if isinstance(raw_update, dict) else {}
+        if _text(row.get("locationos_key")) in updated_fields:
+            row["write_status"] = "pending_user_action"
+            row["readback_status"] = "pending_user_action"
+            row["hold_reason"] = reason
+            if note_id:
+                row["handoff_note_id"] = note_id
+        next_updates.append(row)
+    packet["dd_field_updates"] = next_updates
+    packet["status"] = DUE_DILIGENCE_HANDOFF_PACKET_STATUS
+    packet["m2_source_packet_complete"] = False
+    packet["open_items"] = [
+        "LocationOS due diligence fields require manual update from verified handoff note."
+    ]
+    packet["manual_handoff_note_id"] = note_id
+    packet["manual_handoff_note_readback_status"] = _handoff_note_readback_status(handoff)
+    packet["source_note_lines"] = source_packet_note_lines(
+        supporting_documents=packet.get("supporting_documents", []),
+        dd_field_updates=next_updates,
+    )
+    return packet
+
+
+def _handoff_note_readback_status(handoff: Mapping[str, Any]) -> str:
+    return _text(handoff.get("note_readback_status") or _dict(handoff.get("readback")).get("status"))
+
+
 def _capacity_locationos_fields(state: dict[str, Any]) -> dict[str, Any]:
     report_data = _report_data(state)
     fields: dict[str, Any] = {}
@@ -918,13 +1032,23 @@ def _step_row(step: str, result: M2StepResult) -> dict[str, Any]:
 
 
 def _dict_step_row(step: str, result: dict[str, Any]) -> dict[str, Any]:
-    return {
+    row: dict[str, Any] = {
         "step": step,
         "status": _text(result.get("status")),
         "reason": _text(result.get("reason")),
         "error": _text(result.get("error") or result.get("error_summary")),
         "updated_fields": result.get("updated_fields", []),
     }
+    handoff = _dict(result.get("due_diligence_update_handoff"))
+    if result.get("human_followup_required") is True:
+        row["human_followup_required"] = True
+    if human_followup_type := _text(result.get("human_followup_type")):
+        row["human_followup_type"] = human_followup_type
+    if handoff:
+        row["handoff_status"] = _text(handoff.get("status"))
+        row["handoff_note_readback_status"] = _handoff_note_readback_status(handoff)
+        row["handoff_note_id"] = _text(handoff.get("rhodes_note_id"))
+    return row
 
 
 def _step_result_from_tool(result: dict[str, Any]) -> M2StepResult:

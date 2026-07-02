@@ -118,6 +118,32 @@ class FakeAdapters:
             else self.packet_write_status
         )
         if status != "updated":
+            if status == "pending_user_action":
+                return {
+                    "status": "pending_user_action",
+                    "reason": "handoff_note_created",
+                    "error": "awaiting_browser_approval",
+                    "error_summary": (
+                        "LocationOS updateDueDiligence requires approval; "
+                        "handoff note created."
+                    ),
+                    "updated_fields": sorted(fields),
+                    "rhodes_due_diligence_status": "pending_user_action",
+                    "human_followup_required": True,
+                    "human_followup_type": "due_diligence_update",
+                    "remaining_work": [],
+                    "due_diligence_update_handoff": {
+                        "status": "created",
+                        "reason": "handoff_note_created",
+                        "note_readback_status": "verified",
+                        "rhodes_note_id": "handoff-note-1",
+                        "field_count": len(fields),
+                        "fields": [
+                            {"name": key, "value": str(fields[key])}
+                            for key in sorted(fields)
+                        ],
+                    },
+                }
             return {
                 "status": "failed",
                 "reason": "readback_failed",
@@ -391,6 +417,40 @@ def test_cost_timeline_waits_for_capacity_readback(tmp_path) -> None:
     assert "note" not in adapters.calls
 
 
+def test_capacity_handoff_note_completes_manual_followup(tmp_path) -> None:
+    store = _capacity_ready_store(tmp_path)
+    adapters = FakeAdapters(capacity_write_status="pending_user_action")
+
+    result = execute_ready_m2_states(
+        state_store=store,
+        apply=True,
+        adapters=adapters,
+    )
+
+    state = store.load()["evt-1"]
+    row = result["rows"][0]
+    assert result["completed"] == 1
+    assert result["blocked"] == 0
+    assert row["status"] == "complete"
+    assert row["completion_mode"] == "due_diligence_update_handoff"
+    assert row["human_followup_required"] is True
+    assert row["manual_handoff_note_id"] == "handoff-note-1"
+    assert state["m2_state"] == "complete"
+    assert state["status"] == "complete"
+    assert state["open_blockers"] == []
+    assert state["completion_mode"] == "due_diligence_update_handoff"
+    assert state["human_followup_required"] is True
+    assert state["manual_handoff"]["fields"] == [
+        {"name": "foCapacity", "value": "36"},
+        {"name": "maxCapCapacity", "value": "54"},
+    ]
+    assert state["capacity_write"]["status"] == "pending_user_action"
+    assert state["capacity_write"]["reason"] == "handoff_note_created"
+    assert adapters.calls == ["alpha", "write"]
+    assert "cost" not in adapters.calls
+    assert "note" not in adapters.calls
+
+
 def test_failed_source_registration_blocks_before_packet_write(tmp_path) -> None:
     store = _capacity_ready_store(tmp_path)
     adapters = FakeAdapters(fail_source_step="outdoor")
@@ -430,4 +490,46 @@ def test_failed_packet_readback_blocks_without_note(tmp_path) -> None:
     state = store.load()["evt-1"]
     assert state["m2_state"] == "dd_write_pending"
     assert state["open_blockers"][0]["id"] == "packet_write_readback_pending"
+    assert "note" not in adapters.calls
+
+
+def test_packet_handoff_note_completes_manual_followup(tmp_path) -> None:
+    store = _capacity_ready_store(tmp_path)
+    adapters = FakeAdapters(packet_write_status="pending_user_action")
+
+    result = execute_ready_m2_states(
+        state_store=store,
+        apply=True,
+        adapters=adapters,
+    )
+
+    state = store.load()["evt-1"]
+    row = result["rows"][0]
+    assert result["completed"] == 1
+    assert result["blocked"] == 0
+    assert row["status"] == "complete"
+    assert row["source_packet_status"] == "handoff_pending_manual_update"
+    assert row["completion_mode"] == "due_diligence_update_handoff"
+    assert row["manual_handoff_note_id"] == "handoff-note-1"
+    assert state["m2_state"] == "complete"
+    assert state["open_blockers"] == []
+    assert state["dd_write"]["status"] == "pending_user_action"
+    assert state["source_packet"]["status"] == "handoff_pending_manual_update"
+    assert state["source_packet"]["m2_source_packet_complete"] is False
+    assert state["source_packet"]["manual_handoff_note_id"] == "handoff-note-1"
+    assert any(
+        update.get("write_status") == "pending_user_action"
+        and update.get("handoff_note_id") == "handoff-note-1"
+        for update in state["source_packet"]["dd_field_updates"]
+    )
+    assert adapters.calls == [
+        "alpha",
+        "write",
+        "cost",
+        "outdoor",
+        "opening",
+        "phasing",
+        "security",
+        "write",
+    ]
     assert "note" not in adapters.calls

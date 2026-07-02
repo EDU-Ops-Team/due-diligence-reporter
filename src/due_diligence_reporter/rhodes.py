@@ -1509,6 +1509,7 @@ def _build_due_diligence_update_handoff_note_body(
     lines = [
         f"Site Name: {site_name.strip()}",
         f"Site Address: {site_address.strip()}",
+        "Copy/paste these field names and values into the LocationOS due diligence record:",
         "Due Diligence Fields to update:",
     ]
     for key in sorted(fields):
