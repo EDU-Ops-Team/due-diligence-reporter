@@ -25,10 +25,10 @@
     names and values into the LocationOS due diligence record.
 - Beads:
   - `ddr-w88`: closed after local implementation and focused validation.
-  - `ddr-d2l`: still open until the scoped Miami Beach canary is rerun on the
-    published code and the artifact shows the verified handoff as terminal.
-  - `ddr-1q6`: still open; schedule variables remain disabled until `ddr-d2l`
-    has live proof.
+  - `ddr-d2l`: closed after scoped live canary proof on the published code.
+  - `ddr-1q6`: still open and now unblocked; schedule variables remain
+    disabled until the broad backlog behavior is accepted and first enabled
+    runs are inspected.
 - Validation:
 
 ```powershell
@@ -55,20 +55,40 @@ pytest passed (`127 passed`); Ruff passed; mypy passed for 5 source files;
   - `m2-execute-ready.json`: `status=success`, `apply=false`, `blocked=0`,
     `completed=0`, `executed=0`; preview row would execute
     `write_capacity_fields` for Alpha Miami Beach 300 71st 3rd.
+- Scoped live apply proof:
+  - User approved the owner-facing canary run on 2026-07-02.
+  - M2 Direct DD Events apply run `28618140999` completed success on head SHA
+    `de35c4422871bfadbab34d8181d99c1f35e5d590`.
+  - `m2-poll-events.json`: `status=success`, `apply=true`,
+    `events_found=0`, `blocked=0`, filtered to the Miami Beach canary.
+  - `m2-source-watch.json`: `status=success`, `apply=true`,
+    `open_states_checked=1`, source-event queue clear, and the target state
+    remained ready for `write_capacity_fields` before execution.
+  - `m2-execute-ready.json`: `status=success`, `apply=true`, `executed=1`,
+    `completed=1`, `blocked=0`, `m2_state=complete`,
+    `completion_mode=due_diligence_update_handoff`,
+    `human_followup_required=true`,
+    `manual_handoff_note_id=hx7hbxbngam4dck780tztb34bx89rcwk`, and
+    `manual_handoff_note_readback_status=verified`.
+  - The step was `write_capacity_fields` with `status=pending_user_action`,
+    `reason=handoff_note_created`, and updated fields
+    `foCapacity` / `maxCapCapacity`.
+- Post-apply no-write proof:
+  - M2 Direct DD Events no-write run `28618235348` completed success on head
+    SHA `de35c4422871bfadbab34d8181d99c1f35e5d590`.
+  - Artifacts show the targeted canary is no longer open/ready:
+    `m2-source-watch.json` has `open_states_checked=0`, and
+    `m2-execute-ready.json` has `states_checked=0`, `rows=[]`, `blocked=0`.
 
-Remaining operational sequence:
+Remaining operational sequence for `ddr-1q6`:
 
-1. Rerun the scoped M2 canary with `apply=true` for
-   `site_id=k174yvghy8yzb638b6rt5wdh3s88c6pq` and
-   `event_id=m2-canary-20260701-miami-beach-300-71st-3rd`; this can create
-   another owner-facing handoff note, so confirm before running it.
-2. Inspect `m2-execute-ready.json`; green proof is workflow success,
-   `blocked=0`, `completed=1`, `m2_state=complete`,
-   `completion_mode=due_diligence_update_handoff`, and the verified
-   `manual_handoff_note_id` / owner-note field list.
-3. Only after that proof, decide whether to enable broad scheduled apply.
-   Vendor dry-run still has a broad source backlog, so do not turn on both
-   schedule variables without first accepting the backlog behavior.
+1. Decide whether to enable broad scheduled apply now that `ddr-d2l` is green.
+   Vendor dry-run still has a broad source backlog (`252` source events in the
+   last dry-run), so turning on the vendor schedule means accepting that backlog
+   behavior.
+2. If accepted, set `VENDOR_DOC_REPUBLISH_SWEEP_ENABLED=true` and
+   `M2_DIRECT_DD_EVENTS_ENABLED=true`, then inspect the first scheduled
+   Vendor/M2 runs before closing `ddr-1q6`.
 
 ## 2026-07-02 - Incoming-source enablement verified, schedules still gated
 
