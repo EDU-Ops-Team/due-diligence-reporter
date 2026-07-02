@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from .classifier import classify_document
@@ -39,6 +39,52 @@ CORE_SWEEP_DOC_TYPES = {
 
 RepublishCallback = Callable[..., Any]
 SourceEventEmitter = Callable[[dict[str, Any], dict[str, Any]], Any]
+SWEEP_CURSOR_STATE_KEY = "__vendor_doc_republish_sweep_cursor__"
+
+
+def select_sweep_site_records(
+    site_records: Sequence[dict[str, Any]],
+    republish_state: dict[str, str],
+    *,
+    max_sites: int = 0,
+) -> list[dict[str, Any]]:
+    """Return the next deterministic site slice for a bounded sweep."""
+    records = _ordered_site_records(site_records)
+    limit = _positive_limit(max_sites)
+    if limit <= 0 or len(records) <= limit:
+        return records
+
+    cursor = str(republish_state.get(SWEEP_CURSOR_STATE_KEY) or "").strip()
+    start_index = _site_index(records, cursor)
+    if start_index < 0:
+        start_index = 0
+    return [records[(start_index + offset) % len(records)] for offset in range(limit)]
+
+
+def advance_sweep_cursor(
+    republish_state: dict[str, str],
+    site_records: Sequence[dict[str, Any]],
+    scanned_records: Sequence[dict[str, Any]],
+    *,
+    max_sites: int = 0,
+) -> str:
+    """Persist the cursor for the next bounded sweep and return it."""
+    records = _ordered_site_records(site_records)
+    scanned = list(scanned_records)
+    limit = _positive_limit(max_sites)
+    if limit <= 0 or not records or not scanned or len(records) <= limit:
+        republish_state.pop(SWEEP_CURSOR_STATE_KEY, None)
+        return ""
+
+    last_key = _site_cursor_key(scanned[-1])
+    last_index = _site_index(records, last_key)
+    if last_index < 0:
+        return str(republish_state.get(SWEEP_CURSOR_STATE_KEY) or "").strip()
+
+    next_key = _site_cursor_key(records[(last_index + 1) % len(records)])
+    if next_key:
+        republish_state[SWEEP_CURSOR_STATE_KEY] = next_key
+    return next_key
 
 
 def collect_core_source_events(
@@ -239,6 +285,31 @@ def _site_summary(site_record: dict[str, Any]) -> dict[str, Any]:
         "p1_assignee_user_id": str(site_record.get("p1_assignee_user_id") or p1_user_id).strip(),
         "created_date": str(site_record.get("created_date") or "").strip(),
     }
+
+
+def _ordered_site_records(site_records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(site_records, key=lambda record: (_site_cursor_key(record), str(record)))
+
+
+def _site_cursor_key(site_record: dict[str, Any]) -> str:
+    for key in ("id", "site_id", "slug", "site_slug", "title", "name", "address"):
+        value = str(site_record.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _site_index(site_records: Sequence[dict[str, Any]], cursor: str) -> int:
+    if not cursor:
+        return -1
+    for index, site_record in enumerate(site_records):
+        if _site_cursor_key(site_record) == cursor:
+            return index
+    return -1
+
+
+def _positive_limit(value: int) -> int:
+    return value if value > 0 else 0
 
 
 def _is_vendor_source(

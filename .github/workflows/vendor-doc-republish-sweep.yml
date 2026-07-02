@@ -18,6 +18,11 @@ on:
         options:
           - 'false'
           - 'true'
+      max_sites:
+        description: 'Optional site scan cap; 0 scans all matching sites'
+        required: false
+        default: '0'
+        type: string
 
 concurrency:
   group: vendor-doc-republish-sweep
@@ -168,11 +173,20 @@ jobs:
         env:
           INPUT_SITE: ${{ inputs.site }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_MAX_SITES: ${{ inputs.max_sites }}
+          SCHEDULE_MAX_SITES: ${{ vars.VENDOR_DOC_REPUBLISH_SWEEP_MAX_SITES || '5' }}
         run: |
           set -euo pipefail
           args=()
           if [ "${INPUT_DRY_RUN:-}" = "true" ]; then args+=(--dry-run); fi
           if [ -n "${INPUT_SITE:-}" ]; then args+=(--site "$INPUT_SITE"); fi
+          max_sites="${INPUT_MAX_SITES:-}"
+          if [ -z "$max_sites" ] && [ "${GITHUB_EVENT_NAME:-}" = "schedule" ]; then
+            max_sites="${SCHEDULE_MAX_SITES:-5}"
+          fi
+          if [ -n "$max_sites" ] && [ "$max_sites" != "0" ]; then
+            args+=(--max-sites "$max_sites")
+          fi
           uv run ddr source-sweep "${args[@]}"
 
       - name: Save DD republish dedup state

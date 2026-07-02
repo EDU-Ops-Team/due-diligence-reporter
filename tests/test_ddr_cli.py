@@ -55,15 +55,23 @@ def test_ddr_source_sweep_dispatches_repo_cli_surface(monkeypatch) -> None:
     calls = []
 
     def fake_source_sweep(args):
-        calls.append({"site": args.site, "dry_run": args.dry_run})
+        calls.append(
+            {
+                "site": args.site,
+                "dry_run": args.dry_run,
+                "max_sites": args.max_sites,
+            }
+        )
         return 0
 
     monkeypatch.setattr(ddr_cli, "_run_source_sweep", fake_source_sweep)
 
-    exit_code = ddr_cli.main(["source-sweep", "--site", "Alpha Keller", "--dry-run"])
+    exit_code = ddr_cli.main(
+        ["source-sweep", "--site", "Alpha Keller", "--dry-run", "--max-sites", "5"]
+    )
 
     assert exit_code == 0
-    assert calls == [{"site": "Alpha Keller", "dry_run": True}]
+    assert calls == [{"site": "Alpha Keller", "dry_run": True, "max_sites": 5}]
 
 
 def test_ddr_daily_check_loads_repo_script_without_importable_scripts(
@@ -110,9 +118,9 @@ def test_ddr_source_sweep_loads_repo_script_without_importable_scripts(
             "import json",
             "from pathlib import Path",
             f"CALL_PATH = Path({str(call_path)!r})",
-            "def main(*, dry_run=False, site=''):",
+            "def main(*, dry_run=False, site='', max_sites=0):",
             "    CALL_PATH.write_text(",
-            "        json.dumps({'dry_run': dry_run, 'site': site}),",
+            "        json.dumps({'dry_run': dry_run, 'site': site, 'max_sites': max_sites}),",
             "        encoding='utf-8',",
             "    )",
         ]),
@@ -123,13 +131,14 @@ def test_ddr_source_sweep_loads_repo_script_without_importable_scripts(
     monkeypatch.delitem(sys.modules, "scripts.vendor_doc_republish_sweep", raising=False)
 
     exit_code = ddr_cli._run_source_sweep(
-        SimpleNamespace(site="Alpha Keller", dry_run=True)
+        SimpleNamespace(site="Alpha Keller", dry_run=True, max_sites=5)
     )
 
     assert exit_code == 0
     assert json.loads(call_path.read_text(encoding="utf-8")) == {
         "dry_run": True,
         "site": "Alpha Keller",
+        "max_sites": 5,
     }
 
 

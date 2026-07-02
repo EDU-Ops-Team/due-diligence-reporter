@@ -3,8 +3,11 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from due_diligence_reporter.vendor_doc_sweep import (
+    SWEEP_CURSOR_STATE_KEY,
+    advance_sweep_cursor,
     collect_core_source_events,
     run_vendor_doc_republish_sweep,
+    select_sweep_site_records,
 )
 
 
@@ -15,6 +18,50 @@ def _site() -> dict:
         "address": "123 Main St",
         "drive_folder_url": "https://drive.google.com/drive/folders/root",
     }
+
+
+def _cursor_site(site_id: str) -> dict:
+    site = _site()
+    site["id"] = site_id
+    site["title"] = f"Alpha {site_id}"
+    return site
+
+
+def test_bounded_sweep_rotates_site_records_with_cursor() -> None:
+    records = [_cursor_site("site-c"), _cursor_site("site-a"), _cursor_site("site-b")]
+    state: dict[str, str] = {}
+
+    selected = select_sweep_site_records(records, state, max_sites=2)
+    assert [site["id"] for site in selected] == ["site-a", "site-b"]
+
+    next_cursor = advance_sweep_cursor(
+        state,
+        records,
+        selected,
+        max_sites=2,
+    )
+    assert next_cursor == "site-c"
+    assert state[SWEEP_CURSOR_STATE_KEY] == "site-c"
+
+    selected = select_sweep_site_records(records, state, max_sites=2)
+    assert [site["id"] for site in selected] == ["site-c", "site-a"]
+
+
+def test_unbounded_sweep_clears_cursor() -> None:
+    records = [_cursor_site("site-a"), _cursor_site("site-b")]
+    state = {SWEEP_CURSOR_STATE_KEY: "site-b"}
+
+    selected = select_sweep_site_records(records, state, max_sites=0)
+    next_cursor = advance_sweep_cursor(
+        state,
+        records,
+        selected,
+        max_sites=0,
+    )
+
+    assert [site["id"] for site in selected] == ["site-a", "site-b"]
+    assert next_cursor == ""
+    assert SWEEP_CURSOR_STATE_KEY not in state
 
 
 def test_collect_core_source_events_reads_m1_and_root_core_docs() -> None:

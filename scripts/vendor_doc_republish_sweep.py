@@ -34,7 +34,11 @@ from due_diligence_reporter.report_pipeline import (  # noqa: E402
     process_site_pipeline,
 )
 from due_diligence_reporter.rhodes import list_rhodes_site_records  # noqa: E402
-from due_diligence_reporter.vendor_doc_sweep import run_vendor_doc_republish_sweep  # noqa: E402
+from due_diligence_reporter.vendor_doc_sweep import (  # noqa: E402
+    advance_sweep_cursor,
+    run_vendor_doc_republish_sweep,
+    select_sweep_site_records,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,7 +47,8 @@ logging.basicConfig(
 logger = logging.getLogger("vendor_doc_republish_sweep")
 
 
-def main(*, dry_run: bool = False, site: str = "") -> None:
+def main(*, dry_run: bool = False, site: str = "", max_sites: int = 0) -> None:
+    max_sites = max(0, int(max_sites or 0))
     settings = get_settings()
     gc = GoogleClient.from_oauth_config(
         client_config_path=str(settings.get_client_config_path()),
@@ -58,18 +63,25 @@ def main(*, dry_run: bool = False, site: str = "") -> None:
     republish_state_store = build_dd_republish_state_store()
     republish_state = republish_state_store.load()
     source_event_emitter = _source_event_emitter(dry_run=dry_run)
-    site_records = list_rhodes_site_records()
-    if site.strip():
-        needle = site.strip().lower()
+    all_site_records = list_rhodes_site_records()
+    site_filter = site.strip()
+    if site_filter:
+        needle = site_filter.lower()
         site_records = [
             record
-            for record in site_records
+            for record in all_site_records
             if needle
             in " ".join(
                 str(record.get(key) or "").lower()
                 for key in ("id", "site_id", "title", "name", "slug", "address")
             )
         ]
+    else:
+        site_records = select_sweep_site_records(
+            all_site_records,
+            republish_state,
+            max_sites=max_sites,
+        )
 
     result = run_vendor_doc_republish_sweep(
         gc,
@@ -82,16 +94,30 @@ def main(*, dry_run: bool = False, site: str = "") -> None:
         pipeline_runner=process_site_pipeline,
         source_event_emitter=source_event_emitter,
     )
+    next_cursor = ""
+    if not dry_run and not site_filter:
+        next_cursor = advance_sweep_cursor(
+            republish_state,
+            all_site_records,
+            site_records,
+            max_sites=max_sites,
+        )
     if not dry_run:
         republish_state_store.save(republish_state)
 
+    result["sites_total"] = len(all_site_records)
+    result["site_limit"] = max_sites
+    result["site_cursor_next"] = next_cursor
     print(
         "Vendor doc republish sweep: "
         f"sites={result['sites_scanned']} "
         f"events={result['source_events']} "
         f"republished={result['republished']} "
         f"skipped={result['skipped']} "
-        f"errors={result['errors']}"
+        f"errors={result['errors']} "
+        f"sites_total={result['sites_total']} "
+        f"site_limit={result['site_limit']} "
+        f"next_cursor={result['site_cursor_next'] or '-'}"
     )
     for row in result["rows"]:
         print(
@@ -140,5 +166,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--site", default="", help="Optional site id/name/address substring")
+    parser.add_argument(
+        "--max-sites",
+        type=int,
+        default=0,
+        help="Maximum number of sites to scan in this run; 0 scans all matching sites",
+    )
     args = parser.parse_args()
-    main(dry_run=args.dry_run, site=args.site)
+    main(dry_run=args.dry_run, site=args.site, max_sites=args.max_sites)

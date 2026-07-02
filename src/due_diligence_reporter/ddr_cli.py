@@ -96,6 +96,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Detect source events without applying republish decisions",
     )
+    source_sweep_parser.add_argument(
+        "--max-sites",
+        type=int,
+        default=0,
+        help="Maximum matching sites to scan in this source sweep; 0 scans all",
+    )
 
     m2_parser = subparsers.add_parser(
         "m2",
@@ -614,6 +620,7 @@ def _run_source_sweep(args: argparse.Namespace) -> int:
     vendor_doc_republish_sweep.main(
         dry_run=bool(args.dry_run),
         site=str(args.site or "").strip(),
+        max_sites=max(0, int(args.max_sites or 0)),
     )
     return 0
 
