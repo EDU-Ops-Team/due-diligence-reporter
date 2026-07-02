@@ -36,6 +36,51 @@ def test_run_site_source_sweep_apply_disables_dry_run() -> None:
     assert args.dry_run is False
 
 
+def test_run_site_source_sweep_runs_without_prior_ddr(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "due_diligence_reporter.config.get_settings",
+        MagicMock(return_value=_settings()),
+    )
+    monkeypatch.setattr(adhoc_runner, "_make_google_client", MagicMock(return_value="gc"))
+    monkeypatch.setattr(adhoc_runner, "_load_prompt", MagicMock(return_value="prompt"))
+    monkeypatch.setattr(
+        "due_diligence_reporter.report_pipeline.list_shared_folders_once",
+        MagicMock(return_value={}),
+    )
+    store = MagicMock()
+    store.load.return_value = {}
+    monkeypatch.setattr(
+        "due_diligence_reporter.dd_republish_state_store.build_dd_republish_state_store",
+        MagicMock(return_value=store),
+    )
+    monkeypatch.setattr(
+        "due_diligence_reporter.rhodes.list_rhodes_site_records",
+        MagicMock(return_value=[{"id": "SITE1", "title": "Alpha Keller"}]),
+    )
+    sweep = MagicMock(
+        return_value={
+            "errors": 0,
+            "republished": 0,
+            "rows": [],
+        }
+    )
+    monkeypatch.setattr(
+        "due_diligence_reporter.vendor_doc_sweep.run_vendor_doc_republish_sweep",
+        sweep,
+    )
+    args = adhoc_runner.build_parser().parse_args([
+        "source-sweep",
+        "--site",
+        "Alpha Keller",
+    ])
+
+    exit_code, payload = adhoc_runner.run_site_command(args)
+
+    assert exit_code == 0
+    assert payload["mode"] == "source-sweep"
+    assert sweep.call_args.kwargs["run_without_existing_report"] is True
+
+
 def test_run_site_mcp_write_completed_requires_mcp_assisted_mode() -> None:
     parser = adhoc_runner.build_parser()
     args = parser.parse_args([

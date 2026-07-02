@@ -25,9 +25,10 @@ Design choices:
   trace structure.
 * **No diff means no republish** (cost guard). A repeat call with the
   same fingerprint is a no-op.
-* **First-generation** is not our concern: when no DD Report exists
+* **First-generation** is not the scheduled default: when no DD Report exists
   yet, the helper returns ``skipped_no_existing_report`` so the daily/
-  inbox first-gen path keeps owning that case.
+  inbox first-gen path keeps owning that case. Operator/ad-hoc callers can opt
+  into source-input execution with ``run_without_existing_report=True``.
 * **Failures are non-fatal**: the caller's primary action (publishing
   the RayCon Doc, filing the SIR/BI to Drive) has already succeeded by
   the time we get here, and a republish error must not undo that.
@@ -121,8 +122,9 @@ class RepublishOutcome:
     """Structured result of ``maybe_republish_dd_report``.
 
     ``decision`` is one of:
-      * ``"republish"`` — pipeline ran with ``force_regenerate=True``.
-      * ``"skip_no_prior_report"`` — first-generation case; not our job.
+      * ``"republish"`` — pipeline ran.
+      * ``"skip_no_prior_report"`` — first-generation case; not our job unless
+        the caller opts into ``run_without_existing_report``.
       * ``"skip_no_diff"`` — same fingerprint already produced a DDR/candidate.
       * ``"skip_dry_run"`` — dry run; no work performed.
       * ``"skip_bad_input"`` — caller-supplied site fields incomplete.
@@ -144,6 +146,7 @@ class RepublishOutcome:
     run_id: str = ""
     manifest_path: str = ""
     source_event: dict[str, Any] | None = None
+    prior_report_status: str = ""
     still_open_items: list[dict[str, Any]] | None = None
     closed_items: list[dict[str, Any]] | None = None
     failure_event: dict[str, Any] | None = None
@@ -161,6 +164,7 @@ class RepublishOutcome:
             "run_id": self.run_id,
             "manifest_path": self.manifest_path,
             "source_event": self.source_event,
+            "prior_report_status": self.prior_report_status,
             "still_open_items": self.still_open_items or [],
             "closed_items": self.closed_items or [],
         }
@@ -376,6 +380,7 @@ def maybe_republish_dd_report(
     dry_run: bool = False,
     force: bool = False,
     force_after: timedelta | None = None,
+    run_without_existing_report: bool = False,
     now: datetime | None = None,
     pipeline_runner: Callable[..., PipelineResult] | None = None,
     existing_report_finder: Callable[
@@ -412,6 +417,10 @@ def maybe_republish_dd_report(
             operator-driven recovery; default callers leave it off.
         force_after: Deprecated compatibility parameter; same fingerprints
             now remain no-op until ``force=True``.
+        run_without_existing_report: If True, a source arrival can run the
+            pipeline even when no existing DD Report is found. This is intended
+            for operator/ad-hoc source sweeps that should inventory current site
+            inputs and run whatever source-backed DDR work is possible.
         now: Injectable for tests.
         pipeline_runner: Injectable ``process_site_pipeline`` for tests.
         existing_report_finder: Injectable ``find_existing_dd_report``
@@ -491,7 +500,8 @@ def maybe_republish_dd_report(
         )
 
     existing = finder(gc, site_folder_id)
-    if existing is None:
+    prior_report_status = "found" if existing is not None else "missing"
+    if existing is None and not run_without_existing_report:
         logger.info(
             "DD republish skip: no_prior_report reason=%s site_id=%s site=%s "
             "(daily/inbox path will create the first report)",
@@ -505,6 +515,7 @@ def maybe_republish_dd_report(
             site_id=site_id,
             fingerprint=fingerprint,
             source_event=event_dict,
+            prior_report_status=prior_report_status,
         )
 
     # Dedup key uses site_id when available so two sites with the same
@@ -548,16 +559,18 @@ def maybe_republish_dd_report(
             fingerprint=fingerprint,
             last_republish=last_iso or "",
             source_event=event_dict,
+            prior_report_status=prior_report_status,
         )
 
     if dry_run:
         logger.info(
-            "DD republish dry_run: would_republish reason=%s site_id=%s "
-            "site=%s fingerprint=%s",
+            "DD republish dry_run: would_run_pipeline reason=%s site_id=%s "
+            "site=%s fingerprint=%s prior_report=%s",
             reason,
             site_id or "?",
             site_name,
             fingerprint,
+            prior_report_status,
         )
         return RepublishOutcome(
             decision="skip_dry_run",
@@ -565,6 +578,7 @@ def maybe_republish_dd_report(
             site_id=site_id,
             fingerprint=fingerprint,
             source_event=event_dict,
+            prior_report_status=prior_report_status,
         )
 
     site_address = str(site_summary.get("address", "")).strip() or None
@@ -594,7 +608,7 @@ def maybe_republish_dd_report(
             site_id=site_id or None,
             source_event=event_dict,
             open_questions_before=previous_open_questions,
-            force_regenerate=True,
+            force_regenerate=existing is not None,
         )
     except Exception as e:
         logger.exception(
@@ -611,6 +625,7 @@ def maybe_republish_dd_report(
             fingerprint=fingerprint,
             error=str(e),
             source_event=event_dict,
+            prior_report_status=prior_report_status,
         )
         return _with_failure_event(
             outcome,
@@ -655,6 +670,7 @@ def maybe_republish_dd_report(
         source_event=event_dict,
         still_open_items=still_open_items,
         closed_items=closed_items if result.status == "report_created" else [],
+        prior_report_status=prior_report_status,
     )
     return _with_failure_event(
         outcome,

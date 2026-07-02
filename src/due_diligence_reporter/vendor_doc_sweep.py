@@ -114,6 +114,7 @@ def run_vendor_doc_republish_sweep(
     republish_callback: RepublishCallback = maybe_republish_dd_report,
     pipeline_runner: Callable[..., PipelineResult] | None = None,
     source_event_emitter: SourceEventEmitter | None = None,
+    run_without_existing_report: bool = False,
 ) -> dict[str, Any]:
     """Scan active Rhodes sites for core source changes and republish in place."""
     rows: list[dict[str, Any]] = []
@@ -153,7 +154,12 @@ def run_vendor_doc_republish_sweep(
                     "site_id": site_summary.get("id", ""),
                     "site_title": site_summary.get("title", ""),
                     "status": "skipped",
-                    "reason": "no_core_sources_found",
+                    "reason": "no_runnable_skill_inputs",
+                    "message": (
+                        "No core source documents were found in the linked Drive "
+                        "folder/M1 folder, so no DDR source skills have their "
+                        "required inputs."
+                    ),
                 }
             )
             continue
@@ -182,6 +188,7 @@ def run_vendor_doc_republish_sweep(
             }
             if republish_callback is maybe_republish_dd_report:
                 kwargs["failure_event_recorder"] = record_dd_republish_failure_event
+                kwargs["run_without_existing_report"] = run_without_existing_report
             outcome = republish_callback(
                 gc,
                 **kwargs,

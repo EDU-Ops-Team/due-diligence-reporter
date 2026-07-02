@@ -88,6 +88,7 @@ def _call_helper(
     runner=None,
     dry_run=False,
     force=False,
+    run_without_existing_report=False,
     now=None,
     open_questions_before=None,
     failure_event_recorder=None,
@@ -104,6 +105,7 @@ def _call_helper(
         republish_state=state if state is not None else {},
         dry_run=dry_run,
         force=force,
+        run_without_existing_report=run_without_existing_report,
         now=now,
         existing_report_finder=finder
         or MagicMock(return_value=_existing_dd_report()),
@@ -179,6 +181,43 @@ class TestVendorSIRArrival:
             runner=runner,
         )
         assert outcome.decision == "skip_no_prior_report"
+        runner.assert_not_called()
+
+    def test_no_existing_report_can_run_operator_first_publish_path(self):
+        """Ad-hoc source sweeps can run source inputs without a prior DDR."""
+        runner = _pipeline_runner_factory(status="report_created")
+        state: dict = {}
+
+        outcome = _call_helper(
+            reason=REASON_VENDOR_SIR,
+            finder=MagicMock(return_value=None),
+            runner=runner,
+            state=state,
+            run_without_existing_report=True,
+        )
+
+        assert outcome.decision == "republish"
+        assert outcome.pipeline_status == "report_created"
+        assert outcome.prior_report_status == "missing"
+        assert (
+            "site-123:vendor_sir:file-1:2026-05-05T10:00:00Z" in state
+        )
+        runner.assert_called_once()
+        assert runner.call_args.kwargs["force_regenerate"] is False
+
+    def test_no_existing_report_operator_dry_run_reports_would_run(self):
+        runner = _pipeline_runner_factory()
+
+        outcome = _call_helper(
+            reason=REASON_VENDOR_SIR,
+            finder=MagicMock(return_value=None),
+            runner=runner,
+            dry_run=True,
+            run_without_existing_report=True,
+        )
+
+        assert outcome.decision == "skip_dry_run"
+        assert outcome.prior_report_status == "missing"
         runner.assert_not_called()
 
     def test_failed_pipeline_does_not_update_success_dedup_state(self):

@@ -279,6 +279,27 @@ def test_sweep_skips_site_with_no_prior_report_without_error() -> None:
     assert result["rows"][0]["dd_report_republish"] == "skip_no_prior_report"
 
 
+def test_sweep_reports_no_runnable_skill_inputs() -> None:
+    gc = MagicMock()
+    with patch(
+        "due_diligence_reporter.vendor_doc_sweep.collect_core_source_events",
+        return_value=[],
+    ):
+        result = run_vendor_doc_republish_sweep(
+            gc,
+            settings=MagicMock(),
+            system_prompt="prompt",
+            shared_cache={},
+            republish_state={},
+            site_records=[_site()],
+        )
+
+    assert result["republished"] == 0
+    assert result["errors"] == 0
+    assert result["rows"][0]["reason"] == "no_runnable_skill_inputs"
+    assert "no DDR source skills" in result["rows"][0]["message"]
+
+
 def test_provenance_error_surfaces_as_site_error() -> None:
     gc = MagicMock()
     gc.list_subfolders.return_value = [

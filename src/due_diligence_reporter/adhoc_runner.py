@@ -350,6 +350,7 @@ def _run_source_sweep(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         site_records=site_records,
         dry_run=args.dry_run,
         pipeline_runner=_source_sweep_pipeline_runner(args, process_site_pipeline),
+        run_without_existing_report=True,
     )
     if not args.dry_run:
         store.save(republish_state)

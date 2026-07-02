@@ -1,5 +1,42 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-02 - Ad-hoc source sweep no-prior-DDR fallback
+
+- Branch/worktree: current checkout at
+  `C:\Users\foote\.claude\Work\repos\due-diligence-reporter`.
+- Beads issue: `ddr-fxc`.
+- Request: the DDR ad-hoc runner should not stop only because no existing DDR
+  is found. It should inspect current site/source inputs and run applicable
+  source-backed DDR work when inputs exist; if nothing is runnable, it should
+  report that clearly.
+- Changes:
+  - Added `run_without_existing_report` to
+    `maybe_republish_dd_report(...)`. Scheduled/default callers still return
+    `skip_no_prior_report` when no prior DD Report exists.
+  - `uv run ddr run-site source-sweep ...` now opts into that fallback, so a
+    manual ad-hoc source sweep can run the pipeline from available source
+    inputs even when `find_existing_dd_report(...)` returns nothing.
+  - Source-sweep rows with no discovered core sources now report
+    `reason=no_runnable_skill_inputs` with a user-facing message that no DDR
+    source skills have the required inputs.
+  - Republish outcomes now include `prior_report_status` so operators can see
+    whether the pipeline ran against an existing DDR or as a no-prior-DDR input
+    pass.
+- Validation:
+
+```powershell
+uv run pytest tests\test_dd_republish.py tests\test_vendor_doc_sweep.py tests\test_adhoc_runner.py -q --basetemp C:\tmp\ddr-adhoc-runner-regression
+uv run ruff check src\due_diligence_reporter\dd_republish.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\adhoc_runner.py tests\test_dd_republish.py tests\test_vendor_doc_sweep.py tests\test_adhoc_runner.py
+uv run mypy src\due_diligence_reporter\dd_republish.py src\due_diligence_reporter\vendor_doc_sweep.py src\due_diligence_reporter\adhoc_runner.py
+uv run ruff check .
+uv run mypy src/
+uv run pytest -q --basetemp C:\tmp\ddr-adhoc-runner-full
+```
+
+Results: focused pytest passed (`64 passed`); scoped Ruff passed; scoped mypy
+passed; full Ruff passed; full mypy passed for 52 source files; full pytest
+passed (`1346 passed, 13 skipped`).
+
 ## 2026-07-01 - DD-field approval handoff note
 
 - Branch/worktree: current checkout at
