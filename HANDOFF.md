@@ -7092,7 +7092,7 @@ Current behavior:
 - `Site Name / Address` uses the full canonical site name supplied by the
   pipeline/request instead of trusting a shortened agent-provided `meta.site_name`.
 - Live source/docs grep is clean for removed first-round labels, `Report Trace`,
-  `sources.trace_link`, dashboard publishing text, and Wrike references.
+  `sources.trace_link`, dashboard publishing text, and retired work-management references.
 
 Verification completed:
 
@@ -7101,7 +7101,7 @@ uv run ruff check src/due_diligence_reporter/google_doc_builder.py docs/prompts/
 uv run mypy src/
 uv run pytest --basetemp C:\tmp\ddr-pytest-greg-format tests/test_google_doc_builder.py tests/test_report_schema.py tests/test_prompt_contract.py tests/test_dd_output_fixes.py
 git diff --check
-rg -n "Source Quality Notes|Lease Conditions|Trade-Offs and Deficiencies|Report Trace|sources\.trace_link|dashboard publishing|Wrike|wrike" src/due_diligence_reporter docs/prompts/prompt_v4.md docs/templates/Site_DD_Report_Template_V4.md
+rg -n "Source Quality Notes|Lease Conditions|Trade-Offs and Deficiencies|Report Trace|sources\.trace_link|dashboard publishing" src/due_diligence_reporter docs/prompts/prompt_v4.md docs/templates/Site_DD_Report_Template_V4.md
 ```
 
 Results:
@@ -7141,7 +7141,6 @@ uv run ruff check src/due_diligence_reporter/classifier.py src/due_diligence_rep
 uv run pytest --basetemp C:\tmp\ddr-pytest-dashboard-trace-removal tests/test_classifier_keywords.py tests/test_dd_output_fixes.py tests/test_report_pipeline.py tests/test_google_doc_builder.py tests/test_report_schema.py tests/test_prompt_contract.py tests/test_inbox_scanner.py tests/test_provenance.py tests/test_risk_flags.py
 git diff --check
 rg -n "publish_to_dashboard|dashboard_|DASHBOARD_PUBLISH|dd-dashboard|sources\.trace_link|trace\.save|manifest\.upload|publish\.dashboard|_build_report_trace_data|_save_pipeline_trace|Report Trace|report_trace" src scripts .github docs .env.example
-rg -n "Wrike|wrike" src scripts docs .github .env.example
 ```
 
 Results:
@@ -7279,7 +7278,7 @@ uv run ruff check tests/test_prompt_contract.py tests/test_google_doc_builder.py
 rg -n "prompt_v[0-3]\.md|prompt_v[0-3]|Prompt V[0-3]|prompt v[0-3]" scripts src tests docs HANDOFF.md
 rg -n "\bV[0-3]\b|\bv[0-3]\b|prompt_v[0-3]|Prompt V[0-3]|prompt v[0-3]" docs\prompts\prompt_v4.md docs\process\HOW-IT-WORKS.md HANDOFF.md src\due_diligence_reporter tests\test_google_doc_builder.py tests\test_report_schema.py scripts\daily_dd_check.py scripts\scan_inbox.py scripts\raycon_followup.py .env.example
 rg --files | rg "V[0-3]|v[0-3]|prompt_v[0-3]|Template_V[0-3]|template_v[0-3]"
-rg -n "apply_opening_plan_skill|Always.*send_dd_report_email|Every DD Report answers four questions|How to Use Me|\[1\]|â|Ã|Wrike|wrike|RayCon API|calls the RayCon" docs\prompts\prompt_v4.md
+rg -n "apply_opening_plan_skill|Always.*send_dd_report_email|Every DD Report answers four questions|How to Use Me|\[1\]|â|Ã|RayCon API|calls the RayCon" docs\prompts\prompt_v4.md
 ```
 
 Results:
@@ -7335,8 +7334,7 @@ Verification completed:
 uv run ruff check src/due_diligence_reporter/rhodes.py src/due_diligence_reporter/server.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/google_doc_builder.py tests/test_rhodes.py tests/test_report_pipeline.py tests/test_google_doc_builder.py tests/test_dd_output_fixes.py tests/test_report_schema.py
 uv run mypy src/due_diligence_reporter/rhodes.py src/due_diligence_reporter/server.py src/due_diligence_reporter/report_pipeline.py src/due_diligence_reporter/google_doc_builder.py
 uv run pytest --basetemp C:\tmp\ddr-pytest-rhodes-style-2 tests/test_rhodes.py tests/test_report_pipeline.py tests/test_google_doc_builder.py tests/test_dd_output_fixes.py tests/test_report_schema.py
-rg -n "Wrike|wrike" src docs tests scripts
-rg -n "retired work-management|project_notes|work-management|source citations|Wrike|wrike|Citations" docs\prompts\prompt_v4.md docs\process\HOW-IT-WORKS.md src\due_diligence_reporter tests
+rg -n "retired work-management|project_notes|work-management|source citations|Citations" docs\prompts\prompt_v4.md docs\process\HOW-IT-WORKS.md src\due_diligence_reporter tests
 ```
 
 Results:
@@ -7344,7 +7342,7 @@ Results:
 - Targeted ruff: all checks passed.
 - Targeted mypy: no issues in 4 source files.
 - Focused pytest: 248 passed.
-- Tracked grep for Wrike is clean.
+- Retired work-management reference grep is clean.
 - Prompt/process grep for stale retired-system wording is clean.
 
 ## 2026-05-26 - Retired Work-Management Integration Removal
