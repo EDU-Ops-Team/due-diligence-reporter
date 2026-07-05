@@ -1,5 +1,25 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-05 - Portfolio Remediation Checkout Fails Closed
+
+- Removed `continue-on-error: true` from the
+  `portfolio-automation-gaps.yml` AADP remediation checkout. If the remediation
+  repo cannot be checked out, the workflow now fails at the checkout boundary
+  instead of masking the failure and surfacing it later inside the remediation
+  trigger step.
+- Cross-repo autonomy review found no active Wrike/AWS/SES runtime references
+  in DDR source, workflow, script, or test surfaces. Remaining BrainTrust hits
+  are historical changelog/handoff text or tests that assert active runtime
+  files do not mention BrainTrust.
+- Live GitHub secret readback on 2026-07-05 verified stale
+  `WRIKE_ACCESS_TOKEN` was deleted from the DDR repo. It is no longer present
+  in the repo's GitHub secret list.
+- Validation:
+  full DDR pytest passed (`1354 passed, 13 skipped`); full Ruff passed; full
+  mypy passed (`52 source files`); focused workflow-contract tests passed
+  (`22 passed`); `git diff --check` passed with normal Windows LF/CRLF
+  warnings only.
+
 ## 2026-07-02 - Verified DD handoff notes now complete M2 automation locally
 
 - Branch/worktree: current checkout at
