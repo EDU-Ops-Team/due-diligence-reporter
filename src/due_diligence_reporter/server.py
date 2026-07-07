@@ -4953,6 +4953,17 @@ async def apply_alpha_phasing_plan_skill(
     return await asyncio.to_thread(_work)
 
 
+SKILL_REPORT_DDR_DOC_TYPES = {
+    "e-occupancy": "e_occupancy_report",
+    "school approval": "school_approval_report",
+    "opening plan": "opening_plan_report",
+    "alpha capacity analysis": "alpha_capacity_analysis",
+    "outdoor play space": "outdoor_play_space_report",
+    "security due diligence": "security_due_diligence_report",
+    "alpha phasing plan": "alpha_phasing_plan_report",
+}
+
+
 @mcp.tool()
 async def save_skill_report(
     skill_name: str,
@@ -5023,10 +5034,13 @@ async def save_skill_report(
             doc_id = str(doc.get("id") or "").strip()
             doc_url = str(doc.get("webViewLink") or "").strip()
             rhodes_registration: dict[str, Any] | None = None
-            if site_id.strip() and ddr_doc_type.strip() and doc_id:
+            resolved_doc_type = ddr_doc_type.strip() or SKILL_REPORT_DDR_DOC_TYPES.get(
+                skill_name.strip().casefold(), ""
+            )
+            if site_id.strip() and resolved_doc_type and doc_id:
                 rhodes_registration = register_rhodes_document_for_upload(
                     site_id=site_id,
-                    ddr_doc_type=ddr_doc_type,
+                    ddr_doc_type=resolved_doc_type,
                     title=doc_name,
                     drive_file_id=doc_id,
                     drive_url=doc_url,
@@ -5034,6 +5048,19 @@ async def save_skill_report(
                     original_filename=doc_name,
                     source="save_skill_report",
                 )
+            elif doc_id:
+                # Registration is load-bearing for the DD approval flow: the
+                # approval agent validates proposed fields against documents
+                # registered on the site record, so a skipped registration
+                # must be visible to the caller, never silent.
+                rhodes_registration = {
+                    "status": "skipped",
+                    "reason": (
+                        "missing_site_id"
+                        if not site_id.strip()
+                        else "unmapped_skill_doc_type"
+                    ),
+                }
             result: dict[str, Any] = {
                 "status": "success",
                 "doc_id": doc_id,

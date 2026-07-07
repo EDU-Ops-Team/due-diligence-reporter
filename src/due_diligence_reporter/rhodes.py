@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -1194,8 +1194,17 @@ def update_rhodes_due_diligence(
     owner_user_id: str = "",
     owner_email: str = "",
     fallback_owner_email: str = DOCUMENT_REGISTRATION_FALLBACK_OWNER_EMAIL,
+    field_sources: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Update Rhodes due diligence fields through LocationOS."""
+    """Update Rhodes due diligence fields through LocationOS.
+
+    ``field_sources`` maps LocationOS field keys to the registered source
+    document title backing each proposed value. When the write lands in the
+    LocationOS approval queue, these lines go into the handoff note so the
+    approval reviewer can validate each proposed change against the
+    registered document. Fields without an entry are labeled workflow
+    fields with no source document.
+    """
 
     clean_site_id = site_id.strip()
     clean_fields = _clean_due_diligence_fields(fields)
@@ -1242,6 +1251,7 @@ def update_rhodes_due_diligence(
                 owner_user_id=owner_user_id,
                 owner_email=owner_email,
                 fallback_owner_email=fallback_owner_email,
+                field_sources=field_sources,
             )
             return _due_diligence_handoff_result(
                 base=base,
@@ -1285,6 +1295,7 @@ def update_rhodes_due_diligence(
             owner_user_id=owner_user_id,
             owner_email=owner_email,
             fallback_owner_email=fallback_owner_email,
+            field_sources=field_sources,
         )
         return _due_diligence_handoff_result(
             base=base,
@@ -1500,11 +1511,15 @@ def _due_diligence_field_handoff_value(value: Any) -> str:
     return text if len(text) <= 500 else f"{text[:497]}..."
 
 
+WORKFLOW_FIELD_SOURCE_LABEL = "workflow field - no source document"
+
+
 def _build_due_diligence_update_handoff_note_body(
     *,
     site_name: str,
     site_address: str,
     fields: dict[str, Any],
+    field_sources: Mapping[str, str] | None = None,
 ) -> str:
     lines = [
         f"Site Name: {site_name.strip()}",
@@ -1514,6 +1529,11 @@ def _build_due_diligence_update_handoff_note_body(
     ]
     for key in sorted(fields):
         lines.append(f"{key}: {_due_diligence_field_handoff_value(fields[key])}")
+    if field_sources is not None:
+        lines.append("Supporting documents (registered on this site record):")
+        for key in sorted(fields):
+            source = str(field_sources.get(key) or "").strip()
+            lines.append(f"{key}: {source or WORKFLOW_FIELD_SOURCE_LABEL}")
     return "\n".join(lines)
 
 
@@ -1549,6 +1569,7 @@ def _create_due_diligence_update_handoff(
     owner_user_id: str = "",
     owner_email: str = "",
     fallback_owner_email: str = DOCUMENT_REGISTRATION_FALLBACK_OWNER_EMAIL,
+    field_sources: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     clean_site_id = site_id.strip()
     clean_fields = _clean_due_diligence_fields(fields)
@@ -1606,6 +1627,7 @@ def _create_due_diligence_update_handoff(
         site_name=resolved_site_name,
         site_address=resolved_site_address,
         fields=clean_fields,
+        field_sources=field_sources,
     )
     note = add_rhodes_site_note(
         site_id=clean_site_id,
@@ -1647,6 +1669,7 @@ def _create_due_diligence_update_handoff(
             {
                 "name": key,
                 "value": _due_diligence_field_handoff_value(clean_fields[key]),
+                "source": str((field_sources or {}).get(key) or "").strip(),
             }
             for key in sorted(clean_fields)
         ],

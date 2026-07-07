@@ -37,7 +37,7 @@ def _isolate_report_event_manifest_dir(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("due_diligence_reporter.report_pipeline.RUN_MANIFEST_DIR", tmp_path)
     monkeypatch.setattr(
         "due_diligence_reporter.report_pipeline.update_rhodes_due_diligence",
-        lambda *, site_id, fields: {
+        lambda *, site_id, fields, field_sources=None: {
             "status": "skipped",
             "reason": "test_default",
             "rhodes_site_id": site_id,
@@ -131,9 +131,15 @@ def test_canonicalize_site_tool_input_adds_context_for_alpha_capacity() -> None:
 def test_record_due_diligence_update_respects_source_packet(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
-    def fake_update(*, site_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    def fake_update(
+        *,
+        site_id: str,
+        fields: dict[str, Any],
+        field_sources: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         captured["site_id"] = site_id
         captured["fields"] = dict(fields)
+        captured["field_sources"] = dict(field_sources) if field_sources else None
         return {
             "status": "updated",
             "updated_fields": sorted(fields),
@@ -196,6 +202,7 @@ def test_record_due_diligence_update_respects_source_packet(monkeypatch) -> None
 
     assert captured["fields"]["playAreaScore"] == 1
     assert "regulatoryScore" not in captured["fields"]
+    assert captured["field_sources"]["playAreaScore"] == "Outdoor Play Space Report"
     assert result.rhodes_due_diligence_update is not None
     assert result.rhodes_due_diligence_update["source_packet_status"] == "blocked"
     assert result.rhodes_due_diligence_update["m2_source_packet_complete"] is False

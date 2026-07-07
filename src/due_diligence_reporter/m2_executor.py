@@ -32,6 +32,7 @@ from .rhodes import (
 from .source_packet import (
     SourceDocumentRef,
     build_m2_source_packet,
+    dd_field_update_sources,
     mark_written_fields_from_update_result,
     source_packet_is_complete,
     source_packet_note_lines,
@@ -103,8 +104,18 @@ class M2ExecutorAdapters(Protocol):
     def run_alpha_capacity(self, state: dict[str, Any]) -> M2StepResult:
         """Run or reuse Alpha Capacity Analysis and return capacity fields."""
 
-    def write_due_diligence(self, site_id: str, fields: dict[str, Any]) -> dict[str, Any]:
-        """Write LocationOS/Rhodes due diligence fields with readback."""
+    def write_due_diligence(
+        self,
+        site_id: str,
+        fields: dict[str, Any],
+        field_sources: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Write LocationOS/Rhodes due diligence fields with readback.
+
+        ``field_sources`` maps each field to the registered source document
+        title backing it, so approval-queue handoff notes carry the
+        field -> source-document evidence the approval reviewer needs.
+        """
 
     def run_cost_timeline(self, state: dict[str, Any]) -> M2StepResult:
         """Run or reuse the cost/timeline estimate source."""
@@ -219,7 +230,11 @@ def execute_m2_state(
                 next_action="write_capacity_fields",
             )
             return _finish(updated, steps, timestamp)
-        write_result = adapters.write_due_diligence(_site_id(updated), capacity_fields)
+        write_result = adapters.write_due_diligence(
+            _site_id(updated),
+            capacity_fields,
+            field_sources=_capacity_field_sources(updated, capacity_fields),
+        )
         updated["capacity_write"] = write_result
         steps.append(_dict_step_row("write_capacity_fields", write_result))
         if write_result.get("status") != "updated":
@@ -333,7 +348,11 @@ def execute_m2_state(
             next_action="write_packet_approved_dd_fields",
         )
         return _finish(updated, steps, timestamp)
-    write_result = adapters.write_due_diligence(_site_id(updated), write_fields)
+    write_result = adapters.write_due_diligence(
+        _site_id(updated),
+        write_fields,
+        field_sources=_packet_field_sources(packet),
+    )
     steps.append(_dict_step_row("write_packet_approved_dd_fields", write_result))
     packet = mark_written_fields_from_update_result(
         source_packet=packet,
@@ -478,8 +497,17 @@ class LiveM2ExecutorAdapters:
             raw=result,
         )
 
-    def write_due_diligence(self, site_id: str, fields: dict[str, Any]) -> dict[str, Any]:
-        return update_rhodes_due_diligence(site_id=site_id, fields=fields)
+    def write_due_diligence(
+        self,
+        site_id: str,
+        fields: dict[str, Any],
+        field_sources: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        return update_rhodes_due_diligence(
+            site_id=site_id,
+            fields=fields,
+            field_sources=field_sources,
+        )
 
     def run_cost_timeline(self, state: dict[str, Any]) -> M2StepResult:
         existing = _registered_doc(state, "cost_timeline_estimate")
@@ -996,6 +1024,21 @@ def _capacity_locationos_fields(state: dict[str, Any]) -> dict[str, Any]:
     ):
         fields["maxCapCapacity"] = value
     return fields
+
+
+def _capacity_field_sources(
+    state: dict[str, Any],
+    capacity_fields: Mapping[str, Any],
+) -> dict[str, str]:
+    doc = _registered_doc(state, "alpha_capacity_analysis")
+    title = _text(doc.get("title")) if doc else ""
+    if not title:
+        title = "Alpha Capacity Analysis"
+    return dict.fromkeys(capacity_fields, title)
+
+
+def _packet_field_sources(packet: Mapping[str, Any]) -> dict[str, str]:
+    return dd_field_update_sources(packet.get("dd_field_updates") or [])
 
 
 def _normalize_locationos_value(key: str, value: Any) -> Any:

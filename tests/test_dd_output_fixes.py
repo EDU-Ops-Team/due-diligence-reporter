@@ -1026,6 +1026,73 @@ class TestAsyncOffloading:
         gc.create_document.assert_called_once()
         gc.upload_file_to_folder.assert_not_called()
         mock_to_thread.assert_awaited_once()
+        assert result["rhodes_registration"] == {
+            "status": "skipped",
+            "reason": "missing_site_id",
+        }
+
+    def test_save_skill_report_infers_doc_type_from_skill_name(self) -> None:
+        from due_diligence_reporter.server import save_skill_report
+
+        gc = MagicMock()
+        gc.list_subfolders.return_value = [{"id": "m1-folder", "name": "M1 Property Acquired"}]
+        gc.create_document.return_value = {"id": "doc123", "webViewLink": "https://example.com/doc123"}
+
+        async def run_inline(func: Any, *args: Any, **kwargs: Any) -> Any:
+            return func(*args, **kwargs)
+
+        with patch(
+            "due_diligence_reporter.server.asyncio.to_thread",
+            new=AsyncMock(side_effect=run_inline),
+        ), patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ), patch(
+            "due_diligence_reporter.server.register_rhodes_document_for_upload",
+            return_value={"status": "registered"},
+        ) as mock_register:
+            result = asyncio.run(save_skill_report(
+                skill_name="E-Occupancy",
+                site_name="Alpha",
+                site_id="SITE1",
+                drive_folder_url="https://drive.google.com/drive/folders/folder123",
+                skill_data={"final_score": 90},
+            ))
+
+        assert result["status"] == "success"
+        assert result["rhodes_registration"] == {"status": "registered"}
+        assert mock_register.call_args.kwargs["ddr_doc_type"] == "e_occupancy_report"
+
+    def test_save_skill_report_reports_unmapped_doc_type_skip(self) -> None:
+        from due_diligence_reporter.server import save_skill_report
+
+        gc = MagicMock()
+        gc.list_subfolders.return_value = [{"id": "m1-folder", "name": "M1 Property Acquired"}]
+        gc.create_document.return_value = {"id": "doc123", "webViewLink": "https://example.com/doc123"}
+
+        async def run_inline(func: Any, *args: Any, **kwargs: Any) -> Any:
+            return func(*args, **kwargs)
+
+        with patch(
+            "due_diligence_reporter.server.asyncio.to_thread",
+            new=AsyncMock(side_effect=run_inline),
+        ), patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ):
+            result = asyncio.run(save_skill_report(
+                skill_name="Permit History",
+                site_name="Alpha",
+                site_id="SITE1",
+                drive_folder_url="https://drive.google.com/drive/folders/folder123",
+                skill_data={"summary": "clean"},
+            ))
+
+        assert result["status"] == "success"
+        assert result["rhodes_registration"] == {
+            "status": "skipped",
+            "reason": "unmapped_skill_doc_type",
+        }
 
     def test_create_dd_report_uses_to_thread(self) -> None:
         from due_diligence_reporter.server import create_dd_report

@@ -81,6 +81,7 @@ from .rhodes_events import (
 )
 from .sir_learning import build_sir_learning_review
 from .source_packet import (
+    dd_field_update_sources,
     locationos_fields_allowed_by_source_packet,
     mark_written_fields_from_update_result,
     source_packet_is_complete,
@@ -2437,7 +2438,16 @@ def _record_rhodes_due_diligence_update_step(
             fields=fields,
         )
     else:
-        update_status = update_rhodes_due_diligence(site_id=site_id, fields=fields)
+        field_sources = (
+            dd_field_update_sources(source_packet.get("dd_field_updates") or [])
+            if source_packet is not None
+            else None
+        )
+        update_status = update_rhodes_due_diligence(
+            site_id=site_id,
+            fields=fields,
+            field_sources=field_sources,
+        )
         if (
             due_diligence_write_mode == "mcp_assisted"
             and _due_diligence_update_needs_locationos_mcp(update_status)

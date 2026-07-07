@@ -8,6 +8,7 @@ from due_diligence_reporter.source_packet import (
     SourceDocumentRef,
     build_dd_field_updates,
     build_m2_source_packet,
+    dd_field_update_sources,
     locationos_fields_allowed_by_source_packet,
     m2_field_matrix,
     source_packet_completion,
@@ -334,3 +335,45 @@ def test_translate_outdoor_play_score_uses_confidence_and_review_rules() -> None
     assert "manual review" in yellow["comment"].lower()
     assert red["score"] == 3
     assert "No viable" in red["comment"]
+
+
+def test_dd_field_update_sources_maps_locationos_keys_to_doc_titles() -> None:
+    updates = [
+        {
+            "field": "fast_open_capacity",
+            "locationos_key": "foCapacity",
+            "value": 36,
+            "writer": "alpha_capacity_analysis",
+            "required_source_docs": ("Alpha Capacity Analysis",),
+            "write_status": "pending",
+            "readback_status": "",
+            "source_titles": ("Alpha Capacity Analysis - Site.json",),
+        },
+        {
+            "field": "building_score",
+            "locationos_key": "buildingScore",
+            "value": 1,
+            "writer": "phase_1_phase_2",
+            "required_source_docs": ("Phase 1 Phase 2 workbook",),
+            "write_status": "pending",
+            "readback_status": "",
+            "source_titles": (),
+        },
+        {
+            "field": "zoning_status_confirmed",
+            "locationos_key": None,
+            "value": True,
+            "writer": "regulatory_resolver",
+            "required_source_docs": ("SIR",),
+            "write_status": "held",
+            "readback_status": "",
+            "source_titles": ("Vendor SIR",),
+        },
+    ]
+
+    sources = dd_field_update_sources(updates)
+
+    assert sources == {
+        "foCapacity": "Alpha Capacity Analysis - Site.json",
+        "buildingScore": "Phase 1 Phase 2 workbook",
+    }
