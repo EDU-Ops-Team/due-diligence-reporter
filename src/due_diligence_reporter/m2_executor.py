@@ -74,6 +74,8 @@ KNOWN_EXECUTOR_ACTIONS = frozenset(
 REGISTERED_STATUSES = frozenset({"registered", "already_registered"})
 DUE_DILIGENCE_HANDOFF_COMPLETION_MODE = "due_diligence_update_handoff"
 DUE_DILIGENCE_HANDOFF_PACKET_STATUS = "handoff_pending_manual_update"
+DUE_DILIGENCE_PROPOSAL_COMPLETION_MODE = "due_diligence_proposal_submitted"
+DUE_DILIGENCE_PROPOSAL_PACKET_STATUS = "proposal_awaiting_approval"
 SCORE_KEYS = frozenset(
     {
         "buildingScore",
@@ -920,11 +922,19 @@ def _pending_locationos_fields(packet: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
+def _due_diligence_write_is_proposal(result: Mapping[str, Any]) -> bool:
+    return (
+        _text(result.get("status")) == "proposal_submitted"
+        and _text(result.get("reason")) == "approval_queue"
+    )
+
+
 def _due_diligence_handoff_verified(result: Mapping[str, Any]) -> bool:
-    if _text(result.get("status")) != "pending_user_action":
-        return False
-    if _text(result.get("reason")) != "handoff_note_created":
-        return False
+    if not _due_diligence_write_is_proposal(result):
+        if _text(result.get("status")) != "pending_user_action":
+            return False
+        if _text(result.get("reason")) != "handoff_note_created":
+            return False
     handoff = _dict(result.get("due_diligence_update_handoff"))
     if _text(handoff.get("status")) != "created":
         return False
@@ -939,10 +949,15 @@ def _complete_with_due_diligence_handoff(
 ) -> None:
     handoff = _dict(write_result.get("due_diligence_update_handoff"))
     note_id = _text(handoff.get("rhodes_note_id"))
+    is_proposal = _due_diligence_write_is_proposal(write_result)
     state["status"] = "complete"
     state["m2_state"] = "complete"
     state["open_blockers"] = []
-    state["completion_mode"] = DUE_DILIGENCE_HANDOFF_COMPLETION_MODE
+    state["completion_mode"] = (
+        DUE_DILIGENCE_PROPOSAL_COMPLETION_MODE
+        if is_proposal
+        else DUE_DILIGENCE_HANDOFF_COMPLETION_MODE
+    )
     state["human_followup_required"] = True
     state["human_followup_type"] = (
         _text(write_result.get("human_followup_type"))
@@ -951,13 +966,14 @@ def _complete_with_due_diligence_handoff(
     )
     state["manual_handoff"] = _json_safe(
         {
-            "type": "due_diligence_update",
+            "type": "due_diligence_approval" if is_proposal else "due_diligence_update",
             "status": _text(handoff.get("status")) or "created",
             "reason": _text(write_result.get("reason") or handoff.get("reason")),
             "rhodes_note_id": note_id,
             "note_readback_status": _handoff_note_readback_status(handoff),
             "field_count": handoff.get("field_count"),
             "fields": _list_of_dicts(handoff.get("fields")),
+            "approval": _dict(write_result.get("approval")),
         }
     )
     state["manual_handoff_note_id"] = note_id
@@ -975,6 +991,8 @@ def _mark_packet_handoff_pending(
         return packet
     handoff = _dict(write_result.get("due_diligence_update_handoff"))
     note_id = _text(handoff.get("rhodes_note_id"))
+    is_proposal = _due_diligence_write_is_proposal(write_result)
+    field_status = "proposal_submitted" if is_proposal else "pending_user_action"
     updated_fields = {
         str(field).strip()
         for field in write_result.get("updated_fields", [])
@@ -985,17 +1003,24 @@ def _mark_packet_handoff_pending(
     for raw_update in raw_updates:
         row = dict(raw_update) if isinstance(raw_update, dict) else {}
         if _text(row.get("locationos_key")) in updated_fields:
-            row["write_status"] = "pending_user_action"
-            row["readback_status"] = "pending_user_action"
+            row["write_status"] = field_status
+            row["readback_status"] = field_status
             row["hold_reason"] = reason
             if note_id:
                 row["handoff_note_id"] = note_id
         next_updates.append(row)
     packet["dd_field_updates"] = next_updates
-    packet["status"] = DUE_DILIGENCE_HANDOFF_PACKET_STATUS
+    packet["status"] = (
+        DUE_DILIGENCE_PROPOSAL_PACKET_STATUS if is_proposal else DUE_DILIGENCE_HANDOFF_PACKET_STATUS
+    )
     packet["m2_source_packet_complete"] = False
     packet["open_items"] = [
-        "LocationOS due diligence fields require manual update from verified handoff note."
+        (
+            "LocationOS due diligence fields await the approval-queue decision; "
+            "site owner tracks the pending change."
+        )
+        if is_proposal
+        else "LocationOS due diligence fields require manual update from verified handoff note."
     ]
     packet["manual_handoff_note_id"] = note_id
     packet["manual_handoff_note_readback_status"] = _handoff_note_readback_status(handoff)

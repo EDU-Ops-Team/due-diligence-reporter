@@ -332,6 +332,8 @@ def _dd_report_rhodes_fields_line(rhodes_update: str) -> str:
         return ""
     if rhodes_update.startswith("failed"):
         return "Did not update. Technical details are in the run record."
+    if rhodes_update.startswith("submitted for approval"):
+        return "Submitted for approval; pending in the LocationOS approval queue."
     return "Updated."
 
 
@@ -339,6 +341,8 @@ def _dd_report_next_steps(open_count: int, rhodes_update: str) -> list[str]:
     steps = ["- Review the DD report."]
     if rhodes_update.startswith("failed"):
         steps.append("- Confirm the Rhodes field update is repaired.")
+    elif rhodes_update.startswith("submitted for approval"):
+        steps.append("- Review and approve or reject the pending due diligence change.")
     elif rhodes_update:
         steps.append("- Confirm the Rhodes fields are correct.")
     if open_count > 0:
@@ -528,6 +532,7 @@ def build_dd_report_summary_event(
     )
     due_diligence_written = due_diligence_status == "updated"
     due_diligence_failed = due_diligence_status == "failed"
+    due_diligence_proposed = due_diligence_status == "proposal_submitted"
     artifact_ids = {
         "Run ID": run_id,
     }
@@ -545,7 +550,7 @@ def build_dd_report_summary_event(
         "Closed item count": str(len(closed_items)),
         "Outstanding vendor docs": _format_missing_docs(missing_vendor_docs),
     }
-    if due_diligence_written or due_diligence_failed:
+    if due_diligence_written or due_diligence_failed or due_diligence_proposed:
         assert due_diligence_update_data is not None
         details["Rhodes due diligence update"] = _format_due_diligence_update(
             due_diligence_update_data
@@ -610,6 +615,7 @@ def build_dd_report_republish_candidate_event(
     )
     due_diligence_written = due_diligence_status == "updated"
     due_diligence_failed = due_diligence_status == "failed"
+    due_diligence_proposed = due_diligence_status == "proposal_submitted"
     artifact_ids = {"Run ID": run_id}
     if candidate_doc_id:
         artifact_ids["Candidate DD report ID"] = candidate_doc_id
@@ -624,7 +630,7 @@ def build_dd_report_republish_candidate_event(
         "Candidate DD report URL": str(candidate_doc_url or "").strip(),
         "Guard reason": str(guard.get("reason") or "").strip(),
     }
-    if due_diligence_written or due_diligence_failed:
+    if due_diligence_written or due_diligence_failed or due_diligence_proposed:
         assert due_diligence_update_data is not None
         details["Rhodes due diligence update"] = _format_due_diligence_update(
             due_diligence_update_data
@@ -675,6 +681,10 @@ def _format_due_diligence_update(update: dict[str, Any]) -> str:
         if field_text:
             return f"failed to update {field_text}: {error}"
         return f"failed: {error}"
+    if status == "proposal_submitted":
+        if field_text:
+            return f"submitted for approval: {field_text}"
+        return "submitted for approval"
     if field_text:
         return f"updated {field_text}"
     return "updated"

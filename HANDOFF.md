@@ -1,5 +1,36 @@
 # Due Diligence Reporter Handoff
 
+## 2026-07-07 - Approval-queued DD writes are successful submissions
+
+- Per Greg's direction, DD field writes that land in the LocationOS approval
+  queue are now the expected execution path: DDR executes the write, logs the
+  action, and leaves status tracking to the site owner. Confirmation/readback
+  after the approval decision is a deferred slice (see `ddr-dzc`).
+- New contract in `rhodes.update_rhodes_due_diligence`: a response carrying an
+  approval artifact (`pendingMutationId`, `approvalSessionId`, or `reviewUrl`)
+  returns `status=proposal_submitted` / `reason=approval_queue` with an
+  `approval` metadata block, posts an owner note asking to review/approve the
+  pending change (with field -> source-document evidence and the review link),
+  and records the manifest step as succeeded. A pending-approval status
+  WITHOUT an artifact is not proof a pending change persisted and stays on the
+  legacy copy/paste manual-handoff path (`pending_user_action`).
+- M2 executor completes proposal runs with
+  `completion_mode=due_diligence_proposal_submitted`,
+  `human_followup_type=due_diligence_approval`, packet status
+  `proposal_awaiting_approval`, and field rows marked `proposal_submitted`;
+  the legacy `due_diligence_update_handoff` completion mode still covers
+  manual-handoff cases. `mark_written_fields_from_update_result` and the DD
+  summary event render the proposal state ("Submitted for approval") on the
+  site-pipeline path too.
+- Known deferred items: post-approval readback and rejection handling
+  (`ddr-dzc`), approval-queue dedupe on note-failure retries, and the
+  resume-mcp-write verify path still classifying queued writes by readback
+  only.
+- Validation: full DDR pytest passed (`1364 passed, 13 skipped`); full Ruff
+  passed; full mypy passed (`52 source files`); independent reviewer pass —
+  blocking finding (status-only detection) fixed, medium findings (event
+  rendering, site-pipeline packet marking) fixed in the same change.
+
 ## 2026-07-05 - Portfolio Remediation Checkout Fails Closed
 
 - Removed `continue-on-error: true` from the

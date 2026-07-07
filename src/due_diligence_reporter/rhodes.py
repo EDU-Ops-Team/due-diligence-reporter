@@ -23,6 +23,8 @@ DOCUMENT_REGISTRATION_FOLLOWUP_TYPE = "document_registration"
 DOCUMENT_REGISTRATION_FALLBACK_OWNER_EMAIL = "greg.foote@trilogy.com"
 DUE_DILIGENCE_UPDATE_PENDING_USER_ACTION = "pending_user_action"
 DUE_DILIGENCE_UPDATE_FOLLOWUP_TYPE = "due_diligence_update"
+DUE_DILIGENCE_PROPOSAL_SUBMITTED = "proposal_submitted"
+DUE_DILIGENCE_APPROVAL_FOLLOWUP_TYPE = "due_diligence_approval"
 REQUEST_ID_RE = re.compile(r"Request ID:\s*([A-Za-z0-9-]+)")
 DOCUMENT_REGISTRATION_HANDOFF_ERROR_MARKERS = (
     "approval",
@@ -1281,6 +1283,26 @@ def update_rhodes_due_diligence(
             "error_summary": _summarize_locationos_write_error(str(exc)),
         }
 
+    if _due_diligence_response_approval_queued(response):
+        handoff = _create_due_diligence_update_handoff(
+            site_id=clean_site_id,
+            fields=clean_fields,
+            rhodes=rhodes,
+            mcp_note_client=mcp_note_client,
+            notes_client=notes_client,
+            owner_user_id=owner_user_id,
+            owner_email=owner_email,
+            fallback_owner_email=fallback_owner_email,
+            field_sources=field_sources,
+            proposal=True,
+            review_url=str(response.get("reviewUrl") or "").strip(),
+        )
+        return _due_diligence_proposal_result(
+            base=base,
+            response=response,
+            handoff=handoff,
+        )
+
     if _due_diligence_response_needs_handoff(response):
         error = (
             _due_diligence_response_error(response)
@@ -1537,23 +1559,74 @@ def _build_due_diligence_update_handoff_note_body(
     return "\n".join(lines)
 
 
+def _build_due_diligence_proposal_note_body(
+    *,
+    site_name: str,
+    site_address: str,
+    fields: dict[str, Any],
+    field_sources: Mapping[str, str] | None = None,
+    review_url: str = "",
+) -> str:
+    lines = [
+        f"Site Name: {site_name.strip()}",
+        f"Site Address: {site_address.strip()}",
+        (
+            "DDR submitted these due diligence field values to the LocationOS "
+            "approval queue. Please review the pending change and approve or "
+            "reject it:"
+        ),
+        "Due Diligence Fields proposed:",
+    ]
+    for key in sorted(fields):
+        lines.append(f"{key}: {_due_diligence_field_handoff_value(fields[key])}")
+    if field_sources is not None:
+        lines.append("Supporting documents (registered on this site record):")
+        for key in sorted(fields):
+            source = str(field_sources.get(key) or "").strip()
+            lines.append(f"{key}: {source or WORKFLOW_FIELD_SOURCE_LABEL}")
+    if review_url.strip():
+        lines.append(f"Review link: {review_url.strip()}")
+    return "\n".join(lines)
+
+
 def _due_diligence_update_error_is_handoff_eligible(error: str) -> bool:
     message = str(error or "").casefold()
     return any(marker in message for marker in DUE_DILIGENCE_UPDATE_HANDOFF_ERROR_MARKERS)
 
 
-def _due_diligence_response_needs_handoff(response: dict[str, Any]) -> bool:
-    status = str(response.get("status") or "").strip().casefold()
-    if status in {
+_DUE_DILIGENCE_PENDING_APPROVAL_STATUSES = frozenset(
+    {
         "awaiting_browser_approval",
         "awaiting_approval",
         "pending_approval",
         "pending_browser_approval",
         "pending_confirmation",
         "requires_approval",
-    }:
+    }
+)
+
+
+def _due_diligence_response_approval_queued(response: dict[str, Any]) -> bool:
+    """True when the response proves the write entered the LocationOS approval queue.
+
+    Requires an approval artifact identifier (pending mutation, approval
+    session, or review URL). A pending-approval status alone is not proof:
+    it can describe an interactive elicitation that never persisted a
+    pending change, so status-only responses stay on the manual handoff
+    path instead of being reported as submitted proposals.
+    """
+
+    return any(
+        str(response.get(key) or "").strip()
+        for key in ("pendingMutationId", "approvalSessionId", "reviewUrl")
+    )
+
+
+def _due_diligence_response_needs_handoff(response: dict[str, Any]) -> bool:
+    status = str(response.get("status") or "").strip().casefold()
+    if status in _DUE_DILIGENCE_PENDING_APPROVAL_STATUSES:
         return True
-    if any(str(response.get(key) or "").strip() for key in ("reviewUrl", "approvalSessionId")):
+    if _due_diligence_response_approval_queued(response):
         return True
     error = _due_diligence_response_error(response)
     return bool(error and _due_diligence_update_error_is_handoff_eligible(error))
@@ -1570,6 +1643,8 @@ def _create_due_diligence_update_handoff(
     owner_email: str = "",
     fallback_owner_email: str = DOCUMENT_REGISTRATION_FALLBACK_OWNER_EMAIL,
     field_sources: Mapping[str, str] | None = None,
+    proposal: bool = False,
+    review_url: str = "",
 ) -> dict[str, Any]:
     clean_site_id = site_id.strip()
     clean_fields = _clean_due_diligence_fields(fields)
@@ -1623,12 +1698,21 @@ def _create_due_diligence_update_handoff(
             "site_lookup_error": site_lookup_error,
         }
 
-    note_body = _build_due_diligence_update_handoff_note_body(
-        site_name=resolved_site_name,
-        site_address=resolved_site_address,
-        fields=clean_fields,
-        field_sources=field_sources,
-    )
+    if proposal:
+        note_body = _build_due_diligence_proposal_note_body(
+            site_name=resolved_site_name,
+            site_address=resolved_site_address,
+            fields=clean_fields,
+            field_sources=field_sources,
+            review_url=review_url,
+        )
+    else:
+        note_body = _build_due_diligence_update_handoff_note_body(
+            site_name=resolved_site_name,
+            site_address=resolved_site_address,
+            fields=clean_fields,
+            field_sources=field_sources,
+        )
     note = add_rhodes_site_note(
         site_id=clean_site_id,
         site_slug=resolved_site_slug,
@@ -1637,7 +1721,9 @@ def _create_due_diligence_update_handoff(
         owner_email=owner["owner_email"],
         client=mcp_note_client,
         notes_client=notes_client,
-        automation_source="due_diligence_update_handoff",
+        automation_source=(
+            "due_diligence_proposal_submitted" if proposal else "due_diligence_update_handoff"
+        ),
     )
     if note.get("status") != "created":
         return {
@@ -1674,8 +1760,12 @@ def _create_due_diligence_update_handoff(
             for key in sorted(clean_fields)
         ],
         "human_followup_required": True,
-        "human_followup_type": DUE_DILIGENCE_UPDATE_FOLLOWUP_TYPE,
-        "rhodes_due_diligence_status": DUE_DILIGENCE_UPDATE_PENDING_USER_ACTION,
+        "human_followup_type": (
+            DUE_DILIGENCE_APPROVAL_FOLLOWUP_TYPE if proposal else DUE_DILIGENCE_UPDATE_FOLLOWUP_TYPE
+        ),
+        "rhodes_due_diligence_status": (
+            DUE_DILIGENCE_PROPOSAL_SUBMITTED if proposal else DUE_DILIGENCE_UPDATE_PENDING_USER_ACTION
+        ),
         "remaining_work": [],
         "note_body": note_body,
         "site_name": resolved_site_name,
@@ -1683,6 +1773,54 @@ def _create_due_diligence_update_handoff(
         "site_slug": resolved_site_slug,
         "site_lookup_error": site_lookup_error,
     }
+
+
+def _due_diligence_proposal_result(
+    *,
+    base: dict[str, Any],
+    response: dict[str, Any],
+    handoff: dict[str, Any],
+) -> dict[str, Any]:
+    """Result for a write that entered the LocationOS approval queue.
+
+    The proposal was executed and logged; the site owner tracks the pending
+    change. This is a successful submission, not a failed write.
+    """
+
+    approval = {
+        "pending_mutation_id": str(response.get("pendingMutationId") or "").strip(),
+        "approval_session_id": str(response.get("approvalSessionId") or "").strip(),
+        "review_url": str(response.get("reviewUrl") or "").strip(),
+    }
+    result = {
+        **base,
+        "status": DUE_DILIGENCE_PROPOSAL_SUBMITTED,
+        "reason": "approval_queue",
+        "rhodes_due_diligence_status": DUE_DILIGENCE_PROPOSAL_SUBMITTED,
+        "human_followup_required": True,
+        "human_followup_type": DUE_DILIGENCE_APPROVAL_FOLLOWUP_TYPE,
+        "remaining_work": [],
+        "approval": approval,
+        "due_diligence_update_handoff": handoff,
+        "response": _summarize_due_diligence_response(response),
+    }
+    if handoff.get("status") != "created":
+        result["status"] = "failed"
+        result["reason"] = "proposal_note_failed"
+        result["rhodes_due_diligence_status"] = "failed"
+        result["error"] = str(handoff.get("error") or handoff.get("reason") or "note_write_failed")
+        result["error_summary"] = (
+            "DD fields were submitted to the LocationOS approval queue, but the "
+            "owner notification note could not be created."
+        )
+        result["remaining_work"] = [
+            {
+                "type": DUE_DILIGENCE_APPROVAL_FOLLOWUP_TYPE,
+                "status": "blocked",
+                "reason": str(handoff.get("reason") or "note_failed"),
+            }
+        ]
+    return result
 
 
 def _due_diligence_handoff_result(

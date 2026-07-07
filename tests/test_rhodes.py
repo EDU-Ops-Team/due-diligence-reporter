@@ -1183,22 +1183,31 @@ def test_update_rhodes_due_diligence_handoffs_browser_approval_response() -> Non
     expected_body = (
         "Site Name: Alpha Test\n"
         "Site Address: 123 Main St, Denver, CO 80202\n"
-        "Copy/paste these field names and values into the LocationOS due diligence record:\n"
-        "Due Diligence Fields to update:\n"
+        "DDR submitted these due diligence field values to the LocationOS "
+        "approval queue. Please review the pending change and approve or "
+        "reject it:\n"
+        "Due Diligence Fields proposed:\n"
         "foCapacity: 36\n"
-        "maxCapCapacity: 54"
+        "maxCapCapacity: 54\n"
+        "Review link: https://locationos.example/review"
     )
     handoff = result["due_diligence_update_handoff"]
 
-    assert result["status"] == "pending_user_action"
-    assert result["reason"] == "handoff_note_created"
-    assert result["rhodes_due_diligence_status"] == "pending_user_action"
+    assert result["status"] == "proposal_submitted"
+    assert result["reason"] == "approval_queue"
+    assert result["rhodes_due_diligence_status"] == "proposal_submitted"
     assert result["human_followup_required"] is True
-    assert result["human_followup_type"] == "due_diligence_update"
+    assert result["human_followup_type"] == "due_diligence_approval"
     assert result["remaining_work"] == []
+    assert result["approval"] == {
+        "pending_mutation_id": "MUT1",
+        "approval_session_id": "APPROVAL1",
+        "review_url": "https://locationos.example/review",
+    }
     assert result["response"]["status"] == "awaiting_browser_approval"
     assert result["response"]["pendingMutationId"] == "MUT1"
     assert "readback" not in result
+    assert "error" not in result
     assert handoff["status"] == "created"
     assert handoff["note_body"] == expected_body
     assert handoff["note_readback_status"] == "verified"
@@ -1248,6 +1257,62 @@ def test_update_rhodes_due_diligence_handoff_note_includes_field_sources() -> No
         {"name": "status", "value": "data-gathering", "source": ""},
     ]
     assert client.notes[0]["body"] == note_body
+
+
+def test_status_only_approval_response_falls_back_to_manual_handoff() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "slug": "alpha-test",
+            "address": "123 Main St, Denver, CO 80202",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={"status": "awaiting_browser_approval"},
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"foCapacity": 36},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    handoff = result["due_diligence_update_handoff"]
+    assert result["status"] == "pending_user_action"
+    assert result["reason"] == "handoff_note_created"
+    assert result["human_followup_type"] == "due_diligence_update"
+    assert "approval" not in result
+    assert "Due Diligence Fields to update:" in handoff["note_body"]
+    assert "approval queue" not in handoff["note_body"]
+
+
+def test_proposal_note_failure_reports_failed_submission() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "slug": "alpha-test",
+            "address": "123 Main St, Denver, CO 80202",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={
+            "status": "awaiting_browser_approval",
+            "pendingMutationId": "MUT1",
+        },
+        note_response={"error": "note write rejected"},
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"foCapacity": 36},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "proposal_note_failed"
+    assert result["rhodes_due_diligence_status"] == "failed"
+    assert result["approval"]["pending_mutation_id"] == "MUT1"
+    assert result["remaining_work"][0]["type"] == "due_diligence_approval"
 
 
 def test_update_rhodes_due_diligence_handoffs_elicitation_exception() -> None:

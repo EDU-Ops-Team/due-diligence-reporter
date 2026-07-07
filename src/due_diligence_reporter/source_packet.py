@@ -394,6 +394,9 @@ def source_packet_completion(
             open_items.append(f"{update.field}: {update.hold_reason or 'blocked'}")
             continue
         if update.locationos_key:
+            if update.write_status == "proposal_submitted":
+                open_items.append(f"{update.field}: awaiting approval-queue decision")
+                continue
             if update.write_status not in {"written", "updated"}:
                 open_items.append(f"{update.field}: write not completed")
             if update.readback_status != "verified":
@@ -530,6 +533,10 @@ def mark_written_fields_from_update_result(
             if status == "updated":
                 row["write_status"] = "written"
                 row["readback_status"] = "verified"
+            elif status == "proposal_submitted":
+                row["write_status"] = "proposal_submitted"
+                row["readback_status"] = "proposal_submitted"
+                row["hold_reason"] = "awaiting_approval_queue_decision"
             elif status == "failed":
                 row["write_status"] = "failed"
                 row["readback_status"] = "failed"
