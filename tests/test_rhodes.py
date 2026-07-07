@@ -1205,11 +1205,49 @@ def test_update_rhodes_due_diligence_handoffs_browser_approval_response() -> Non
     assert handoff["rhodes_note_id"] == "NOTE1"
     assert handoff["field_count"] == 2
     assert handoff["fields"] == [
-        {"name": "foCapacity", "value": "36"},
-        {"name": "maxCapCapacity", "value": "54"},
+        {"name": "foCapacity", "value": "36", "source": ""},
+        {"name": "maxCapCapacity", "value": "54", "source": ""},
     ]
     assert client.notes[0]["body"] == expected_body
     assert client.notes[0]["mentions"] == ["OWNER1"]
+
+
+def test_update_rhodes_due_diligence_handoff_note_includes_field_sources() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "slug": "alpha-test",
+            "address": "123 Main St, Denver, CO 80202",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={
+            "status": "awaiting_browser_approval",
+            "pendingMutationId": "MUT1",
+        },
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"foCapacity": 36, "status": "data-gathering"},
+        client=client,  # type: ignore[arg-type]
+        field_sources={"foCapacity": "Alpha Capacity Analysis - Alpha Test.json"},
+    )
+
+    handoff = result["due_diligence_update_handoff"]
+    note_body = handoff["note_body"]
+    assert "Supporting documents (registered on this site record):" in note_body
+    assert "foCapacity: Alpha Capacity Analysis - Alpha Test.json" in note_body
+    assert "status: workflow field - no source document" in note_body
+    assert handoff["fields"] == [
+        {
+            "name": "foCapacity",
+            "value": "36",
+            "source": "Alpha Capacity Analysis - Alpha Test.json",
+        },
+        {"name": "status", "value": "data-gathering", "source": ""},
+    ]
+    assert client.notes[0]["body"] == note_body
 
 
 def test_update_rhodes_due_diligence_handoffs_elicitation_exception() -> None:

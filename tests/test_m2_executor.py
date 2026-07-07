@@ -89,6 +89,7 @@ class FakeAdapters:
         self.phase_source_type = phase_source_type
         self.calls: list[str] = []
         self.write_calls: list[dict[str, Any]] = []
+        self.write_field_sources: list[dict[str, str] | None] = []
 
     def run_alpha_capacity(self, state: dict[str, Any]) -> M2StepResult:
         del state
@@ -108,10 +109,16 @@ class FakeAdapters:
             ],
         )
 
-    def write_due_diligence(self, site_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    def write_due_diligence(
+        self,
+        site_id: str,
+        fields: dict[str, Any],
+        field_sources: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         del site_id
         self.calls.append("write")
         self.write_calls.append(dict(fields))
+        self.write_field_sources.append(dict(field_sources) if field_sources else None)
         status = (
             self.capacity_write_status
             if set(fields) <= {"foCapacity", "maxCapCapacity"}
@@ -284,6 +291,14 @@ def test_execute_ready_m2_state_completes_successfully(tmp_path) -> None:
     ]
     assert adapters.write_calls[0] == {"foCapacity": 36, "maxCapCapacity": 54}
     assert "foCapEx" in adapters.write_calls[1]
+    assert adapters.write_field_sources[0] == {
+        "foCapacity": "Alpha Capacity Analysis",
+        "maxCapCapacity": "Alpha Capacity Analysis",
+    }
+    packet_sources = adapters.write_field_sources[1]
+    assert packet_sources is not None
+    assert packet_sources["foCapacity"] == "Alpha Capacity Analysis"
+    assert set(packet_sources) >= set(adapters.write_calls[1])
 
 
 def test_execute_ready_dry_run_does_not_mutate_state(tmp_path) -> None:
@@ -449,6 +464,10 @@ def test_capacity_handoff_note_completes_manual_followup(tmp_path) -> None:
     assert adapters.calls == ["alpha", "write"]
     assert "cost" not in adapters.calls
     assert "note" not in adapters.calls
+    assert adapters.write_field_sources[0] == {
+        "foCapacity": "Alpha Capacity Analysis",
+        "maxCapCapacity": "Alpha Capacity Analysis",
+    }
 
 
 def test_failed_source_registration_blocks_before_packet_write(tmp_path) -> None:

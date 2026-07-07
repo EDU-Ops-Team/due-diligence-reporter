@@ -409,6 +409,29 @@ def source_packet_completion(
     }
 
 
+def dd_field_update_sources(
+    dd_field_updates: Sequence[DDFieldUpdate | dict[str, Any]],
+) -> dict[str, str]:
+    """Map LocationOS field keys to the registered source-doc titles backing them.
+
+    Used to put field -> source-document evidence into approval-queue
+    handoff notes so the approval reviewer can validate each proposed
+    change against the documents registered on the site record.
+    """
+
+    sources: dict[str, str] = {}
+    for raw in dd_field_updates:
+        update = _coerce_field_update(raw)
+        if not update.locationos_key:
+            continue
+        titles = [_safe_title(title) for title in update.source_titles if str(title).strip()]
+        if not titles:
+            titles = [str(name).strip() for name in update.required_source_docs if str(name).strip()]
+        if titles:
+            sources[update.locationos_key] = ", ".join(titles)
+    return sources
+
+
 def source_packet_note_lines(
     *,
     supporting_documents: Sequence[SourceDocumentRef | dict[str, Any]],
