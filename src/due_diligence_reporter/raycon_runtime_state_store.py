@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 from .firestore_state import (
     DEFAULT_FIRESTORE_DATABASE,
+    alert_firestore_fallback,
     build_authorized_session,
     decode_firestore_fields,
     encode_firestore_fields,
@@ -122,6 +123,7 @@ class FirestoreRayConDispatchStateStore:
             firestore_state = self._load_firestore_state()
         except Exception as exc:  # noqa: BLE001 - local JSON remains the safe fallback
             logger.warning("Failed to load RayCon dispatch state from Firestore: %s", exc)
+            alert_firestore_fallback("raycon_dispatch_state", "load", exc)
             return self.fallback.load()
         if firestore_state:
             return firestore_state
@@ -132,6 +134,7 @@ class FirestoreRayConDispatchStateStore:
             self._save_firestore_state(state)
         except Exception as exc:  # noqa: BLE001 - preserve progress locally
             logger.warning("Failed to save RayCon dispatch state to Firestore: %s", exc)
+            alert_firestore_fallback("raycon_dispatch_state", "save", exc)
             self.fallback.save(state)
             return
         self.fallback.save(state)
@@ -209,6 +212,7 @@ class FirestoreRayConAlertStateStore:
             firestore_state = self._load_firestore_state()
         except Exception as exc:  # noqa: BLE001 - local JSON remains the safe fallback
             logger.warning("Failed to load RayCon alert state from Firestore: %s", exc)
+            alert_firestore_fallback("raycon_alert_state", "load", exc)
             return self.fallback.load()
         if firestore_state:
             return firestore_state
@@ -219,6 +223,7 @@ class FirestoreRayConAlertStateStore:
             self._save_firestore_state(state)
         except Exception as exc:  # noqa: BLE001 - preserve progress locally
             logger.warning("Failed to save RayCon alert state to Firestore: %s", exc)
+            alert_firestore_fallback("raycon_alert_state", "save", exc)
             self.fallback.save(state)
             return
         self.fallback.save(state)

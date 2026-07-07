@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 from .firestore_state import (
     DEFAULT_FIRESTORE_DATABASE,
+    alert_firestore_fallback,
     build_authorized_session,
     decode_firestore_fields,
     encode_firestore_fields,
@@ -144,6 +145,7 @@ class FirestoreM2StateStore:
             firestore_state = self._load_firestore_state()
         except Exception as exc:  # noqa: BLE001 - local JSON remains the safe fallback
             logger.warning("Failed to load M2 state from Firestore: %s", exc)
+            alert_firestore_fallback("m2_state", "load", exc)
             return self.fallback.load()
         if firestore_state:
             return firestore_state
@@ -155,6 +157,7 @@ class FirestoreM2StateStore:
             self._save_firestore_state(clean_state)
         except Exception as exc:  # noqa: BLE001 - preserve progress locally
             logger.warning("Failed to save M2 state to Firestore: %s", exc)
+            alert_firestore_fallback("m2_state", "save", exc)
             self.fallback.save(clean_state)
             return
         self.fallback.save(clean_state)
