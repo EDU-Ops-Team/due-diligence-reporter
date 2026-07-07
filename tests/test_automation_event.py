@@ -514,3 +514,29 @@ def test_raycon_followup_alert_event_renders_review_context() -> None:
     assert "RayCon run ID:" not in note
     assert "no raycon_scenario.json" not in note
     assert "Drive folder:" not in note
+
+
+def test_dd_report_summary_event_renders_proposal_submitted() -> None:
+    event = build_dd_report_summary_event(
+        site_id="SITE1",
+        site_name="Alpha Keller",
+        run_id="run-1",
+        doc_id="doc-1",
+        doc_url="https://docs.google.com/document/d/doc-1",
+        due_diligence_update={
+            "status": "proposal_submitted",
+            "reason": "approval_queue",
+            "updated_fields": ["foCapacity", "maxCapCapacity"],
+        },
+        created_at="2026-07-07T18:15:00+00:00",
+    )
+
+    note = render_automation_event_note(event)
+
+    assert (
+        "Rhodes due diligence update: submitted for approval: foCapacity, maxCapCapacity"
+        not in note
+    )
+    assert "Rhodes fields: Submitted for approval; pending in the LocationOS approval queue." in note
+    assert "Rhodes fields: Updated." not in note
+    assert "- Review and approve or reject the pending due diligence change." in note

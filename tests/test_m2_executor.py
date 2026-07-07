@@ -125,6 +125,32 @@ class FakeAdapters:
             else self.packet_write_status
         )
         if status != "updated":
+            if status == "proposal_submitted":
+                return {
+                    "status": "proposal_submitted",
+                    "reason": "approval_queue",
+                    "updated_fields": sorted(fields),
+                    "rhodes_due_diligence_status": "proposal_submitted",
+                    "human_followup_required": True,
+                    "human_followup_type": "due_diligence_approval",
+                    "remaining_work": [],
+                    "approval": {
+                        "pending_mutation_id": "MUT1",
+                        "approval_session_id": "APPROVAL1",
+                        "review_url": "https://locationos.example/review",
+                    },
+                    "due_diligence_update_handoff": {
+                        "status": "created",
+                        "reason": "handoff_note_created",
+                        "note_readback_status": "verified",
+                        "rhodes_note_id": "proposal-note-1",
+                        "field_count": len(fields),
+                        "fields": [
+                            {"name": key, "value": str(fields[key]), "source": ""}
+                            for key in sorted(fields)
+                        ],
+                    },
+                }
             if status == "pending_user_action":
                 return {
                     "status": "pending_user_action",
@@ -468,6 +494,63 @@ def test_capacity_handoff_note_completes_manual_followup(tmp_path) -> None:
         "foCapacity": "Alpha Capacity Analysis",
         "maxCapCapacity": "Alpha Capacity Analysis",
     }
+
+
+def test_capacity_proposal_submission_completes_without_manual_update_ask(tmp_path) -> None:
+    store = _capacity_ready_store(tmp_path)
+    adapters = FakeAdapters(capacity_write_status="proposal_submitted")
+
+    result = execute_ready_m2_states(
+        state_store=store,
+        apply=True,
+        adapters=adapters,
+    )
+
+    state = store.load()["evt-1"]
+    row = result["rows"][0]
+    assert result["completed"] == 1
+    assert row["status"] == "complete"
+    assert state["m2_state"] == "complete"
+    assert state["completion_mode"] == "due_diligence_proposal_submitted"
+    assert state["human_followup_required"] is True
+    assert state["human_followup_type"] == "due_diligence_approval"
+    assert state["manual_handoff"]["type"] == "due_diligence_approval"
+    assert state["manual_handoff"]["approval"] == {
+        "pending_mutation_id": "MUT1",
+        "approval_session_id": "APPROVAL1",
+        "review_url": "https://locationos.example/review",
+    }
+    assert state["capacity_write"]["status"] == "proposal_submitted"
+    assert adapters.calls == ["alpha", "write"]
+
+
+def test_packet_proposal_submission_marks_fields_awaiting_approval(tmp_path) -> None:
+    store = _capacity_ready_store(tmp_path)
+    adapters = FakeAdapters(packet_write_status="proposal_submitted")
+
+    result = execute_ready_m2_states(
+        state_store=store,
+        apply=True,
+        adapters=adapters,
+    )
+
+    state = store.load()["evt-1"]
+    assert result["completed"] == 1
+    assert state["completion_mode"] == "due_diligence_proposal_submitted"
+    packet = state["source_packet"]
+    assert packet["status"] == "proposal_awaiting_approval"
+    assert packet["m2_source_packet_complete"] is False
+    assert packet["open_items"] == [
+        "LocationOS due diligence fields await the approval-queue decision; "
+        "site owner tracks the pending change."
+    ]
+    statuses = {
+        row["locationos_key"]: row["write_status"]
+        for row in packet["dd_field_updates"]
+        if row.get("locationos_key") and row.get("write_status") != "written"
+    }
+    assert statuses
+    assert set(statuses.values()) == {"proposal_submitted"}
 
 
 def test_failed_source_registration_blocks_before_packet_write(tmp_path) -> None:

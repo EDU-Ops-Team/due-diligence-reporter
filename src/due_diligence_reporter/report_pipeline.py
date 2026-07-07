@@ -2484,7 +2484,10 @@ def _record_rhodes_due_diligence_update_step(
         metadata=update_status,
     )
     status = str(update_status.get("status") or "")
-    if status == "updated":
+    if status in {"updated", "proposal_submitted"}:
+        # proposal_submitted means the write entered the LocationOS approval
+        # queue and the owner note was verified: the action executed and is
+        # logged; the site owner tracks the pending change from here.
         recorder.record(
             DUE_DILIGENCE_UPDATE_STEP,
             started_at,

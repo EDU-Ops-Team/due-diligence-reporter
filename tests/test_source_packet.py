@@ -11,6 +11,7 @@ from due_diligence_reporter.source_packet import (
     dd_field_update_sources,
     locationos_fields_allowed_by_source_packet,
     m2_field_matrix,
+    mark_written_fields_from_update_result,
     source_packet_completion,
     source_packet_is_complete,
     source_packet_note_lines,
@@ -377,3 +378,40 @@ def test_dd_field_update_sources_maps_locationos_keys_to_doc_titles() -> None:
         "foCapacity": "Alpha Capacity Analysis - Site.json",
         "buildingScore": "Phase 1 Phase 2 workbook",
     }
+
+
+def test_mark_written_fields_proposal_submitted_awaits_approval() -> None:
+    packet = build_m2_source_packet(
+        values={
+            "exec.play_area_score": "1",
+            "exec.play_area_comment": "On-site playscape passes.",
+        },
+        supporting_documents=[
+            SourceDocumentRef(
+                source_type="outdoor_play_space_report",
+                title="Outdoor Play Space Report",
+                drive_url="https://drive.example/play",
+                rhodes_doc_type="other",
+                registration_status="registered",
+                fields_supported=("play_area_score", "play_area_comment"),
+            )
+        ],
+    )
+
+    marked = mark_written_fields_from_update_result(
+        source_packet=packet,
+        update_result={
+            "status": "proposal_submitted",
+            "reason": "approval_queue",
+            "updated_fields": ["playAreaScore", "playAreaComment"],
+        },
+    )
+
+    rows = {row["field"]: row for row in marked["dd_field_updates"]}
+    assert rows["play_area_score"]["write_status"] == "proposal_submitted"
+    assert rows["play_area_score"]["readback_status"] == "proposal_submitted"
+    assert rows["play_area_score"]["hold_reason"] == "awaiting_approval_queue_decision"
+    assert marked["m2_source_packet_complete"] is False
+    assert "play_area_score: awaiting approval-queue decision" in marked["open_items"]
+    assert "play_area_score: write not completed" not in marked["open_items"]
+    assert "play_area_score: readback not verified" not in marked["open_items"]
