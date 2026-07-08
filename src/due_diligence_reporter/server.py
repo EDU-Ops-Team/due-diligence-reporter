@@ -2709,6 +2709,14 @@ async def apply_opening_plan_skill(
                         site_name,
                         e,
                     )
+                    return {
+                        "status": "error",
+                        "error": "Failed to inspect existing Opening Plan",
+                        "message": (
+                            "Reuse inspection failed; not regenerating to avoid "
+                            f"duplicate documents: {e}"
+                        ),
+                    }
 
         import anthropic
 
@@ -2749,6 +2757,15 @@ async def apply_opening_plan_skill(
             )
             first_block = response.content[0] if response.content else None
             plan_content = str(getattr(first_block, "text", "") or "")
+            if str(getattr(response, "stop_reason", "") or "") == "max_tokens":
+                return {
+                    "status": "error",
+                    "error": "Truncated output",
+                    "message": (
+                        "Opening Plan generation hit the max_tokens limit; "
+                        "refusing to publish a truncated plan."
+                    ),
+                }
         except Exception as e:
             logger.error("Claude call failed for opening plan: %s", e)
             return {
@@ -2969,6 +2986,14 @@ async def apply_security_due_diligence_skill(
                         site_name,
                         e,
                     )
+                    return {
+                        "status": "error",
+                        "error": "Failed to inspect existing Security Due Diligence memo",
+                        "message": (
+                            "Reuse inspection failed; not regenerating to avoid "
+                            f"duplicate documents: {e}"
+                        ),
+                    }
 
         import anthropic
 
@@ -3009,6 +3034,15 @@ async def apply_security_due_diligence_skill(
             )
             first_block = response.content[0] if response.content else None
             memo_content = str(getattr(first_block, "text", "") or "")
+            if str(getattr(response, "stop_reason", "") or "") == "max_tokens":
+                return {
+                    "status": "error",
+                    "error": "Truncated output",
+                    "message": (
+                        "Security Due Diligence generation hit the max_tokens "
+                        "limit; refusing to publish a truncated memo."
+                    ),
+                }
         except Exception as e:
             logger.error("Claude call failed for security due diligence: %s", e)
             return {
@@ -5214,13 +5248,20 @@ async def apply_alpha_phasing_plan_skill(
         try:
             existing_docs = _list_m1_documents_by_type(gc, target_folder_id)
             existing = existing_docs.get("alpha_phasing_plan_report")
-        except Exception as e:  # noqa: BLE001 - reuse inspection is best-effort
+        except Exception as e:  # noqa: BLE001 - do not regenerate blind
             logger.warning(
                 "Failed to inspect existing Phase 1 Phase 2 workbook for '%s': %s",
                 site_name,
                 e,
             )
-            existing = None
+            return {
+                "status": "error",
+                "error": "Failed to inspect existing Phase 1 Phase 2 workbook",
+                "message": (
+                    "Reuse inspection failed; not regenerating to avoid duplicate "
+                    f"workbooks and duplicate P2 review notes: {e}"
+                ),
+            }
         if existing is not None:
             existing_url = str(existing.get("webViewLink") or "").strip()
             existing_id = str(existing.get("id") or "").strip()

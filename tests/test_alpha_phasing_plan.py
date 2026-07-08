@@ -391,3 +391,36 @@ def test_apply_alpha_phasing_plan_skill_skips_notify_when_registration_incomplet
         "reason": "registration_not_complete",
     }
     notify.assert_not_called()
+
+
+def test_reuse_inspection_failure_blocks_regeneration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gc = MagicMock()
+    monkeypatch.setattr("due_diligence_reporter.server._make_google_client", lambda: gc)
+    monkeypatch.setattr(
+        "due_diligence_reporter.server._get_or_create_m1_folder",
+        lambda _gc, _folder_id: {"id": "m1", "name": "M1 - Acquire Property"},
+    )
+    monkeypatch.setattr(
+        "due_diligence_reporter.server._list_m1_documents_by_type",
+        MagicMock(side_effect=RuntimeError("Drive listing failed")),
+    )
+    notify = MagicMock()
+    monkeypatch.setattr(
+        "due_diligence_reporter.server.notify_rhodes_phasing_review", notify
+    )
+
+    result = asyncio.run(
+        apply_alpha_phasing_plan_skill(
+            site_name="Alpha Test",
+            site_address="123 Main St",
+            site_id="SITE1",
+            drive_folder_url="https://drive.google.com/drive/folders/root",
+        )
+    )
+
+    assert result["status"] == "error"
+    assert "inspect existing" in result["error"]
+    gc.upload_file_to_folder.assert_not_called()
+    notify.assert_not_called()

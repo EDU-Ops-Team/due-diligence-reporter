@@ -635,3 +635,54 @@ def test_packet_handoff_note_completes_manual_followup(tmp_path) -> None:
         "write",
     ]
     assert "note" not in adapters.calls
+
+
+def test_opening_plan_success_without_registered_doc_blocks() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from due_diligence_reporter.m2_executor import LiveM2ExecutorAdapters
+
+    adapters = LiveM2ExecutorAdapters.__new__(LiveM2ExecutorAdapters)
+    adapters._gc = MagicMock()
+    state = {
+        "site": {"id": "SITE1", "name": "Alpha Test", "address": "123 Main St"},
+        "drive": {"site_folder_url": "https://drive.google.com/drive/folders/site"},
+        "supporting_documents": [
+            {
+                "source_type": "sir",
+                "title": "Vendor SIR",
+                "drive_file_id": "sir1",
+                "rhodes_doc_type": "siteInvestigationReport",
+                "registration_status": "registered",
+            }
+        ],
+        "report_data_fields": {},
+    }
+
+    import due_diligence_reporter.m2_executor as m2x
+
+    calls = iter(
+        [
+            {"content": "SIR TEXT"},
+            {
+                "status": "success",
+                "source_type": "opening_plan_report",
+                "plan_content": "PLAN",
+                "doc_url": "",
+                "doc_id": "",
+                "publish_status": "failed",
+                "publish_error": "Drive create failed",
+                "report_data_fields": {},
+            },
+        ]
+    )
+    with patch(
+        "due_diligence_reporter.server.read_drive_document", MagicMock()
+    ), patch(
+        "due_diligence_reporter.server.apply_opening_plan_skill", MagicMock()
+    ), patch.object(m2x, "_run_async", side_effect=lambda _v: next(calls)):
+        step = adapters.run_opening_plan(state)
+
+    assert step.status == "blocked"
+    assert "opening_plan_report" in step.raw["resume_source_types"]
+    assert "Drive create failed" in step.reason

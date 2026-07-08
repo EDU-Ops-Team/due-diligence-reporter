@@ -253,3 +253,64 @@ def test_executor_succeeds_with_registered_memo() -> None:
     assert step.status == "success"
     assert step.supporting_documents
     assert step.supporting_documents[0]["source_type"] == "security_due_diligence_report"
+
+
+def test_truncated_memo_is_not_published(monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    gc = MagicMock()
+    anthropic_client = MagicMock()
+    anthropic_client.messages.create.return_value = SimpleNamespace(
+        content=[SimpleNamespace(text="PARTIAL MEMO")],
+        stop_reason="max_tokens",
+    )
+
+    with patch(
+        "due_diligence_reporter.server.asyncio.to_thread",
+        new=AsyncMock(side_effect=_run_inline),
+    ), patch(
+        "due_diligence_reporter.server._make_google_client", return_value=gc
+    ), patch(
+        "due_diligence_reporter.server._list_m1_documents_by_type", return_value={}
+    ), patch(
+        "due_diligence_reporter.server.load_ops_skill_file",
+        return_value=SimpleNamespace(source="ops-skills", text="SKILL BODY"),
+    ), patch("anthropic.Anthropic", return_value=anthropic_client):
+        result = asyncio.run(
+            apply_security_due_diligence_skill(
+                site_name="Alpha Test",
+                site_address="123 Main St",
+                drive_folder_url="https://drive.google.com/drive/folders/folder123",
+            )
+        )
+
+    assert result["status"] == "error"
+    assert result["error"] == "Truncated output"
+    gc.create_document.assert_not_called()
+
+
+def test_reuse_inspection_failure_does_not_regenerate(monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    gc = MagicMock()
+    anthropic_client = MagicMock()
+
+    with patch(
+        "due_diligence_reporter.server.asyncio.to_thread",
+        new=AsyncMock(side_effect=_run_inline),
+    ), patch(
+        "due_diligence_reporter.server._make_google_client", return_value=gc
+    ), patch(
+        "due_diligence_reporter.server._list_m1_documents_by_type",
+        side_effect=RuntimeError("Drive listing failed"),
+    ), patch("anthropic.Anthropic", return_value=anthropic_client):
+        result = asyncio.run(
+            apply_security_due_diligence_skill(
+                site_name="Alpha Test",
+                site_address="123 Main St",
+                drive_folder_url="https://drive.google.com/drive/folders/folder123",
+            )
+        )
+
+    assert result["status"] == "error"
+    assert "inspect existing" in result["error"]
+    anthropic_client.messages.create.assert_not_called()
+    gc.create_document.assert_not_called()
