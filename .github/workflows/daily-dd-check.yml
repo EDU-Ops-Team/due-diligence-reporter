@@ -146,9 +146,23 @@ jobs:
           "
           echo "[OK] Wrote .gcp-saved-tokens.json"
 
+      - name: Configure Firestore credentials for DD write log
+        env:
+          GCP_FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON:-}" ]; then
+            echo "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON}" > gcp-firestore-sa.json
+            echo "GOOGLE_APPLICATION_CREDENTIALS=${PWD}/gcp-firestore-sa.json" >> "$GITHUB_ENV"
+          else
+            echo "::warning title=DD write log not durable::GCP_FIRESTORE_SERVICE_ACCOUNT_JSON is not configured; daily-check DD writes will not reach the digest write log."
+          fi
+
       - name: Run daily DD check
         env:
           INPUT_SITE: ${{ inputs.site }}
+          DD_WRITE_LOG_FIRESTORE_PROJECT_ID: ${{ vars.DD_WRITE_LOG_FIRESTORE_PROJECT_ID || vars.M2_DD_STATE_FIRESTORE_PROJECT_ID || vars.DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID }}
+          DD_WRITE_LOG_FIRESTORE_DATABASE: ${{ vars.DD_WRITE_LOG_FIRESTORE_DATABASE || vars.M2_DD_STATE_FIRESTORE_DATABASE || vars.DD_REPUBLISH_STATE_FIRESTORE_DATABASE }}
+          DD_WRITE_LOG_FIRESTORE_COLLECTION: ${{ vars.DD_WRITE_LOG_FIRESTORE_COLLECTION }}
         run: |
           set -euo pipefail
           ARGS=()

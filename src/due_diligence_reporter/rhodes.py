@@ -1314,11 +1314,19 @@ def update_rhodes_due_diligence(
             proposal=True,
             review_url=str(response.get("reviewUrl") or "").strip(),
         )
-        return _due_diligence_proposal_result(
+        proposal_result = _due_diligence_proposal_result(
             base=base,
             response=response,
             handoff=handoff,
         )
+        if proposal_result.get("status") == DUE_DILIGENCE_PROPOSAL_SUBMITTED:
+            _record_dd_write_digest_event(
+                result=proposal_result,
+                site_id=clean_site_id,
+                fields=clean_fields,
+                field_sources=field_sources,
+            )
+        return proposal_result
 
     if _due_diligence_response_needs_handoff(response):
         error = (
@@ -1375,13 +1383,45 @@ def update_rhodes_due_diligence(
             "readback": readback,
         }
 
-    return {
+    result = {
         **base,
         "status": "updated",
         "reason": "ok",
         "response": _summarize_due_diligence_response(response),
         "readback": readback,
     }
+    _record_dd_write_digest_event(
+        result=result,
+        site_id=clean_site_id,
+        fields=clean_fields,
+        field_sources=field_sources,
+    )
+    return result
+
+
+def _record_dd_write_digest_event(
+    *,
+    result: dict[str, Any],
+    site_id: str,
+    fields: dict[str, Any],
+    field_sources: Mapping[str, str] | None,
+) -> None:
+    """Best-effort digest log for a successful write/proposal; never raises."""
+
+    try:
+        from .dd_write_digest import build_dd_write_event, record_dd_write_event
+
+        record_dd_write_event(
+            build_dd_write_event(
+                site_id=site_id,
+                status=str(result.get("status") or ""),
+                fields=fields,
+                field_sources=dict(field_sources or {}),
+                review_url=str(_dict_get(result.get("approval"), "review_url") or ""),
+            )
+        )
+    except Exception:  # noqa: BLE001 - digest logging must never fail the write
+        pass
 
 
 def verify_rhodes_due_diligence_fields(
