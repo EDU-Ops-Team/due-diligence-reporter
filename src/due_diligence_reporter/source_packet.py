@@ -428,10 +428,15 @@ def dd_field_update_sources(
         if not update.locationos_key:
             continue
         titles = [_safe_title(title) for title in update.source_titles if str(title).strip()]
-        if not titles:
-            titles = [str(name).strip() for name in update.required_source_docs if str(name).strip()]
         if titles:
             sources[update.locationos_key] = ", ".join(titles)
+            continue
+        # No captured registered title: name the required source TYPE and say
+        # so, rather than presenting a doc-type label as if it were a
+        # specific registered document title.
+        labels = [str(name).strip() for name in update.required_source_docs if str(name).strip()]
+        if labels:
+            sources[update.locationos_key] = "required source: " + ", ".join(labels)
     return sources
 
 

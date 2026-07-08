@@ -376,7 +376,7 @@ def test_dd_field_update_sources_maps_locationos_keys_to_doc_titles() -> None:
 
     assert sources == {
         "foCapacity": "Alpha Capacity Analysis - Site.json",
-        "buildingScore": "Phase 1 Phase 2 workbook",
+        "buildingScore": "required source: Phase 1 Phase 2 workbook",
     }
 
 

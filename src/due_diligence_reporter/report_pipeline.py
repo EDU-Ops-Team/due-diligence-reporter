@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -2459,6 +2460,7 @@ def _record_rhodes_due_diligence_update_step(
                     site_title=result.site_title,
                     site_id=site_id,
                     fields=fields,
+                    field_sources=field_sources,
                     error=str(update_status.get("error") or ""),
                     document_already_rendered=bool(result.doc_url),
                     doc_url=result.doc_url or "",
@@ -2551,7 +2553,13 @@ def _verify_locationos_mcp_due_diligence_update(
         **base,
         "status": "failed",
         "reason": "locationos_mcp_readback_failed",
-        "error": str(readback_status.get("error") or readback_status.get("reason") or ""),
+        "error": (
+            str(readback_status.get("error") or readback_status.get("reason") or "")
+            + " Note: an operator-approved updateDueDiligence can land in the "
+            "LocationOS approval queue, in which case values will not read "
+            "back until the pending field-change request is approved - check "
+            "the approval queue before retrying the write."
+        ).strip(),
         "readback": readback_status,
     }
 
@@ -2569,6 +2577,7 @@ def _build_locationos_mcp_write_request(
     site_id: str,
     fields: dict[str, Any],
     error: str,
+    field_sources: Mapping[str, str] | None = None,
     document_already_rendered: bool = False,
     doc_url: str = "",
 ) -> dict[str, Any]:
@@ -2597,6 +2606,7 @@ def _build_locationos_mcp_write_request(
         "site_title": site_title,
         "run_id": run_id,
         "arguments": arguments,
+        "field_sources": dict(field_sources or {}),
         "readback": {
             "server": "locationos",
             "tool": "getSite",
