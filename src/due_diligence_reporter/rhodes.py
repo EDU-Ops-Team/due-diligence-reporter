@@ -408,6 +408,23 @@ def _site_address(site: dict[str, Any]) -> str:
     return ""
 
 
+def _extract_p2_dri(site: dict[str, Any]) -> dict[str, str]:
+    owner: dict[str, str] = {}
+    p2_dri = site.get("p2Dri")
+    if isinstance(p2_dri, dict):
+        for target, keys in {
+            "name": ("name", "fullName", "displayName"),
+            "email": ("email", "emailAddress", "primaryEmail"),
+            "userId": ("userId", "_id", "id"),
+        }.items():
+            for key in keys:
+                value = p2_dri.get(key)
+                if isinstance(value, str) and value.strip():
+                    owner[target] = value.strip()
+                    break
+    return owner
+
+
 def _extract_p1_dri(site: dict[str, Any]) -> dict[str, str]:
     owner: dict[str, str] = {}
     p1_dri = site.get("p1Dri")
@@ -3274,3 +3291,102 @@ def list_rhodes_site_records(
             continue
         records.append(record)
     return records
+
+
+def notify_rhodes_phasing_review(
+    *,
+    site_id: str,
+    workbook_name: str,
+    workbook_url: str,
+    auto_accepted_inputs: list[str] | None = None,
+    client: RhodesClient | None = None,
+    notes_client: AerieNotesClient | None = None,
+    fallback_owner_email: str = DOCUMENT_REGISTRATION_FALLBACK_OWNER_EMAIL,
+) -> dict[str, Any]:
+    """Notify the P2 DRI that a Phase 1 Phase 2 workbook is ready for review.
+
+    Phasing recommendations are auto-accepted at publish time, so the review
+    moves after the fact: this posts one site note mentioning the P2 DRI
+    (falling back to the P1 DRI, then the fallback owner) with the workbook
+    link and any auto-accepted inputs the reviewer should scrutinize.
+    """
+
+    clean_site_id = site_id.strip()
+    if not clean_site_id:
+        return {"status": "skipped", "reason": "missing_site_id"}
+
+    try:
+        rhodes = client or RhodesClient()
+    except RhodesError as exc:
+        reason = (
+            LOCATIONOS_NOT_CONFIGURED_REASON
+            if _is_locationos_not_configured_error(exc)
+            else "locationos_mcp_error"
+        )
+        status = "skipped" if reason == LOCATIONOS_NOT_CONFIGURED_REASON else "failed"
+        return {"status": status, "reason": reason, "error": str(exc)}
+
+    site: dict[str, Any] = {}
+    try:
+        site = rhodes.get_site(site_id=clean_site_id) or {}
+    except RhodesError as exc:
+        return {"status": "failed", "reason": "site_lookup_failed", "error": str(exc)}
+
+    p2_dri = _extract_p2_dri(site)
+    owner = _resolve_document_registration_handoff_owner(
+        site=site,
+        owner_user_id=p2_dri.get("userId", ""),
+        owner_email=p2_dri.get("email", ""),
+        fallback_owner_email=fallback_owner_email,
+        rhodes=rhodes,
+    )
+    if not owner["owner_user_id"]:
+        return {
+            "status": "failed",
+            "reason": "owner_route_unresolved",
+            "error": "Phasing review note requires a P2/P1 DRI or fallback owner user ID.",
+            "owner_email": owner["owner_email"],
+        }
+
+    site_name = str(site.get("name") or "site").strip()
+    accepted = [item.strip() for item in (auto_accepted_inputs or []) if str(item).strip()]
+    lines = [
+        "Phase 1 Phase 2 workbook review",
+        "Action needed: Review the completed Phase 1 Phase 2 workbook.",
+        f"Site: {site_name}",
+        "Status: Workbook published; skill recommendations were auto-accepted.",
+    ]
+    if workbook_url.strip():
+        lines.append(f"Workbook: {workbook_url.strip()}")
+    elif workbook_name.strip():
+        lines.append(f"Workbook: {workbook_name.strip()}")
+    if accepted:
+        lines.append("Auto-accepted inputs to scrutinize:")
+        lines.extend(f"- {item}" for item in accepted)
+    lines.extend(
+        [
+            "Next steps:",
+            "- Review the Phase I / Phase II scope split, budgets, and timing.",
+            "- Flag corrections; a rerun republishes the workbook.",
+        ]
+    )
+    note = add_rhodes_site_note(
+        site_id=clean_site_id,
+        site_slug=str(site.get("slug") or ""),
+        body="\n".join(lines),
+        owner_user_id=owner["owner_user_id"],
+        owner_email=owner["owner_email"],
+        client=client if client is not None and not isinstance(client, RhodesClient) else None,
+        notes_client=notes_client,
+        automation_source="alpha_phasing_plan_review",
+    )
+    return {
+        "status": "created" if note.get("status") == "created" else "failed",
+        "reason": str(note.get("reason") or note.get("status") or ""),
+        "rhodes_note_id": str(note.get("rhodes_note_id") or ""),
+        "note_readback_status": str(_dict_get(note.get("readback"), "status") or ""),
+        "mentioned_owner_user_id": owner["owner_user_id"],
+        "owner_email": owner["owner_email"],
+        "fallback_owner_used": owner["fallback_owner_used"],
+        "p2_dri_found": bool(p2_dri.get("userId") or p2_dri.get("email")),
+    }

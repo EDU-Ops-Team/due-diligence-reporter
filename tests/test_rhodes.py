@@ -1872,3 +1872,63 @@ def test_add_rhodes_site_note_fails_when_aerie_readback_lacks_owner_mention() ->
     assert result["reason"] == "note_readback_failed"
     assert result["readback"]["reason"] == "note_mentions_missing"
     assert result["readback"]["missing_user_ids"] == ["OWNER1"]
+
+
+def test_notify_rhodes_phasing_review_mentions_p2_dri() -> None:
+    from due_diligence_reporter.rhodes import notify_rhodes_phasing_review
+
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Armonk 355 Main St",
+            "slug": "alpha-armonk",
+            "p1Dri": {"email": "p1@example.com", "userId": "P1USER"},
+            "p2Dri": {"email": "p2@example.com", "userId": "P2USER"},
+        }
+    )
+
+    result = notify_rhodes_phasing_review(
+        site_id="SITE1",
+        workbook_name="Phase 1 Phase 2 Workbook - Alpha Armonk - 2026-07-08.xlsx",
+        workbook_url="https://drive/phasing",
+        auto_accepted_inputs=["Phase II deferred scope: Quality-bar completion items"],
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "created"
+    assert result["mentioned_owner_user_id"] == "P2USER"
+    assert result["p2_dri_found"] is True
+    assert result["fallback_owner_used"] is False
+    note = client.notes[0]
+    assert note["mentions"] == ["P2USER"]
+    assert note["body"].splitlines()[0] == "Phase 1 Phase 2 workbook review"
+    assert "Action needed: Review the completed Phase 1 Phase 2 workbook." in note["body"]
+    assert "Workbook: https://drive/phasing" in note["body"]
+    assert "Auto-accepted inputs to scrutinize:" in note["body"]
+    assert "- Phase II deferred scope: Quality-bar completion items" in note["body"]
+
+
+def test_notify_rhodes_phasing_review_falls_back_to_p1_dri() -> None:
+    from due_diligence_reporter.rhodes import notify_rhodes_phasing_review
+
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "slug": "alpha-test",
+            "p1Dri": {"email": "p1@example.com", "userId": "P1USER"},
+        }
+    )
+
+    result = notify_rhodes_phasing_review(
+        site_id="SITE1",
+        workbook_name="Workbook.xlsx",
+        workbook_url="https://drive/phasing",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "created"
+    assert result["mentioned_owner_user_id"] == "P1USER"
+    assert result["p2_dri_found"] is False
+    assert client.notes[0]["mentions"] == ["P1USER"]
+    assert "Auto-accepted inputs" not in client.notes[0]["body"]
