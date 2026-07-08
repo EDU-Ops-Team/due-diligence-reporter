@@ -631,7 +631,24 @@ class LiveM2ExecutorAdapters:
                 target_open_date=_text(_report_data(state).get("exec.fastest_open_open_date")),
             )
         )
-        return _step_result_from_tool(result)
+        step = _step_result_from_tool(result)
+        # A "success" without a registered Opening Plan document (Drive
+        # publish failure after generation, missing folder context) must not
+        # advance as if the source exists; block and retry via reuse next
+        # cycle instead.
+        plan_registered = any(_doc_registered(doc) for doc in step.supporting_documents)
+        if step.status == "success" and not plan_registered:
+            return M2StepResult(
+                status="blocked",
+                reason=_text(result.get("publish_error") or result.get("error"))
+                or "Opening Plan generated but not published/registered.",
+                artifacts=step.artifacts,
+                raw={
+                    "resume_source_types": ["opening_plan_report"],
+                    "tool_result": result,
+                },
+            )
+        return step
 
     def run_phase_1_phase_2(self, state: dict[str, Any]) -> M2StepResult:
         from . import server
