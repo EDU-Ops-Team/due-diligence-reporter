@@ -675,6 +675,8 @@ class LiveM2ExecutorAdapters:
         return _step_result_from_tool(result)
 
     def run_security_due_diligence(self, state: dict[str, Any]) -> M2StepResult:
+        from . import server
+
         existing = _registered_doc(state, "security_due_diligence_report")
         if existing:
             return M2StepResult(
@@ -690,16 +692,78 @@ class LiveM2ExecutorAdapters:
                     "and Alpha Capacity Analysis are present."
                 ),
             )
-        return M2StepResult(
-            status="blocked",
-            reason=(
-                "Security Due Diligence is ready but no registered memo is present. "
-                "Run ops-skills:security-due-diligence with the site address, "
-                "block/floor plan context, and Alpha Capacity Analysis context, "
-                "then save/register the memo as security_due_diligence_report."
-            ),
-            raw={"resume_source_types": ["security_due_diligence_report"]},
+
+        site = _dict(state.get("site"))
+        site_address = _text(site.get("address"))
+        if not site_address:
+            return M2StepResult(
+                status="blocked",
+                reason="Site address is required for Security Due Diligence.",
+                raw={"resume_source_types": ["security_due_diligence_report"]},
+            )
+
+        block_plan_content = ""
+        plan = _security_plan_source_doc(state)
+        plan_file_id = _doc_drive_file_id(plan)
+        if plan_file_id:
+            try:
+                plan_bytes = self.gc.download_file_bytes(plan_file_id)
+                block_plan_content = _text_from_document_bytes(
+                    plan_bytes, _doc_title(plan) or "Block Plan.pdf"
+                )
+            except Exception:  # noqa: BLE001 - plan text is optional context
+                block_plan_content = ""
+
+        capacity_context = ""
+        capacity = _registered_doc(state, "alpha_capacity_analysis")
+        capacity_file_id = _doc_drive_file_id(capacity)
+        if capacity_file_id:
+            try:
+                capacity_context = json.dumps(
+                    self._read_json_file(capacity_file_id), indent=2, sort_keys=True
+                )
+            except Exception:  # noqa: BLE001 - capacity text is optional context
+                capacity_context = ""
+
+        result = _run_async(
+            server.apply_security_due_diligence_skill(
+                site_name=_text(site.get("name")),
+                site_address=site_address,
+                drive_folder_url=_drive_folder_url(state),
+                site_id=_site_id(state),
+                block_plan_content=block_plan_content,
+                capacity_context=capacity_context,
+                student_count=_text(_report_data(state).get("exec.max_capacity_capacity")),
+            )
         )
+        step = _step_result_from_tool(result)
+        # A "success" without a registered memo document (e.g. Drive publish
+        # failed after generation, or no Drive folder context) must not clear
+        # the security gate: block with the manual runbook as the safety net.
+        memo_registered = any(_doc_registered(doc) for doc in step.supporting_documents)
+        if step.status != "success" or not memo_registered:
+            manual_instruction = (
+                "Run ops-skills:security-due-diligence manually and register "
+                "the memo as security_due_diligence_report."
+            )
+            reason = (
+                f"{step.reason} {manual_instruction}".strip()
+                if step.reason
+                else (
+                    "Security Due Diligence memo generation did not complete "
+                    "with a registered document. " + manual_instruction
+                )
+            )
+            return M2StepResult(
+                status="blocked",
+                reason=reason,
+                artifacts=step.artifacts,
+                raw={
+                    "resume_source_types": ["security_due_diligence_report"],
+                    "tool_result": result,
+                },
+            )
+        return step
 
     def add_source_note(self, state: dict[str, Any], note_lines: Sequence[str]) -> dict[str, Any]:
         body = _source_note_body(state, note_lines)
@@ -1199,15 +1263,28 @@ def _security_due_diligence_is_due(state: dict[str, Any]) -> bool:
     return _has_doc(state, "alpha_capacity_analysis") and _has_security_plan_source(state)
 
 
+_SECURITY_PLAN_SOURCE_TYPES = (
+    "block_plan",
+    "floor_plan",
+    "measured_floor_plan",
+    "fastest_open_block_plan",
+    "max_capacity_block_plan",
+)
+
+
 def _has_security_plan_source(state: dict[str, Any]) -> bool:
-    source_types = {
-        "block_plan",
-        "floor_plan",
-        "measured_floor_plan",
-        "fastest_open_block_plan",
-        "max_capacity_block_plan",
-    }
-    return any(_has_doc(state, source_type) or _event_doc(state, source_type) for source_type in source_types)
+    return any(
+        _has_doc(state, source_type) or _event_doc(state, source_type)
+        for source_type in _SECURITY_PLAN_SOURCE_TYPES
+    )
+
+
+def _security_plan_source_doc(state: dict[str, Any]) -> dict[str, Any] | None:
+    for source_type in _SECURITY_PLAN_SOURCE_TYPES:
+        doc = _registered_doc(state, source_type) or _event_doc(state, source_type)
+        if doc:
+            return doc
+    return None
 
 
 def _has_doc(state: dict[str, Any], source_type: str) -> bool:
