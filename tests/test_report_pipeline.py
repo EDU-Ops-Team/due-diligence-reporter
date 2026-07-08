@@ -1913,6 +1913,7 @@ class TestProcessSitePipeline:
         assert result.rhodes_due_diligence_update is not None
         mcp_request = result.rhodes_due_diligence_update["locationos_mcp_write_request"]
         assert mcp_request["resume"]["required"] is False
+        assert "field_sources" in mcp_request
         update_kwargs = mock_update_due_diligence.call_args.kwargs
         assert update_kwargs["fields"] == {
             "status": "complete",
@@ -2454,7 +2455,8 @@ class TestProcessSitePipeline:
 
         assert result.status == "report_data_prepared"
         assert result.failed_step == "rhodes.due_diligence_update"
-        assert result.error == "foCapacity did not match"
+        assert result.error.startswith("foCapacity did not match")
+        assert "approval queue" in result.error
         route_tool_call.assert_not_called()
         rhodes_note.assert_not_called()
 
