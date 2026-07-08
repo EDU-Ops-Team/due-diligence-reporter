@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 from .firestore_state import (
     DEFAULT_FIRESTORE_DATABASE,
+    alert_firestore_fallback,
     build_authorized_session,
     decode_firestore_fields,
     encode_firestore_fields,
@@ -84,6 +85,7 @@ class FirestoreRhodesRetryStateStore:
             firestore_state = self._load_firestore_state()
         except Exception as exc:  # noqa: BLE001 - local JSON remains the safe fallback
             logger.warning("Failed to load Rhodes retry state from Firestore: %s", exc)
+            alert_firestore_fallback("rhodes_retry_state", "load", exc)
             return self.fallback.load()
         if firestore_state:
             return firestore_state
@@ -94,6 +96,7 @@ class FirestoreRhodesRetryStateStore:
             self._save_firestore_state(state)
         except Exception as exc:  # noqa: BLE001 - preserve progress locally
             logger.warning("Failed to save Rhodes retry state to Firestore: %s", exc)
+            alert_firestore_fallback("rhodes_retry_state", "save", exc)
             self.fallback.save(state)
             return
         self.fallback.save(state)
