@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from unittest.mock import patch
 
 from due_diligence_reporter.rhodes import (
     AerieApiConfig,
@@ -1932,3 +1933,65 @@ def test_notify_rhodes_phasing_review_falls_back_to_p1_dri() -> None:
     assert result["p2_dri_found"] is False
     assert client.notes[0]["mentions"] == ["P1USER"]
     assert "Auto-accepted inputs" not in client.notes[0]["body"]
+
+
+def test_successful_update_records_dd_write_digest_event() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "foCapacity": 36,
+            "dueDiligence": {"foCapacity": 36},
+        },
+        due_diligence_response={"status": "ok"},
+    )
+
+    with patch(
+        "due_diligence_reporter.dd_write_digest.record_dd_write_event"
+    ) as mock_record:
+        result = update_rhodes_due_diligence(
+            site_id="SITE1",
+            fields={"foCapacity": 36},
+            client=client,  # type: ignore[arg-type]
+            field_sources={"foCapacity": "Alpha Capacity Analysis"},
+        )
+
+    assert result["status"] == "updated"
+    mock_record.assert_called_once()
+    event = mock_record.call_args.args[0]
+    assert event["site_id"] == "SITE1"
+    assert event["status"] == "updated"
+    assert '"foCapacity": "36"' in event["fields"]
+    assert "Alpha Capacity Analysis" in event["field_sources"]
+
+
+def test_submitted_proposal_records_dd_write_digest_event() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Test",
+            "slug": "alpha-test",
+            "address": "123 Main St, Denver, CO 80202",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={
+            "status": "awaiting_browser_approval",
+            "pendingMutationId": "MUT1",
+            "reviewUrl": "https://locationos.example/review",
+        },
+    )
+
+    with patch(
+        "due_diligence_reporter.dd_write_digest.record_dd_write_event"
+    ) as mock_record:
+        result = update_rhodes_due_diligence(
+            site_id="SITE1",
+            fields={"foCapacity": 36},
+            client=client,  # type: ignore[arg-type]
+        )
+
+    assert result["status"] == "proposal_submitted"
+    mock_record.assert_called_once()
+    event = mock_record.call_args.args[0]
+    assert event["status"] == "proposal_submitted"
+    assert event["review_url"] == "https://locationos.example/review"

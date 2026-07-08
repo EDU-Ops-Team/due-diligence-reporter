@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import time
 from pathlib import Path
 from types import ModuleType
@@ -234,6 +235,23 @@ def main(argv: list[str] | None = None) -> int:
     review_execution_parser.add_argument("--max-actions", type=int, default=0)
     review_execution_parser.add_argument("--dry-run", action="store_true")
 
+    digest_parser = subparsers.add_parser(
+        "dd-write-digest",
+        help="Send the daily digest of successful DD field writes/proposals",
+    )
+    digest_parser.add_argument("--hours", type=int, default=24)
+    digest_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the digest without sending email or Chat messages",
+    )
+    digest_parser.add_argument(
+        "--skip-empty",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip sending when there were no writes in the period",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "status":
         _print_status(load_run_manifest(args.run_id))
@@ -270,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
         _print_portfolio_gaps(args)
     elif args.command == "review-execution":
         _run_review_execution(args)
+    elif args.command == "dd-write-digest":
+        return _run_dd_write_digest(args)
     return 0
 
 
@@ -997,3 +1017,104 @@ def _doc_label(name: str, file_id: str, uri: str) -> str:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _run_dd_write_digest(args: argparse.Namespace) -> int:
+    """Compose and deliver the daily DD write digest to the operating owner."""
+
+    from datetime import UTC, datetime, timedelta
+
+    from .config import get_settings
+    from .dd_write_digest import (
+        build_dd_write_digest,
+        collect_dd_write_events,
+        write_log_project_id,
+    )
+    from .utils import post_google_chat_message, send_email
+
+    hours = max(int(args.hours), 1)
+    if not write_log_project_id():
+        print(
+            "DD write log Firestore project is not configured "
+            "(DD_WRITE_LOG/M2_DD_STATE/DD_REPUBLISH_STATE project vars all "
+            "empty); the digest would silently read an empty local fallback."
+        )
+        if not args.dry_run:
+            return 1
+    since_iso = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+    events = collect_dd_write_events(since_iso=since_iso)
+
+    resolver = None
+    try:
+        from .rhodes import RhodesClient
+
+        rhodes = RhodesClient()
+
+        def _resolve(site_id: str) -> str:
+            site = rhodes.get_site(site_id=site_id) or {}
+            return str(site.get("name") or "")
+
+        resolver = _resolve
+    except Exception:  # noqa: BLE001 - digest renders with site IDs if lookup is down
+        resolver = None
+
+    digest = build_dd_write_digest(
+        events,
+        resolve_site_name=resolver,
+        period_label=f"last {hours} hours",
+    )
+    print(digest["text"])
+    print(
+        f"\nDigest events={digest['event_count']} sites={digest['site_count']}"
+    )
+
+    if args.dry_run:
+        print("Dry run: no email or Chat message sent.")
+        return 0
+    if digest["event_count"] == 0 and args.skip_empty:
+        print("No writes in period: skipping delivery (--skip-empty).")
+        return 0
+
+    settings = get_settings()
+    recipients = [
+        addr.strip()
+        for addr in os.environ.get(
+            "DD_WRITE_DIGEST_RECIPIENTS", "greg.foote@trilogy.com"
+        ).split(",")
+        if addr.strip()
+    ]
+    delivered = 0
+    delivery_failures: list[str] = []
+    if settings.email_sender and settings.email_app_password and recipients:
+        try:
+            send_email(
+                settings.email_sender,
+                settings.email_app_password,
+                recipients,
+                digest["subject"],
+                digest["html"],
+            )
+            delivered += 1
+            print(f"Digest emailed to: {', '.join(recipients)}")
+        except Exception as exc:  # noqa: BLE001 - report and continue to Chat
+            delivery_failures.append(f"email: {exc}")
+    else:
+        delivery_failures.append("email: sender credentials not configured")
+    webhook_url = str(getattr(settings, "google_chat_webhook_url", "") or "").strip()
+    if webhook_url:
+        try:
+            post_google_chat_message(
+                webhook_url, f"{digest['subject']}\n{digest['text']}"
+            )
+            delivered += 1
+            print("Digest posted to Google Chat.")
+        except Exception as exc:  # noqa: BLE001
+            delivery_failures.append(f"chat: {exc}")
+    else:
+        delivery_failures.append("chat: webhook not configured")
+    for failure in delivery_failures:
+        print(f"Delivery issue: {failure}")
+    if delivered == 0:
+        print("Digest delivery failed: the owner was not informed.")
+        return 1
+    return 0

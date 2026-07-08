@@ -1,0 +1,99 @@
+name: DD Write Digest
+
+on:
+  schedule:
+    # 22:30 UTC weekdays = 5:30 PM Central during DST
+    - cron: '30 22 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'Lookback window in hours'
+        required: false
+        default: '24'
+        type: string
+      dry_run:
+        description: 'Print the digest without sending email or Chat'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+concurrency:
+  group: dd-write-digest
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  dd-write-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.14"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Configure Firestore credentials
+        env:
+          GCP_FIRESTORE_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_FIRESTORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON:-}" ]; then
+            echo "${GCP_FIRESTORE_SERVICE_ACCOUNT_JSON}" > gcp-firestore-sa.json
+            echo "GOOGLE_APPLICATION_CREDENTIALS=${PWD}/gcp-firestore-sa.json" >> "$GITHUB_ENV"
+          else
+            echo "::warning title=Write log not readable::GCP_FIRESTORE_SERVICE_ACCOUNT_JSON is not configured; the digest cannot read the Firestore write log."
+          fi
+
+      - name: Send DD write digest
+        env:
+          LOCATIONOS_MCP_API_KEY: ${{ secrets.LOCATIONOS_MCP_API_KEY }}
+          RHODES_API_KEY: ${{ secrets.RHODES_API_KEY }}
+          RHODES_MCP_URL: ${{ secrets.RHODES_MCP_URL }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.DDR_GOOGLE_CHAT_WEBHOOK_URL }}
+          DD_WRITE_DIGEST_RECIPIENTS: ${{ vars.DD_WRITE_DIGEST_RECIPIENTS }}
+          DD_WRITE_LOG_FIRESTORE_PROJECT_ID: ${{ vars.DD_WRITE_LOG_FIRESTORE_PROJECT_ID || vars.M2_DD_STATE_FIRESTORE_PROJECT_ID || vars.DD_REPUBLISH_STATE_FIRESTORE_PROJECT_ID }}
+          DD_WRITE_LOG_FIRESTORE_DATABASE: ${{ vars.DD_WRITE_LOG_FIRESTORE_DATABASE || vars.M2_DD_STATE_FIRESTORE_DATABASE || vars.DD_REPUBLISH_STATE_FIRESTORE_DATABASE }}
+          DD_WRITE_LOG_FIRESTORE_COLLECTION: ${{ vars.DD_WRITE_LOG_FIRESTORE_COLLECTION }}
+          INPUT_HOURS: ${{ inputs.hours }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          default_hours=24
+          # Monday's run must cover the weekend gap (Sat 00:15-02:15 UTC M2
+          # cycles land after Friday's cutoff and before a 24h Monday window).
+          if [ -z "${INPUT_HOURS:-}" ] && [ "$(date -u +%u)" = "1" ]; then
+            default_hours=72
+          fi
+          args=(--hours "${INPUT_HOURS:-$default_hours}")
+          if [ "${INPUT_DRY_RUN:-false}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          uv run ddr dd-write-digest "${args[@]}" | tee dd-write-digest.txt
+          {
+            echo "## DD Write Digest"
+            echo
+            echo '```text'
+            cat dd-write-digest.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload digest artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dd-write-digest
+          if-no-files-found: warn
+          path: dd-write-digest.txt
