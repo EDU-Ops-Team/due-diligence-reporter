@@ -31,6 +31,7 @@ from .alpha_phasing_plan import (
     build_alpha_phasing_workbook,
     load_alpha_phasing_skill,
     missing_alpha_phasing_inputs,
+    normalize_phasing_list,
 )
 from .assignment import assign_p1
 from .classifier import (
@@ -83,6 +84,7 @@ from .report_schema import (
 from .retry import retry_config
 from .rhodes import (
     create_document_registration_handoff_for_uploads,
+    notify_rhodes_phasing_review,
     register_rhodes_document_for_upload,
 )
 from .rhodes import (
@@ -5073,10 +5075,14 @@ async def apply_alpha_phasing_plan_skill(
 ) -> dict[str, Any]:
     """Publish a Phase 1 Phase 2 workbook and return DDR-ready fields.
 
-    The tool is deliberately strict about minimum inputs: it does not invent
-    Phase II line items. When phasing inputs are incomplete, it returns concrete
-    verification open items for the DDR instead of publishing a placeholder
-    workbook.
+    Skill recommendations are auto-accepted: when a judgment input (source of
+    truth, quality-bar target, opening target, Phase I scope, Phase II deferred
+    scope) is not supplied, the tool fills it with the skill's standard
+    recommendation, records it in ``auto_accepted_inputs``, and publishes.
+    After publish the P2 DRI is notified via a site note that the workbook is
+    complete and ready for review; the review happens after the fact instead
+    of gating the publish. Only site identity and the Drive folder remain hard
+    requirements.
     """
 
     logger.info("Tool called: apply_alpha_phasing_plan_skill - site=%s", site_name)
@@ -5092,20 +5098,65 @@ async def apply_alpha_phasing_plan_skill(
     )
     if not drive_folder_url.strip():
         missing.append("site Drive folder URL")
-    if missing:
-        open_items = alpha_phasing_open_items(missing)
+    hard_missing = [
+        item
+        for item in missing
+        if item in {"site name", "site address", "site Drive folder URL"}
+    ]
+    if hard_missing:
+        open_items = alpha_phasing_open_items(hard_missing)
         return {
             "status": "blocked",
             "source_usable": False,
-            "missing_inputs": missing,
+            "missing_inputs": hard_missing,
             "report_data_fields": {
                 "verification.open_items": open_items,
             },
             "message": (
-                "Phase 1 Phase 2 workbook not published because minimum phasing "
-                "inputs are incomplete."
+                "Phase 1 Phase 2 workbook not published because site identity "
+                "or Drive folder context is missing."
             ),
         }
+
+    auto_accepted_inputs: list[str] = []
+
+    def _auto_accept(label: str, value: str) -> str:
+        auto_accepted_inputs.append(f"{label}: {value}")
+        return value
+
+    if not source_of_truth.strip():
+        source_of_truth = _auto_accept(
+            "source of truth", "Cost/Timeline Estimate and Alpha Capacity Analysis"
+        )
+    if not quality_bar_target.strip():
+        quality_bar_target = _auto_accept("quality bar target", "Alpha quality bars")
+    if not opening_target_date.strip():
+        opening_target_date = _auto_accept(
+            "opening target date", "TBD - confirm at P2 review"
+        )
+    if not must_complete_before_opening.strip():
+        must_complete_before_opening = _auto_accept(
+            "Phase I opening scope",
+            "Minimum buildout required to open (skill recommendation).",
+        )
+    if not normalize_phasing_list(deferred_scopes):
+        deferred_scopes = [
+            _auto_accept(
+                "Phase II deferred scope",
+                "Quality-bar completion items not required for opening "
+                "(skill recommendation).",
+            )
+        ]
+    if auto_accepted_inputs:
+        accepted_note = "Auto-accepted skill recommendations: " + "; ".join(
+            auto_accepted_inputs
+        )
+        if isinstance(source_notes, str):
+            source_notes = [source_notes, accepted_note]
+        elif isinstance(source_notes, list):
+            source_notes = [*source_notes, accepted_note]
+        else:
+            source_notes = [accepted_note]
 
     folder_id = extract_folder_id_from_url(drive_folder_url)
     if not folder_id:
@@ -5114,6 +5165,26 @@ async def apply_alpha_phasing_plan_skill(
             "error": "Invalid Drive folder URL",
             "message": f"Could not extract folder ID from: {drive_folder_url}",
         }
+
+    def _register_phasing_workbook(
+        *,
+        workbook_id: str,
+        workbook_url: str,
+        workbook_name: str,
+    ) -> dict[str, Any]:
+        return register_rhodes_document_for_upload(
+            site_id=site_id,
+            ddr_doc_type="alpha_phasing_plan_report",
+            title=workbook_name,
+            drive_file_id=workbook_id,
+            drive_url=workbook_url,
+            mime_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            original_filename=workbook_name,
+            source="apply_alpha_phasing_plan_skill",
+        )
 
     def _work() -> dict[str, Any]:
         try:
@@ -5136,6 +5207,54 @@ async def apply_alpha_phasing_plan_skill(
                 "status": "error",
                 "error": "Failed to resolve M1 folder",
                 "message": str(e),
+            }
+
+        # Reuse an existing M1 workbook so sweep/executor reruns neither
+        # publish duplicate dated workbooks nor re-notify the P2 DRI.
+        try:
+            existing_docs = _list_m1_documents_by_type(gc, target_folder_id)
+            existing = existing_docs.get("alpha_phasing_plan_report")
+        except Exception as e:  # noqa: BLE001 - reuse inspection is best-effort
+            logger.warning(
+                "Failed to inspect existing Phase 1 Phase 2 workbook for '%s': %s",
+                site_name,
+                e,
+            )
+            existing = None
+        if existing is not None:
+            existing_url = str(existing.get("webViewLink") or "").strip()
+            existing_id = str(existing.get("id") or "").strip()
+            existing_name = str(existing.get("name") or "").strip()
+            return {
+                "status": "success",
+                "source_usable": True,
+                "doc_type": "alpha_phasing_plan_report",
+                "source_type": "alpha_phasing_plan_report",
+                "workbook_id": existing_id,
+                "workbook_url": existing_url,
+                "workbook_name": existing_name,
+                "reused_existing": True,
+                "rhodes_registration": _register_phasing_workbook(
+                    workbook_id=existing_id,
+                    workbook_url=existing_url,
+                    workbook_name=existing_name,
+                ),
+                "auto_accepted_inputs": [],
+                "p2_review_note": {"status": "skipped", "reason": "reused_existing"},
+                "skill_version": skill.version,
+                "skill_source": skill.source,
+                "scorecard_theme_id": skill.scorecard_theme_id,
+                "report_data_fields": build_alpha_phasing_report_fields(
+                    workbook_url=existing_url,
+                    phase_i_scope_summary=phase_i_scope_summary,
+                    must_complete_before_opening=must_complete_before_opening,
+                    deferred_scopes=deferred_scopes,
+                    phase_ii_budget_items=phase_ii_budget_items,
+                    phase_ii_total_allowance=phase_ii_total_allowance,
+                    recommended_timing=recommended_timing,
+                    quality_bar_target=quality_bar_target,
+                ),
+                "message": f"Reused existing '{existing_name}' in Drive",
             }
 
         workbook_bytes = build_alpha_phasing_workbook(
@@ -5180,18 +5299,10 @@ async def apply_alpha_phasing_plan_skill(
 
         workbook_url = str(workbook.get("webViewLink") or "").strip()
         workbook_id = str(workbook.get("id") or "").strip()
-        rhodes_registration = register_rhodes_document_for_upload(
-            site_id=site_id,
-            ddr_doc_type="alpha_phasing_plan_report",
-            title=workbook_name,
-            drive_file_id=workbook_id,
-            drive_url=workbook_url,
-            mime_type=(
-                "application/vnd.openxmlformats-officedocument."
-                "spreadsheetml.sheet"
-            ),
-            original_filename=workbook_name,
-            source="apply_alpha_phasing_plan_skill",
+        rhodes_registration = _register_phasing_workbook(
+            workbook_id=workbook_id,
+            workbook_url=workbook_url,
+            workbook_name=workbook_name,
         )
         report_fields = build_alpha_phasing_report_fields(
             workbook_url=workbook_url,
@@ -5203,6 +5314,34 @@ async def apply_alpha_phasing_plan_skill(
             recommended_timing=recommended_timing,
             quality_bar_target=quality_bar_target,
         )
+        # Notify the P2 DRI only for a fresh, successfully registered publish:
+        # unregistered publishes go through the registration-handoff machinery
+        # instead, and retries reuse the existing workbook without re-notifying.
+        registration_status = str(rhodes_registration.get("status") or "").strip()
+        p2_review_note: dict[str, Any] = {"status": "skipped", "reason": "missing_site_id"}
+        if site_id.strip():
+            if registration_status in {"registered", "already_registered"}:
+                try:
+                    p2_review_note = notify_rhodes_phasing_review(
+                        site_id=site_id,
+                        workbook_name=workbook_name,
+                        workbook_url=workbook_url,
+                        auto_accepted_inputs=auto_accepted_inputs,
+                    )
+                except Exception as e:  # noqa: BLE001 - note failure must not undo publish
+                    logger.warning(
+                        "Phasing P2 review note failed for '%s': %s", site_name, e
+                    )
+                    p2_review_note = {
+                        "status": "failed",
+                        "reason": "note_error",
+                        "error": str(e),
+                    }
+            else:
+                p2_review_note = {
+                    "status": "skipped",
+                    "reason": "registration_not_complete",
+                }
         return {
             "status": "success",
             "source_usable": True,
@@ -5212,6 +5351,8 @@ async def apply_alpha_phasing_plan_skill(
             "workbook_url": workbook_url,
             "workbook_name": workbook_name,
             "rhodes_registration": rhodes_registration,
+            "auto_accepted_inputs": auto_accepted_inputs,
+            "p2_review_note": p2_review_note,
             "skill_version": skill.version,
             "skill_source": skill.source,
             "scorecard_theme_id": skill.scorecard_theme_id,

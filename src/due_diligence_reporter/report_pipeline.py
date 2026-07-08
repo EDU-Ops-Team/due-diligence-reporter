@@ -318,7 +318,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_alpha_phasing_plan_skill",
-        "description": "Create and publish the Phase 1 Phase 2 workbook after source reads, E-Occupancy, School Approval, and Cost/Timeline Estimate context are available. Pass only confirmed phasing inputs; if deferred Phase II scope is not confirmed, call the tool with the missing fields so it returns concrete verification.open_items instead of inventing scope. On success, copy returned report_data_fields into report_data before prepare_due_diligence_data, including sources.alpha_phasing_plan_link and exec.alpha_phasing_* summary fields.",
+        "description": "Create and publish the Phase 1 Phase 2 workbook after source reads, E-Occupancy, School Approval, and Cost/Timeline Estimate context are available. Only call this tool when you intend to publish: missing judgment inputs (source of truth, quality bar target, opening target date, Phase I scope, Phase II deferred scope) are auto-accepted from skill recommendations, recorded in auto_accepted_inputs, and the P2 DRI is notified for after-the-fact review - do not probe-call it to discover missing inputs. If a workbook already exists in M1 it is reused without a new notification. On success, copy returned report_data_fields into report_data before prepare_due_diligence_data, including sources.alpha_phasing_plan_link and exec.alpha_phasing_* summary fields.",
         "input_schema": {
             "type": "object",
             "properties": {

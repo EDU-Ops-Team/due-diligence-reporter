@@ -122,7 +122,7 @@ def build_alpha_phasing_report_fields(
         gap_count = len(_normalize_list(deferred_scopes))
         plural = "" if gap_count == 1 else "s"
         quality_status = (
-            f"{quality_bar_target.strip()} target with {gap_count} confirmed "
+            f"{quality_bar_target.strip()} target with {gap_count} deferred "
             f"Phase II gap{plural}."
         )
 
@@ -279,7 +279,7 @@ def _quality_bar_rows(quality_bar_target: str, deferred_scopes: Any) -> list[lis
             quality_bar_target,
             "Gap remains after Phase I",
             "Planned for Phase II pending budget approval",
-            "Confirmed deferred scope; pricing must stay tied to source notes.",
+            "Deferred scope; pricing must stay tied to source notes.",
         ])
     return rows
 
@@ -548,6 +548,12 @@ def _normalize_records(value: Any) -> list[dict[str, str]]:
         elif str(item).strip():
             records.append({"name": str(item).strip()})
     return records
+
+
+def normalize_phasing_list(value: Any) -> list[str]:
+    """Normalize a deferred-scope/list input the same way the workbook does."""
+
+    return _normalize_list(value)
 
 
 def _normalize_list(value: Any) -> list[str]:
