@@ -102,7 +102,7 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.trigger_remediation != 'false' }}
         uses: actions/checkout@v4
         with:
-          repository: trilogy-group/alpha-analysis-downstream-processing
+          repository: EDU-Ops-Team/alpha-analysis-downstream-processing
           ref: main
           path: aadp-remediation
           token: ${{ secrets.AADP_REMEDIATION_REPO_TOKEN || github.token }}
