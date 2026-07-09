@@ -253,7 +253,8 @@ def test_portfolio_gap_snapshot_triggers_aadp_remediation_without_oauth() -> Non
     assert "secrets.GOOGLE_CHAT_WEBHOOK_URL" not in text
     assert "portfolio-gaps" in text
     assert "portfolio-automation-gaps.json" in text
-    assert "trilogy-group/alpha-analysis-downstream-processing" in text
+    assert "EDU-Ops-Team/alpha-analysis-downstream-processing" in text
+    assert "trilogy-group/" not in text
     assert "AADP_REMEDIATION_REPO_TOKEN" in text
     assert "AADP_DRIVE_PARENT_FOLDER_ID" in text
     assert (
