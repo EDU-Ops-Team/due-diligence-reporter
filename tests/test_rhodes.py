@@ -1995,3 +1995,163 @@ def test_submitted_proposal_records_dd_write_digest_event() -> None:
     event = mock_record.call_args.args[0]
     assert event["status"] == "proposal_submitted"
     assert event["review_url"] == "https://locationos.example/review"
+
+
+# --- MCP elicitation auto-accept (fleet write policy: accept own-initiated writes) ---
+
+
+class FakeMcpResponse:
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        body: str = "",
+        json_payload: Any = None,
+    ) -> None:
+        self.status_code = status_code
+        self.ok = 200 <= status_code < 300
+        self.headers = headers or {}
+        self._json = json_payload
+        self.text = body if body else (json.dumps(json_payload) if json_payload is not None else "")
+        self._body = self.text
+        self.request = None
+
+    def json(self) -> Any:
+        return self._json
+
+    def iter_lines(self, decode_unicode: bool = False) -> Any:
+        return iter(self._body.splitlines())
+
+    def __enter__(self) -> "FakeMcpResponse":
+        return self
+
+    def __exit__(self, *args: Any) -> bool:
+        return False
+
+
+class FakeMcpSession:
+    def __init__(self, responses: list[FakeMcpResponse]) -> None:
+        self.responses = list(responses)
+        self.posts: list[dict[str, Any]] = []
+
+    def post(self, url: str, **kwargs: Any) -> FakeMcpResponse:
+        self.posts.append({"url": url, **kwargs})
+        if not self.responses:
+            raise AssertionError(f"No fake MCP response queued for POST {url}")
+        return self.responses.pop(0)
+
+
+def _mcp_client_with_session(responses: list[FakeMcpResponse]) -> tuple[RhodesClient, FakeMcpSession]:
+    from due_diligence_reporter.rhodes import RhodesConfig
+
+    client = RhodesClient(RhodesConfig(mcp_url="https://rhodes.test/mcp", api_key="key"))
+    session = FakeMcpSession(responses)
+    client._session = session  # type: ignore[assignment]
+    return client, session
+
+
+def _init_responses() -> list[FakeMcpResponse]:
+    return [
+        FakeMcpResponse(
+            headers={"content-type": "application/json", "Mcp-Session-Id": "S1"},
+            json_payload={"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+        ),
+        FakeMcpResponse(status_code=202, headers={"content-type": "application/json"}),
+    ]
+
+
+def test_initialize_declares_elicitation_capability() -> None:
+    client, session = _mcp_client_with_session(_init_responses())
+
+    client._ensure_initialized()
+
+    init_payload = session.posts[0]["json"]
+    assert init_payload["params"]["capabilities"] == {"elicitation": {"form": {}}}
+
+
+def test_call_tool_auto_accepts_confirmation_elicitation() -> None:
+    elicitation = {
+        "jsonrpc": "2.0",
+        "id": 77,
+        "method": "elicitation/create",
+        "params": {
+            "mode": "form",
+            "message": "Confirm registerDocument write",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {"confirm": {"type": "boolean", "title": "Confirm write"}},
+                "required": ["confirm"],
+            },
+        },
+    }
+    final = {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": {"documentId": "DOC1"}}}
+    sse_body = f"data: {json.dumps(elicitation)}\n\ndata: {json.dumps(final)}\n"
+    client, session = _mcp_client_with_session(
+        _init_responses()
+        + [
+            FakeMcpResponse(headers={"content-type": "text/event-stream"}, body=sse_body),
+            FakeMcpResponse(status_code=202, headers={"content-type": "application/json"}),
+        ]
+    )
+
+    payload = client.call_tool("registerDocument", {"siteId": "SITE1"})
+
+    assert payload == {"documentId": "DOC1"}
+    answer = session.posts[3]["json"]
+    assert answer == {
+        "jsonrpc": "2.0",
+        "id": 77,
+        "result": {"action": "accept", "content": {"confirm": True}},
+    }
+
+
+def test_call_tool_declines_elicitation_requiring_real_input() -> None:
+    elicitation = {
+        "jsonrpc": "2.0",
+        "id": 78,
+        "method": "elicitation/create",
+        "params": {
+            "mode": "form",
+            "message": "Provide a justification",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {"justification": {"type": "string"}},
+                "required": ["justification"],
+            },
+        },
+    }
+    final = {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": {"status": "rejected"}}}
+    sse_body = f"data: {json.dumps(elicitation)}\n\ndata: {json.dumps(final)}\n"
+    client, session = _mcp_client_with_session(
+        _init_responses()
+        + [
+            FakeMcpResponse(headers={"content-type": "text/event-stream"}, body=sse_body),
+            FakeMcpResponse(status_code=202, headers={"content-type": "application/json"}),
+        ]
+    )
+
+    payload = client.call_tool("registerDocument", {"siteId": "SITE1"})
+
+    assert payload == {"status": "rejected"}
+    answer = session.posts[3]["json"]
+    assert answer["result"] == {"action": "decline"}
+
+
+def test_unknown_server_request_is_refused_with_method_not_found() -> None:
+    server_request = {"jsonrpc": "2.0", "id": 79, "method": "sampling/createMessage", "params": {}}
+    final = {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": {"ok": True}}}
+    sse_body = f"data: {json.dumps(server_request)}\n\ndata: {json.dumps(final)}\n"
+    client, session = _mcp_client_with_session(
+        _init_responses()
+        + [
+            FakeMcpResponse(headers={"content-type": "text/event-stream"}, body=sse_body),
+            FakeMcpResponse(status_code=202, headers={"content-type": "application/json"}),
+        ]
+    )
+
+    payload = client.call_tool("getSite", {"siteId": "SITE1"})
+
+    assert payload == {"ok": True}
+    answer = session.posts[3]["json"]
+    assert answer["error"]["code"] == -32601
