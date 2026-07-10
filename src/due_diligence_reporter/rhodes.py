@@ -141,6 +141,53 @@ def _parse_json_rpc_response(resp: requests.Response) -> dict[str, Any]:
     return data
 
 
+_CONFIRMATION_TOKEN_RE = re.compile(
+    r"\b(confirm|confirmed|approve|approved|accept|accepted|acknowledge|acknowledged"
+    r"|authorize|authorized|proceed|allow|yes)\b"
+)
+
+
+def _build_safe_confirmation_result(params: Any) -> dict[str, Any]:
+    """Accept form-mode boolean confirmation elicitations; decline the rest.
+
+    Mirrors document-router's root fix: booleans that read as confirmations
+    are answered true; an elicitation asking for any other required input is
+    declined (it is a real form, not a write confirmation).
+    """
+    if not isinstance(params, dict):
+        return {"action": "decline"}
+    mode = params.get("mode")
+    if mode and mode != "form":
+        return {"action": "decline"}
+    schema = params.get("requestedSchema")
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return {"action": "decline"}
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return {"action": "decline"}
+    required = {item for item in (schema.get("required") or []) if isinstance(item, str)}
+    message = params.get("message")
+    content: dict[str, bool] = {}
+    for field, definition in properties.items():
+        if (
+            isinstance(definition, dict)
+            and definition.get("type") == "boolean"
+            and _is_confirmation_field(field, definition, message)
+        ):
+            content[field] = True
+        elif field in required:
+            return {"action": "decline"}
+    if any(field not in content for field in required):
+        return {"action": "decline"}
+    return {"action": "accept", "content": content}
+
+
+def _is_confirmation_field(field: str, definition: dict[str, Any], message: Any) -> bool:
+    parts = [field, definition.get("title"), definition.get("description"), message]
+    haystack = " ".join(item for item in parts if isinstance(item, str)).lower()
+    return bool(_CONFIRMATION_TOKEN_RE.search(haystack))
+
+
 def _raise_for_rhodes_error(resp: requests.Response) -> None:
     if resp.ok:
         return
@@ -689,21 +736,101 @@ class RhodesClient:
                 headers=_rhodes_headers(self.cfg.api_key, session_id=self._session_id),
                 json=payload,
                 timeout=RHODES_TIMEOUT_SECONDS,
+                stream=True,
             )
         except requests.RequestException as exc:
             raise RhodesError(f"Rhodes MCP request failed: {exc}") from exc
 
-        if not self._session_id:
-            self._session_id = (
-                resp.headers.get("Mcp-Session-Id")
-                or resp.headers.get("mcp-session-id")
-                or resp.headers.get("MCP-Session-Id")
-            )
+        with resp:
+            if not self._session_id:
+                self._session_id = (
+                    resp.headers.get("Mcp-Session-Id")
+                    or resp.headers.get("mcp-session-id")
+                    or resp.headers.get("MCP-Session-Id")
+                )
 
-        _raise_for_rhodes_error(resp)
-        if resp.status_code == 202 and not resp.text:
-            return {}
-        return _parse_json_rpc_response(resp)
+            _raise_for_rhodes_error(resp)
+            content_type = resp.headers.get("content-type", "")
+            if "text/event-stream" in content_type:
+                return self._read_sse_response(resp, expected_id=payload.get("id"))
+            if resp.status_code == 202 and not resp.text:
+                return {}
+            return _parse_json_rpc_response(resp)
+
+    def _read_sse_response(
+        self, resp: requests.Response, *, expected_id: Any
+    ) -> dict[str, Any]:
+        """Read a streamable-HTTP SSE response incrementally.
+
+        The stream can interleave server->client requests (elicitation
+        confirmations) with the final response to our own request; server
+        requests are answered inline so the call completes autonomously.
+        """
+        data_lines: list[str] = []
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            line = (raw_line or "").strip()
+            if line.startswith("data:"):
+                chunk = line.removeprefix("data:").strip()
+                if chunk and chunk != "[DONE]":
+                    data_lines.append(chunk)
+                continue
+            if line:
+                continue
+            reply = self._dispatch_stream_event(data_lines, expected_id=expected_id)
+            data_lines = []
+            if reply is not None:
+                return reply
+        reply = self._dispatch_stream_event(data_lines, expected_id=expected_id)
+        return reply if reply is not None else {}
+
+    def _dispatch_stream_event(
+        self, data_lines: list[str], *, expected_id: Any
+    ) -> dict[str, Any] | None:
+        if not data_lines:
+            return None
+        try:
+            message = json.loads("\n".join(data_lines))
+        except ValueError:
+            return None
+        if not isinstance(message, dict):
+            return None
+        if "method" in message:
+            if message.get("id") is not None:
+                self._answer_server_request(message)
+            return None
+        if expected_id is None or message.get("id") == expected_id:
+            return message
+        return None
+
+    def _answer_server_request(self, request: dict[str, Any]) -> None:
+        """Answer a server->client request arriving on a call stream.
+
+        Rhodes sends elicitation/create to confirm mutations. Every call this
+        client makes is DDR-initiated (it never relays third-party requests),
+        so confirmations are auto-accepted; anything else is refused loudly.
+        """
+        if request.get("method") == "elicitation/create":
+            response: dict[str, Any] = {
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "result": _build_safe_confirmation_result(request.get("params")),
+            }
+        else:
+            response = {
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "error": {"code": -32601, "message": "Method not found"},
+            }
+        try:
+            reply = self._session.post(
+                self.cfg.mcp_url,
+                headers=_rhodes_headers(self.cfg.api_key, session_id=self._session_id),
+                json=response,
+                timeout=RHODES_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise RhodesError(f"Rhodes MCP elicitation response failed: {exc}") from exc
+        _raise_for_rhodes_error(reply)
 
     def _ensure_initialized(self) -> None:
         if self._initialized:
@@ -714,7 +841,11 @@ class RhodesClient:
                 "method": "initialize",
                 "params": {
                     "protocolVersion": MCP_PROTOCOL_VERSION,
-                    "capabilities": {},
+                    # Elicitation declared so Rhodes confirmation-gates DDR's
+                    # own writes to this client instead of rejecting them
+                    # with elicitation_unsupported (fleet policy: a worker
+                    # auto-accepts mutations it itself initiated).
+                    "capabilities": {"elicitation": {"form": {}}},
                     "clientInfo": {
                         "name": "due-diligence-reporter",
                         "version": "0.2.0",
