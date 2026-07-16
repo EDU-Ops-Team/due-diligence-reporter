@@ -432,11 +432,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def route_tool_call(tool_name: str, tool_input: dict[str, Any]) -> Any:
-    """Route a Claude API tool call to the corresponding Python function."""
+def routed_tool_map() -> dict[str, Any]:
+    """Name → server function map for agent tool routing (shared with tests)."""
     from . import server as srv
 
-    tool_map = {
+    return {
         "list_drive_documents": srv.list_drive_documents,
         "read_drive_document": srv.read_drive_document,
         "lookup_rhodes_site_owner": srv.lookup_rhodes_site_owner,
@@ -453,7 +453,10 @@ async def route_tool_call(tool_name: str, tool_input: dict[str, Any]) -> Any:
         "send_dd_report_email": srv.send_dd_report_email,
     }
 
-    fn = tool_map.get(tool_name)
+
+async def route_tool_call(tool_name: str, tool_input: dict[str, Any]) -> Any:
+    """Route a Claude API tool call to the corresponding Python function."""
+    fn = routed_tool_map().get(tool_name)
     if fn is None:
         return {"status": "error", "message": f"Unknown tool: {tool_name}"}
 
@@ -525,7 +528,6 @@ def _canonicalize_site_tool_input(
         "apply_school_approval_skill",
         "apply_opening_plan_skill",
         "apply_alpha_capacity_analysis_skill",
-        "apply_outdoor_play_space_skill",
         "apply_alpha_phasing_plan_skill",
         "prepare_due_diligence_data",
         "create_dd_report",
@@ -533,8 +535,16 @@ def _canonicalize_site_tool_input(
         canonical["site_address"] = site_address
         if tool_name == "apply_school_approval_skill" and not str(canonical.get("address") or "").strip():
             canonical["address"] = site_address
-        if tool_name == "apply_outdoor_play_space_skill" and not str(canonical.get("address") or "").strip():
-            canonical["address"] = site_address
+
+    if tool_name == "apply_outdoor_play_space_skill":
+        # The play-space server tool only accepts ``address``; a site_address
+        # kwarg (from canonicalization or the agent) makes every routed call
+        # raise TypeError and silently degrades the play-area lane.
+        agent_site_address = str(canonical.pop("site_address", "") or "").strip()
+        if not str(canonical.get("address") or "").strip():
+            resolved_address = str(site_address or "").strip() or agent_site_address
+            if resolved_address:
+                canonical["address"] = resolved_address
 
     return canonical
 
