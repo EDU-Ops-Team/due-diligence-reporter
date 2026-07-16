@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
+
+ARCHIVED_SKILLS_DIRNAME = "archived-skills"
 
 
 @dataclass(frozen=True)
@@ -15,6 +20,7 @@ class OpsSkillFile:
 
     source: str
     text: str
+    archived: bool = False
 
 
 class OpsSkillLoadError(RuntimeError):
@@ -26,13 +32,25 @@ def load_ops_skill_file(skill_id: str, relative_path: str = "SKILL.md") -> OpsSk
 
     Git checkouts are read from origin/main when possible so a local stale or
     dirty worktree does not silently downgrade the runtime skill contract.
+
+    Skills retired from skills/ into archived-skills/ still load (Ops-Skills
+    archives superseded skills instead of deleting them), but with a warning:
+    an archived skill has a replacement the caller should migrate to.
     """
 
     for candidate in _skill_file_candidates(skill_id, relative_path):
         loaded = _read_skill_candidate(candidate)
         if loaded is not None:
             source, text = loaded
-            return OpsSkillFile(source=source, text=text)
+            archived = ARCHIVED_SKILLS_DIRNAME in candidate.parts
+            if archived:
+                logger.warning(
+                    "Loaded Ops-Skills %s from %s: the skill is archived "
+                    "(superseded); migrate this caller to its replacement skill.",
+                    skill_id,
+                    source,
+                )
+            return OpsSkillFile(source=source, text=text, archived=archived)
 
     raise OpsSkillLoadError(
         f"Could not load Ops-Skills {skill_id}/{relative_path}. Set "
@@ -54,7 +72,7 @@ def _skill_file_candidates(skill_id: str, relative_path: str) -> list[Path]:
     candidates.extend(_expand_skill_path(workspace_root / "Ops-Skills", skill_id, relative_path))
     candidates.extend(_expand_skill_path(workspace_root / "ops-skills", skill_id, relative_path))
 
-    candidates.append(
+    plugin_cache_root = (
         Path.home()
         / ".codex"
         / "plugins"
@@ -62,9 +80,10 @@ def _skill_file_candidates(skill_id: str, relative_path: str) -> list[Path]:
         / "ops-skills"
         / "ops-skills"
         / "0.1.0"
-        / "skills"
-        / skill_id
-        / relative_path
+    )
+    candidates.append(plugin_cache_root / "skills" / skill_id / relative_path)
+    candidates.append(
+        plugin_cache_root / ARCHIVED_SKILLS_DIRNAME / skill_id / relative_path
     )
 
     return _dedupe_paths(candidates)
@@ -76,10 +95,14 @@ def _expand_skill_path(path: Path, skill_id: str, relative_path: str) -> list[Pa
     if path.name == skill_id:
         return [path / relative_path]
     if path.name == "skills":
-        return [path / skill_id / relative_path]
+        return [
+            path / skill_id / relative_path,
+            path.parent / ARCHIVED_SKILLS_DIRNAME / skill_id / relative_path,
+        ]
     return [
         path / "skills" / skill_id / relative_path,
         path / skill_id / relative_path,
+        path / ARCHIVED_SKILLS_DIRNAME / skill_id / relative_path,
     ]
 
 
