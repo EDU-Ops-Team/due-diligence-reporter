@@ -262,6 +262,34 @@ def test_canonicalize_site_tool_input_aliases_agent_site_address_for_outdoor_pla
     assert "site_address" not in canonical
 
 
+def test_canonicalize_site_tool_input_keeps_agent_address_for_outdoor_play_space() -> None:
+    canonical = _canonicalize_site_tool_input(
+        "apply_outdoor_play_space_skill",
+        {"student_count": 40, "address": "1 Agent Way, Franklin, TN"},
+        site_title="Alpha Franklin",
+        drive_folder_url=None,
+        site_address="210 Gothic Ct, Franklin, TN",
+        site_id=None,
+    )
+
+    assert canonical["address"] == "1 Agent Way, Franklin, TN"
+    assert "site_address" not in canonical
+
+
+def test_canonicalize_site_tool_input_ignores_blank_addresses_for_outdoor_play_space() -> None:
+    canonical = _canonicalize_site_tool_input(
+        "apply_outdoor_play_space_skill",
+        {"student_count": 40, "address": "   ", "site_address": "  "},
+        site_title="Alpha Franklin",
+        drive_folder_url=None,
+        site_address="  ",
+        site_id=None,
+    )
+
+    assert canonical["address"] == "   "
+    assert "site_address" not in canonical
+
+
 def test_canonicalized_tool_inputs_match_routed_tool_signatures() -> None:
     """Every kwarg the canonicalizer injects must be accepted by the routed tool.
 
