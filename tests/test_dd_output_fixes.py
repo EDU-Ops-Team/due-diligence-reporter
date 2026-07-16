@@ -1625,3 +1625,242 @@ class TestAsyncOffloading:
         gc.update_file_app_properties.assert_called_once()
 
 
+
+
+class TestAutomationRevisionMarking:
+    """Automation-ownership markers must fit Drive's appProperties limits."""
+
+    def test_mark_stores_sha256_fingerprint_within_drive_limit(self) -> None:
+        from due_diligence_reporter.server import (
+            DDR_AUTOMATION_REVISION_ID_KEY,
+            _dd_report_revision_fingerprint,
+            _mark_dd_report_automation_write,
+        )
+
+        gc = MagicMock()
+        long_revision = "ALm37BV" + "x" * 300
+        gc.get_document.return_value = {"body": {}, "revisionId": long_revision}
+        gc.update_file_app_properties.return_value = {
+            "id": "doc1",
+            "appProperties": {},
+        }
+
+        result = _mark_dd_report_automation_write(gc, doc_id="doc1", role="active")
+
+        properties = gc.update_file_app_properties.call_args.args[1]
+        stored = properties[DDR_AUTOMATION_REVISION_ID_KEY]
+        assert stored == _dd_report_revision_fingerprint(long_revision)
+        key_value_bytes = len(DDR_AUTOMATION_REVISION_ID_KEY.encode("utf-8")) + len(
+            stored.encode("utf-8")
+        )
+        assert key_value_bytes <= 124
+        assert result["automation_marking"] == "marked"
+
+    def test_mark_failure_is_explicit_not_silent(self) -> None:
+        from due_diligence_reporter.server import _mark_dd_report_automation_write
+
+        gc = MagicMock()
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-1"}
+        gc.update_file_app_properties.side_effect = RuntimeError(
+            "propertyLengthLimitExceeded"
+        )
+
+        result = _mark_dd_report_automation_write(gc, doc_id="doc1", role="candidate")
+
+        assert result["automation_marking"] == "failed"
+        assert "propertyLengthLimitExceeded" in result["automation_marking_error"]
+        assert "overwrite" in result["automation_marking_impact"]
+
+    def test_overwrite_guard_accepts_fingerprint_marker(self) -> None:
+        from due_diligence_reporter.server import (
+            _dd_report_overwrite_guard,
+            _dd_report_revision_fingerprint,
+        )
+
+        gc = MagicMock()
+        gc.get_file_metadata.return_value = {
+            "id": "doc1",
+            "modifiedTime": "2026-07-16T10:00:00+00:00",
+            "webViewLink": "https://docs.google.com/document/d/doc1",
+            "appProperties": {
+                "ddrAutomationRevisionId": _dd_report_revision_fingerprint("rev-live"),
+            },
+        }
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-live"}
+
+        guard = _dd_report_overwrite_guard(gc, existing_doc={"id": "doc1"})
+
+        assert guard["status"] == "safe"
+        assert guard["reason"] == "automation_owned"
+
+    def test_overwrite_guard_accepts_legacy_raw_marker(self) -> None:
+        from due_diligence_reporter.server import _dd_report_overwrite_guard
+
+        gc = MagicMock()
+        gc.get_file_metadata.return_value = {
+            "id": "doc1",
+            "modifiedTime": "2026-07-16T10:00:00+00:00",
+            "webViewLink": "https://docs.google.com/document/d/doc1",
+            "appProperties": {"ddrAutomationRevisionId": "rev-live"},
+        }
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-live"}
+
+        guard = _dd_report_overwrite_guard(gc, existing_doc={"id": "doc1"})
+
+        assert guard["status"] == "safe"
+
+    def test_overwrite_guard_still_blocks_on_changed_revision(self) -> None:
+        from due_diligence_reporter.server import (
+            _dd_report_overwrite_guard,
+            _dd_report_revision_fingerprint,
+        )
+
+        gc = MagicMock()
+        gc.get_file_metadata.return_value = {
+            "id": "doc1",
+            "modifiedTime": "2026-07-16T10:00:00+00:00",
+            "webViewLink": "https://docs.google.com/document/d/doc1",
+            "appProperties": {
+                "ddrAutomationRevisionId": _dd_report_revision_fingerprint("rev-old"),
+            },
+        }
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-new"}
+
+        guard = _dd_report_overwrite_guard(gc, existing_doc={"id": "doc1"})
+
+        assert guard["status"] == "blocked"
+        assert guard["reason"] == "content_revision_changed"
+
+    def test_candidate_guard_reports_final_marking_failure(self) -> None:
+        from due_diligence_reporter.server import create_dd_report
+
+        gc = MagicMock()
+        gc.list_subfolders.return_value = [{
+            "id": "m1-folder",
+            "name": "M1 - Acquire Property",
+            "webViewLink": "https://drive.google.com/drive/folders/m1-folder",
+        }]
+        gc.list_files_in_folder.return_value = [{
+            "id": "doc-existing",
+            "name": "Alpha DD Report - 04/02/2026",
+            "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            "modifiedTime": "2026-04-03T10:00:00+00:00",
+        }]
+        gc.get_file_metadata.return_value = {
+            "id": "doc-existing",
+            "name": "Alpha DD Report - 04/02/2026",
+            "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            "modifiedTime": "2026-04-03T10:00:00+00:00",
+            "appProperties": {},
+        }
+        gc.create_document.return_value = {
+            "id": "doc-candidate",
+            "webViewLink": "https://docs.google.com/document/d/doc-candidate",
+        }
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-candidate"}
+        gc.update_file_app_properties.side_effect = [
+            {"id": "doc-candidate", "appProperties": {}},
+            RuntimeError("propertyLengthLimitExceeded"),
+        ]
+        gc.docs_service = MagicMock()
+        gc.drive_service = MagicMock()
+
+        async def run_inline(func: Any, *args: Any, **kwargs: Any) -> Any:
+            return func(*args, **kwargs)
+
+        with patch(
+            "due_diligence_reporter.server.asyncio.to_thread",
+            new=AsyncMock(side_effect=run_inline),
+        ), patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ), patch(
+            "due_diligence_reporter.server._clear_document_body",
+        ), patch(
+            "due_diligence_reporter.server.datetime",
+        ) as mock_datetime, patch(
+            "due_diligence_reporter.server._normalize_report_replacements",
+            return_value=({}, [], [], {}, MagicMock()),
+        ), patch(
+            "due_diligence_reporter.server.build_dd_report_doc",
+            return_value={"applied": 0, "found_tokens": [], "not_found_tokens": []},
+        ):
+            mock_datetime.now.return_value = datetime(2026, 4, 2, 10, 10, tzinfo=UTC)
+            result = asyncio.run(create_dd_report(
+                site_name="Alpha",
+                drive_folder_url="https://drive.google.com/drive/folders/folder123",
+                report_data={},
+            ))
+
+        assert result["status"] == "success"
+        assert result["document"]["role"] == "candidate"
+        guard = result["republish_guard"]
+        assert guard["candidate_automation_marking"] == "failed"
+        assert "propertyLengthLimitExceeded" in guard["candidate_automation_marking_error"]
+        assert result["automation_metadata"]["automation_marking"] == "failed"
+
+    def test_candidate_guard_reports_final_marking_success(self) -> None:
+        from due_diligence_reporter.server import create_dd_report
+
+        gc = MagicMock()
+        gc.list_subfolders.return_value = [{
+            "id": "m1-folder",
+            "name": "M1 - Acquire Property",
+            "webViewLink": "https://drive.google.com/drive/folders/m1-folder",
+        }]
+        gc.list_files_in_folder.return_value = [{
+            "id": "doc-existing",
+            "name": "Alpha DD Report - 04/02/2026",
+            "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            "modifiedTime": "2026-04-03T10:00:00+00:00",
+        }]
+        gc.get_file_metadata.return_value = {
+            "id": "doc-existing",
+            "name": "Alpha DD Report - 04/02/2026",
+            "webViewLink": "https://docs.google.com/document/d/doc-existing",
+            "modifiedTime": "2026-04-03T10:00:00+00:00",
+            "appProperties": {},
+        }
+        gc.create_document.return_value = {
+            "id": "doc-candidate",
+            "webViewLink": "https://docs.google.com/document/d/doc-candidate",
+        }
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-candidate"}
+        gc.update_file_app_properties.side_effect = [
+            RuntimeError("transient"),
+            {"id": "doc-candidate", "appProperties": {}},
+        ]
+        gc.docs_service = MagicMock()
+        gc.drive_service = MagicMock()
+
+        async def run_inline(func: Any, *args: Any, **kwargs: Any) -> Any:
+            return func(*args, **kwargs)
+
+        with patch(
+            "due_diligence_reporter.server.asyncio.to_thread",
+            new=AsyncMock(side_effect=run_inline),
+        ), patch(
+            "due_diligence_reporter.server._make_google_client",
+            return_value=gc,
+        ), patch(
+            "due_diligence_reporter.server._clear_document_body",
+        ), patch(
+            "due_diligence_reporter.server.datetime",
+        ) as mock_datetime, patch(
+            "due_diligence_reporter.server._normalize_report_replacements",
+            return_value=({}, [], [], {}, MagicMock()),
+        ), patch(
+            "due_diligence_reporter.server.build_dd_report_doc",
+            return_value={"applied": 0, "found_tokens": [], "not_found_tokens": []},
+        ):
+            mock_datetime.now.return_value = datetime(2026, 4, 2, 10, 10, tzinfo=UTC)
+            result = asyncio.run(create_dd_report(
+                site_name="Alpha",
+                drive_folder_url="https://drive.google.com/drive/folders/folder123",
+                report_data={},
+            ))
+
+        assert result["status"] == "success"
+        guard = result["republish_guard"]
+        assert guard["candidate_automation_marking"] == "marked"
+        assert "candidate_automation_marking_error" not in guard
