@@ -1625,3 +1625,108 @@ class TestAsyncOffloading:
         gc.update_file_app_properties.assert_called_once()
 
 
+
+
+class TestAutomationRevisionMarking:
+    """Automation-ownership markers must fit Drive's appProperties limits."""
+
+    def test_mark_stores_sha256_fingerprint_within_drive_limit(self) -> None:
+        from due_diligence_reporter.server import (
+            DDR_AUTOMATION_REVISION_ID_KEY,
+            _dd_report_revision_fingerprint,
+            _mark_dd_report_automation_write,
+        )
+
+        gc = MagicMock()
+        long_revision = "ALm37BV" + "x" * 300
+        gc.get_document.return_value = {"body": {}, "revisionId": long_revision}
+        gc.update_file_app_properties.return_value = {
+            "id": "doc1",
+            "appProperties": {},
+        }
+
+        result = _mark_dd_report_automation_write(gc, doc_id="doc1", role="active")
+
+        properties = gc.update_file_app_properties.call_args.args[1]
+        stored = properties[DDR_AUTOMATION_REVISION_ID_KEY]
+        assert stored == _dd_report_revision_fingerprint(long_revision)
+        key_value_bytes = len(DDR_AUTOMATION_REVISION_ID_KEY.encode("utf-8")) + len(
+            stored.encode("utf-8")
+        )
+        assert key_value_bytes <= 124
+        assert result["automation_marking"] == "marked"
+
+    def test_mark_failure_is_explicit_not_silent(self) -> None:
+        from due_diligence_reporter.server import _mark_dd_report_automation_write
+
+        gc = MagicMock()
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-1"}
+        gc.update_file_app_properties.side_effect = RuntimeError(
+            "propertyLengthLimitExceeded"
+        )
+
+        result = _mark_dd_report_automation_write(gc, doc_id="doc1", role="candidate")
+
+        assert result["automation_marking"] == "failed"
+        assert "propertyLengthLimitExceeded" in result["automation_marking_error"]
+        assert "overwrite" in result["automation_marking_impact"]
+
+    def test_overwrite_guard_accepts_fingerprint_marker(self) -> None:
+        from due_diligence_reporter.server import (
+            _dd_report_overwrite_guard,
+            _dd_report_revision_fingerprint,
+        )
+
+        gc = MagicMock()
+        gc.get_file_metadata.return_value = {
+            "id": "doc1",
+            "modifiedTime": "2026-07-16T10:00:00+00:00",
+            "webViewLink": "https://docs.google.com/document/d/doc1",
+            "appProperties": {
+                "ddrAutomationRevisionId": _dd_report_revision_fingerprint("rev-live"),
+            },
+        }
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-live"}
+
+        guard = _dd_report_overwrite_guard(gc, existing_doc={"id": "doc1"})
+
+        assert guard["status"] == "safe"
+        assert guard["reason"] == "automation_owned"
+
+    def test_overwrite_guard_accepts_legacy_raw_marker(self) -> None:
+        from due_diligence_reporter.server import _dd_report_overwrite_guard
+
+        gc = MagicMock()
+        gc.get_file_metadata.return_value = {
+            "id": "doc1",
+            "modifiedTime": "2026-07-16T10:00:00+00:00",
+            "webViewLink": "https://docs.google.com/document/d/doc1",
+            "appProperties": {"ddrAutomationRevisionId": "rev-live"},
+        }
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-live"}
+
+        guard = _dd_report_overwrite_guard(gc, existing_doc={"id": "doc1"})
+
+        assert guard["status"] == "safe"
+
+    def test_overwrite_guard_still_blocks_on_changed_revision(self) -> None:
+        from due_diligence_reporter.server import (
+            _dd_report_overwrite_guard,
+            _dd_report_revision_fingerprint,
+        )
+
+        gc = MagicMock()
+        gc.get_file_metadata.return_value = {
+            "id": "doc1",
+            "modifiedTime": "2026-07-16T10:00:00+00:00",
+            "webViewLink": "https://docs.google.com/document/d/doc1",
+            "appProperties": {
+                "ddrAutomationRevisionId": _dd_report_revision_fingerprint("rev-old"),
+            },
+        }
+        gc.get_document.return_value = {"body": {}, "revisionId": "rev-new"}
+
+        guard = _dd_report_overwrite_guard(gc, existing_doc={"id": "doc1"})
+
+        assert guard["status"] == "blocked"
+        assert guard["reason"] == "content_revision_changed"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import logging
@@ -606,6 +607,34 @@ def _get_dd_report_revision_id(gc: GoogleClient, *, doc_id: str) -> str:
     return str(document.get("revisionId") or "").strip()
 
 
+def _dd_report_revision_fingerprint(revision_id: str) -> str:
+    """Fixed-width fingerprint of a Docs revisionId for Drive appProperties.
+
+    Raw revisionIds can exceed Drive's 124-byte key+value appProperties
+    limit, which 403s the whole metadata write, leaves candidates unmarked,
+    and forces a new candidate Doc on every force-regenerate.
+    """
+    clean = str(revision_id or "").strip()
+    if not clean:
+        return ""
+    return hashlib.sha256(clean.encode("utf-8")).hexdigest()
+
+
+def _dd_report_revision_matches_marker(revision_id: str, marker: str) -> bool:
+    """Whether a live revisionId matches the stored automation marker.
+
+    Markers written before the fingerprint change hold the raw revisionId,
+    so accept either the sha256 fingerprint or a legacy raw match.
+    """
+    clean_revision = str(revision_id or "").strip()
+    clean_marker = str(marker or "").strip()
+    if not clean_revision or not clean_marker:
+        return False
+    if clean_marker == _dd_report_revision_fingerprint(clean_revision):
+        return True
+    return clean_marker == clean_revision
+
+
 def _dd_report_overwrite_guard(
     gc: GoogleClient,
     *,
@@ -645,7 +674,7 @@ def _dd_report_overwrite_guard(
             "automation_revision_id": automation_revision_id,
             "current_revision_id": current_revision_id,
         }
-    if current_revision_id != automation_revision_id:
+    if not _dd_report_revision_matches_marker(current_revision_id, automation_revision_id):
         return {
             "status": "blocked",
             "reason": "content_revision_changed",
@@ -684,7 +713,11 @@ def _mark_dd_report_automation_write(
         DDR_AUTOMATION_DOC_ROLE_KEY: role,
     }
     if revision_id:
-        properties[DDR_AUTOMATION_REVISION_ID_KEY] = revision_id
+        # Store a fixed-width fingerprint: raw revisionIds can exceed Drive's
+        # 124-byte key+value appProperties limit and 403 the whole write.
+        properties[DDR_AUTOMATION_REVISION_ID_KEY] = _dd_report_revision_fingerprint(
+            revision_id
+        )
     if source_doc_id:
         properties[DDR_AUTOMATION_SOURCE_DOC_ID_KEY] = source_doc_id
     if guard_reason:
@@ -692,10 +725,20 @@ def _mark_dd_report_automation_write(
     if report_date:
         properties[DDR_CANDIDATE_REPORT_DATE_KEY] = report_date
     try:
-        return gc.update_file_app_properties(doc_id, properties)
+        marked = gc.update_file_app_properties(doc_id, properties)
     except Exception as exc:  # noqa: BLE001 - the report is still usable
         logger.warning("Could not mark DD report %s automation metadata: %s", doc_id, exc)
-        return {}
+        return {
+            "automation_marking": "failed",
+            "automation_marking_error": str(exc),
+            "automation_marking_impact": (
+                "Doc is not marked automation-owned; the next run's overwrite "
+                "guard will block in-place rebuild and create a new candidate."
+            ),
+        }
+    result = dict(marked) if isinstance(marked, dict) else {}
+    result["automation_marking"] = "marked"
+    return result
 
 
 def _candidate_dd_report_name(site_name: str, today_str: str) -> str:
@@ -4219,7 +4262,7 @@ async def create_dd_report(
                         doc_url = candidate_doc.get("webViewLink")
                         if not doc_id or not isinstance(doc_id, str):
                             raise RuntimeError("Invalid document ID returned from candidate create operation")
-                    _mark_dd_report_automation_write(
+                    candidate_marking = _mark_dd_report_automation_write(
                         gc,
                         doc_id=doc_id,
                         role=document_role,
@@ -4233,7 +4276,14 @@ async def create_dd_report(
                         "candidate_reused": candidate_reused,
                         "candidate_doc_id": doc_id,
                         "candidate_doc_url": str(doc_url or ""),
+                        "candidate_automation_marking": str(
+                            candidate_marking.get("automation_marking") or "failed"
+                        ),
                     }
+                    if candidate_marking.get("automation_marking_error"):
+                        republish_guard["candidate_automation_marking_error"] = str(
+                            candidate_marking["automation_marking_error"]
+                        )
                 else:
                     doc_id = existing_doc_id
                     doc_url = existing_doc.get("webViewLink")
