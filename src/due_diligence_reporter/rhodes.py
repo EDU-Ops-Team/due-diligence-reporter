@@ -1505,11 +1505,22 @@ def update_rhodes_due_diligence(
         fields=clean_fields,
     )
     if readback["status"] != "verified":
+        error = _due_diligence_readback_error(readback)
+        if readback.get("reason") == "field_mismatch":
+            # The write reported success with no approval artifact, yet the
+            # field never landed. Rhodes silently discards some writes (e.g.
+            # a due-diligence stage regression) with no error and no
+            # field-change queue entry.
+            error += (
+                ". The write returned success without a pending field-change "
+                "request, so Rhodes may have silently dropped it (stage "
+                "regressions are discarded without a queue entry)."
+            )
         return {
             **base,
             "status": "failed",
             "reason": "readback_failed",
-            "error": _due_diligence_readback_error(readback),
+            "error": error,
             "response": _summarize_due_diligence_response(response),
             "readback": readback,
         }
@@ -1794,16 +1805,57 @@ _DUE_DILIGENCE_PENDING_APPROVAL_STATUSES = frozenset(
 )
 
 
+def _due_diligence_response_layers(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Dicts to inspect for approval artifacts: the response and a nested result."""
+    layers = [response]
+    nested = response.get("result")
+    if isinstance(nested, dict):
+        layers.append(nested)
+    return layers
+
+
+def _due_diligence_field_change_request_id(response: dict[str, Any]) -> str:
+    """Extract the queued field-change request ID, if the write created one.
+
+    Rhodes updateDueDiligence writes to guarded fields now queue a pending
+    field-change request (outcome=pending_field_change with
+    fieldChangeRequest.requestId) for reviewer approval instead of applying
+    immediately.
+    """
+    for layer in _due_diligence_response_layers(response):
+        request = layer.get("fieldChangeRequest")
+        if isinstance(request, dict):
+            for key in ("requestId", "id", "_id"):
+                value = str(request.get(key) or "").strip()
+                if value:
+                    return value
+        value = str(layer.get("fieldChangeRequestId") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _due_diligence_response_outcome(response: dict[str, Any]) -> str:
+    for layer in _due_diligence_response_layers(response):
+        outcome = str(layer.get("outcome") or "").strip().casefold()
+        if outcome:
+            return outcome
+    return ""
+
+
 def _due_diligence_response_approval_queued(response: dict[str, Any]) -> bool:
     """True when the response proves the write entered the LocationOS approval queue.
 
     Requires an approval artifact identifier (pending mutation, approval
-    session, or review URL). A pending-approval status alone is not proof:
-    it can describe an interactive elicitation that never persisted a
-    pending change, so status-only responses stay on the manual handoff
-    path instead of being reported as submitted proposals.
+    session, review URL, or a queued field-change request ID). A
+    pending-approval status alone is not proof: it can describe an
+    interactive elicitation that never persisted a pending change, so
+    status-only responses stay on the manual handoff path instead of being
+    reported as submitted proposals.
     """
 
+    if _due_diligence_field_change_request_id(response):
+        return True
     return any(
         str(response.get(key) or "").strip()
         for key in ("pendingMutationId", "approvalSessionId", "reviewUrl")
@@ -1815,6 +1867,11 @@ def _due_diligence_response_needs_handoff(response: dict[str, Any]) -> bool:
     if status in _DUE_DILIGENCE_PENDING_APPROVAL_STATUSES:
         return True
     if _due_diligence_response_approval_queued(response):
+        return True
+    if _due_diligence_response_outcome(response) == "pending_field_change":
+        # The write says it queued a field-change request but returned no
+        # request ID we can track; route to manual follow-up rather than
+        # claiming a submitted proposal.
         return True
     error = _due_diligence_response_error(response)
     return bool(error and _due_diligence_update_error_is_handoff_eligible(error))
@@ -1979,6 +2036,7 @@ def _due_diligence_proposal_result(
         "pending_mutation_id": str(response.get("pendingMutationId") or "").strip(),
         "approval_session_id": str(response.get("approvalSessionId") or "").strip(),
         "review_url": str(response.get("reviewUrl") or "").strip(),
+        "field_change_request_id": _due_diligence_field_change_request_id(response),
     }
     result = {
         **base,
@@ -2105,6 +2163,7 @@ def _summarize_due_diligence_response(response: dict[str, Any]) -> dict[str, Any
         "id",
         "_id",
         "siteId",
+        "outcome",
         "pendingMutationId",
         "approvalSessionId",
         "reviewUrl",
@@ -2113,6 +2172,9 @@ def _summarize_due_diligence_response(response: dict[str, Any]) -> dict[str, Any
         value = response.get(key)
         if isinstance(value, str | bool | int | float) or value is None:
             summary[key] = value
+    field_change_request_id = _due_diligence_field_change_request_id(response)
+    if field_change_request_id:
+        summary["fieldChangeRequestId"] = field_change_request_id
     return summary
 
 

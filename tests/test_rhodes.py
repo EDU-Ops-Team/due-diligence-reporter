@@ -1204,6 +1204,7 @@ def test_update_rhodes_due_diligence_handoffs_browser_approval_response() -> Non
         "pending_mutation_id": "MUT1",
         "approval_session_id": "APPROVAL1",
         "review_url": "https://locationos.example/review",
+        "field_change_request_id": "",
     }
     assert result["response"]["status"] == "awaiting_browser_approval"
     assert result["response"]["pendingMutationId"] == "MUT1"
@@ -1220,6 +1221,116 @@ def test_update_rhodes_due_diligence_handoffs_browser_approval_response() -> Non
     ]
     assert client.notes[0]["body"] == expected_body
     assert client.notes[0]["mentions"] == ["OWNER1"]
+
+
+def test_update_rhodes_due_diligence_reports_pending_field_change_as_proposal() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Franklin",
+            "slug": "alpha-franklin",
+            "address": "210 Gothic Ct, Franklin, TN 37064",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={
+            "outcome": "pending_field_change",
+            "fieldChangeRequest": {"requestId": "tx7njp2yryw2tfhmpb3nr1w2kx8ajjcx"},
+        },
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"ddReportLink": "https://docs.google.com/document/d/doc1"},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "proposal_submitted"
+    assert result["reason"] == "approval_queue"
+    assert (
+        result["approval"]["field_change_request_id"]
+        == "tx7njp2yryw2tfhmpb3nr1w2kx8ajjcx"
+    )
+    assert (
+        result["response"]["fieldChangeRequestId"]
+        == "tx7njp2yryw2tfhmpb3nr1w2kx8ajjcx"
+    )
+    assert result["response"]["outcome"] == "pending_field_change"
+    assert "readback" not in result
+    assert "error" not in result
+
+
+def test_update_rhodes_due_diligence_reports_nested_field_change_as_proposal() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Franklin",
+            "slug": "alpha-franklin",
+            "address": "210 Gothic Ct, Franklin, TN 37064",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={
+            "result": {
+                "outcome": "pending_field_change",
+                "fieldChangeRequest": {"requestId": "REQ1"},
+            },
+        },
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"foCapacity": 36},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "proposal_submitted"
+    assert result["approval"]["field_change_request_id"] == "REQ1"
+
+
+def test_update_rhodes_due_diligence_pending_field_change_without_id_hands_off() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Franklin",
+            "slug": "alpha-franklin",
+            "address": "210 Gothic Ct, Franklin, TN 37064",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={"outcome": "pending_field_change"},
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"foCapacity": 36},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] != "proposal_submitted"
+    assert result["human_followup_required"] is True
+
+
+def test_update_rhodes_due_diligence_flags_possible_silent_drop_on_mismatch() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Franklin",
+            "slug": "alpha-franklin",
+            "address": "210 Gothic Ct, Franklin, TN 37064",
+            "dueDiligence": {"status": "follow-up"},
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={"status": "ok"},
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"status": "data-gathering"},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "readback_failed"
+    assert "silently dropped" in result["error"]
+    assert result["readback"]["reason"] == "field_mismatch"
 
 
 def test_update_rhodes_due_diligence_handoff_note_includes_field_sources() -> None:
@@ -1457,7 +1568,8 @@ def test_update_rhodes_due_diligence_fails_when_readback_mismatches() -> None:
 
     assert result["status"] == "failed"
     assert result["reason"] == "readback_failed"
-    assert result["error"] == "LocationOS readback mismatch for status"
+    assert result["error"].startswith("LocationOS readback mismatch for status")
+    assert "silently dropped" in result["error"]
     assert result["readback"]["mismatches"] == [
         {
             "field": "status",
