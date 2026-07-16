@@ -231,6 +231,95 @@ def test_canonicalize_site_tool_input_adds_context_for_opening_plan() -> None:
     assert canonical["site_id"] == "SITE1"
 
 
+def test_canonicalize_site_tool_input_uses_address_for_outdoor_play_space() -> None:
+    canonical = _canonicalize_site_tool_input(
+        "apply_outdoor_play_space_skill",
+        {"student_count": 40, "site_address": "wrong"},
+        site_title="Alpha Tulsa",
+        drive_folder_url="https://drive.google.com/drive/folders/site123",
+        site_address="421 E 11th St, Tulsa, OK 74120",
+        site_id="SITE1",
+    )
+
+    assert canonical["site_name"] == "Alpha Tulsa"
+    assert canonical["drive_folder_url"] == "https://drive.google.com/drive/folders/site123"
+    assert canonical["site_id"] == "SITE1"
+    assert canonical["address"] == "421 E 11th St, Tulsa, OK 74120"
+    assert "site_address" not in canonical
+
+
+def test_canonicalize_site_tool_input_aliases_agent_site_address_for_outdoor_play_space() -> None:
+    canonical = _canonicalize_site_tool_input(
+        "apply_outdoor_play_space_skill",
+        {"student_count": 40, "site_address": "210 Gothic Ct, Franklin, TN"},
+        site_title="Alpha Franklin",
+        drive_folder_url=None,
+        site_address=None,
+        site_id=None,
+    )
+
+    assert canonical["address"] == "210 Gothic Ct, Franklin, TN"
+    assert "site_address" not in canonical
+
+
+def test_canonicalize_site_tool_input_keeps_agent_address_for_outdoor_play_space() -> None:
+    canonical = _canonicalize_site_tool_input(
+        "apply_outdoor_play_space_skill",
+        {"student_count": 40, "address": "1 Agent Way, Franklin, TN"},
+        site_title="Alpha Franklin",
+        drive_folder_url=None,
+        site_address="210 Gothic Ct, Franklin, TN",
+        site_id=None,
+    )
+
+    assert canonical["address"] == "1 Agent Way, Franklin, TN"
+    assert "site_address" not in canonical
+
+
+def test_canonicalize_site_tool_input_ignores_blank_addresses_for_outdoor_play_space() -> None:
+    canonical = _canonicalize_site_tool_input(
+        "apply_outdoor_play_space_skill",
+        {"student_count": 40, "address": "   ", "site_address": "  "},
+        site_title="Alpha Franklin",
+        drive_folder_url=None,
+        site_address="  ",
+        site_id=None,
+    )
+
+    assert canonical["address"] == "   "
+    assert "site_address" not in canonical
+
+
+def test_canonicalized_tool_inputs_match_routed_tool_signatures() -> None:
+    """Every kwarg the canonicalizer injects must be accepted by the routed tool.
+
+    Guards the class of bug where canonicalization adds a kwarg a server
+    function does not accept, so the routed call raises TypeError and the
+    lane silently degrades (e.g. site_address vs address on the play-space
+    tool).
+    """
+    import inspect
+
+    from due_diligence_reporter.report_pipeline import routed_tool_map
+
+    for tool_name, fn in routed_tool_map().items():
+        canonical = _canonicalize_site_tool_input(
+            tool_name,
+            {},
+            site_title="Alpha Tulsa",
+            drive_folder_url="https://drive.google.com/drive/folders/site123",
+            site_address="421 E 11th St, Tulsa, OK 74120",
+            site_id="SITE1",
+        )
+        params = inspect.signature(fn).parameters
+        if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            continue
+        unexpected = set(canonical) - set(params)
+        assert not unexpected, (
+            f"{tool_name} would reject canonicalized kwargs {sorted(unexpected)}"
+        )
+
+
 def test_canonicalize_site_tool_input_does_not_add_site_id_to_create_report() -> None:
     canonical = _canonicalize_site_tool_input(
         "create_dd_report",
