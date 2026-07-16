@@ -1864,15 +1864,20 @@ def _due_diligence_response_approval_queued(response: dict[str, Any]) -> bool:
     reported as submitted proposals.
     """
 
+    # Approval artifacts can be echoed back on terminal outcomes too (e.g.
+    # a rejected write returning its field-change record or review URL).
+    # Count an artifact as queued-proposal proof only when no layer of the
+    # response carries an error and the outcome is absent or pending.
+    outcome = _due_diligence_response_outcome(response)
+    if outcome not in {"", "pending_field_change"}:
+        return False
+    if any(
+        _due_diligence_response_error(layer)
+        for layer in _due_diligence_response_layers(response)
+    ):
+        return False
     if _due_diligence_field_change_request_id(response):
-        # A field-change request record can be echoed back on terminal
-        # outcomes too (e.g. rejected). Count it as queued-proposal proof
-        # only when the response carries no error and no terminal outcome.
-        outcome = _due_diligence_response_outcome(response)
-        if outcome in {"", "pending_field_change"} and not _due_diligence_response_error(
-            response
-        ):
-            return True
+        return True
     return any(
         str(response.get(key) or "").strip()
         for key in ("pendingMutationId", "approvalSessionId", "reviewUrl")

@@ -1340,6 +1340,58 @@ def test_update_rhodes_due_diligence_rejected_with_echoed_request_is_not_proposa
     assert "Validation failed" in result["error"]
 
 
+def test_update_rhodes_due_diligence_rejected_with_review_url_is_not_proposal() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Franklin",
+            "slug": "alpha-franklin",
+            "address": "210 Gothic Ct, Franklin, TN 37064",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={
+            "status": "rejected",
+            "rejectionReason": "Validation failed",
+            "reviewUrl": "https://locationos.example/review",
+        },
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"foCapacity": 36},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "write_rejected"
+
+
+def test_update_rhodes_due_diligence_nested_error_with_echoed_request_is_not_proposal() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Franklin",
+            "slug": "alpha-franklin",
+            "address": "210 Gothic Ct, Franklin, TN 37064",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={
+            "result": {
+                "error": "field change request could not be persisted",
+                "fieldChangeRequest": {"requestId": "REQ1"},
+            },
+        },
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"foCapacity": 36},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] != "proposal_submitted"
+
+
 def test_update_rhodes_due_diligence_accepts_flat_field_change_request_id() -> None:
     client = FakeRhodesClient(
         site={
