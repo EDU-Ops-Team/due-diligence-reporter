@@ -1257,6 +1257,11 @@ def test_update_rhodes_due_diligence_reports_pending_field_change_as_proposal() 
     assert result["response"]["outcome"] == "pending_field_change"
     assert "readback" not in result
     assert "error" not in result
+    handoff = result["due_diligence_update_handoff"]
+    assert (
+        "Field-change request ID: tx7njp2yryw2tfhmpb3nr1w2kx8ajjcx"
+        in handoff["note_body"]
+    )
 
 
 def test_update_rhodes_due_diligence_reports_nested_field_change_as_proposal() -> None:
@@ -1306,6 +1311,58 @@ def test_update_rhodes_due_diligence_pending_field_change_without_id_hands_off()
 
     assert result["status"] != "proposal_submitted"
     assert result["human_followup_required"] is True
+
+
+def test_update_rhodes_due_diligence_rejected_with_echoed_request_is_not_proposal() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Franklin",
+            "slug": "alpha-franklin",
+            "address": "210 Gothic Ct, Franklin, TN 37064",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={
+            "status": "rejected",
+            "rejectionReason": "Validation failed",
+            "fieldChangeRequest": {"requestId": "REQ1", "status": "rejected"},
+        },
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"foCapacity": 36},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "write_rejected"
+    assert "Validation failed" in result["error"]
+
+
+def test_update_rhodes_due_diligence_accepts_flat_field_change_request_id() -> None:
+    client = FakeRhodesClient(
+        site={
+            "_id": "SITE1",
+            "name": "Alpha Franklin",
+            "slug": "alpha-franklin",
+            "address": "210 Gothic Ct, Franklin, TN 37064",
+            "p1Dri": {"email": "owner@example.com", "userId": "OWNER1"},
+        },
+        due_diligence_response={
+            "outcome": "pending_field_change",
+            "fieldChangeRequestId": "REQFLAT",
+        },
+    )
+
+    result = update_rhodes_due_diligence(
+        site_id="SITE1",
+        fields={"foCapacity": 36},
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert result["status"] == "proposal_submitted"
+    assert result["approval"]["field_change_request_id"] == "REQFLAT"
 
 
 def test_update_rhodes_due_diligence_flags_possible_silent_drop_on_mismatch() -> None:

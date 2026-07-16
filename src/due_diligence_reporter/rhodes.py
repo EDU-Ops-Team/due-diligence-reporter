@@ -1444,6 +1444,7 @@ def update_rhodes_due_diligence(
             field_sources=field_sources,
             proposal=True,
             review_url=str(response.get("reviewUrl") or "").strip(),
+            field_change_request_id=_due_diligence_field_change_request_id(response),
         )
         proposal_result = _due_diligence_proposal_result(
             base=base,
@@ -1560,6 +1561,9 @@ def _record_dd_write_digest_event(
                 fields=fields,
                 field_sources=dict(field_sources or {}),
                 review_url=str(_dict_get(result.get("approval"), "review_url") or ""),
+                field_change_request_id=str(
+                    _dict_get(result.get("approval"), "field_change_request_id") or ""
+                ),
             )
         )
     except Exception:  # noqa: BLE001 - digest logging must never fail the write
@@ -1765,6 +1769,7 @@ def _build_due_diligence_proposal_note_body(
     fields: dict[str, Any],
     field_sources: Mapping[str, str] | None = None,
     review_url: str = "",
+    field_change_request_id: str = "",
 ) -> str:
     lines = [
         f"Site Name: {site_name.strip()}",
@@ -1785,6 +1790,11 @@ def _build_due_diligence_proposal_note_body(
             lines.append(f"{key}: {source or WORKFLOW_FIELD_SOURCE_LABEL}")
     if review_url.strip():
         lines.append(f"Review link: {review_url.strip()}")
+    if field_change_request_id.strip():
+        lines.append(
+            f"Field-change request ID: {field_change_request_id.strip()} "
+            "(find it in the LocationOS field-change approval queue)"
+        )
     return "\n".join(lines)
 
 
@@ -1855,7 +1865,14 @@ def _due_diligence_response_approval_queued(response: dict[str, Any]) -> bool:
     """
 
     if _due_diligence_field_change_request_id(response):
-        return True
+        # A field-change request record can be echoed back on terminal
+        # outcomes too (e.g. rejected). Count it as queued-proposal proof
+        # only when the response carries no error and no terminal outcome.
+        outcome = _due_diligence_response_outcome(response)
+        if outcome in {"", "pending_field_change"} and not _due_diligence_response_error(
+            response
+        ):
+            return True
     return any(
         str(response.get(key) or "").strip()
         for key in ("pendingMutationId", "approvalSessionId", "reviewUrl")
@@ -1890,6 +1907,7 @@ def _create_due_diligence_update_handoff(
     field_sources: Mapping[str, str] | None = None,
     proposal: bool = False,
     review_url: str = "",
+    field_change_request_id: str = "",
 ) -> dict[str, Any]:
     clean_site_id = site_id.strip()
     clean_fields = _clean_due_diligence_fields(fields)
@@ -1950,6 +1968,7 @@ def _create_due_diligence_update_handoff(
             fields=clean_fields,
             field_sources=field_sources,
             review_url=review_url,
+            field_change_request_id=field_change_request_id,
         )
     else:
         note_body = _build_due_diligence_update_handoff_note_body(
@@ -2163,7 +2182,6 @@ def _summarize_due_diligence_response(response: dict[str, Any]) -> dict[str, Any
         "id",
         "_id",
         "siteId",
-        "outcome",
         "pendingMutationId",
         "approvalSessionId",
         "reviewUrl",
@@ -2172,6 +2190,9 @@ def _summarize_due_diligence_response(response: dict[str, Any]) -> dict[str, Any
         value = response.get(key)
         if isinstance(value, str | bool | int | float) or value is None:
             summary[key] = value
+    outcome = _due_diligence_response_outcome(response)
+    if outcome:
+        summary["outcome"] = outcome
     field_change_request_id = _due_diligence_field_change_request_id(response)
     if field_change_request_id:
         summary["fieldChangeRequestId"] = field_change_request_id

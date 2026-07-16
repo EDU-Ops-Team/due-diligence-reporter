@@ -123,6 +123,31 @@ def test_build_dd_write_digest_renders_sites_and_statuses() -> None:
     assert "<h3>Alpha Miami Beach</h3>" in digest["html"]
 
 
+def test_build_dd_write_digest_renders_field_change_request_id() -> None:
+    events = [
+        build_dd_write_event(
+            site_id="SITE1",
+            status="proposal_submitted",
+            fields={"ddReportLink": "https://docs.google.com/document/d/doc1"},
+            field_change_request_id="tx7njp2yryw2tfhmpb3nr1w2kx8ajjcx",
+            created_at="2026-07-15T17:00:00+00:00",
+        ),
+    ]
+
+    assert events[0]["field_change_request_id"] == "tx7njp2yryw2tfhmpb3nr1w2kx8ajjcx"
+
+    digest = build_dd_write_digest(
+        events,
+        resolve_site_name=lambda site_id: "Alpha Franklin",
+        period_label="last 24 hours",
+    )
+
+    assert (
+        "field-change request: tx7njp2yryw2tfhmpb3nr1w2kx8ajjcx" in digest["text"]
+    )
+    assert "tx7njp2yryw2tfhmpb3nr1w2kx8ajjcx" in digest["html"]
+
+
 def test_build_dd_write_digest_empty() -> None:
     digest = build_dd_write_digest([], period_label="last 24 hours")
     assert digest["event_count"] == 0
