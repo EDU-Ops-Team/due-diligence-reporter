@@ -4382,6 +4382,19 @@ async def create_dd_report(
                 else "",
                 report_date=today_str if document_role == "candidate" else "",
             )
+            if republish_guard.get("candidate_doc_id") == doc_id:
+                # This post-build marking is the authoritative one (the body
+                # build changes the revisionId), so the guard status must
+                # reflect it, not the earlier pre-build marking.
+                republish_guard["candidate_automation_marking"] = str(
+                    automation_metadata.get("automation_marking") or "failed"
+                )
+                if automation_metadata.get("automation_marking_error"):
+                    republish_guard["candidate_automation_marking_error"] = str(
+                        automation_metadata["automation_marking_error"]
+                    )
+                else:
+                    republish_guard.pop("candidate_automation_marking_error", None)
 
             hyperlink_trace = {
                 "candidates": {},
