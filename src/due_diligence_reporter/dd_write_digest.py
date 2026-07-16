@@ -86,6 +86,7 @@ def build_dd_write_event(
     fields: dict[str, Any],
     field_sources: dict[str, str] | None = None,
     review_url: str = "",
+    field_change_request_id: str = "",
     run_source: str = "",
     created_at: str | None = None,
 ) -> dict[str, str]:
@@ -101,6 +102,7 @@ def build_dd_write_event(
         ),
         "field_sources": json.dumps(dict(sorted((field_sources or {}).items()))),
         "review_url": review_url.strip(),
+        "field_change_request_id": field_change_request_id.strip(),
         "run_source": run_source.strip()
         or os.environ.get("GITHUB_WORKFLOW", "").strip()
         or "local",
@@ -304,8 +306,11 @@ def build_dd_write_digest(
             )
             line = f"- {status}: {field_text}" if field_text else f"- {status}"
             review_url = sanitize_http_url(str(event.get("review_url") or "")) or ""
+            request_id = str(event.get("field_change_request_id") or "").strip()
             if review_url:
                 line += f" (review: {review_url})"
+            elif request_id:
+                line += f" (field-change request: {request_id})"
             text_lines.append(line)
             safe_field_text = escape_html_text(field_text)
             html_line = (
@@ -314,6 +319,11 @@ def build_dd_write_digest(
             if review_url:
                 html_line += (
                     f' &mdash; <a href="{escape_html_text(review_url)}">review</a>'
+                )
+            elif request_id:
+                html_line += (
+                    " &mdash; field-change request "
+                    f"{escape_html_text(request_id)}"
                 )
             html_parts.append(html_line + "</li>")
         text_lines.append("")
