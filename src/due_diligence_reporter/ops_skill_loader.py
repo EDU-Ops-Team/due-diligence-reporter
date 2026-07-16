@@ -15,6 +15,14 @@ ARCHIVED_SKILLS_DIRNAME = "archived-skills"
 
 
 @dataclass(frozen=True)
+class _SkillCandidate:
+    """One probe location for a skill file, with its provenance."""
+
+    path: Path
+    archived: bool = False
+
+
+@dataclass(frozen=True)
 class OpsSkillFile:
     """Text loaded from an Ops-Skills file and its provenance."""
 
@@ -39,10 +47,10 @@ def load_ops_skill_file(skill_id: str, relative_path: str = "SKILL.md") -> OpsSk
     """
 
     for candidate in _skill_file_candidates(skill_id, relative_path):
-        loaded = _read_skill_candidate(candidate)
+        loaded = _read_skill_candidate(candidate.path)
         if loaded is not None:
             source, text = loaded
-            archived = ARCHIVED_SKILLS_DIRNAME in candidate.parts
+            archived = candidate.archived
             if archived:
                 logger.warning(
                     "Loaded Ops-Skills %s from %s: the skill is archived "
@@ -59,10 +67,10 @@ def load_ops_skill_file(skill_id: str, relative_path: str = "SKILL.md") -> OpsSk
     )
 
 
-def _skill_file_candidates(skill_id: str, relative_path: str) -> list[Path]:
+def _skill_file_candidates(skill_id: str, relative_path: str) -> list[_SkillCandidate]:
     settings = get_settings()
     configured = settings.ops_skills_repo_path.strip()
-    candidates: list[Path] = []
+    candidates: list[_SkillCandidate] = []
 
     if configured:
         candidates.extend(_expand_skill_path(Path(configured), skill_id, relative_path))
@@ -81,40 +89,59 @@ def _skill_file_candidates(skill_id: str, relative_path: str) -> list[Path]:
         / "ops-skills"
         / "0.1.0"
     )
-    candidates.append(plugin_cache_root / "skills" / skill_id / relative_path)
     candidates.append(
-        plugin_cache_root / ARCHIVED_SKILLS_DIRNAME / skill_id / relative_path
+        _SkillCandidate(plugin_cache_root / "skills" / skill_id / relative_path)
+    )
+    candidates.append(
+        _SkillCandidate(
+            plugin_cache_root / ARCHIVED_SKILLS_DIRNAME / skill_id / relative_path,
+            archived=True,
+        )
     )
 
-    return _dedupe_paths(candidates)
+    return _dedupe_candidates(candidates)
 
 
-def _expand_skill_path(path: Path, skill_id: str, relative_path: str) -> list[Path]:
+def _expand_skill_path(
+    path: Path, skill_id: str, relative_path: str
+) -> list[_SkillCandidate]:
+    """Probe locations for one configured root, active before archived.
+
+    Roots pointing directly at a skill file or a single skill directory get
+    no archived fallback: the caller pinned an exact location, and there is
+    no reliable way to derive its archived sibling.
+    """
     if path.name == Path(relative_path).name:
-        return [path]
+        return [_SkillCandidate(path)]
     if path.name == skill_id:
-        return [path / relative_path]
+        return [_SkillCandidate(path / relative_path)]
     if path.name == "skills":
         return [
-            path / skill_id / relative_path,
-            path.parent / ARCHIVED_SKILLS_DIRNAME / skill_id / relative_path,
+            _SkillCandidate(path / skill_id / relative_path),
+            _SkillCandidate(
+                path.parent / ARCHIVED_SKILLS_DIRNAME / skill_id / relative_path,
+                archived=True,
+            ),
         ]
     return [
-        path / "skills" / skill_id / relative_path,
-        path / skill_id / relative_path,
-        path / ARCHIVED_SKILLS_DIRNAME / skill_id / relative_path,
+        _SkillCandidate(path / "skills" / skill_id / relative_path),
+        _SkillCandidate(path / skill_id / relative_path),
+        _SkillCandidate(
+            path / ARCHIVED_SKILLS_DIRNAME / skill_id / relative_path,
+            archived=True,
+        ),
     ]
 
 
-def _dedupe_paths(paths: list[Path]) -> list[Path]:
+def _dedupe_candidates(candidates: list[_SkillCandidate]) -> list[_SkillCandidate]:
     seen: set[str] = set()
-    deduped: list[Path] = []
-    for path in paths:
-        key = str(path)
+    deduped: list[_SkillCandidate] = []
+    for candidate in candidates:
+        key = str(candidate.path)
         if key in seen:
             continue
         seen.add(key)
-        deduped.append(path)
+        deduped.append(candidate)
     return deduped
 
 

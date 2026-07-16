@@ -76,6 +76,31 @@ def test_prefers_active_over_archived_skill(
     assert str(active_dir) in loaded.source
 
 
+def test_skills_dir_root_falls_back_to_archived_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "Ops-Skills"
+    _write_skill(repo, "archived-skills", "alpha-phasing-plan")
+    monkeypatch.setenv("OPS_SKILLS_REPO_PATH", str(repo / "skills"))
+
+    loaded = load_ops_skill_file("alpha-phasing-plan")
+
+    assert loaded.archived is True
+    assert loaded.text == _SKILL_TEXT
+
+
+def test_archived_flag_ignores_ancestor_directory_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "archived-skills" / "Ops-Skills"
+    _write_skill(repo, "skills", "alpha-phasing-plan")
+    monkeypatch.setenv("OPS_SKILLS_REPO_PATH", str(repo))
+
+    loaded = load_ops_skill_file("alpha-phasing-plan")
+
+    assert loaded.archived is False
+
+
 def test_raises_when_skill_missing_everywhere(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
